@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExecutionRequest",
+  "type": "object",
+  "required": [
+    "requestId",
+    "principalId",
+    "origin",
+    "intent",
+    "targetResources",
+    "proposedActions",
+    "priority",
+    "createdAt"
+  ],
+  "properties": {
+    "requestId": {
+      "type": "string"
+    },
+    "principalId": {
+      "type": "string"
+    },
+    "sessionId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "origin": {
+      "enum": [
+        "VOICE",
+        "TEXT",
+        "SCHEDULED_TASK",
+        "AGENT",
+        "PLUGIN",
+        "HOME_ASSISTANT_EVENT",
+        "ANDROID_EVENT",
+        "REMOTE_INTERFACE"
+      ]
+    },
+    "intent": {
+      "type": "string"
+    },
+    "targetResources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "proposedActions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "priority": {
+      "enum": [
+        "IMMEDIATE",
+        "HIGH",
+        "NORMAL",
+        "BACKGROUND",
+        "DEFERRED",
+        "MAINTENANCE"
+      ]
+    },
+    "riskEstimate": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "correlationId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+stateDiagram-v2
+[*] --> Created
+Created --> Validated
+Validated --> PermissionPending
+PermissionPending --> Approved
+PermissionPending --> Denied
+PermissionPending --> Deferred
+Approved --> Queued
+Queued --> Executing
+Executing --> Completed
+Executing --> Failed
+Queued --> Cancelled
+Created --> Expired
+Completed --> [*]
+Failed --> [*]
+Denied --> [*]
+Deferred --> [*]
+Cancelled --> [*]
+Expired --> [*]

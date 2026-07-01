@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExecutionResult",
+  "type": "object",
+  "required": [
+    "resultId",
+    "requestId",
+    "status",
+    "startedAt"
+  ],
+  "properties": {
+    "resultId": {
+      "type": "string"
+    },
+    "requestId": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "SUCCESS",
+        "PARTIAL_SUCCESS",
+        "FAILED",
+        "CANCELLED",
+        "DENIED",
+        "EXPIRED",
+        "DEFERRED"
+      ]
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "affectedResources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "toolResults": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "auditRecordId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reflectionCandidate": {
+      "type": "boolean"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

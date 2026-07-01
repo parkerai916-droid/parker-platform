@@ -1,0 +1,12 @@
+graph TD
+A[Created] --> B[Validated]
+B --> C[Permission Pending]
+C --> D{Permission Decision}
+D -->|Approved| E[Queued]
+D -->|Denied| F[Denied]
+D -->|Deferred| G[Deferred]
+E --> H[Executing]
+H --> I[Completed]
+H --> J[Failed]
+E --> K[Cancelled]
+B --> L[Expired]
