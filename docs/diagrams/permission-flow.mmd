@@ -1,0 +1,10 @@
+graph TD
+A[ExecutionRequest] --> B[Principal Identified]
+B --> C[Resource Identified]
+C --> D[Permission Engine]
+D --> E{Decision}
+E -->|Approved| F[Execution Pipeline]
+E -->|Confirmation Required| G[Confirmation Engine]
+E -->|Deferred| H[Wait or Clarify]
+E -->|Denied| I[Reject Request]
+G --> F

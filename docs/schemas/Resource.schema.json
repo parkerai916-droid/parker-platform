@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Resource",
+  "type": "object",
+  "required": [
+    "resourceId",
+    "resourceType",
+    "displayName",
+    "ownerPrincipalId",
+    "sensitivity",
+    "lifecycleState"
+  ],
+  "properties": {
+    "resourceId": {
+      "type": "string"
+    },
+    "resourceType": {
+      "enum": [
+        "MEMORY",
+        "WORLD_MODEL",
+        "DOCUMENT",
+        "EMAIL",
+        "CALENDAR",
+        "CONTACT",
+        "HOME_ASSISTANT_ENTITY",
+        "ANDROID_CAPABILITY",
+        "TOOL",
+        "PLUGIN",
+        "AGENT",
+        "SECRET",
+        "CONFIGURATION",
+        "AUDIT_LOG"
+      ]
+    },
+    "displayName": {
+      "type": "string"
+    },
+    "ownerPrincipalId": {
+      "type": "string"
+    },
+    "sensitivity": {
+      "enum": [
+        "PUBLIC",
+        "PERSONAL",
+        "HOUSEHOLD",
+        "FINANCIAL",
+        "MEDICAL",
+        "LEGAL",
+        "SECURITY_SENSITIVE",
+        "CREDENTIALS_SECRETS",
+        "THIRD_PARTY_PERSONAL_DATA"
+      ]
+    },
+    "lifecycleState": {
+      "enum": [
+        "CREATED",
+        "REGISTERED",
+        "AVAILABLE",
+        "UPDATED",
+        "ARCHIVED",
+        "DELETED"
+      ]
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}
