@@ -9,7 +9,8 @@
     "targetResources",
     "proposedActions",
     "priority",
-    "createdAt"
+    "createdAt",
+    "correlationId"
   ],
   "properties": {
     "requestId": {
@@ -72,6 +73,16 @@
     "createdAt": {
       "type": "string",
       "format": "date-time"
+    },
+    "expiresAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "correlationId": {
+      "type": "string"
     },
     "metadata": {
       "type": "object"
