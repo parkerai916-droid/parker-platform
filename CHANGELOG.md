@@ -46,3 +46,40 @@ v0.6 consistency review, without writing Kotlin:
 - See `docs/reviews/PARKER_V0_7_ARCHITECTURE_COMPLETION_REPORT.md` for
   the full report, remaining human decisions, and Phase 2 readiness
   assessment.
+
+## v0.8 — Phase 2 Runtime Complete
+
+Concrete Kotlin runtime implementation on `feature/phase-2-runtime`,
+verified by a real Gradle build and test run in Android Studio:
+**BUILD SUCCESSFUL, 101 tests passed, 0 failed.**
+
+- New: Tool Registry (`src/interfaces/ToolRegistry.kt`,
+  `src/runtime/InMemoryToolRegistry.kt`), Action Mapping
+  (`src/runtime/ActionMapper.kt`), EventBus (`src/interfaces/EventBus.kt`,
+  `src/runtime/InMemoryEventBus.kt`), Runtime Integration
+  (`src/runtime/DefaultExecutionPipeline.kt`), and Identity Service
+  (`src/interfaces/IdentityService.kt`, `src/runtime/InMemoryIdentityService.kt`,
+  `src/contracts/PrincipalLifecycle.kt`) — all implemented directly from
+  their governing architecture documents, no invented policy or behaviour.
+- New: Gradle Wrapper (`gradlew`, `gradlew.bat`,
+  `gradle/wrapper/gradle-wrapper.properties`, Gradle 8.10) so the project
+  builds in Android Studio without a system-wide Gradle install.
+- Targeted Refinement Pass: closed seven small previously-recorded gaps
+  (`Created -> Failed` lifecycle edge, Tool lifecycle diagram file,
+  `AgentHealth` deferral note, action-mapping.md/PermissionEngine
+  alignment, `EventBus.subscribe` subscriber identity, backfilled
+  `ToolRegistry.md`, `Resource.sensitivity` enum).
+- Fixed: one test-data defect in `DefaultExecutionPipelineTest` (an
+  expiry timestamp predating its own `createdAt`), found by the real
+  Gradle test run.
+- `docs/architecture/IMPLEMENTATION_GAPS.md`: 17 items resolved, 2
+  partially resolved, remainder recorded as deliberate scope boundaries
+  or open human decisions — see its new "Gap Closure Summary" section.
+- See `docs/reviews/PARKER_PHASE_2_RUNTIME_VERIFICATION_REPORT.md` for
+  the full verification report, architecture decisions, known
+  limitations, and next-milestone recommendation.
+- **Not implemented, by explicit scope:** `PermissionEngine.evaluate`'s
+  authorisation policy, any concrete `Tool`, Identity Service
+  integration into Permission Engine/EventBus/Tool Registry, cascading
+  Principal revocation, Agent runtime, Memory, World Model, and Phase 3
+  generally.

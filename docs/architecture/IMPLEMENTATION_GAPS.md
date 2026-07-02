@@ -60,7 +60,8 @@ event authentication requirements, and by whom.
 
 ## 5. `Principal` and `Resource` lifecycles had no transition rules
 
-**Status: Partially resolved; validator implementation deferred.**
+**Status: Partially resolved -- Principal half closed by the Identity
+Service Implementation phase; Resource half still deferred.**
 
 Added `docs/diagrams/principal-lifecycle-state-machine.mmd` and
 `docs/diagrams/resource-lifecycle-state-machine.mmd`, each a literal,
@@ -334,7 +335,14 @@ document requires it to exist.
 
 ### 23. Tool Registry's discovery surface has no Principal-scoped visibility filtering
 
-**Status: Known scope reduction, documented in `ToolRegistry.kt`'s own KDoc.**
+**Status: Known scope reduction, documented in `ToolRegistry.kt`'s own KDoc.
+Partially unblocked, not yet wired.** `IdentityService`/`InMemoryIdentityService`
+now exist as a concrete implementation (Identity Service Implementation
+phase), so the "resolving a caller's Principal" half of this blocker is
+no longer missing. `ToolRegistry`'s discovery methods are not wired to it
+-- doing so, and deciding what "some plausible Permission path" means,
+is still blocked on a policy-bearing `PermissionEngine`, which remains
+unimplemented.
 
 `tool-registry.md`'s Discovery Model specifies that a Tool descriptor
 should only be visible to a caller with "some plausible Permission path"
@@ -375,7 +383,12 @@ scope. Wiring `ActionMapper`'s output into a concrete
 
 ### 26. EventBus authentication and signature verification are placeholders, not real trust decisions
 
-**Status: Documented gap, deliberate stand-ins.**
+**Status: Documented gap, deliberate stand-ins. `IdentityService` now
+exists as a real candidate for `InMemoryEventBus`'s injected
+`PrincipalAuthenticator` seam** (resolve a Principal, check its status is
+ACTIVE) -- not wired in this phase, since that would be new integration
+work beyond this round's explicit scope. Recorded as a low-risk,
+well-specified follow-up.
 
 `InMemoryEventBus` accepts an injected `PrincipalAuthenticator`
 (`suspend fun isInGoodStanding(principalId): Boolean`) as the seam where
@@ -647,3 +660,38 @@ integration, so `PermissionEngine`/`FakePermissionEngine`/`DefaultExecutionPipel
 are all untouched by this work. The Identity Service foundation exists
 and is ready for that wiring; doing it is the natural next milestone, not
 done here.
+
+---
+
+## Phase 2 Runtime — Gap Closure Summary (all 40 items, current status)
+
+Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
+EventBus, Runtime Integration, Targeted Refinement Pass, Identity Service
+Implementation -- all on `feature/phase-2-runtime`), so every item's
+current disposition is visible in one place rather than requiring a
+scroll through the full history above.
+
+**Resolved:** #1 (IdentityService), #2, #3, #4, #6, #9, #10/#29
+(Resource.sensitivity enum), #11 (architecture level), #12 (architecture
+level), #13, #14, #15, #17, #18, #19, #21 (ToolRegistry.md backfill), #27
+(EventBus subscriber identity), #28 (tool lifecycle diagram), #31
+(Created -> Failed edge).
+
+**Partially resolved:** #5 (Principal half done via
+`PrincipalLifecycleTransitions`; Resource half still deferred), #30
+(action-mapping.md's prose now matches the interface; the interface
+itself is unchanged, per explicit instruction).
+
+**Deliberate scope boundaries / known, documented limitations (not
+defects, not pending):** #7, #22, #23, #24, #25, #26, #32, #33, #34, #35,
+#36, #37, #38, #39, #40.
+
+**Still requires a human decision:** #8/#16 (`Permission.schema.json` vs
+`PermissionDecision.schema.json` duplication), #20 (`AgentHealth`'s
+shape), #35 (exact cascading-revocation rule), #36 (whether the Principal
+lifecycle needs an Active -> Revoked or Suspended -> Active edge), #37
+(whether `resolve()` should suppress non-Active Principals), #38 (whether
+the owner-validation interpretation is correct).
+
+No item in this file was closed by inventing behaviour beyond what its
+governing architecture document already specified.
