@@ -42,6 +42,34 @@
         "type": "string"
       }
     },
+    "toolResults": {
+      "type": "array",
+      "description": "Structured per-tool outcomes. Shape mirrors parker.core.interfaces.ToolResult (src/contracts/ExecutionResult.kt): toolId, success, output, errorMessage. No standalone ToolResult.schema.json exists yet -- see ToolResult.md (Volume 3 supporting type).",
+      "items": {
+        "type": "object",
+        "required": [
+          "toolId",
+          "success"
+        ],
+        "properties": {
+          "toolId": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "output": {
+            "type": "object"
+          },
+          "errorMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
     "warnings": {
       "type": "array",
       "items": {
@@ -59,6 +87,11 @@
         "string",
         "null"
       ]
+    },
+    "reflectionCandidate": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this result is a candidate for the Reflection Engine to examine. Inferred type (Boolean) per ExecutionResult.md's required field list, which names reflectionCandidate but never states its type -- see IMPLEMENTATION_GAPS.md and src/contracts/ExecutionResult.kt."
     },
     "metadata": {
       "type": "object"

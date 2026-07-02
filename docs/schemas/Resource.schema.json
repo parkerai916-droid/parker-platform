@@ -7,7 +7,10 @@
     "displayName",
     "ownerPrincipalId",
     "sensitivity",
-    "lifecycleState"
+    "lifecycleState",
+    "createdAt",
+    "updatedAt",
+    "source"
   ],
   "properties": {
     "resourceId": {
@@ -63,6 +66,18 @@
         "ARCHIVED",
         "DELETED"
       ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "description": "Where this Resource originated (e.g. the subsystem or Plugin that created it). Required by Resource.md and src/contracts/Resource.kt; previously missing from this schema."
     },
     "metadata": {
       "type": "object"

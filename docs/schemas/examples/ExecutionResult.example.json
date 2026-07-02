@@ -10,5 +10,15 @@
   "warnings": [],
   "errors": [],
   "auditRecordId": "audit.001",
-  "metadata": {}
+  "metadata": {},
+  "toolResults": [
+    {
+      "toolId": "tool.home_assistant.light_control",
+      "success": true,
+      "output": {
+        "state": "on"
+      }
+    }
+  ],
+  "reflectionCandidate": false
 }

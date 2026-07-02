@@ -14,13 +14,18 @@ source for this schema.
 resultId, requestId, status, startedAt.
 
 ## Optional Fields
-completedAt, affectedResources, warnings, errors, auditRecordId, metadata.
+completedAt, affectedResources, toolResults, warnings, errors,
+auditRecordId, reflectionCandidate, metadata.
 
-Note: the prose ExecutionResult Contract (Volume 1) also lists
-`toolResults` and `reflectionCandidate` as required fields; the JSON
-Schema does not yet define either property. Not fixed in this pass (only
-`ExecutionRequest.schema.json` was in scope -- see
-docs/architecture/IMPLEMENTATION_GAPS.md, newly recorded finding).
+**Resolved in the v0.7 Architecture Completion Phase:** `toolResults`
+(array, shape mirrors `parker.core.interfaces.ToolResult`) and
+`reflectionCandidate` (boolean, default `false`) are now present in
+`ExecutionResult.schema.json` and its example, matching
+`src/contracts/ExecutionResult.kt`. Both are optional in the schema (not
+in the `required` array) since the Kotlin type supplies defaults for
+both, consistent with how `affectedResources`/`warnings`/`errors` are
+already treated as optional despite prose listing them as "Required
+Fields" generically.
 
 ## Key Enumerations
 - status: SUCCESS, PARTIAL_SUCCESS, FAILED, CANCELLED, DENIED, EXPIRED, DEFERRED
