@@ -25,22 +25,26 @@ kotlin {
     jvmToolchain(17)
 }
 
-// This build deliberately compiles only the Phase 1 (Volume 1 Core
-// Contracts) slice of src/interfaces. Eight stub files reference types
-// that belong to later phases (EventBus's ParkerEvent/EventType/etc.,
-// Agent's AgentHealth, MemoryStore's Memory/MemoryQuery/etc., and so on)
-// and are excluded here so the module actually builds. Nothing on disk is
-// deleted or rewritten -- this is a build-scope decision, reversible by
-// editing this file once those phases are specified. See
-// docs/architecture/IMPLEMENTATION_GAPS.md and phase1-assessment.md.
+// Phase 1 compiled only src/contracts + src/interfaces, excluding eight
+// stub files whose referenced types (EventBus's ParkerEvent/EventType/etc.,
+// Agent's AgentHealth, MemoryStore's Memory/MemoryQuery/etc.) didn't exist
+// yet. Phase 2 (v0.7 Architecture Completion Phase follow-on) specifies
+// and implements EventBus's supporting types, so EventBus.kt is back in
+// the build. Agent/AuditService/MemoryStore/ModelManager/NotificationService/
+// Plugin/WorldModel remain excluded -- their supporting types are still
+// unspecified (AgentHealth is a known, recorded gap; the rest are entirely
+// out of this phase's scope). src/runtime holds Phase 2's concrete
+// implementations (ToolRegistry, ActionMapper, EventBus), kept separate
+// from src/contracts (data types) and src/interfaces (Volume 3 interface
+// stubs) per the existing two-directory convention. See
+// docs/architecture/IMPLEMENTATION_GAPS.md.
 sourceSets {
     main {
         kotlin {
-            srcDirs("src/contracts", "src/interfaces")
+            srcDirs("src/contracts", "src/interfaces", "src/runtime")
             exclude(
                 "Agent.kt",
                 "AuditService.kt",
-                "EventBus.kt",
                 "MemoryStore.kt",
                 "ModelManager.kt",
                 "NotificationService.kt",
@@ -51,7 +55,7 @@ sourceSets {
     }
     test {
         kotlin {
-            srcDirs("tests/contracts")
+            srcDirs("tests/contracts", "tests/runtime")
         }
     }
 }
