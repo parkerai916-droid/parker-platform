@@ -1,0 +1,11 @@
+graph TD
+RR[ResourceRegistry] --> PE[PermissionEngine]
+PE --> EP[ExecutionPipeline]
+EP --> T[Tool]
+EP --> AS[AuditService]
+EB[EventBus] --> WM[WorldModel]
+EB --> MS[MemoryStore]
+MM[ModelManager] --> CE[Cognitive Services]
+NS[NotificationService] --> User[User]
+A[Agent] --> EP
+P[Plugin] --> EP

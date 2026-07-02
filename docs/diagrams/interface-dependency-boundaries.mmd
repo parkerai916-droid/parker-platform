@@ -1,0 +1,9 @@
+graph TD
+C[Cognitive Runtime] --> TR[Trust Runtime]
+TR --> ER[Execution Runtime]
+TR --> RR[ResourceRegistry]
+TR --> PE[PermissionEngine]
+ER --> EP[ExecutionPipeline]
+ER --> T[Tool]
+ER --> EB[EventBus]
+EP --> AS[AuditService]
