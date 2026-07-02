@@ -28,6 +28,12 @@ interface Agent {
 }
 ```
 
+**`AgentHealth` is currently undefined.** No document specifies its
+shape, and `src/interfaces/Agent.kt` is excluded from compilation
+(`build.gradle.kts`) until the Agent Framework phase defines it. Recorded
+in `docs/architecture/IMPLEMENTATION_GAPS.md` #20; not implemented by the
+targeted refinement pass, which is documentation-only for this item.
+
 ## Normative Requirements
 
 - Agents MUST be Principals.

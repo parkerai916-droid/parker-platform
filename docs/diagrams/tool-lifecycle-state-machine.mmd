@@ -1,0 +1,20 @@
+%% Tool Registry runtime lifecycle, transcribed exactly from
+%% docs/architecture/tool-registry.md "Runtime Lifecycle":
+%% Registered -> Enabled -> Disabled/Deprecated -> Removed.
+%%
+%% This is a literal copy of that document's own stateDiagram-v2 block
+%% into its own file, for consistency with the standalone-diagram
+%% convention already used for Principal/Resource/Session/Task/Workflow.
+%% No states or transitions are added or changed here -- see
+%% src/contracts/ToolLifecycle.kt (ToolLifecycleTransitions) for the
+%% Kotlin validator already written directly from this same diagram.
+%% Added by the targeted refinement pass (IMPLEMENTATION_GAPS.md #28).
+stateDiagram-v2
+[*] --> Registered
+Registered --> Enabled
+Enabled --> Disabled
+Disabled --> Enabled
+Enabled --> Deprecated
+Deprecated --> Removed
+Disabled --> Removed
+Removed --> [*]

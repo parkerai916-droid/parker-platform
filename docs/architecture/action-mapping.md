@@ -157,24 +157,44 @@ explainability (Chapter 43). This document keeps them distinct.
 
 An `ExecutionRequest` may legitimately propose more than one action (e.g.
 "read the calendar and send a summary email" → `READ` + `SEND_EXTERNAL`).
-v0.7 specifies:
 
-- Each resolved Permission Action is evaluated as its own
-  `PermissionEngine.evaluate` call, producing its own `PermissionDecision`
-  — there is no merged "batch decision" type. `ExecutionRequest` remains
-  singular per Volume 1, but may yield multiple `PermissionDecision`
-  records, each independently auditable.
+**Corrected by the targeted refinement pass** (IMPLEMENTATION_GAPS.md #30
+/ IMPLEMENTATION_REFINEMENTS.md #30): an earlier revision of this section
+described calling `PermissionEngine.evaluate` once per resolved Permission
+Action. That does not match the existing Volume 3 interface
+(`suspend fun evaluate(request: ExecutionRequest): PermissionDecision`),
+which takes the whole request and returns a single decision, with no
+parameter identifying which of several mapped actions is being evaluated.
+Rather than change that interface — a larger step than this document's
+scope, and not required to keep the underlying guarantee — this section
+now describes the model the existing interface actually supports:
+
+- `PermissionEngine.evaluate(request)` is called **exactly once per
+  `ExecutionRequest`**, regardless of how many actions the request's
+  `proposedActions` map to. There is no batch or per-action call.
+- `PermissionDecision.action` records the request's **primary mapped
+  action** — the one the action mapping layer (this document's
+  Transformation Rules) identifies as the request's principal action.
+  Selecting which mapped action is primary when a request has several is
+  an action-mapping-layer concern, not a Permission Engine concern; this
+  document does not prescribe a selection algorithm (e.g. first-listed,
+  highest-risk) beyond noting that whichever action-mapping
+  implementation makes this choice must do so deterministically, the
+  same way `ToolRegistry`'s ambiguous-match handling requires
+  determinism without yet prescribing a tie-break rule.
+- Multi-action requests are therefore handled entirely **within the
+  action mapping layer**: it resolves every proposed action to its
+  `PermissionAction`/`ResourceType` pair(s) (Transformation Rules),
+  validates all of them (Validation, Unknown Actions), and identifies the
+  primary one to pass forward. `PermissionEngine`'s single decision then
+  governs the request as a whole — there is no per-action approval/denial
+  split to reconcile, because the Permission Engine was never asked to
+  evaluate more than one action to begin with.
 - The overall request may only proceed to `Approved` in the execution
-  lifecycle if **every** resolved Permission Action's decision is
-  `APPROVED` or `APPROVED_WITH_CONFIRMATION`. A single `DENIED` among
-  several proposed actions denies the whole request — v0.7 does not
-  specify partial execution of only the approved subset, since that would
-  let a Planner-composed multi-action request silently execute less than
-  what its `intent` described, without the user ever having proposed the
-  narrower version. Partial execution of a deliberately-scoped subset is
-  left as a future extensibility item (see below), not invented here.
-- `PermissionDecisionOutcome.DEFERRED` on any one action defers the whole
-  request, same reasoning.
+  lifecycle if the single `PermissionDecision`'s outcome is `APPROVED` or
+  `APPROVED_WITH_CONFIRMATION`. `DENIED` or `DEFERRED` denies/defers the
+  whole request — unchanged from before, just now correctly described as
+  the outcome of one decision rather than a reconciliation across several.
 
 ## Composite Actions
 
@@ -188,10 +208,11 @@ original location, plus `WRITE` the destination). v0.7 specifies:
   `(PermissionAction, ResourceType)` pairs per vocabulary entry, rather
   than requiring the Planner to decompose composite actions into multiple
   separate proposed-action strings itself.
-- Composite actions still follow the "Multiple Actions" rule above: every
-  constituent `PermissionAction` must independently resolve to
-  `APPROVED`/`APPROVED_WITH_CONFIRMATION` for the composite action to
-  proceed.
+- Composite actions still follow the "Multiple Actions" rule above: the
+  vocabulary entry's constituent `(PermissionAction, ResourceType)` pairs
+  are all resolved by the action mapping layer, one of them is identified
+  as primary, and the single `PermissionEngine.evaluate` call governs the
+  whole composite action — not a separate decision per constituent pair.
 - This document does not attempt to enumerate the composite vocabulary —
   that is implementation-phase content (a data table, not an
   architectural decision) once this mapping model is approved.

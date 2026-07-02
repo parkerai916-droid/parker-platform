@@ -7,7 +7,16 @@ package parker.core.interfaces
  *   Created -> Validated -> PermissionPending -> {Approved, Denied, Deferred}
  *   Approved -> Queued -> Executing -> {Completed, Failed}
  *   Queued -> Cancelled
- *   Created -> Expired
+ *   Created -> {Expired, Failed}
+ *
+ * Created -> Failed was added by the targeted refinement pass
+ * (IMPLEMENTATION_GAPS.md #31 / IMPLEMENTATION_REFINEMENTS.md #31): a
+ * request that fails validation (an unresolvable target Resource, or a
+ * proposed action that doesn't resolve via the action-mapping vocabulary
+ * -- action-mapping.md calls this "Invalid, not Denied") previously had
+ * no legal lifecycle-state-machine edge to represent that outcome; only
+ * Expired existed as a way out of Created. This is the smallest possible
+ * fix: one additional edge, no new state, no other edge changed.
  *
  * This is the one lifecycle in Volume 1 with an actual diagram behind it
  * (unlike Principal's or Resource's, which are prose-only linear chains --
@@ -34,6 +43,7 @@ object ExecutionLifecycleTransitions {
         ExecutionLifecycleState.CREATED to setOf(
             ExecutionLifecycleState.VALIDATED,
             ExecutionLifecycleState.EXPIRED,
+            ExecutionLifecycleState.FAILED,
         ),
         ExecutionLifecycleState.VALIDATED to setOf(
             ExecutionLifecycleState.PERMISSION_PENDING,

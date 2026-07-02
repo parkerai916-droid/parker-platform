@@ -2,16 +2,21 @@
 
 ## Status
 
-Version: 0.7-alpha
-Status: New architecture specification (Priority 4, v0.7 Architecture
-Completion Phase). Per this phase's explicit instruction, **no
-`IdentityService` interface is implemented in Kotlin here** — this
-document is the "reviewable architecture proposal" that
-`docs/architecture/IMPLEMENTATION_GAPS.md` #1 said would follow the
-original deferral decision. It graduates that deferred item from "no
-architecture exists" to "architecture exists, implementation still
-deliberately withheld until an implementation phase is declared for it
-(per ADR-022)."
+Version: 0.7.1
+Status: Architecture specification from the v0.7 Architecture Completion
+Phase (Priority 4), **now implemented** by the explicitly-declared
+Identity Service Implementation phase: `src/interfaces/IdentityService.kt`
+and `src/runtime/InMemoryIdentityService.kt` implement exactly the
+"Interfaces (Proposed)" shape below, plus `PrincipalLifecycleTransitions`
+(`src/contracts/PrincipalLifecycle.kt`) enforcing the "Lifecycle" section.
+Closes `IMPLEMENTATION_GAPS.md` #1. **Still deliberately not implemented**:
+real authentication providers (Chapter 42 remains untouched), the
+"Interaction with Audit" event-publishing responsibility, cascading
+revocation (see "Trust Relationships" below -- left conservative, no
+cascading at all, per its own still-open exact-rule question), and
+integration with `PermissionEngine.evaluate` ("Integration with Permission
+Engine" below) -- all recorded as follow-ups in `IMPLEMENTATION_GAPS.md`,
+not silently added here."
 
 ## Purpose
 

@@ -8,19 +8,23 @@ while doing that cleanup are appended at the end.
 
 ## 1. `IdentityService` has no interface
 
-**Status: Architecture proposed (v0.7); implementation still deferred.**
+**Status: Resolved by the Identity Service Implementation phase.**
 
-`IdentityService` was deferred from Phase 1 implementation. The v0.7
-Architecture Completion Phase delivered the "reviewable architecture
-proposal" promised above: `docs/architecture/IdentityService.md` now
-specifies responsibilities, a proposed interface shape, lifecycle
-ownership, principal resolution, trust/delegation relationships (via the
-existing `Principal.owner` field), an authentication-flow integration
-diagram, and integration points with the Permission Engine, World Model,
-and Audit. **No Kotlin was added** — the proposed interface is
-documentation only, per ADR-022 and this phase's explicit "do not
-implement Kotlin" rule. Promoting it to `src/interfaces`/Volume 3 remains
-a decision for an explicitly-declared implementation phase.
+`IdentityService` was deferred from Phase 1 implementation, then given a
+full architecture proposal in `docs/architecture/IdentityService.md`
+during the v0.7 Architecture Completion Phase. This item's own text said
+promoting that proposal to `src/interfaces`/Volume 3 "remains a decision
+for an explicitly-declared implementation phase" -- that phase has now
+happened. `src/interfaces/IdentityService.kt` and
+`src/runtime/InMemoryIdentityService.kt` implement the proposed
+`register`/`resolve`/`updateStatus`/`touch`/`listByOwner` shape exactly,
+and `src/contracts/PrincipalLifecycle.kt` adds `PrincipalLifecycleTransitions`
+(closing the Principal half of item #5 below). See the "Identity Service
+Implementation" section near the end of this document for what was
+deliberately still left out (cascading revocation, event publishing, real
+authentication, PermissionEngine integration) and the interpretive
+choices made where the architecture document left more than one option
+open.
 
 ## 2. `ExecutionRequest`: prose spec and JSON Schema disagreed
 
@@ -69,6 +73,12 @@ Active is still not stated, so no such edge is diagrammed). Both contract
 Kotlin validators (parallel to `ExecutionLifecycleTransitions`) was treated
 as runtime/code work, out of scope for this documentation-only pass. Now
 that diagrams exist, this is a well-specified, low-risk follow-up.
+
+**Update (Identity Service Implementation phase):** the Principal half is
+now done -- `PrincipalLifecycleTransitions` (`src/contracts/PrincipalLifecycle.kt`)
+enforces the exact linear chain in the diagram, no branching added.
+`ResourceLifecycleTransitions` remains undone; it is a Resource Registry
+concern, not this phase's scope.
 
 ## 6. Volume 2 "core schemas" markdown files were templated placeholders
 
@@ -126,16 +136,18 @@ change, since it was already correct.
 
 ### 10. `Resource.sensitivity` does have a defined enum — earlier finding was wrong
 
-**Status: Resolved (correction).**
+**Status: Resolved (correction), and now fully closed by the targeted
+refinement pass.**
 
 Gap #3's original entry said no value set was defined for `Resource.sensitivity`
 anywhere. That was based on reading only the prose `Resource.md`, not
 `Resource.schema.json` — which does define one (`PUBLIC`, `PERSONAL`,
 `HOUSEHOLD`, `FINANCIAL`, `MEDICAL`, `LEGAL`, `SECURITY_SENSITIVE`,
 `CREDENTIALS_SECRETS`, `THIRD_PARTY_PERSONAL_DATA`). `Resource-Schema.md`
-now documents this enum. **`src/contracts/Resource.kt` still types
-`sensitivity` as a plain `String`, not this enum** — not changed in this
-pass (documentation-only scope); recommended as a follow-up code fix.
+now documents this enum. **The targeted refinement pass added
+`ResourceSensitivity` (`src/contracts/Resource.kt`) with exactly these nine
+values and retyped `Resource.sensitivity` from `String` to it** — see item
+#29, the follow-up code fix this item recommended, now done.
 
 
 ---
@@ -261,7 +273,9 @@ genuinely fixed earlier.
 
 ### 20. `AgentHealth` is referenced but never defined (new finding)
 
-**Status: Requires human decision — not addressed by this phase.**
+**Status: Requires human decision for the actual type definition; the gap
+is now explicitly flagged in `Agent.md` itself (targeted refinement pass),
+so it is no longer silently discoverable only by reading Kotlin.**
 
 While fixing `Agent.md`'s `ADR-004` citation (item 14), found that both
 `Agent.md` and `src/interfaces/Agent.kt` reference a return type
@@ -287,7 +301,11 @@ planning was implemented, per that phase's explicit scope.
 
 ### 21. No formal Volume 3 `ToolRegistry.md` interface document exists
 
-**Status: Requires follow-up, not blocking.**
+**Status: Resolved by the targeted refinement pass.**
+`docs/specifications/volume-03-core-interfaces/ToolRegistry.md` now exists,
+summarizing the already-implemented `src/interfaces/ToolRegistry.kt`
+exactly as built, and `VOLUME_3_INDEX.md`'s Included Interfaces list now
+names it. No new Tool Registry behaviour was introduced.
 
 `docs/architecture/tool-registry.md` (an architecture document) was
 implemented directly as `src/interfaces/ToolRegistry.kt`. Every other
@@ -372,7 +390,13 @@ inventing one was out of scope for this phase.
 
 ### 27. EventBus subscriber Principal identity is not asserted
 
-**Status: Documented gap.**
+**Status: Resolved by the targeted refinement pass.**
+`EventBus.subscribe` now takes an explicit `subscriberPrincipalId:
+PrincipalId` parameter; `InMemoryEventBus` uses the caller-supplied value
+directly instead of a placeholder. This makes subscriber identity
+explicit only -- it does not implement IdentityService and does not
+implement the cascading-cancellation-on-Revoke behaviour described below
+(original text retained for that reason):
 
 `EventBus.subscribe` is a synchronous (non-suspend) call per its existing
 Volume 3 interface stub, with no caller-context parameter to identify the
@@ -388,7 +412,10 @@ here) or resolving subscriber identity from ambient coroutine context
 
 ### 28. `docs/diagrams/tool-lifecycle-state-machine.mmd` does not exist as a standalone file
 
-**Status: Not a blocker; Kotlin already matches the architecture doc.**
+**Status: Resolved by the targeted refinement pass.** The standalone file
+now exists, transcribed verbatim from `tool-registry.md`'s inline
+diagram -- no new states or transitions. Original finding retained below
+for context:
 
 `src/contracts/ToolLifecycle.kt`'s `ToolLifecycleTransitions` was written
 directly from `docs/architecture/tool-registry.md`'s inline
@@ -401,7 +428,222 @@ agree.
 
 ### 29. `Resource.sensitivity: String` (item 5/10, restated) still not changed to the enum
 
-**Status: Still open; unrelated to this phase's changes.**
+**Status: Resolved by the targeted refinement pass.** See item #10 --
+`ResourceSensitivity` now exists and `Resource.sensitivity` uses it.
+`tests/contracts/ResourceTest.kt` and all other `Resource(...)`
+construction sites were updated to the enum; `Resource-Schema.md` no
+longer recommends this as a pending follow-up.
 
-Carried over unchanged. Not touched by Phase 2 work, since it's an
-independent, previously-recorded item.
+
+---
+
+## Runtime Integration (Priority 4, feature/phase-2-runtime) — findings
+
+Recorded while wiring `DefaultExecutionPipeline` (Execution Pipeline ->
+Permission Engine -> Tool Registry -> Event Bus). Per the "Authority"
+process (stop, record, recommend smallest correction, continue only if
+safe), each item below was hit *during* implementation and handled by
+implementing the smallest safe workaround while recording the real fix as
+an open decision -- none were silently invented around.
+
+### 30. `PermissionEngine.evaluate`'s signature doesn't match action-mapping.md's "once per action" description
+
+**Status: Documentation half resolved by the targeted refinement pass;
+interface question still requires human decision.**
+`action-mapping.md`'s "Multiple Actions" section was rewritten to
+correctly describe the interface as it actually exists (`evaluate` called
+exactly once per `ExecutionRequest`; `PermissionDecision.action` records
+a "primary mapped action"; multi-action handling lives entirely in the
+action mapping layer) -- the prose no longer disagrees with the Kotlin.
+`PermissionEngine.evaluate`'s signature was deliberately NOT changed, per
+this pass's explicit scope. Original finding retained below for the
+still-open interface question:
+
+`action-mapping.md` ("Multiple Actions") states "each resolved Permission
+Action is evaluated as its own `PermissionEngine.evaluate` call, producing
+its own `PermissionDecision`." But the existing Volume 3 interface
+(`suspend fun evaluate(request: ExecutionRequest): PermissionDecision`,
+predating that document, from Phase 1) has no parameter identifying
+*which* action is being evaluated when a request maps to more than one
+`PermissionAction`. `DefaultExecutionPipeline` calls `evaluate(request)`
+exactly once per request, matching the interface as it actually exists
+today, rather than inventing a different signature. **Recommended
+smallest correction:** either add an `action: PermissionAction` parameter
+to `evaluate`, or add a batch-evaluation variant, and reconcile
+`action-mapping.md`'s prose with whichever is chosen.
+
+### 31. The ExecutionLifecycleState transition table has no `CREATED -> FAILED` edge for validation failures
+
+**Status: Resolved by the targeted refinement pass.** `CREATED -> FAILED`
+is now a legal edge in `ExecutionLifecycleTransitions` and
+`execution-state-machine.mmd`; `DefaultExecutionPipeline` now calls
+`transition(..., FAILED)` on both validation-failure paths instead of
+leaving the tracked state at `CREATED`. No new lifecycle states were
+added. Original finding retained below for context:
+
+`action-mapping.md` says an unresolvable proposed action (or, by the same
+reasoning, an unresolvable target Resource) is "Invalid, not Denied" and
+should fail before ever reaching `PermissionPending`. But
+`ExecutionLifecycleTransitions` (locked in and tested since Phase 1) only
+permits `CREATED -> {VALIDATED, EXPIRED}` -- there is no legal edge
+representing "this request failed validation." `DefaultExecutionPipeline`
+does not force an illegal transition or add an edge unilaterally to a
+contract with existing passing tests; instead, on a validation failure it
+returns an `ExecutionResult` with `status = FAILED` (a value
+`ExecutionResultStatus` already supports, independent of
+`ExecutionLifecycleState`) while leaving the tracked lifecycle state at
+`CREATED` -- an honest "never legally left Created," not a fabricated
+edge. **Recommended smallest correction:** add `CREATED -> FAILED` (or a
+new dedicated pre-permission-evaluation terminal state, e.g. `INVALID`)
+to the state machine and to `ExecutionLifecycleTransitions`.
+
+### 32. No concrete `Tool` implementation exists to actually invoke
+
+**Status: Known, expected limitation -- not a defect in this phase's scope.**
+
+`ToolRegistry.resolve` deliberately returns a `ToolDescriptor`, never a
+live `Tool` (per `docs/architecture/tool-registry.md`'s own design: models
+and planners never hold executable references, only the Execution
+Pipeline does). But no concrete `Tool` implementation exists anywhere in
+this codebase to resolve *to* -- Tool implementations are explicitly out
+of this phase's scope (and every other phase's scope so far). A `SUCCESS`
+result from `DefaultExecutionPipeline` therefore means "every orchestration
+stage up to and including finding the right Tool succeeded," not "a Tool
+actually ran." This is disclosed prominently in `DefaultExecutionPipeline`'s
+own KDoc and in the Phase 2 completion report -- recorded here so it
+isn't lost as a footnote.
+
+### 33. `execution.timed_out` (an event name from the original runtime task's lifecycle list) has no corresponding `ExecutionLifecycleState`
+
+**Status: Minor terminology gap, not blocking.**
+
+The original Parker Runtime v0.1 task listed lifecycle events including
+"execution timed out." `ExecutionLifecycleState` has `EXPIRED` (checked
+before execution begins, for `ExecutionRequest.expiresAt`) and `FAILED`
+(after execution), but no distinct "timed out mid-execution" state or
+event. `DefaultExecutionPipeline` does not implement execution timeouts at
+all (no concrete Tool runs long enough for this to matter yet) and does
+not publish an `execution.timed_out` event. Recorded for whichever future
+phase adds real Tool execution with duration limits.
+
+### 34. `DefaultExecutionPipeline`'s simplifications, restated for visibility
+
+**Status: Documented design choices, not gaps requiring a decision.**
+
+Processing is synchronous within `submit()` (no background execution
+queue -- `QUEUED`/`EXECUTING` are transitioned through within the same
+call); `APPROVED_WITH_CONFIRMATION` is treated identically to `APPROVED`
+(a real confirmation workflow is Chapter 42 territory); lifecycle events
+published to the Event Bus use a placeholder signature
+(`"internal-execution-pipeline-authority"`), consistent with the
+already-recorded placeholder pattern in item 26 (no real signing scheme
+is specified anywhere).
+
+---
+
+## Targeted Refinement Pass (feature/phase-2-runtime) — closed items
+
+Executed the seven specific small refinements identified in
+`IMPLEMENTATION_REFINEMENTS.md`, and only those -- not a redesign, not
+Phase 3. Items closed: #10, #20 (doc clarification only, decision still
+open), #21, #27, #28, #29, #30 (doc clarification only, interface
+decision still open), #31. Items #1, #8, #16, #22-26, #32-34 remain open
+exactly as previously recorded -- none were touched by this pass.
+
+---
+
+## Identity Service Implementation (feature/phase-2-runtime) — findings
+
+Recorded while implementing `IdentityService`/`InMemoryIdentityService`
+per `docs/architecture/IdentityService.md`. No authentication providers,
+OAuth, biometrics, Android account integration, remote identity
+federation, agent runtime, memory, world model, AI/LLM logic, plugins, or
+Home Assistant/email/calendar integration was implemented, per that
+phase's explicit scope.
+
+### 35. Cascading revocation was not implemented -- left fully conservative
+
+**Status: Deliberate scope boundary, matches an explicit instruction.**
+
+`IdentityService.md` ("Trust Relationships") says the Identity Service
+"MUST evaluate whether any Principal it owns... should also transition"
+on Revoke, but in the same breath leaves "the exact cascading rule
+(immediate revoke vs. suspend-pending-review)" as an open question rather
+than settling it. `InMemoryIdentityService.updateStatus` does not cascade
+to owned Principals at all -- revoking a Principal has no effect on
+anything it owns. **Requires human decision:** what the exact cascading
+rule should be, before it can be implemented without inventing policy.
+
+### 36. `PrincipalLifecycleTransitions` only allows the literal linear chain -- no direct Active -> Revoked, no Suspended -> Active
+
+**Status: Matches the diagram exactly; practical consequence flagged for visibility.**
+
+Per `docs/diagrams/principal-lifecycle-state-machine.mmd` (no branching
+specified anywhere), `PrincipalLifecycleTransitions` only permits
+`Created -> Active -> Suspended -> Revoked -> Archived`, strictly in
+order. A practical consequence: a Principal cannot be revoked without
+first passing through Suspended, and a Suspended Principal can never
+return to Active. **Requires human decision:** whether real-world
+operation needs a direct `Active -> Revoked` edge (e.g. immediate
+revocation without a suspend step) or a `Suspended -> Active`
+reactivation edge -- neither is invented here.
+
+### 37. `resolve()` does not suppress Revoked or Archived Principals
+
+**Status: Conservative choice between two options the architecture leaves open.**
+
+`IdentityService.md` ("Principal Resolution") says an unresolvable
+Principal is "not found, or found but Revoked/Archived" -- but also says
+elsewhere the Identity Service should "refuse to resolve, or resolve as
+inert" such a Principal, without picking one. `InMemoryIdentityService.resolve`
+takes the smaller, easier-to-extend-later option: it always returns the
+stored `Principal` record regardless of status, never hiding data.
+Treating a Revoked/Archived Principal as "cannot act" is left to callers
+(the future Permission Engine integration, item #39 below) rather than
+baked into the read path. **Requires human decision:** whether `resolve`
+should instead suppress non-Active Principals once a real caller
+(Permission Engine) exists to depend on that behaviour.
+
+### 38. Owner validation for delegated Principal types: interpreted as "non-null AND already registered"
+
+**Status: Concrete interpretive decision, recorded for review.**
+
+`IdentityService.md` says `register` "requires an already-established
+owning context" for any `PrincipalType` other than `USER`/`SYSTEM`, but
+does not spell out an algorithm. `InMemoryIdentityService.register`
+interprets this as: `owner` must be non-null, and that `owner` must
+already resolve to a registered Principal at registration time. `USER`
+and `SYSTEM` Principals may register with a null owner, but are not
+*forbidden* from having one (the architecture only states the typical
+pattern, not a prohibition). **Requires human decision (low urgency):**
+whether this interpretation is correct, and whether `USER`/`SYSTEM`
+should in fact be forbidden from having a non-null owner.
+
+### 39. `identity.*` event publishing (Audit integration) not implemented
+
+**Status: Deferred, explicitly out of this phase's allowed-behaviour list.**
+
+`IdentityService.md` ("Interaction with Audit") specifies that every
+`register`, `updateStatus`, and resolution failure should emit an
+`identity.*` event via the Event Bus for Audit to consume.
+`InMemoryIdentityService` has no `EventBus` dependency and publishes
+nothing. This phase's task description did not list event publishing
+among the allowed/required behaviours, so it was not added rather than
+guessed at. Recommended follow-up: wire an `EventBus` dependency through
+`InMemoryIdentityService`'s constructor (optional, defaulted, mirroring
+`InMemoryEventBus`'s own `PrincipalAuthenticator` injection pattern) once
+this is explicitly scoped.
+
+### 40. `PermissionEngine.evaluate` is not yet wired to resolve identity first
+
+**Status: Deliberately not done -- explicit instruction for this phase.**
+
+`IdentityService.md` ("Integration with Permission Engine") specifies
+that `PermissionEngine.evaluate(request)` MUST resolve
+`request.principalId` via the Identity Service as its first step, and
+short-circuit to `DENIED` for a Suspended/Revoked Principal. This phase's
+task explicitly said not to proceed to Permission Engine policy
+integration, so `PermissionEngine`/`FakePermissionEngine`/`DefaultExecutionPipeline`
+are all untouched by this work. The Identity Service foundation exists
+and is ready for that wiring; doing it is the natural next milestone, not
+done here.

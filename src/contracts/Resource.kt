@@ -43,18 +43,36 @@ enum class ResourceLifecycleState {
 }
 
 /**
- * @param sensitivity Resource.md requires "a sensitivity classification"
- *   but never enumerates the value set anywhere I could find (unlike
- *   ExecutionRequest's RiskEstimate, which is a concrete enum). Typed as a
- *   free-form String rather than guessing at enum members that aren't
- *   specified -- see IMPLEMENTATION_GAPS.md.
+ * Resource.schema.json defines the value set IMPLEMENTATION_GAPS.md #10/#29
+ * originally said was missing -- that finding was a correction: the enum was
+ * only absent from the prose Resource.md, not from the schema. Sourced
+ * directly from Resource.schema.json's `sensitivity` property (targeted
+ * refinement pass, closes #10/#29). No values were invented here.
+ */
+enum class ResourceSensitivity {
+    PUBLIC,
+    PERSONAL,
+    HOUSEHOLD,
+    FINANCIAL,
+    MEDICAL,
+    LEGAL,
+    SECURITY_SENSITIVE,
+    CREDENTIALS_SECRETS,
+    THIRD_PARTY_PERSONAL_DATA,
+}
+
+/**
+ * @param sensitivity Resource.md requires "a sensitivity classification";
+ *   the value set is defined by Resource.schema.json and represented here
+ *   by [ResourceSensitivity] (targeted refinement pass, closes
+ *   IMPLEMENTATION_GAPS.md #10/#29 -- previously a free-form String).
  */
 data class Resource(
     val resourceId: ResourceId,
     val resourceType: ResourceType,
     val displayName: String,
     val ownerPrincipalId: PrincipalId,
-    val sensitivity: String,
+    val sensitivity: ResourceSensitivity,
     val lifecycleState: ResourceLifecycleState,
     val createdAt: Instant,
     val updatedAt: Instant,
@@ -63,6 +81,5 @@ data class Resource(
 ) {
     init {
         require(displayName.isNotBlank()) { "Resource.displayName must not be blank" }
-        require(sensitivity.isNotBlank()) { "Resource.sensitivity must not be blank" }
     }
 }

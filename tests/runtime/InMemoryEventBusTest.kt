@@ -53,7 +53,7 @@ class InMemoryEventBusTest {
     fun `a subscriber receives an event published on its exact eventType`() = runTest {
         val bus = InMemoryEventBus()
         var received: ParkerEvent? = null
-        bus.subscribe(EventType("resource.updated")) { received = it }
+        bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-1")) { received = it }
 
         val result = bus.publish(event())
         assertEquals(PublishResult.Delivered(1), result)
@@ -64,7 +64,7 @@ class InMemoryEventBusTest {
     fun `a subscriber does not receive events of a different eventType`() = runTest {
         val bus = InMemoryEventBus()
         var receivedCount = 0
-        bus.subscribe(EventType("resource.updated")) { receivedCount++ }
+        bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-1")) { receivedCount++ }
 
         bus.publish(event(eventType = "session.expired"))
         assertEquals(0, receivedCount)
@@ -75,8 +75,8 @@ class InMemoryEventBusTest {
         val bus = InMemoryEventBus()
         var countA = 0
         var countB = 0
-        bus.subscribe(EventType("resource.updated")) { countA++ }
-        bus.subscribe(EventType("resource.updated")) { countB++ }
+        bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-a")) { countA++ }
+        bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-b")) { countB++ }
 
         val result = bus.publish(event())
         assertEquals(PublishResult.Delivered(2), result)
@@ -88,8 +88,8 @@ class InMemoryEventBusTest {
     fun `a throwing handler is isolated -- other subscribers still receive, publish still returns`() = runTest {
         val bus = InMemoryEventBus()
         var goodHandlerRan = false
-        bus.subscribe(EventType("resource.updated")) { throw RuntimeException("boom") }
-        bus.subscribe(EventType("resource.updated")) { goodHandlerRan = true }
+        bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-bad")) { throw RuntimeException("boom") }
+        bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-good")) { goodHandlerRan = true }
 
         val result = bus.publish(event())
         assertTrue(goodHandlerRan)
@@ -102,7 +102,7 @@ class InMemoryEventBusTest {
     fun `cancelling a subscription stops further delivery`() = runTest {
         val bus = InMemoryEventBus()
         var count = 0
-        val subscription = bus.subscribe(EventType("resource.updated")) { count++ }
+        val subscription = bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-1")) { count++ }
 
         bus.publish(event())
         subscription.cancel()
@@ -115,7 +115,7 @@ class InMemoryEventBusTest {
     @Test
     fun `cancelling an already-cancelled subscription is idempotent, not an error`() = runTest {
         val bus = InMemoryEventBus()
-        val subscription = bus.subscribe(EventType("resource.updated")) { }
+        val subscription = bus.subscribe(EventType("resource.updated"), PrincipalId("subscriber-1")) { }
 
         subscription.cancel()
         subscription.cancel() // must not throw

@@ -17,6 +17,7 @@ class ExecutionLifecycleTransitionsTest {
         val edges = listOf(
             ExecutionLifecycleState.CREATED to ExecutionLifecycleState.VALIDATED,
             ExecutionLifecycleState.CREATED to ExecutionLifecycleState.EXPIRED,
+            ExecutionLifecycleState.CREATED to ExecutionLifecycleState.FAILED,
             ExecutionLifecycleState.VALIDATED to ExecutionLifecycleState.PERMISSION_PENDING,
             ExecutionLifecycleState.PERMISSION_PENDING to ExecutionLifecycleState.APPROVED,
             ExecutionLifecycleState.PERMISSION_PENDING to ExecutionLifecycleState.DENIED,
@@ -32,6 +33,20 @@ class ExecutionLifecycleTransitionsTest {
             assertTrue(ExecutionLifecycleTransitions.isValidTransition(from, to), "$from -> $to should be valid")
             ExecutionLifecycleTransitions.requireValidTransition(from, to) // must not throw
         }
+    }
+
+    @Test
+    fun `Created can go directly to Failed -- a validation failure, not a Denied decision`() {
+        // Added by the targeted refinement pass (IMPLEMENTATION_GAPS.md #31): a request that fails
+        // validation (unresolvable target Resource, or an action-mapping failure -- see
+        // action-mapping.md's "Invalid, not Denied") never reaches PermissionPending at all.
+        assertTrue(
+            ExecutionLifecycleTransitions.isValidTransition(
+                ExecutionLifecycleState.CREATED,
+                ExecutionLifecycleState.FAILED,
+            ),
+        )
+        ExecutionLifecycleTransitions.requireValidTransition(ExecutionLifecycleState.CREATED, ExecutionLifecycleState.FAILED) // must not throw
     }
 
     @Test

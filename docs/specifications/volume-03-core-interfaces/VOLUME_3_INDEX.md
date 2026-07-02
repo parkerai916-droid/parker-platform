@@ -15,6 +15,13 @@ These interfaces are implementation contracts. They describe what each service m
 - ExecutionPipeline
 - PermissionEngine
 - ResourceRegistry
+- ToolRegistry (backfilled by the targeted refinement pass -- see
+  `IMPLEMENTATION_GAPS.md` #21; the interface predates this document,
+  implemented directly from `docs/architecture/tool-registry.md`)
+- IdentityService (Identity Service Implementation phase -- promotes
+  `docs/architecture/IdentityService.md`'s proposed interface shape to a
+  real interface/implementation; closes `IMPLEMENTATION_GAPS.md` #1's
+  "implementation still deferred" status)
 - EventBus
 - Tool
 - Agent

@@ -28,15 +28,22 @@ services subscribe to categories of them.
 ```kotlin
 interface EventBus {
     suspend fun publish(event: ParkerEvent): PublishResult
-    fun subscribe(eventType: EventType, handler: EventHandler): Subscription
+    fun subscribe(eventType: EventType, subscriberPrincipalId: PrincipalId, handler: EventHandler): Subscription
 }
 ```
 
 Supporting types: `EventType.md`, `EventHandler.md`, `Subscription.md`,
-`PublishResult.md`. `ParkerEvent` is defined by
-`docs/schemas/Event.schema.json` / `Event-Schema.md`; no Kotlin mapping
-exists for it yet (deferred to the phase that implements EventBus, per
-`Event-Schema.md`).
+`PublishResult.md`. `ParkerEvent` is defined by `docs/schemas/Event.schema.json`
+/ `Event-Schema.md`, and implemented in `src/contracts/EventContracts.kt`
+(Phase 2 runtime implementation).
+
+**`subscribe`'s `subscriberPrincipalId` parameter was added by the
+targeted refinement pass** (IMPLEMENTATION_GAPS.md #27): earlier
+revisions of this interface had no way for a caller to assert real
+subscriber identity, so implementations had to guess or stamp a
+placeholder. This parameter only makes identity explicit — it does not
+itself authenticate or authorise the subscriber (see "Authentication"
+below, which remains a separate, still-open concern).
 
 ## Normative Requirements
 

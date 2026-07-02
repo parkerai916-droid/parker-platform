@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.Resource
+import parker.core.interfaces.ResourceSensitivity
 import parker.core.interfaces.ResourceId
 import parker.core.interfaces.ResourceLifecycleState
 import parker.core.interfaces.ResourceType
@@ -31,7 +32,7 @@ class InMemoryToolRegistryTest {
         resourceType = ResourceType.TOOL,
         displayName = "Tool Resource $id",
         ownerPrincipalId = PrincipalId("system"),
-        sensitivity = "PUBLIC",
+        sensitivity = ResourceSensitivity.PUBLIC,
         lifecycleState = ResourceLifecycleState.AVAILABLE,
         createdAt = Instant.parse("2026-01-01T00:00:00Z"),
         updatedAt = Instant.parse("2026-01-01T00:00:00Z"),

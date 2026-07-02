@@ -9,14 +9,12 @@ modify, delete, execute, export, observe, or protect.
 
 ## Normative Source
 `docs/schemas/Resource.schema.json` is the normative, versioned source.
-Note: the schema defines a concrete `sensitivity` enum (see below); this
-implementation's `src/contracts/Resource.kt` currently types `sensitivity`
-as a free-form `String` because that Kotlin was written before this
-schema was read closely (see `docs/architecture/IMPLEMENTATION_GAPS.md` --
-this corrects an earlier, mistaken claim that no sensitivity enum existed
-anywhere). Recommended follow-up: change the Kotlin type to the enum below
-(a Kotlin change, out of scope for the v0.7 Architecture Completion Phase,
-which does not implement Kotlin).
+**Resolved by the targeted refinement pass** (`IMPLEMENTATION_GAPS.md`
+#10/#29): `src/contracts/Resource.kt` now defines `ResourceSensitivity`
+with exactly the nine values below and types `Resource.sensitivity` as
+that enum, rather than a free-form `String`. No values were invented --
+the enum is a direct transcription of the schema's existing `sensitivity`
+property.
 
 **Resolved in the v0.7 Architecture Completion Phase:** `createdAt`,
 `updatedAt`, and `source` are now present in `Resource.schema.json` and

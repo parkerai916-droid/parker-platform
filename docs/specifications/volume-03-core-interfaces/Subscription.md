@@ -6,8 +6,12 @@ Status: New — closes IMPLEMENTATION_GAPS.md / consistency review §2.2
 (v0.7 Architecture Completion Phase, Priority 3).
 
 ## Purpose
-The return type of `EventBus.subscribe(eventType, handler): Subscription`
-(see `EventBus.md`). Represents a live, cancellable subscription.
+The return type of `EventBus.subscribe(eventType, subscriberPrincipalId, handler): Subscription`
+(see `EventBus.md`). Represents a live, cancellable subscription. The
+`subscriberPrincipalId` parameter was added to `subscribe` by the targeted
+refinement pass (`IMPLEMENTATION_GAPS.md` #27) so that the identity recorded
+below is asserted by the caller rather than guessed or stamped by the
+implementation.
 
 ## Required Fields
 - subscriptionId

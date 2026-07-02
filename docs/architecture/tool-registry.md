@@ -286,9 +286,9 @@ consistency across the platform's lifecycle vocabulary, while using
 Tool-specific state names since "Suspended"/"Revoked" don't carry the
 right connotation for a dispatch-table entry. See
 `docs/diagrams/tool-lifecycle-state-machine.mmd` for the standalone
-diagram file (added alongside the Priority 5 lifecycle diagrams in this
-same phase, since Tool Registry's own "Runtime Lifecycle" requirement
-needs one).
+diagram file (added by the targeted refinement pass, IMPLEMENTATION_GAPS.md
+#28 -- a literal copy of the `stateDiagram-v2` block above, matching the
+Principal/Resource/Session/Task/Workflow convention).
 
 ## Failure Behaviour
 

@@ -124,15 +124,16 @@ class InMemoryEventBus(
         }
     }
 
-    override fun subscribe(eventType: EventType, handler: EventHandler): Subscription {
+    override fun subscribe(eventType: EventType, subscriberPrincipalId: PrincipalId, handler: EventHandler): Subscription {
         val list = subscriptionsByType.computeIfAbsent(eventType) { CopyOnWriteArrayList() }
         val subscription = SubscriptionImpl(
             subscriptionId = UUID.randomUUID().toString(),
             eventType = eventType,
-            // No IdentityService to resolve "the calling Principal" from context yet; subscriber identity
-            // is not asserted by this bus -- callers requiring subscriber-Principal-scoped bookkeeping
-            // (cascading cancellation on Revoke) must supply it themselves. Recorded in IMPLEMENTATION_GAPS.md.
-            subscriberPrincipalId = PrincipalId("system.event-bus.unresolved-subscriber"),
+            // Identity is now asserted explicitly by the caller (IMPLEMENTATION_GAPS.md #27,
+            // resolved). This bus still does not authenticate or authorise that identity -- it takes
+            // the caller's word for it, same as before -- and cascading cancellation on Principal
+            // Revoke still isn't implemented (no IdentityService to raise that event yet).
+            subscriberPrincipalId = subscriberPrincipalId,
             handler = handler,
             onCancel = { list.remove(it) },
         )
