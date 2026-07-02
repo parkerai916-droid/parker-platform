@@ -1,0 +1,17 @@
+{
+  "requestId": "exec.req.001",
+  "principalId": "principal.user.steve",
+  "sessionId": "session.voice.001",
+  "origin": "VOICE",
+  "intent": "turn lounge light on",
+  "targetResources": [
+    "ha.light.lounge"
+  ],
+  "proposedActions": [
+    "CONTROL"
+  ],
+  "priority": "NORMAL",
+  "riskEstimate": "LOW",
+  "createdAt": "2026-07-02T00:00:00Z",
+  "metadata": {}
+}

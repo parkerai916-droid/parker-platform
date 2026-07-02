@@ -1,0 +1,53 @@
+{
+  "title": "Session",
+  "type": "object",
+  "required": [
+    "sessionId",
+    "principalId",
+    "sessionType",
+    "status",
+    "startedAt"
+  ],
+  "properties": {
+    "sessionId": {
+      "type": "string"
+    },
+    "principalId": {
+      "type": "string"
+    },
+    "sessionType": {
+      "enum": [
+        "VOICE",
+        "TEXT",
+        "BACKGROUND_TASK",
+        "DEVELOPER",
+        "PLUGIN",
+        "REMOTE"
+      ]
+    },
+    "status": {
+      "enum": [
+        "ACTIVE",
+        "EXPIRED",
+        "CANCELLED",
+        "AUTH_REQUIRED",
+        "CLOSED"
+      ]
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

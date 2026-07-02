@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Resource",
   "type": "object",
   "required": [
@@ -29,7 +28,11 @@
         "AGENT",
         "SECRET",
         "CONFIGURATION",
-        "AUDIT_LOG"
+        "AUDIT_LOG",
+        "SESSION",
+        "EVENT",
+        "TASK",
+        "WORKFLOW"
       ]
     },
     "displayName": {
@@ -64,5 +67,6 @@
     "metadata": {
       "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

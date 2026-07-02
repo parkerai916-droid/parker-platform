@@ -1,40 +1,37 @@
 {
-  "title": "Principal",
+  "title": "Workflow",
   "type": "object",
   "required": [
-    "principalId",
-    "principalType",
-    "displayName",
+    "workflowId",
+    "ownerPrincipalId",
     "status",
+    "steps",
     "createdAt"
   ],
   "properties": {
-    "principalId": {
+    "workflowId": {
       "type": "string"
     },
-    "principalType": {
-      "enum": [
-        "USER",
-        "SYSTEM",
-        "AGENT",
-        "PLUGIN",
-        "TOOL",
-        "SCHEDULED_TASK",
-        "DEVELOPER_SESSION",
-        "REMOTE_DEVICE"
-      ]
-    },
-    "displayName": {
+    "ownerPrincipalId": {
       "type": "string"
     },
     "status": {
       "enum": [
         "CREATED",
         "ACTIVE",
-        "SUSPENDED",
-        "REVOKED",
+        "RUNNING",
+        "PAUSED",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
         "ARCHIVED"
       ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
     },
     "createdAt": {
       "type": "string",

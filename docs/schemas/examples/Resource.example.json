@@ -1,0 +1,11 @@
+{
+  "resourceId": "ha.light.lounge",
+  "resourceType": "HOME_ASSISTANT_ENTITY",
+  "displayName": "Lounge Light",
+  "ownerPrincipalId": "principal.user.steve",
+  "sensitivity": "HOUSEHOLD",
+  "lifecycleState": "AVAILABLE",
+  "metadata": {
+    "domain": "light"
+  }
+}

@@ -1,0 +1,10 @@
+graph TD
+P[Principal] --> ER[ExecutionRequest]
+ER --> R[Resource]
+ER --> PD[PermissionDecision]
+PD --> EX[ExecutionResult]
+EX --> AR[AuditRecord]
+ER --> S[Session]
+ER --> T[Task]
+T --> W[Workflow]
+EV[Event] --> AR

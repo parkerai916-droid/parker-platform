@@ -1,0 +1,60 @@
+{
+  "title": "PermissionDecision",
+  "type": "object",
+  "required": [
+    "decisionId",
+    "principalId",
+    "resourceId",
+    "action",
+    "decision",
+    "level",
+    "timestamp"
+  ],
+  "properties": {
+    "decisionId": {
+      "type": "string"
+    },
+    "principalId": {
+      "type": "string"
+    },
+    "resourceId": {
+      "type": "string"
+    },
+    "action": {
+      "enum": [
+        "READ",
+        "WRITE",
+        "DELETE",
+        "EXECUTE",
+        "EXPORT",
+        "SHARE",
+        "CONTROL",
+        "NOTIFY",
+        "SCHEDULE",
+        "SEND_EXTERNAL"
+      ]
+    },
+    "decision": {
+      "enum": [
+        "APPROVED",
+        "APPROVED_WITH_CONFIRMATION",
+        "DEFERRED",
+        "DENIED"
+      ]
+    },
+    "level": {
+      "enum": [
+        "AUTOMATIC",
+        "USER_AWARE",
+        "CONFIRMATION_REQUIRED",
+        "HIGH_ASSURANCE",
+        "ADMINISTRATIVE"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

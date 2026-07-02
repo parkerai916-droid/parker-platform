@@ -1,0 +1,7 @@
+graph TD
+S[Session] --> ER[ExecutionRequest]
+ER --> EV[Event Published]
+ER --> PD[PermissionDecision]
+PD --> EX[ExecutionResult]
+EX --> AR[AuditRecord]
+EV --> AR

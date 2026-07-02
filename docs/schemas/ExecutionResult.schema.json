@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExecutionResult",
   "type": "object",
   "required": [
@@ -43,12 +42,6 @@
         "type": "string"
       }
     },
-    "toolResults": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
-    },
     "warnings": {
       "type": "array",
       "items": {
@@ -67,11 +60,9 @@
         "null"
       ]
     },
-    "reflectionCandidate": {
-      "type": "boolean"
-    },
     "metadata": {
       "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

@@ -1,0 +1,44 @@
+{
+  "title": "Task",
+  "type": "object",
+  "required": [
+    "taskId",
+    "ownerPrincipalId",
+    "status",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "taskId": {
+      "type": "string"
+    },
+    "ownerPrincipalId": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "CREATED",
+        "QUEUED",
+        "RUNNING",
+        "PAUSED",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "EXPIRED",
+        "SUPERSEDED"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

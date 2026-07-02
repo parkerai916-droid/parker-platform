@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExecutionRequest",
   "type": "object",
   "required": [
@@ -74,21 +73,9 @@
       "type": "string",
       "format": "date-time"
     },
-    "expiresAt": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "format": "date-time"
-    },
-    "correlationId": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "metadata": {
       "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

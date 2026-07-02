@@ -1,0 +1,14 @@
+{
+  "resultId": "exec.result.001",
+  "requestId": "exec.req.001",
+  "status": "SUCCESS",
+  "startedAt": "2026-07-02T00:00:01Z",
+  "completedAt": "2026-07-02T00:00:02Z",
+  "affectedResources": [
+    "ha.light.lounge"
+  ],
+  "warnings": [],
+  "errors": [],
+  "auditRecordId": "audit.001",
+  "metadata": {}
+}

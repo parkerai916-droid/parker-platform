@@ -1,0 +1,53 @@
+{
+  "title": "AuditRecord",
+  "type": "object",
+  "required": [
+    "auditRecordId",
+    "timestamp",
+    "principalId",
+    "action",
+    "outcome",
+    "correlationId"
+  ],
+  "properties": {
+    "auditRecordId": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "principalId": {
+      "type": "string"
+    },
+    "resourceId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "action": {
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "APPROVED",
+        "DENIED",
+        "EXECUTED",
+        "FAILED",
+        "CANCELLED",
+        "DEFERRED"
+      ]
+    },
+    "correlationId": {
+      "type": "string"
+    },
+    "redacted": {
+      "type": "boolean"
+    },
+    "details": {
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,13 @@
+{
+  "auditRecordId": "audit.001",
+  "timestamp": "2026-07-02T00:00:02Z",
+  "principalId": "principal.user.steve",
+  "resourceId": "ha.light.lounge",
+  "action": "CONTROL",
+  "outcome": "EXECUTED",
+  "correlationId": "corr.001",
+  "redacted": false,
+  "details": {
+    "tool": "homeAssistant.turnOn"
+  }
+}
