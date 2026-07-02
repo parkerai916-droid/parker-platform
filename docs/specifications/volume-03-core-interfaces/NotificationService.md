@@ -1,5 +1,11 @@
 # NotificationService Interface
 
+## Status
+Version: 0.6-alpha3 (content unchanged since the v0.6 Volume 3 release;
+stamped during the v0.7 Architecture Completion Phase for consistency
+with other Volume 3 documents -- see
+docs/reviews/PARKER_V0_6_CONSISTENCY_REVIEW.md §3.6).
+
 ## Purpose
 
 The NotificationService communicates with the user through approved channels.
