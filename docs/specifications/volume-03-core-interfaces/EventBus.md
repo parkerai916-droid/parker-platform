@@ -30,4 +30,9 @@ interface EventBus {
 ## Related
 
 - Chapter 13 – Event Bus
-- ADR-005
+- *No ADR currently exists for event authentication requirements.* This section
+  previously cited "ADR-005", which does not exist in `docs/adr/` (ADR
+  numbering jumps from 003 to 006). Per IMPLEMENTATION_GAPS.md #4, the
+  dangling citation has been removed rather than backfilled with an
+  invented ADR. If the normative requirements above need ADR-level backing,
+  a new ADR should be authored and referenced here explicitly.
