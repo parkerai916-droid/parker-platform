@@ -1,71 +1,131 @@
 # Parker Platform — Implementation Gaps
 
-Recorded while implementing Phase 1 (Volume 1 Core Contracts) on `feature/phase-1-core-contracts`. None of these blocked implementation outright — each was resolved with a documented, conservative choice, per Phase 7's "stop, record, recommend" process. Nothing here invents architecture; every choice below is either a direct reading of existing prose, or an explicit refusal to guess where no prose exists.
+Recorded while implementing Phase 1 (Volume 1 Core Contracts) on
+`feature/phase-1-core-contracts`. Updated during the Phase 1 follow-up
+specification cleanup pass — each original gap is now marked **Resolved**,
+**Deferred**, or **Requires human decision**. Three new findings surfaced
+while doing that cleanup are appended at the end.
 
-## 1. `IdentityService` has no interface — not implemented this round
+## 1. `IdentityService` has no interface
 
-**Where:** `docs/architecture/41-identity-service.md` fully describes its responsibilities in prose, and `IMPLEMENTATION_ORDER.md` Phase 1 names "Identity Service" as required. But Volume 3's own "Included Interfaces" list (`docs/specifications/volume-03-core-interfaces/VOLUME_3_INDEX.md`) does not include it, and no `src/interfaces/IdentityService.kt` stub exists.
+**Status: Deferred (explicit decision, recorded per your instruction).**
 
-**Why it blocks:** Writing this interface now would mean inventing its method signatures (register? resolve? updateStatus? touch-lastSeenAt?) with nothing but prose to go on, contrary to Phase 7's "do not invent missing architecture."
+`IdentityService` is deferred from this Phase 1 implementation pass.
+Volume 3 does not include it despite Chapter 41 and `IMPLEMENTATION_ORDER.md`
+naming it, and per Phase 7's "do not invent missing architecture," no
+interface was written. **A proposed interface may be drafted later as a
+reviewable architecture proposal** — explicitly not as a silent addition
+to Volume 3, since Volume 3 currently states its included interfaces are
+"normative for v0.6 engineering work" and IdentityService isn't among them.
 
-**Options:**
-- (a) Add `IdentityService.kt` to Volume 3 first (as a documentation change, by whoever owns the spec), then implement it in a follow-up.
-- (b) Explicitly descope Identity from this "Phase 1" (contracts) pass and handle it only when `IMPLEMENTATION_ORDER.md`'s Phase 1 (Resource Registry / Identity Service / Permission Engine as running systems) is actually tackled.
-- (c) Authorize me to draft a proposed `IdentityService` interface as a *reviewable proposal* (clearly marked as such, not a stub with silent authority) based on Chapter 41 + the `Principal` contract.
+## 2. `ExecutionRequest`: prose spec and JSON Schema disagreed
 
-**Recommendation:** (b) now, (c) as the concrete next step if you want Identity Service work to keep moving before (a) happens.
+**Status: Resolved.**
 
-## 2. `ExecutionRequest`: prose spec and JSON Schema disagree
+`docs/schemas/ExecutionRequest.schema.json` now includes `expiresAt`
+(optional, `string`/`null`, `format: date-time`) and `correlationId`
+(required, `string`), matching the prose spec and this implementation's
+Kotlin. The worked example (`docs/schemas/examples/ExecutionRequest.example.json`)
+was updated to match.
 
-**Where:** `docs/specifications/volume-01-core-contracts/ExecutionRequest.md` lists `expiresAt` and `correlationId` under "Required Fields." `docs/schemas/ExecutionRequest.schema.json` defines neither field at all.
+## 3. Several referenced types had no defined shape anywhere
 
-**Why it blocks:** ADR-019 treats the JSON Schema as the versioned, normative artifact, but the schema is missing fields the prose spec requires and that the state machine (`Created -> Expired`) and `ExecutionResult.Expired`/`Deferred` statuses depend on. Picking one source silently would hide a real inconsistency.
+**Status: Resolved** (as provisional, reviewable specifications — not as
+finished designs; each new document says so explicitly).
 
-**Decision made:** Implemented `ExecutionRequest` with `expiresAt: Instant?` and `correlationId: String` included, following the prose spec, since both fields are load-bearing elsewhere in the same volume. This is *implementing an existing (inconsistent) spec*, not inventing one.
+Added `docs/specifications/volume-03-core-interfaces/{PermissionExplanation,ToolResult,ToolDescriptor,CancellationResult,ExecutionStatus}.md`,
+each with Purpose/Required Fields/Normative Requirements and an "Open
+Questions" section listing what the entry deliberately leaves unresolved.
+`VOLUME_3_INDEX.md` now lists these under a new "Supporting Types"
+section. `Resource.sensitivity` is addressed separately — see new finding
+below; it turned out to already have a defined enum I'd missed.
 
-**Recommendation:** Update `ExecutionRequest.schema.json` to add `expiresAt` (optional, date-time) and `correlationId` (required, string), matching the prose and this implementation, and note the fix with an ADR per ADR-019's versioning rule.
+## 4. `ADR-005` was cited but does not exist
 
-## 3. Several referenced types have no defined shape anywhere
+**Status: Resolved** (by removal, not invention).
 
-**Where:**
-- `PermissionEngine.explain(decisionId): PermissionExplanation` — no spec defines `PermissionExplanation`'s fields.
-- `Tool.execute(request): ToolResult` — `Tool.md` says "Tools MUST return structured results" but never specifies the structure.
-- `Tool.descriptor: ToolDescriptor` — no spec defines `ToolDescriptor`'s fields.
-- `ExecutionPipeline.cancel(requestId): CancellationResult` / `.status(requestId): ExecutionStatus` — neither type is specified.
-- `Resource.sensitivity` — required per `Resource.md`, but no enum or value set is given anywhere (contrast with `ExecutionRequest.riskEstimate`, which *is* a concrete enum).
+`EventBus.md`'s dangling "ADR-005" citation has been replaced with an
+explicit note that no such ADR exists and none was invented to fill the
+gap, per your explicit instruction not to invent an ADR unless required.
+**Requires human decision:** whether a real ADR should be authored for
+event authentication requirements, and by whom.
 
-**Why it blocks:** These types are referenced by name in Volume 3's own interface specs, so *some* shape is needed just to make the existing stubs compile — but no source specifies what that shape should be.
+## 5. `Principal` and `Resource` lifecycles had no transition rules
 
-**Decision made:** Added minimal, explicitly-provisional shapes for `PermissionExplanation`, `ToolResult`, `ToolDescriptor`, `CancellationResult`, and `ExecutionStatus` (see KDoc comments on each in `src/contracts/`), and typed `Resource.sensitivity` as a plain `String` rather than guessing at enum members. None of these should be treated as final.
+**Status: Partially resolved; validator implementation deferred.**
 
-**Recommendation:** Add these five shapes to Volume 2/3 properly (with real field lists, not inferred from usage), then reconcile the placeholders here against the result.
+Added `docs/diagrams/principal-lifecycle-state-machine.mmd` and
+`docs/diagrams/resource-lifecycle-state-machine.mmd`, each a literal,
+un-embellished transcription of the linear chain already stated in prose
+(no invented branching — e.g. whether a Suspended principal can return to
+Active is still not stated, so no such edge is diagrammed). Both contract
+`.md` files now reference their diagram.
 
-## 4. `ADR-005` is cited but does not exist
+**Deferred:** writing `PrincipalLifecycleTransitions`/`ResourceLifecycleTransitions`
+Kotlin validators (parallel to `ExecutionLifecycleTransitions`) was treated
+as runtime/code work, out of scope for this documentation-only pass. Now
+that diagrams exist, this is a well-specified, low-risk follow-up.
 
-**Where:** `docs/specifications/volume-03-core-interfaces/EventBus.md`'s "Related" section cites "ADR-005." The `docs/adr/` directory has no `ADR-004` or `ADR-005` file — numbering jumps from `ADR-003` to `ADR-006`.
+## 6. Volume 2 "core schemas" markdown files were templated placeholders
 
-**Why it blocks:** Not blocking for this round (EventBus is out of Phase 1 scope), but will block whoever implements EventBus next if the citation is never resolved.
+**Status: Resolved.**
 
-**Recommendation:** Either recover/write the missing ADR-004/005, or remove the dangling citation from `EventBus.md`.
+All 10 Volume 2 files plus `VOLUME_2_INDEX.md` now state their `.schema.json`
+file is the normative source and give a real required/optional field list
+and key enumerations, rather than generic boilerplate. Where writing these
+summaries surfaced a real prose/schema/Kotlin disagreement, the summary
+says so explicitly instead of papering over it — see the three new
+findings below, all surfaced this way.
 
-## 5. `Principal` and `Resource` lifecycles have no transition rules, only a linear chain
+## 7. Build-scope exclusion of eight later-phase interface stubs
 
-**Where:** `Principal.md`: "Created → Active → Suspended → Revoked → Archived." `Resource.md`: "Created → Registered → Available → Updated → Archived → Deleted." Neither has an accompanying state-machine diagram (unlike `ExecutionRequest`, which has `docs/diagrams/execution-state-machine.mmd`).
+**Status: Unchanged / not a gap requiring resolution.**
 
-**Why it blocks:** Implementing a transition validator (like `ExecutionLifecycleTransitions`) requires knowing the actual edges — e.g. can a Suspended principal return to Active, or only proceed to Revoked? Can a Resource cycle between Available and Updated, or does Updated only happen once? The prose doesn't say.
+Recorded for traceability only, as before; this is a `build.gradle.kts`
+configuration choice, not a specification gap, and remains in effect.
 
-**Decision made:** Implemented `PrincipalStatus` and `ResourceLifecycleState` as plain enums with **no transition validator**, unlike `ExecutionLifecycleState`. Phase 6's test requirement ("invalid state transitions are rejected *if a state machine is specified*") is satisfied for `ExecutionRequest`, the one lifecycle that actually has a diagram behind it.
+---
 
-**Recommendation:** Produce `.mmd` diagrams for `Principal` and `Resource` lifecycles (matching the existing style for `ExecutionRequest`), then add validators for both, matching the pattern already in `ExecutionLifecycleTransitions`.
+## New findings from this cleanup pass
 
-## 6. Volume 2 ("core schemas") markdown files are templated placeholders
+### 8. `Permission.schema.json` and `PermissionDecision.schema.json` disagree
 
-**Where:** `docs/specifications/volume-02-core-schemas/*.md` (e.g. `ExecutionRequest-Schema.md`, `PermissionDecision-Schema.md`, `Event-Schema.md`) all contain identical generic boilerplate text, not real field-by-field schema detail.
+**Status: Requires human decision.**
 
-**Why it doesn't block:** The real schema detail exists and is properly filled in at `docs/schemas/*.schema.json` — this implementation was written against those, not against Volume 2's prose wrappers.
+Two separate schema files both describe the same concept ("PermissionDecision")
+with different field sets: `Permission.schema.json`'s `action` enum omits
+`SEND_EXTERNAL` and adds `reason`/`requiresConfirmation` properties that
+`PermissionDecision.schema.json` doesn't have. `PermissionDecision-Schema.md`
+now documents both and treats `PermissionDecision.schema.json` as
+authoritative (it matches Volume 3's naming and this implementation), but
+this is a judgment call, not a resolution — **someone needs to decide
+whether `Permission.schema.json` should be deleted, merged, or repurposed
+for a distinct concept** (e.g. a tool-declared permission *requirement*,
+distinct from a *decision* record).
 
-**Recommendation:** Either fill in Volume 2's markdown properly (referencing the real `.schema.json` content) or remove the wrappers and point Volume 2's index directly at `docs/schemas/`, so there's one source of truth instead of two, one of which is empty.
+### 9. `Principal.schema.json` disagrees with the prose `Principal` contract and this implementation's Kotlin
 
-## 7. Build system scope decision (not a spec gap, but recorded for traceability)
+**Status: Requires human decision.**
 
-`src/interfaces/{Agent,AuditService,EventBus,MemoryStore,ModelManager,NotificationService,Plugin,WorldModel}.kt` are excluded from this branch's `build.gradle.kts` compilation (see that file's comment). This is a build-configuration decision, not a specification gap — those eight files reference Phase 2+ types that don't exist yet, and excluding them was necessary to get anything to compile. Nothing on disk was changed; the exclusion list is one array in one Gradle file, reversible in one edit once those phases are implemented.
+The schema's `principalType` enum (`AGENT`, `REMOTE_DEVICE`) differs from
+the prose's (`Internal Agent`, `Future Remote Device`) and this
+implementation's Kotlin (`INTERNAL_AGENT`, `FUTURE_REMOTE_DEVICE`). The
+schema also omits `owner` and `lastSeenAt` entirely, though the prose
+requires both. `Principal-Schema.md` now documents this discrepancy.
+**`src/contracts/Principal.kt` was not changed in this pass** (this round
+was documentation/specification only, per its stated scope) — updating it
+to match whichever naming is decided as correct is a recommended, ready-to-do
+follow-up once a decision is made.
+
+### 10. `Resource.sensitivity` does have a defined enum — earlier finding was wrong
+
+**Status: Resolved (correction).**
+
+Gap #3's original entry said no value set was defined for `Resource.sensitivity`
+anywhere. That was based on reading only the prose `Resource.md`, not
+`Resource.schema.json` — which does define one (`PUBLIC`, `PERSONAL`,
+`HOUSEHOLD`, `FINANCIAL`, `MEDICAL`, `LEGAL`, `SECURITY_SENSITIVE`,
+`CREDENTIALS_SECRETS`, `THIRD_PARTY_PERSONAL_DATA`). `Resource-Schema.md`
+now documents this enum. **`src/contracts/Resource.kt` still types
+`sensitivity` as a plain `String`, not this enum** — not changed in this
+pass (documentation-only scope); recommended as a follow-up code fix.
