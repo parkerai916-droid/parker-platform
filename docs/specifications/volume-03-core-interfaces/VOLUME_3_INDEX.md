@@ -2,7 +2,7 @@
 # Volume 3 – Core Interfaces
 
 ## Version
-0.6-alpha3
+0.7-alpha1
 
 ## Purpose
 
@@ -28,15 +28,27 @@ These interfaces are implementation contracts. They describe what each service m
 ## Supporting Types
 
 These types are referenced by the interfaces above but were not
-independently specified until this entry. Each is marked Provisional --
-inferred from how its owning interface uses it, not independently
-designed. See `docs/architecture/IMPLEMENTATION_GAPS.md` #3.
+independently specified until specification passes added them. Types
+marked Provisional were inferred from how their owning interface uses
+them, not independently designed. See
+`docs/architecture/IMPLEMENTATION_GAPS.md` #3.
+
+Added during the Phase 1 follow-up (Provisional):
 
 - PermissionExplanation (used by PermissionEngine)
 - ToolResult (used by Tool)
 - ToolDescriptor (used by Tool)
 - CancellationResult (used by ExecutionPipeline)
 - ExecutionStatus (used by ExecutionPipeline)
+
+Added during the v0.7 Architecture Completion Phase (closes consistency
+review §2.2 -- EventBus supporting types were previously entirely
+unspecified):
+
+- EventType (used by EventBus)
+- EventHandler (used by EventBus)
+- Subscription (used by EventBus)
+- PublishResult (used by EventBus)
 
 ## Normative Status
 
