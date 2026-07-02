@@ -1,19 +1,29 @@
 # Event Schema Specification
 
-## Purpose
-Defines the canonical data shape for structured facts published inside Parker.
+## Status
+Version: 0.6-alpha
 
-## Structure
-This schema includes required identifiers, lifecycle or status fields, metadata, and relationships to other Parker core contracts.
+## Purpose
+Defines the canonical data shape for structured facts published inside Parker (as `ParkerEvent`).
+
+## Normative Source
+`docs/schemas/Event.schema.json` is the normative, versioned source.
+Out of Phase 1 scope (EventBus is a later phase per `IMPLEMENTATION_ORDER.md`)
+-- summarised here for traceability, not yet implemented in Kotlin.
+
+## Required Fields
+eventId, publisherPrincipalId, eventType, timestamp, correlationId, payload.
+
+## Optional Fields
+signature, metadata.
 
 ## Validation Rules
 - Required fields MUST be present.
-- Identifiers MUST be unique within their schema domain.
-- Cross references SHOULD resolve to valid Parker objects.
-- Sensitive fields SHOULD be redacted in logs.
+- Events MUST identify their publisher Principal (EventBus.md).
+- Unauthenticated events MUST NOT influence Memory, World Model, Execution or Trust.
 
 ## Kotlin Mapping
-Each schema SHOULD map to an immutable Kotlin data class.
+Not yet implemented -- deferred to the phase that implements EventBus.
 
 ## Versioning
-Breaking changes require a schema version update and ADR.
+Breaking changes require a schema version update and ADR (ADR-019).
