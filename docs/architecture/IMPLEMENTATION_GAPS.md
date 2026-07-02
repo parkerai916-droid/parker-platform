@@ -274,3 +274,134 @@ Identity Service, remaining lifecycle models) and outside
 reaching into architecture this phase wasn't scoped to complete. Recorded
 here so it isn't lost, and so a future Agent-Framework-focused phase
 starts with this already flagged rather than rediscovering it.
+
+
+---
+
+## Phase 2 Runtime Implementation (feature/phase-2-runtime) — findings
+
+Recorded while implementing Tool Registry, Action Mapping, and EventBus
+per the v0.7 architecture documents. No AI logic, agents, memory, world
+model, voice, Android UI, Home Assistant, email, calendar, or autonomous
+planning was implemented, per that phase's explicit scope.
+
+### 21. No formal Volume 3 `ToolRegistry.md` interface document exists
+
+**Status: Requires follow-up, not blocking.**
+
+`docs/architecture/tool-registry.md` (an architecture document) was
+implemented directly as `src/interfaces/ToolRegistry.kt`. Every other
+Volume 3 interface (`ExecutionPipeline`, `PermissionEngine`,
+`ResourceRegistry`, `Tool`, `EventBus`, ...) has a matching
+`docs/specifications/volume-03-core-interfaces/*.md` document; `ToolRegistry`
+does not yet. Recommended follow-up: backfill a `ToolRegistry.md` in that
+directory now that the interface shape has been implemented and proven
+against real usage (registration, resolution, lifecycle), rather than
+before -- the Kotlin surfaced two decisions (see items 22-23) worth
+folding back into that doc when it's written.
+
+### 22. `InMemoryResourceRegistry` added as a supporting dependency, not one of the three requested systems
+
+**Status: Deliberate, documented addition.**
+
+`docs/architecture/tool-registry.md`'s registration invariant ("every
+registered Tool MUST also have a corresponding Resource Registry entry")
+cannot be enforced against `ResourceRegistry` with no working
+implementation. `IMPLEMENTATION_ORDER.md` places Resource Registry in an
+earlier phase than Tool Registry, so `src/runtime/InMemoryResourceRegistry.kt`
+is a small, boring implementation of the *already-specified*
+`ResourceRegistry` interface -- no new architecture invented, just a
+missing prerequisite filled in because Tool Registry's own architecture
+document requires it to exist.
+
+### 23. Tool Registry's discovery surface has no Principal-scoped visibility filtering
+
+**Status: Known scope reduction, documented in `ToolRegistry.kt`'s own KDoc.**
+
+`tool-registry.md`'s Discovery Model specifies that a Tool descriptor
+should only be visible to a caller with "some plausible Permission path"
+to it. Implementing that requires resolving a caller's Principal
+(IdentityService, still unimplemented per item 1) and evaluating
+plausible permission paths (a policy-bearing PermissionEngine, not yet
+built). `listAll()`/`findCandidates()` currently return the full
+catalogue unfiltered by caller. Closing this is blocked on IdentityService
+and real PermissionEngine policy, not on anything Tool-Registry-specific.
+
+### 24. Registration and lifecycle changes are not gated by a live Permission Engine evaluation
+
+**Status: Known scope reduction, by design.**
+
+`tool-registry.md` specifies that registering a Tool, or changing its
+lifecycle state, should itself be evaluated as a `PermissionAction.CONTROL`
+decision. No concrete `PermissionEngine.evaluate` with real authorisation
+policy exists (this phase only implements the *action-mapping* layer that
+sits before evaluation, per `action-mapping.md` -- it does not implement
+policy/authorisation itself, which is unspecified). `InMemoryToolRegistry.register`
+and `.setLifecycleState` therefore perform no live permission check.
+Wiring this in is a follow-up once a policy-bearing PermissionEngine
+exists.
+
+### 25. Action Mapping implements the vocabulary/mapping layer only, not `PermissionEngine.evaluate`
+
+**Status: Deliberate scope boundary, not an oversight.**
+
+`src/runtime/ActionMapper.kt` implements exactly the process
+action-mapping.md specifies as sitting *before* the Permission Engine:
+resolving `ExecutionRequest.proposedActions` strings to
+`PermissionAction`/`ResourceType` pairs via a vocabulary table. It does
+not implement `PermissionEngine.evaluate` itself, because no
+authorisation policy (who may do what, under what circumstances) is
+specified anywhere in the architecture yet -- inventing one was out of
+scope. Wiring `ActionMapper`'s output into a concrete
+`PermissionEngine.evaluate` is the natural next step once policy exists.
+
+### 26. EventBus authentication and signature verification are placeholders, not real trust decisions
+
+**Status: Documented gap, deliberate stand-ins.**
+
+`InMemoryEventBus` accepts an injected `PrincipalAuthenticator`
+(`suspend fun isInGoodStanding(principalId): Boolean`) as the seam where
+real IdentityService integration will plug in; the default
+`AllowAllPrincipalAuthenticator` treats every syntactically valid
+`PrincipalId` as active, which is not a real trust decision. Separately,
+the "trust-sensitive event types require a signature" rule
+(`permission.*`/`execution.*`) is implemented as a **presence/non-blank
+check only** -- no cryptographic signature verification is implemented,
+since no signing scheme is specified anywhere in the architecture and
+inventing one was out of scope for this phase.
+
+### 27. EventBus subscriber Principal identity is not asserted
+
+**Status: Documented gap.**
+
+`EventBus.subscribe` is a synchronous (non-suspend) call per its existing
+Volume 3 interface stub, with no caller-context parameter to identify the
+subscribing Principal. `InMemoryEventBus` currently stamps every
+`Subscription.subscriberPrincipalId` with a placeholder value
+(`"system.event-bus.unresolved-subscriber"`). This means the
+cascading-cancellation-on-Principal-Revoke rule from `EventBus.md`
+("Security Considerations"/Subscription.md) is **not implemented** --
+there's no real subscriber identity to cascade from yet. Closing this
+requires either changing the interface (a Volume 3 change, out of scope
+here) or resolving subscriber identity from ambient coroutine context
+(not yet designed anywhere).
+
+### 28. `docs/diagrams/tool-lifecycle-state-machine.mmd` does not exist as a standalone file
+
+**Status: Not a blocker; Kotlin already matches the architecture doc.**
+
+`src/contracts/ToolLifecycle.kt`'s `ToolLifecycleTransitions` was written
+directly from `docs/architecture/tool-registry.md`'s inline
+`stateDiagram-v2` block, the same one that document's own "Runtime
+Lifecycle" section describes. A standalone `.mmd` file (matching the
+pattern used for Principal/Resource/Session/Task/Workflow) was not
+produced this round; recorded as a documentation-completeness follow-up,
+not a behavioural gap -- the Kotlin and the architecture doc's diagram
+agree.
+
+### 29. `Resource.sensitivity: String` (item 5/10, restated) still not changed to the enum
+
+**Status: Still open; unrelated to this phase's changes.**
+
+Carried over unchanged. Not touched by Phase 2 work, since it's an
+independent, previously-recorded item.
