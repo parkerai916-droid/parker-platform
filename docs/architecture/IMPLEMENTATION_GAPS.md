@@ -103,19 +103,22 @@ whether `Permission.schema.json` should be deleted, merged, or repurposed
 for a distinct concept** (e.g. a tool-declared permission *requirement*,
 distinct from a *decision* record).
 
-### 9. `Principal.schema.json` disagrees with the prose `Principal` contract and this implementation's Kotlin
+### 9. `Principal.schema.json` disagreed with the prose `Principal` contract and this implementation's Kotlin
 
-**Status: Requires human decision.**
+**Status: Resolved.**
 
-The schema's `principalType` enum (`AGENT`, `REMOTE_DEVICE`) differs from
-the prose's (`Internal Agent`, `Future Remote Device`) and this
-implementation's Kotlin (`INTERNAL_AGENT`, `FUTURE_REMOTE_DEVICE`). The
-schema also omits `owner` and `lastSeenAt` entirely, though the prose
-requires both. `Principal-Schema.md` now documents this discrepancy.
-**`src/contracts/Principal.kt` was not changed in this pass** (this round
-was documentation/specification only, per its stated scope) — updating it
-to match whichever naming is decided as correct is a recommended, ready-to-do
-follow-up once a decision is made.
+Decision made: the prose contract and Kotlin implementation agreed with
+each other, so `docs/schemas/Principal.schema.json` was the inconsistent
+artifact and has been reconciled to match them, not the other way around.
+
+`docs/schemas/Principal.schema.json` now uses `USER, SYSTEM, INTERNAL_AGENT,
+PLUGIN, TOOL, SCHEDULED_TASK, DEVELOPER_SESSION, FUTURE_REMOTE_DEVICE` for
+`principalType`, and requires `owner` (nullable -- a root User/System
+principal may have none) and `lastSeenAt` (non-null, `format: date-time`).
+`docs/schemas/examples/Principal.example.json` and
+`Principal-Schema.md` were updated to match; the disagreement language in
+the latter has been removed. `src/contracts/Principal.kt` required no
+change, since it was already correct.
 
 ### 10. `Resource.sensitivity` does have a defined enum — earlier finding was wrong
 

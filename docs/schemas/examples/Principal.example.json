@@ -2,7 +2,9 @@
   "principalId": "principal.user.steve",
   "principalType": "USER",
   "displayName": "Steve",
+  "owner": null,
   "status": "ACTIVE",
   "createdAt": "2026-07-02T00:00:00Z",
+  "lastSeenAt": "2026-07-02T00:00:00Z",
   "metadata": {}
 }

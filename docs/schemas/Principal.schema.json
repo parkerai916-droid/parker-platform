@@ -5,8 +5,10 @@
     "principalId",
     "principalType",
     "displayName",
+    "owner",
     "status",
-    "createdAt"
+    "createdAt",
+    "lastSeenAt"
   ],
   "properties": {
     "principalId": {
@@ -16,16 +18,22 @@
       "enum": [
         "USER",
         "SYSTEM",
-        "AGENT",
+        "INTERNAL_AGENT",
         "PLUGIN",
         "TOOL",
         "SCHEDULED_TASK",
         "DEVELOPER_SESSION",
-        "REMOTE_DEVICE"
+        "FUTURE_REMOTE_DEVICE"
       ]
     },
     "displayName": {
       "type": "string"
+    },
+    "owner": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "status": {
       "enum": [
@@ -37,6 +45,10 @@
       ]
     },
     "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "lastSeenAt": {
       "type": "string",
       "format": "date-time"
     },

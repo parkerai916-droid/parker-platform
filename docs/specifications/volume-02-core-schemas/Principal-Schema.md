@@ -1,7 +1,7 @@
 # Principal Schema Specification
 
 ## Status
-Version: 0.6-alpha
+Version: 0.6-alpha (schema reconciled this pass -- see IMPLEMENTATION_GAPS.md #9)
 
 ## Purpose
 Defines the canonical data shape for any actor that can request access,
@@ -9,36 +9,31 @@ initiate work, publish events, or appear in audit records.
 
 ## Normative Source
 `docs/schemas/Principal.schema.json` is the normative, versioned source.
-**It currently disagrees with the prose `Principal Contract` (Volume 1)
-in two ways**, newly discovered during this cleanup pass (not one of the
-originally scoped fixes -- recorded, not corrected, in
-`docs/architecture/IMPLEMENTATION_GAPS.md`):
-- The schema's `principalType` enum uses `AGENT`/`REMOTE_DEVICE`; the
-  prose and this implementation's Kotlin (`src/contracts/Principal.kt`)
-  use `INTERNAL_AGENT`/`FUTURE_REMOTE_DEVICE`.
-- The schema does not define `owner` or `lastSeenAt` at all, though the
-  prose lists both as required fields.
+It now agrees with the prose `Principal Contract` (Volume 1) and with
+`src/contracts/Principal.kt`: same `principalType` enum values, and
+`owner`/`lastSeenAt` are both present and required.
 
-## Required Fields (per JSON Schema)
-principalId, principalType, displayName, status, createdAt.
+## Required Fields
+principalId, principalType, displayName, owner, status, createdAt, lastSeenAt.
 
-## Required Fields (per prose Contract, not yet in the JSON Schema)
-owner, lastSeenAt.
+`owner` is required as a key but its value may be `null` (type
+`["string", "null"]`) -- a root User or System principal may genuinely
+have no owner. This matches `src/contracts/Principal.kt`'s `owner: PrincipalId?`.
+
+## Optional Fields
+metadata.
 
 ## Key Enumerations
-- principalType (schema): USER, SYSTEM, AGENT, PLUGIN, TOOL, SCHEDULED_TASK, DEVELOPER_SESSION, REMOTE_DEVICE
-- principalType (prose / this implementation): User, System, Internal Agent, Plugin, Tool, Scheduled Task, Developer Session, Future Remote Device
+- principalType: USER, SYSTEM, INTERNAL_AGENT, PLUGIN, TOOL, SCHEDULED_TASK, DEVELOPER_SESSION, FUTURE_REMOTE_DEVICE
 - status: CREATED, ACTIVE, SUSPENDED, REVOKED, ARCHIVED
 
 ## Validation Rules
-- Required fields MUST be present.
+- Required fields MUST be present (owner's value MAY be null; the others MUST NOT be).
 - Sensitive fields SHOULD be redacted in logs.
 
 ## Kotlin Mapping
-Maps to `parker.core.interfaces.Principal` (`src/contracts/Principal.kt`),
-which currently follows the **prose** naming/field set, not the JSON
-Schema. Reconciling these is recommended before the schema's next
-revision.
+Maps to `parker.core.interfaces.Principal` (`src/contracts/Principal.kt`).
+Schema, prose, and Kotlin are now consistent.
 
 ## Versioning
 Breaking changes require a schema version update and ADR (ADR-019).
