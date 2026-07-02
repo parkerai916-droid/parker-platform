@@ -8,15 +8,19 @@ while doing that cleanup are appended at the end.
 
 ## 1. `IdentityService` has no interface
 
-**Status: Deferred (explicit decision, recorded per your instruction).**
+**Status: Architecture proposed (v0.7); implementation still deferred.**
 
-`IdentityService` is deferred from this Phase 1 implementation pass.
-Volume 3 does not include it despite Chapter 41 and `IMPLEMENTATION_ORDER.md`
-naming it, and per Phase 7's "do not invent missing architecture," no
-interface was written. **A proposed interface may be drafted later as a
-reviewable architecture proposal** — explicitly not as a silent addition
-to Volume 3, since Volume 3 currently states its included interfaces are
-"normative for v0.6 engineering work" and IdentityService isn't among them.
+`IdentityService` was deferred from Phase 1 implementation. The v0.7
+Architecture Completion Phase delivered the "reviewable architecture
+proposal" promised above: `docs/architecture/IdentityService.md` now
+specifies responsibilities, a proposed interface shape, lifecycle
+ownership, principal resolution, trust/delegation relationships (via the
+existing `Principal.owner` field), an authentication-flow integration
+diagram, and integration points with the Permission Engine, World Model,
+and Audit. **No Kotlin was added** — the proposed interface is
+documentation only, per ADR-022 and this phase's explicit "do not
+implement Kotlin" rule. Promoting it to `src/interfaces`/Volume 3 remains
+a decision for an explicitly-declared implementation phase.
 
 ## 2. `ExecutionRequest`: prose spec and JSON Schema disagreed
 
@@ -132,3 +136,141 @@ anywhere. That was based on reading only the prose `Resource.md`, not
 now documents this enum. **`src/contracts/Resource.kt` still types
 `sensitivity` as a plain `String`, not this enum** — not changed in this
 pass (documentation-only scope); recommended as a follow-up code fix.
+
+
+---
+
+## v0.7 Architecture Completion Phase — additional resolutions and findings
+
+### 11. No `ToolRegistry` interface existed (consistency review §2.1)
+
+**Status: Resolved at the architecture level; Kotlin not implemented.**
+
+`docs/architecture/tool-registry.md` now specifies purpose, responsibilities,
+registration model, discovery model, lookup process, version handling,
+plugin integration, runtime lifecycle, failure behaviour, thread safety
+expectations, and relationships to the Resource Registry, Permission
+Engine, and Execution Pipeline, with sequence diagrams. It also proposes
+extending `ToolDescriptor` with `supportedActions`/`supportedResourceTypes`
+fields to make dispatch deterministic, answering that document's own
+previously-open question. This is a specification, not an implementation
+— no Kotlin was written or changed.
+
+### 12. No mapping from `ExecutionRequest.proposedActions` to `PermissionDecision.action` (consistency review §2.3)
+
+**Status: Resolved at the architecture level.**
+
+`docs/architecture/action-mapping.md` defines the complete
+Intent -> Planner -> Proposed Actions -> Permission Actions -> Permission
+Engine -> Decision process, including transformation rules (a
+Planner-owned action vocabulary table), validation, unknown-action
+handling (invalid vs. denied), multiple/composite actions, and plugin-
+supplied actions. This document is now part of Parker's Trust
+Architecture. No Kotlin was written.
+
+### 13. `EventBus` supporting types were unspecified (consistency review §2.2)
+
+**Status: Resolved.**
+
+`EventType`, `EventHandler`, `Subscription`, and `PublishResult` are now
+each specified as Volume 3 supporting types
+(`docs/specifications/volume-03-core-interfaces/{EventType,EventHandler,Subscription,PublishResult}.md`).
+`EventBus.md` was rewritten to add lifecycle, authentication,
+authorisation, ordering, delivery guarantee, failure handling,
+cancellation, and security sections. `VOLUME_3_INDEX.md`'s Supporting
+Types section lists all four. No Kotlin `ParkerEvent` type or `EventBus`
+implementation was added — still deferred to whichever phase implements
+EventBus, per `Event-Schema.md`.
+
+### 14. `ADR-004` dangling citation in `Agent.md`
+
+**Status: Resolved** (by removal, same treatment as `ADR-005` in
+`EventBus.md`).
+
+**Requires human decision** (carried over, same as item 4): whether a
+real ADR should be authored for Agent-specific accountability rules.
+
+### 15. `ExecutionResult.schema.json` and `Resource.schema.json` were missing prose-required fields
+
+**Status: Resolved** for the unambiguous cases.
+
+`ExecutionResult.schema.json` now defines `toolResults` and
+`reflectionCandidate`, matching `src/contracts/ExecutionResult.kt`.
+`Resource.schema.json` now defines `createdAt`, `updatedAt`, and `source`
+(now required), matching `Resource.md` and `src/contracts/Resource.kt`.
+Both worked examples were updated to match.
+
+**New finding, requires human decision:** while fixing `Resource.schema.json`,
+found its `resourceType` enum has 18 values, but `Resource.md`'s "Resource
+Categories" list and `src/contracts/Resource.kt`'s `ResourceType` enum
+both independently agree on only 14 — the schema additionally has
+`SESSION`, `EVENT`, `TASK`, `WORKFLOW`. Unlike the Principal mismatch
+(where prose+Kotlin agreed and the schema was simply wrong), this one
+cuts the other way: the schema may be *ahead* of prose/Kotlin, since
+Session/Event/Task/Workflow each already have their own canonical schemas
+and plausibly belong in the Resource Registry's catalogue (Chapter 8).
+Not resolved here — recorded in `Resource-Schema.md` — because deciding
+which 14 or 18 (or a different set) is correct is a content decision
+about what counts as a Resource, not a mechanical fix.
+
+### 16. `Permission.schema.json` / `PermissionDecision.schema.json` duplication (item 8, restated)
+
+**Status: Still requires human decision; now explicitly labelled.**
+
+`Permission.schema.json` now carries a `$comment` marking it deprecated in
+favour of `PermissionDecision.schema.json` and pointing back to this item,
+so a future reader of the schema file itself (not just this document)
+sees the warning. `VOLUME_1_INDEX.md`'s "Included Schemas" list was also
+corrected — it previously listed `Permission.schema.json` as Volume 1's
+canonical schema for this concept, which conflicted with the judgment call
+already made in `PermissionDecision-Schema.md`. The file itself was
+**not deleted** — deletion, merging, or repurposing still requires a human
+decision, as before.
+
+### 17. Twelve original Volume 3 interface docs had no version/status header (consistency review §3.6)
+
+**Status: Resolved.**
+
+All twelve (`ExecutionPipeline.md`, `PermissionEngine.md`,
+`ResourceRegistry.md`, `Tool.md`, `Agent.md`, `Plugin.md`,
+`MemoryStore.md`, `WorldModel.md`, `ModelManager.md`,
+`NotificationService.md`, `AuditService.md`, and `EventBus.md`, the
+latter rewritten more substantially per item 13) now carry a `## Status`
+header. Content of the eleven not otherwise touched this phase is
+unchanged — only the header was added, honestly noting the content's
+actual last-substantive-revision point.
+
+### 18. `README.md` / `CHANGELOG.md` still said "v0.4" (consistency review §3.7)
+
+**Status: Resolved.**
+
+Both now describe the actual current state (Chapters 1-50, 20 ADRs,
+Volumes 1-3, Phase 1 Kotlin contracts, the v0.6 consistency review, and
+this v0.7 Architecture Completion Phase), with a CHANGELOG entry per
+version.
+
+### 19. `RequestOrigin.AGENT` vs `PrincipalType.INTERNAL_AGENT` (consistency review §3.8)
+
+**Status: Resolved** (clarifying note added, no rename).
+
+`ExecutionRequest.md` now explains why these are two different fields
+(request channel vs. actor type) that happen to share a word, rather than
+the same field disagreeing with itself — confirmed this is not the same
+class of bug as the `Principal.schema.json` enum-value mismatch that was
+genuinely fixed earlier.
+
+### 20. `AgentHealth` is referenced but never defined (new finding)
+
+**Status: Requires human decision — not addressed by this phase.**
+
+While fixing `Agent.md`'s `ADR-004` citation (item 14), found that both
+`Agent.md` and `src/interfaces/Agent.kt` reference a return type
+`AgentHealth` for `Agent.health()` that is defined nowhere — the same
+category of gap the `EventBus` supporting types were before this phase.
+**Not resolved here**, because Agent Framework implementation is outside
+this phase's five priorities (Tool Registry, Action Mapping, EventBus,
+Identity Service, remaining lifecycle models) and outside
+`IMPLEMENTATION_ORDER.md`'s near-term phases — fixing it now would mean
+reaching into architecture this phase wasn't scoped to complete. Recorded
+here so it isn't lost, and so a future Agent-Framework-focused phase
+starts with this already flagged rather than rediscovering it.
