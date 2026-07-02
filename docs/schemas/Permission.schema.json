@@ -61,5 +61,6 @@
       "type": "string",
       "format": "date-time"
     }
-  }
+  },
+  "$comment": "DEPRECATED: this file and docs/schemas/PermissionDecision.schema.json both describe the same concept under the title \"PermissionDecision\" and disagree (this file's action enum omits SEND_EXTERNAL and adds reason/requiresConfirmation properties the other lacks). PermissionDecision.schema.json is treated as normative -- it matches Volume 3's PermissionEngine.md naming and src/contracts/Permission.kt. Whether this file should be deleted, merged, or repurposed for a distinct concept (e.g. a tool-declared permission requirement, distinct from a decision record) is an open human decision -- see docs/architecture/IMPLEMENTATION_GAPS.md #8. Labelled here rather than silently deleted, per the v0.7 Architecture Completion Phase's rule against invented/unilateral architecture decisions."
 }
