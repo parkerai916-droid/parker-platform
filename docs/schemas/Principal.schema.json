@@ -53,7 +53,8 @@
       "format": "date-time"
     },
     "metadata": {
-      "type": "object"
+      "type": "object",
+      "additionalProperties": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema"
