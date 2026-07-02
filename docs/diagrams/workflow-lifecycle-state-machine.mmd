@@ -1,0 +1,28 @@
+%% Workflow lifecycle, derived from docs/schemas/Workflow.schema.json's
+%% `status` enum (CREATED, ACTIVE, RUNNING, PAUSED, COMPLETED, FAILED,
+%% CANCELLED, ARCHIVED).
+%%
+%% NOTE: Chapter 38 describes a DIFFERENT sequence (Trigger ->
+%% Preconditions -> Steps -> Validation -> Completion -> Reflection) --
+%% that is the execution-phase flow of a single Workflow *run*, not this
+%% status enum's definition-level lifecycle. The two are not in conflict
+%% but describe different things at different granularity; see
+%% Workflow-Schema.md for the terminology note. This diagram covers only
+%% the schema's `status` field.
+%% v0.7 Architecture Completion Phase, Priority 5.
+stateDiagram-v2
+[*] --> Created
+Created --> Active
+Created --> Cancelled
+Active --> Running
+Active --> Cancelled
+Running --> Paused
+Running --> Completed
+Running --> Failed
+Running --> Cancelled
+Paused --> Running
+Paused --> Cancelled
+Completed --> Archived
+Failed --> Archived
+Cancelled --> Archived
+Archived --> [*]

@@ -1,0 +1,23 @@
+%% Session lifecycle, derived from docs/schemas/Session.schema.json's
+%% `status` enum (ACTIVE, EXPIRED, CANCELLED, AUTH_REQUIRED, CLOSED) and
+%% Chapter 40's expiry conditions (inactivity, confidence loss, user
+%% command, authentication timeout, device lock, policy restrictions).
+%%
+%% Unlike Principal/Resource, Session.schema.json has no CREATED or
+%% ARCHIVED state -- a session begins ACTIVE at `startedAt` and its
+%% terminal states (Expired/Cancelled/Closed) are the closest equivalent
+%% to "archived". Recorded as a documented finding in
+%% Session-Schema.md, not silently invented here.
+%% v0.7 Architecture Completion Phase, Priority 5.
+stateDiagram-v2
+[*] --> Active
+Active --> AuthRequired
+AuthRequired --> Active
+AuthRequired --> Expired
+AuthRequired --> Closed
+Active --> Expired
+Active --> Cancelled
+Active --> Closed
+Expired --> [*]
+Cancelled --> [*]
+Closed --> [*]

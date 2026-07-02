@@ -1,0 +1,32 @@
+%% Task lifecycle, derived from docs/schemas/Task.schema.json's `status`
+%% enum and Chapter 37's stated chain (Created -> Queued -> Running ->
+%% Paused -> Completed) plus its listed alternative terminal states
+%% (Cancelled, Failed, Expired, Superseded).
+%%
+%% Superseded is reachable only from non-actively-executing states
+%% (Created, Queued, Paused) -- a Running task must be Cancelled to stop
+%% it, not silently Superseded out from under active execution. This is
+%% a deliberate, documented design choice, not an omission.
+%% v0.7 Architecture Completion Phase, Priority 5.
+stateDiagram-v2
+[*] --> Created
+Created --> Queued
+Created --> Cancelled
+Created --> Superseded
+Queued --> Running
+Queued --> Cancelled
+Queued --> Expired
+Queued --> Superseded
+Running --> Paused
+Running --> Completed
+Running --> Failed
+Running --> Cancelled
+Paused --> Running
+Paused --> Cancelled
+Paused --> Expired
+Paused --> Superseded
+Completed --> [*]
+Failed --> [*]
+Cancelled --> [*]
+Expired --> [*]
+Superseded --> [*]
