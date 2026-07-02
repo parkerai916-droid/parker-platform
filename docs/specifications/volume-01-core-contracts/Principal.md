@@ -42,3 +42,4 @@ Created → Active → Suspended → Revoked → Archived
 - Chapter 41 – Identity Service
 - Chapter 42 – Authentication Framework
 - ADR-013 – Agents and Services Use Principal Identities
+- docs/diagrams/principal-lifecycle-state-machine.mmd (literal transcription of the Lifecycle line above; see IMPLEMENTATION_GAPS.md #5 for what it deliberately does not cover)

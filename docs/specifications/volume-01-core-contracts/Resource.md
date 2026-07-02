@@ -49,3 +49,4 @@ Created → Registered → Available → Updated → Archived → Deleted
 ## Related Documents
 - Chapter 8 – Resource Registry
 - Chapter 45 – Privacy and Data Governance
+- docs/diagrams/resource-lifecycle-state-machine.mmd (literal transcription of the Lifecycle line above; see IMPLEMENTATION_GAPS.md #5 for what it deliberately does not cover)

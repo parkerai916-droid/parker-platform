@@ -1,0 +1,17 @@
+%% Resource lifecycle, transcribed literally from
+%% docs/specifications/volume-01-core-contracts/Resource.md:
+%% "Created -> Registered -> Available -> Updated -> Archived -> Deleted"
+%%
+%% This is a direct reading of the prose chain only. Whether Available and
+%% Updated cycle back and forth under repeated edits (the practically
+%% likely case) or Updated occurs only once is not specified -- see
+%% docs/architecture/IMPLEMENTATION_GAPS.md #5. Diagrammed as the literal
+%% linear chain; do not add a cycle here without an authoritative decision.
+stateDiagram-v2
+[*] --> Created
+Created --> Registered
+Registered --> Available
+Available --> Updated
+Updated --> Archived
+Archived --> Deleted
+Deleted --> [*]

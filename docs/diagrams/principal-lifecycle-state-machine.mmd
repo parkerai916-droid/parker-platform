@@ -1,0 +1,16 @@
+%% Principal lifecycle, transcribed literally from
+%% docs/specifications/volume-01-core-contracts/Principal.md:
+%% "Created -> Active -> Suspended -> Revoked -> Archived"
+%%
+%% This is a direct reading of the prose chain only. No branching
+%% (e.g. Suspended -> Active reactivation, or Active -> Revoked directly)
+%% is specified anywhere, so none is diagrammed here -- see
+%% docs/architecture/IMPLEMENTATION_GAPS.md #5. Add branches only once an
+%% authoritative decision states them explicitly.
+stateDiagram-v2
+[*] --> Created
+Created --> Active
+Active --> Suspended
+Suspended --> Revoked
+Revoked --> Archived
+Archived --> [*]
