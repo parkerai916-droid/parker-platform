@@ -99,3 +99,17 @@ src/interfaces/         Volume 3 interfaces: implemented (ExecutionPipeline,
 src/contracts/          Phase 1 core contracts, plus lifecycle transition
                         validators and runtime-supporting types (implemented)
 src/runtime/            Phase 2 concrete implementations: InMemoryToolRegistry,
+                        ActionMapper, InMemoryEventBus, DefaultExecutionPipeline,
+                        InMemoryResourceRegistry, InMemoryIdentityService
+tests/contracts/        Phase 1 unit tests (implemented)
+tests/runtime/          Phase 2 runtime unit tests (implemented)
+gradle/wrapper/         Gradle Wrapper (Gradle 8.10)
+plugins/                Future plugins
+agents/                 Future internal agents
+tools/                  Future tools
+examples/               Example flows
+```
+
+## Engineering Slogan
+
+> Think clearly. Act safely. Learn continuously.

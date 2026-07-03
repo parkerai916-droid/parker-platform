@@ -81,4 +81,23 @@ verified by a real Gradle build and test run in Android Studio:
 - **Not implemented, by explicit scope:** `PermissionEngine.evaluate`'s
   authorisation policy, any concrete `Tool`, Identity Service
   integration into Permission Engine/EventBus/Tool Registry, cascading
-  
+  Principal revocation, Agent runtime, Memory, World Model, and Phase 3
+  generally.
+
+## v0.8.0-runtime-complete — Public Release Preparation
+
+Repository prepared for public GitHub release. No runtime behaviour
+changed.
+
+- Replaced the placeholder `LICENSE` with the full Apache License 2.0
+  text (Copyright 2026 Steven McTague).
+- Untracked `local.properties` from version control (file remains on
+  disk); `.gitignore` extended to exclude `local.properties`, `.idea/`,
+  `.gradle/`, `build/`, `out/`, and `*.iml`.
+- Restored the missing `gradle/wrapper/gradle-wrapper.jar` and
+  normalised `gradlew`'s line endings so the wrapper runs on a fresh
+  Unix-style clone.
+- Aligned `build.gradle.kts` version to `0.8.0-runtime-complete`,
+  matching the architecture/runtime version already stated elsewhere.
+- Rewrote the README Status section for a public audience.
+- Added `docs/release/v0.8-runtime-complete-checklist.md`.

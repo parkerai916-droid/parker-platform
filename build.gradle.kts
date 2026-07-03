@@ -62,4 +62,10 @@ sourceSets {
 
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
-        allW
+        allWarningsAsErrors.set(false)
+    }
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
