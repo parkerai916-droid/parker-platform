@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "parker"
-version = "0.6.0-alpha1"
+version = "0.8.0-runtime-complete"
 
 repositories {
     mavenCentral()
@@ -62,10 +62,4 @@ sourceSets {
 
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
-        allWarningsAsErrors.set(false)
-    }
-}
-
-tasks.test {
-    useJUnitPlatform()
-}
+        allW
