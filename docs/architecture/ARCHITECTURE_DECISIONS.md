@@ -21,6 +21,29 @@ Execution Pipeline is the only path to tool execution, without needing to
 cross-reference three specifications' Non-Goals sections to notice they
 all say the same thing for the same underlying reason.
 
+**A note on Planner Runtime Specification review status.** Several
+decisions in Section 4 (AD-002, AD-005, AD-010, AD-011, and AD-012) cite
+`docs/specifications/volume-06-planner-runtime/PlannerRuntimeSpecification.md`
+as evidence. That specification has not yet completed the same
+independent review-and-correction cycle already applied to the Agent
+Runtime Specification (`docs/reviews/AgentRuntimeSpecificationReview.md`
+→ correction pass) and the Task Manager Runtime Specification
+(`docs/reviews/TaskManagerRuntimeSpecificationReview.md` → correction
+pass) — `docs/reviews/Phase3ArchitecturePositionReview.md` examined it
+only as part of a cross-specification architecture check, not as a
+standalone review of its own internal consistency. The decisions that
+cite it remain Accepted because each is also cross-supported by
+already-approved architecture and trust-boundary rules that do not
+depend on the Planner Runtime Specification alone (identity-before-
+authority, no-execution-bypass, and reference-based Context are each
+independently stated by the Agent Runtime and Task Manager Runtime
+Specifications too). A future Planner Runtime Specification review may
+refine Planner-specific wording, gaps, or terminology, but should not
+silently alter an already-accepted platform-wide decision recorded here —
+any such effect must go through this document's own correction process
+(Section 6), not happen as a side effect of a specification-level
+review.
+
 ## 2. How to Use This Document
 
 - **Decisions explain intent.** An Architecture Decision states a rule
@@ -132,41 +155,76 @@ itself.
 
 **Status:** Accepted
 
-**Decision:** Intelligent subsystems propose. Deterministic runtime
-components authorise and execute. No proposal, by itself, has any
-external effect.
+**Decision:** Parker's control chain has four distinct kinds of role, and
+no subsystem collapses more than one of them into itself:
 
-**Reasoning:** Separating "what should happen" from "what is allowed to
-happen" and "what actually happens" keeps every point where judgement
-(potentially model-driven, potentially non-deterministic) is exercised
-strictly upstream of every point where an irreversible or auditable
-action occurs, so that authority is never a side effect of a proposal
-existing.
+- **Intelligent subsystems propose.** The Planner Runtime proposes work
+  (Task Proposals). Proposing, by itself, has no external effect.
+- **Runtime coordination services orchestrate.** The Task Manager
+  Runtime coordinates and decides — accepting, deferring, splitting,
+  merging, or rejecting proposals, and coordinating Agent Runs against
+  the Tasks it owns. Orchestrating is neither proposing nor authorising
+  nor executing; it is a distinct role that decides *whether and how*
+  proposed work proceeds, without itself being the authority that
+  approves an action or the mechanism that carries one out.
+- **Authority services authorise.** The Permission Engine is the sole
+  source of permission for any action with external effect.
+- **Execution services execute.** The Execution Pipeline (dispatching to
+  the Tool Registry and a resolved Tool) is the sole mechanism by which
+  an authorised action actually has an external effect.
+
+**Reasoning:** Separating "what should happen" (propose), "should this
+proceed" (orchestrate), "is this allowed" (authorise), and "make it
+happen" (execute) keeps every point where judgement — potentially
+model-driven, potentially non-deterministic, or simply coordinating
+competing work — is exercised strictly distinct from the point where
+permission is decided and the point where an irreversible or auditable
+action occurs. Collapsing any two of these roles into one subsystem would
+let that subsystem grant itself something only a separate role is meant
+to grant: a Planner that could orchestrate would not need Task Manager
+acceptance; a Task Manager that could authorise would not need the
+Permission Engine; an Execution Pipeline that could propose would not
+need anything upstream of it at all.
 
 **Evidence:** `PlannerRuntimeSpecification.md` §2 ("Proposal-before-
 authority... Authority to act always comes from a later, separate
 decision by the Task Manager Runtime, the Permission Engine, or both —
-never from the act of proposing"); ADR-001 (Models Never Execute Tools);
+never from the act of proposing"); `TaskManagerRuntimeSpecification.md`
+§1 ("The Task Manager coordinates work. It does not execute tools
+directly, does not bypass permissions, and does not replace the
+Execution Pipeline" — the orchestrating role stated in the Task Manager
+Runtime Specification's own words, distinct from both proposing and
+authorising/executing); ADR-001 (Models Never Execute Tools);
 `docs/architecture/action-mapping.md` ("Why the Permission Engine must
-never parse intent"); `TaskManagerRuntimeSpecification.md` §1 ("The Task
-Manager coordinates work... does not bypass permissions"); `AgentRuntimeSpecification.md`
-§6 (an Agent Instance's only channel for effect is constructing an
-`ExecutionRequest`, never executing directly).
+never parse intent"); `AgentRuntimeSpecification.md` §6 (an Agent
+Instance's only channel for effect is constructing an `ExecutionRequest`,
+never executing directly); `docs/specifications/volume-03-core-interfaces/PermissionEngine.md`
+and `docs/specifications/volume-03-core-interfaces/ExecutionPipeline.md`
+(the authorising and executing roles respectively).
 
-**Affected specifications:** Planner Runtime Specification, Task Manager
-Runtime Specification, Agent Runtime Specification, `action-mapping.md`.
+**Affected specifications:** Planner Runtime Specification (proposes),
+Task Manager Runtime Specification (orchestrates), `PermissionEngine.md`
+(authorises), `ExecutionPipeline.md` (executes), Agent Runtime
+Specification (performs Agent Runs within the orchestrated chain, itself
+proposing actions rather than authorising or executing them),
+`action-mapping.md`.
 
 **Consequences:** A Task Proposal, a Task Manager Task's existence, and
-an Agent Run's proposed action are all recommendations or requests, not
-grants; the only operations that ever have external effect are
-`PermissionEngine.evaluate` followed by `ExecutionPipeline.submit`
-succeeding.
+an Agent Run's proposed action are all recommendations, coordination
+decisions, or requests — never grants. The only operations that ever have
+external effect are `PermissionEngine.evaluate` followed by
+`ExecutionPipeline.submit` succeeding. The Task Manager Runtime's
+orchestration decisions (accept, defer, split, merge, reject) are
+themselves never a substitute for Permission Engine evaluation of any
+resulting `ExecutionRequest` — orchestrating that a Task should proceed
+is not the same as authorising a specific action within it.
 
 **Future considerations:** Whether Chapter 20's "Deliberation Service" is
 distinct from the Planner Runtime's own internal Plan Decision remains an
 open question (`PlannerRuntimeSpecification.md` §1, Open Questions);
 either way, this decision is unaffected, since Plan Decision itself is
-still upstream of authority.
+still upstream of authority and remains part of the "propose" role, not
+the "orchestrate" role.
 
 ---
 
@@ -409,7 +467,7 @@ permission and identity are enforced at the moment of action.
 `docs/specifications/volume-03-core-interfaces/EventType.md`'s
 `<domain>.<event>` convention; `TaskManagerRuntimeSpecification.md` §10
 (19-event table) and §12 ("No unaudited lifecycle transition");
-`AgentRuntimeSpecification.md` §9 (16-event table) and §11 ("No
+`AgentRuntimeSpecification.md` §9 (17-event table) and §11 ("No
 unaudited action execution"); `PlannerRuntimeSpecification.md` §11
 (13-event table) and §13.
 
@@ -610,6 +668,124 @@ Runtime and Task Manager Runtime Specifications; `docs/reviews/Phase3Architectur
 reviewed it only as part of the cross-specification architecture check,
 not as a standalone review of its own internal consistency.
 
+---
+
+### AD-015 — Invalid Is Not Denied
+
+**Status:** Accepted
+
+**Decision:** Invalid requests and denied requests are distinct outcomes,
+and no component treats one as the other. **Invalid** means the request
+is malformed, structurally impossible, references a missing or unknown
+object, violates a schema, or otherwise cannot be evaluated at all.
+**Denied** means the request was well-formed enough to evaluate, but
+authority to perform it was not granted. Systems must not treat an
+Invalid outcome as a permission denial, and must not treat a Denied
+outcome as a schema or validation failure.
+
+**Reasoning:** Conflating the two would let a well-formed but forbidden
+action look identical, in an audit trail, to a nonsensical or malformed
+one — weakening exactly the kind of explainability Chapter 43 (Audit and
+Observability) depends on. Keeping them distinct also keeps the
+Permission Engine's own semantics clean: it only ever renders a decision
+about something it could actually evaluate, never about something that
+was never well-formed enough to reach it.
+
+**Evidence:** `docs/architecture/action-mapping.md` ("Unknown Actions":
+"An unresolvable proposed action is treated as **invalid, not denied**
+... Conflating the two would let a well-formed but forbidden action look
+identical to a nonsensical one in audit logs, which would weaken
+explainability"); `docs/architecture/IdentityService.md` ("Principal
+Resolution": "An unresolvable `PrincipalId` (not found, or found but
+`Revoked`/`Archived`) is treated the same way
+`docs/architecture/action-mapping.md` treats an unresolvable proposed
+action: **invalid, not denied**"); `AgentRuntimeSpecification.md` §10
+("Malformed action... is, per `action-mapping.md`'s existing 'Unknown
+Actions' section, **invalid, not denied** — the underlying
+`ExecutionRequest` never reaches `PermissionPending`"); `TaskManagerRuntimeSpecification.md`
+§8 ("An unresolvable Task Owner is invalid, not denied, mirroring
+`Principal.md`'s existing rule and the Agent Runtime Specification's
+identical treatment of an unresolvable Agent Identity").
+
+**Affected specifications:** `action-mapping.md`, `IdentityService.md`,
+Agent Runtime Specification, Task Manager Runtime Specification. The
+Planner Runtime Specification independently applies the same underlying
+distinction in its own terms (`FAILED` vs. `REJECTED`, §5: "`FAILED`
+means the Planning Session itself could not produce a well-formed,
+submittable Task Proposal... `REJECTED` means a well-formed Task Proposal
+was produced and submitted, but the Task Manager Runtime declined all of
+it"), without using the "invalid/denied" vocabulary verbatim.
+
+**Consequences:** Permission Engine decisions remain semantically clean —
+a `PermissionDecisionOutcome` is only ever rendered for something that
+was well-formed enough to evaluate. Validation failures remain separate
+from authorisation failures throughout the platform. Audit trails can
+distinguish "this request made no sense" from "this request was refused,"
+which is a meaningfully different fact for anyone reviewing platform
+behaviour after the fact.
+
+**Future considerations:** None currently open against this decision
+itself; individual specifications remain free to name their own
+Invalid/Denied-equivalent outcomes in their own vocabulary (e.g. the
+Planner Runtime Specification's `FAILED`/`REJECTED`), provided the
+underlying distinction is preserved.
+
+---
+
+### AD-016 — Terminal Lifecycle States Are Final
+
+**Status:** Accepted
+
+**Decision:** When a runtime object enters a terminal lifecycle state, it
+does not resume. A completed, failed, cancelled, expired, rejected, or
+superseded lifecycle object is not restarted or mutated back into an
+active state in place. Further work requires a new lifecycle object — a
+new Agent Run, a new Task Manager Task, a new Planning Session, or
+another explicit replacement object, depending on the subsystem.
+
+**Reasoning:** A lifecycle whose terminal states could be reopened would
+make "what happened" ambiguous after the fact — was this object always
+in this state, or did it get there, leave, and come back? Treating
+terminal states as genuinely final keeps every lifecycle deterministic to
+reason about and keeps the audit history of a terminal object stable
+once written.
+
+**Evidence:** `docs/specifications/volume-02-core-schemas/Task-Schema.md`
+("No transition out of any terminal state (Completed, Failed, Cancelled,
+Expired, Superseded)"); ADR-012 (Task and Workflow Separation, the
+governing boundary that a Task tracks a single unit of work rather than a
+resumable, branching process); `AgentRuntimeSpecification.md` §5 ("Any
+transition out of `COMPLETED`, `FAILED`, or `CANCELLED`... matching every
+other lifecycle state machine in this repository
+(`ExecutionLifecycleState`, `ToolLifecycleTransitions`,
+`PrincipalLifecycleTransitions`, and the Task Manager Task lifecycle
+itself) — none of which permit resurrection out of a terminal state");
+`TaskManagerRuntimeSpecification.md` §5 ("No transition out of any
+terminal state" and "Retryable states... **None, by transition**...
+'Retry' at the Task Manager Runtime level means creating a **new** Task
+Manager Task"); `PlannerRuntimeSpecification.md` §5 ("Any transition out
+of `COMPLETED`, `REJECTED`, `CANCELLED`, or `FAILED`... matching every
+other lifecycle state machine in this repository").
+
+**Affected specifications:** Task Manager Runtime Specification, Agent
+Runtime Specification, Planner Runtime Specification, `Task-Schema.md`,
+ADR-012, and the already-implemented `ExecutionLifecycleState`,
+`ToolLifecycleTransitions`, and `PrincipalLifecycleTransitions` state
+machines.
+
+**Consequences:** Lifecycle reasoning remains deterministic across every
+subsystem: a terminal state is always a dead end for that specific
+object. Audit history remains stable, since a terminal object's record is
+never rewritten by a later resumption. Recovery from a terminal state
+(retrying a failed Task, restarting a cancelled Agent Run, re-planning
+after a rejected proposal) always happens through a new lifecycle object,
+never by mutating the terminal one — consistent with ADR-018's identical
+precedent for `ExecutionRequest` ("changes require creation of a new
+ExecutionRequest linked by correlation ID").
+
+**Future considerations:** None currently open against this decision
+itself.
+
 ## 5. Relationship to Specifications
 
 ```text
@@ -646,6 +822,22 @@ Planner Runtime Specification and the Task Manager Runtime Specification;
 what is missing is the contract shape between them, not agreement on the
 underlying rule.
 
+This diagram describes an **authority ordering** — which document wins
+when two levels appear to disagree — not the historical order in which
+these documents were written. All sixteen decisions in
+Section 4 were themselves distilled *from* already-existing, already-
+approved and reviewed specifications, not authored independently ahead of
+them (Section 1). Going forward, that direction reverses: these decisions
+now serve as governance constraints any *future* specification (Memory,
+World Model, Workflow Runtime, Android integration, or a Planner Runtime
+correction pass) is expected to satisfy, the same way the existing three
+Phase 3 specifications already do. Where a contract gap or an
+inter-specification inconsistency is found, it should be closed by
+revising the affected specification(s) or the
+`docs/architecture/INTER_SPECIFICATION_CONTRACTS.md` catalogue entry that
+describes it — never by weakening, narrowing, or quietly reinterpreting
+an already-accepted decision in Section 4 to make the gap appear closed.
+
 ## 6. Decision Lifecycle
 
 - **Proposed.** A candidate platform-wide rule has been identified —
@@ -656,7 +848,7 @@ underlying rule.
   shared decision. Not yet recorded in Section 4.
 - **Accepted.** The decision is recorded in Section 4, evidenced by
   existing specifications, and governs how future specifications must be
-  written. All fourteen decisions in Section 4 are Accepted.
+  written. All sixteen decisions in Section 4 are Accepted.
 - **Superseded.** A later decision explicitly replaces an earlier one,
   with both entries cross-referencing each other and the superseded
   entry's Status updated accordingly. No decision in this document is
@@ -692,6 +884,22 @@ new, speculative principle. Where a candidate decision is not yet
 evidenced this way, it belongs in a specification's own Open Questions
 section until enough specifications converge on it independently to
 justify recording it here.
+
+**Future consideration, not yet a decision.** Parker's existing
+specifications show a repeated preference for reusing an existing schema,
+enum, or contract over inventing a parallel vocabulary — for example,
+`TaskManagerRuntimeSpecification.md` §4 reuses `RequestOrigin` and
+`RequestPriority` (`src/contracts/ExecutionRequest.kt`) for Task Source
+and Task Priority rather than defining new enums, and
+`PlannerRuntimeSpecification.md` §4 independently does the same for its
+own Source and Priority fields, plus reuses `RiskEstimate` for Risk. This
+is evidenced twice, independently, but is narrower in scope (a
+data-modelling convention) than the decisions in Section 4, which are
+load-bearing rules about how subsystems relate to each other. It is
+recorded here as a pattern worth watching, not promoted to an Architecture
+Decision — if a third or fourth specification independently repeats it,
+it would meet Section 7's criteria and should be added at that point,
+rather than being adopted now on two data points alone.
 
 ## 8. Related Documents
 
