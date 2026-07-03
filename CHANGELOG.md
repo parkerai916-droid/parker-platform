@@ -81,5 +81,4 @@ verified by a real Gradle build and test run in Android Studio:
 - **Not implemented, by explicit scope:** `PermissionEngine.evaluate`'s
   authorisation policy, any concrete `Tool`, Identity Service
   integration into Permission Engine/EventBus/Tool Registry, cascading
-  Principal revocation, Agent runtime, Memory, World Model, and Phase 3
-  generally.
+  

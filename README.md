@@ -1,15 +1,22 @@
 # Parker Platform
 
-Parker is a privacy-first Personal Intelligence Platform designed around trust, structured reasoning, secure execution, local-first operation and long-term extensibility.
+Parker Platform is an open-source Personal Intelligence Platform designed around trust, structured reasoning, secure execution, local-first operation and long-term extensibility.
 
 ## Status
 
-**Architecture version:** v0.8 (Phase 2 Runtime Complete)
-**Repository status:** Private development
-**Future intent:** Open source once architecture, security model and licence are ready.
+**Current release:** v0.8-runtime-complete
+**Status:** Runtime and identity baseline complete.
+**Tests:** 101 passing, 0 failing.
+**Not yet implemented:** Agents, Memory, World Model, Planner, Android integration.
 
-Current implementation state, verified by a real Gradle build and test
-run in Android Studio (BUILD SUCCESSFUL, 101 tests passed, 0 failed):
+Parker Platform is under active development. This release establishes the
+runtime and identity baseline described below; it is not a production-ready
+system, and the components listed as "not yet implemented" should be
+treated as absent rather than partial.
+
+Test suite independently verified in Android Studio: 101 passing, 0 failed.
+
+Current implementation state:
 
 - **Phase 1 Core Contracts: complete.** Volume 1 core contracts
   (`Principal`, `Resource`, `ExecutionRequest`, `ExecutionResult`,
@@ -31,7 +38,7 @@ run in Android Studio (BUILD SUCCESSFUL, 101 tests passed, 0 failed):
   `docs/reviews/PARKER_PHASE_2_RUNTIME_VERIFICATION_REPORT.md`.
 - **101 automated tests passing**, 0 failing, across Phase 1 contracts,
   Tool Registry, Action Mapping, EventBus, Runtime Integration, and
-  Identity Service.
+  Identity Service (independently verified in Android Studio).
 - **Architecture Chapters 1–50** are present under `docs/architecture/`.
 - **20 Architecture Decision Records** are present under `docs/adr/`
   (numbered ADR-001 through ADR-022; ADR-004 and ADR-005 do not exist —
@@ -47,6 +54,11 @@ run in Android Studio (BUILD SUCCESSFUL, 101 tests passed, 0 failed):
   policy, any concrete `Tool`, Identity Service integration, cascading
   Principal revocation, Agent runtime, Memory, World Model, and Phase 3
   generally — see `docs/architecture/IMPLEMENTATION_GAPS.md`.
+
+## Known Environment Limitations
+
+Claude Code environment could not run the Gradle test task directly.
+Test validation was performed independently in Android Studio.
 
 ## Core Rule
 
@@ -87,17 +99,3 @@ src/interfaces/         Volume 3 interfaces: implemented (ExecutionPipeline,
 src/contracts/          Phase 1 core contracts, plus lifecycle transition
                         validators and runtime-supporting types (implemented)
 src/runtime/            Phase 2 concrete implementations: InMemoryToolRegistry,
-                        ActionMapper, InMemoryEventBus, DefaultExecutionPipeline,
-                        InMemoryResourceRegistry, InMemoryIdentityService
-tests/contracts/        Phase 1 unit tests (implemented)
-tests/runtime/          Phase 2 runtime unit tests (implemented)
-gradle/wrapper/         Gradle Wrapper (Gradle 8.10)
-plugins/                Future plugins
-agents/                 Future internal agents
-tools/                  Future tools
-examples/               Example flows
-```
-
-## Engineering Slogan
-
-> Think clearly. Act safely. Learn continuously.
