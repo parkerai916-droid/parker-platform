@@ -701,4 +701,258 @@ authentication is implemented.
   `ExecutionResult`/`ToolResult` exactly as it already is for any
   Execution Pipeline caller (`Tool.md`'s existing normative
   requirements). The Agent Runtime does not add a parallel Tool-failure
-  channel; an Agent Step whose `Execut
+  channel; an Agent Step whose `ExecutionResult.status` is `FAILED`
+  records that outcome and, per Agent Policy (Section 4), either ends the
+  Agent Run (`--> FAILED`) or allows the Agent Run to continue with a
+  different proposed action — this document does not prescribe which,
+  since it depends on Planner-level retry logic out of scope here
+  (Section 12).
+- **Permission denial.** Per Section 5 and Section 9, `DENIED` fails the
+  current Agent Step and publishes `agent.action_denied`; whether the
+  Agent Run also ends (`--> FAILED`) or continues via an alternate
+  proposed action is the same Agent Policy/Planner-level decision as
+  "Tool failure" above — not a platform error either way, but a correct,
+  auditable outcome of Section 6's execution model. `DEFERRED` is handled
+  separately below.
+- **Identity revocation.** Per Section 7, when the Identity Service
+  reports — via `resolve()`, or, once available, an `identity.*` event —
+  that an Agent Run's Principal is no longer Active, the Agent Run stops
+  rather than continuing (`--> FAILED`). This is treated as an integrity
+  condition, not a normal Agent Run outcome, since there is no specified
+  path for a Revoked Principal to regain authority
+  (`PrincipalLifecycleTransitions` has no `Revoked -> Active` edge).
+  **Full, timely enforcement of this is dependent on Identity Service gap
+  closure** — see Section 7's dependency note
+  (`IMPLEMENTATION_GAPS.md` #37, #39).
+- **Malformed action.** A proposed action that does not resolve to a
+  known action vocabulary entry is, per `action-mapping.md`'s existing
+  "Unknown Actions" section, **invalid, not denied** — the underlying
+  `ExecutionRequest` never reaches `PermissionPending`. From the Agent
+  Runtime's perspective this surfaces the same way a Tool failure does: a
+  `FAILED` `ExecutionResult` for that Agent Step, handled per "Tool
+  failure" above.
+- **Timeout.** Two distinct timeout conditions exist: an `ExecutionRequest`
+  reaching its own `expiresAt` (already specified,
+  `ExecutionLifecycleState.EXPIRED`) is a Tool/Execution Pipeline-level
+  concern unchanged by this document. An Agent Run exceeding an Agent
+  Policy-defined maximum duration or Agent Step count is an Agent
+  Runtime-level concern; this document specifies that such an Agent Run
+  MUST transition to `SUSPENDED` (recoverable) rather than `FAILED`,
+  since exceeding a configured bound is not itself evidence of an
+  unrecoverable error. A `WAITING_FOR_INPUT` wait timing out is a third,
+  narrower case, also resolving to `SUSPENDED` (Section 5).
+- **Cancellation.** An explicit cancellation request transitions the
+  Agent Run to `CANCELLED` from any non-terminal state (Section 5).
+  Cancellation is always available and is not itself a failure.
+- **Partial completion.** An Agent Run that has completed some Agent
+  Steps toward its Goal but cannot complete all of them (e.g. because a
+  later Agent Step was denied or failed) ends at whatever terminal state
+  its last Agent Step's outcome dictates (`FAILED` or `CANCELLED`); this
+  document does not introduce a distinct "partially completed" terminal
+  state, mirroring `ExecutionResultStatus.PARTIAL_SUCCESS`'s existing
+  precedent of recording partial completion as a status/result concern
+  rather than a distinct lifecycle state. The Agent Result (Section 4)
+  for such an Agent Run reports exactly which Agent Steps completed and
+  which did not; where the Agent Run executed within a Task Manager
+  Task, that Task's own status is reported by the Task Manager, not
+  inferred from the Agent Result (Section 5, "Relationship to the Task
+  Manager Task Lifecycle").
+- **Safe suspension.** `SUSPENDED` (Section 5) is the Agent Runtime's
+  general-purpose recoverable pause state: reached from a `DEFERRED`
+  permission decision, a `WAITING_FOR_INPUT` timeout, an Agent
+  Policy-defined bound being exceeded, or an explicit suspend request. A
+  suspended Agent Run holds no active Agent Step and consumes no further
+  Execution Pipeline capacity until resumed.
+
+## 11. Safety Boundaries
+
+- **No direct external effects.** An Agent Instance has no operation that
+  reaches an external system, a Tool, or a Resource other than by
+  submitting an `ExecutionRequest` through the Agent Runtime to the
+  Execution Pipeline.
+- **No self-permissioning.** An Agent Instance cannot approve its own
+  proposed action, grant itself a `PermissionDecision`, or otherwise
+  substitute for the Permission Engine.
+- **No silent privilege escalation.** Agent Capability and Agent Policy
+  narrow scope; neither can be used to obtain authority beyond what the
+  Agent Instance's Principal would already be granted by the Permission
+  Engine for an identical request submitted by any other Principal of the
+  same standing.
+- **No hidden background execution.** Every Agent Run is explicitly
+  tracked through Section 5's lifecycle and is visible via Section 9's
+  events; there is no execution mode in this specification that runs
+  outside a tracked Agent Run or that omits publishing the corresponding
+  Agent Events — including while `WAITING_FOR_INPUT` (Section 5,
+  "WAITING_FOR_INPUT Trust Boundary"), where no further Agent Step may
+  begin until input arrives or the wait is resolved.
+- **No mutation of identity or permission state except through authorised
+  runtime services.** An Agent Instance never writes directly to a
+  `Principal` record, a `PermissionDecision`, a `Resource` entry, or a
+  Tool Registry entry. Every such mutation happens exclusively through
+  the Identity Service, Permission Engine, Resource Registry, or Tool
+  Registry's own sanctioned operations, called (where applicable) via an
+  `ExecutionRequest` like any other administrative action
+  (`docs/architecture/tool-registry.md`'s "Registration Model" is the
+  precedent this follows). The same applies to Task Manager Task state:
+  an Agent Instance never writes a Task's `status` directly (Section 5,
+  "Relationship to the Task Manager Task Lifecycle").
+- **No unaudited action execution.** Every Agent Step (Section 4) that
+  reaches the Execution Pipeline publishes `agent.action_proposed` and
+  exactly one of `agent.action_approved`, `agent.action_denied`, or
+  `agent.action_deferred`, plus `agent.step_completed` where the Agent
+  Step reaches a result (Section 9) — there is no path for a proposed
+  action to have an effect without a corresponding Agent Event trail.
+
+## 12. Relationship to Future Systems
+
+The following integrations are **future work, not part of this
+specification.** This document intentionally does not define their
+shape; it only notes the seam each will eventually attach to, so a future
+specification does not have to rediscover it.
+
+- **Planner (Chapter 20).** Will be the component that turns a Goal into
+  the ordered proposed actions an Agent Instance's Agent Steps submit
+  (Section 6). This document assumes proposed actions arrive already
+  formed, the same assumption `action-mapping.md` makes.
+- **World Model (Chapter 16).** Will be a read-only input a future
+  Planner or Agent Instance may consult when forming a Goal into
+  Task Manager Tasks and Agent Runs. Agent Context (Section 8) does not
+  reference the World Model, and this document does not specify how or
+  whether an Agent Instance ever queries it.
+- **Memory (Chapter 17).** Will be where any long-term Agent Result
+  history, learned preference, or cross-Agent-Run knowledge would
+  eventually be written and read. No such promotion path exists in this
+  specification; Agent Context (Section 8) is explicitly Agent-Run-scoped
+  only (Section 8's closing paragraph).
+- **Android front end (Chapter 27).** Will be one of possibly several
+  surfaces that create Goals, supply `WAITING_FOR_INPUT` responses, or
+  display Agent Results. This document assumes no particular front end
+  and specifies no Android-specific behaviour.
+- **Plugins (Chapter 15).** Will be able to register Tools an Agent
+  Instance's proposed actions may resolve to, exactly as any other
+  Plugin-supplied Tool already can (`docs/architecture/tool-registry.md`,
+  "Plugin Integration"). This document does not propose a distinct
+  Agent-Plugin integration surface beyond the existing Tool Registry path.
+- **Workflows (Chapter 38).** Will likely be the mechanism by which
+  multiple Agent Runs, multiple Task Manager Tasks, or an Agent Run and
+  non-Agent work, are composed into a larger multi-stage process. This
+  document specifies a single Agent Instance's own Agent Run lifecycle
+  only, and does not specify cross-Agent-Run or cross-Task orchestration.
+
+## 13. Acceptance Criteria
+
+This specification is complete when, and only to the extent that:
+
+- **Agent lifecycle is explicit.** Section 5 defines every state, every
+  valid transition, and enumerates transitions this document deliberately
+  does not permit.
+- **Terminology is reconciled with existing platform concepts.** Section
+  4 treats the Task Manager Task (Chapter 37/ADR-012) as canonical and
+  does not define a competing Agent Task abstraction; Section 5 states
+  explicitly that the Agent Run lifecycle's overlapping state names are a
+  naming coincidence with, not a substitute for, the Task Manager Task
+  lifecycle.
+- **Trust boundaries are explicit.** Section 11 enumerates the safety
+  boundaries an implementation MUST enforce; Section 6 defines the single
+  execution path an Agent Instance has; Section 5's "WAITING_FOR_INPUT
+  Trust Boundary" specifies the one state where external data enters a
+  paused Agent Run.
+- **Identity and permission integration is explicit.** Section 7 defines
+  how Agent Identity, Delegated Authority, and revocation interact with
+  the existing Identity Service and Permission Engine, without inventing
+  new mechanisms beyond `owner` and the existing lifecycle operations,
+  and states plainly which part of the revocation requirement depends on
+  still-open Identity Service gaps.
+- **Execution path is defined.** Section 6 defines how a proposed action
+  becomes an `ExecutionRequest` and flows through the existing Execution
+  Pipeline, Permission Engine, Tool Registry, Resource Registry, and
+  EventBus, with no Agent-specific shortcut through any of them.
+- **Event emissions are defined.** Section 9 enumerates the required
+  Agent Event set — including distinct events for every lifecycle state
+  entry and for denied vs. deferred permission outcomes — and their
+  `agent.*` namespacing, correlation, and authentication treatment.
+- **Non-goals prevent scope creep.** Section 3 explicitly excludes
+  Memory, World Model, Planner, a competing Task abstraction, Workflow
+  implementation, Android integration, direct external system access,
+  and unrestricted autonomy from this document's scope.
+- **No implementation code has been changed.** This document adds no file
+  under `src/` or `tests/`, and proposes no Kotlin.
+
+## Open Questions (not resolved by this document)
+
+Recorded rather than invented, following the convention already
+established by `docs/architecture/tool-registry.md`,
+`docs/architecture/action-mapping.md`, and
+`docs/architecture/IdentityService.md`. Items resolved by the
+pre-publication correction pass (whether a `DENIED` result ends the whole
+Agent Run or allows continuation via an alternate action, per Section 5
+and Section 9) have been removed from this list; only genuinely
+unresolved decisions remain:
+
+- Whether an Agent Instance may be associated with more than one Agent
+  Run over its lifetime (Agent ID persisting across Agent Runs) or
+  whether each Agent Instance is strictly single-Agent-Run — Section 8
+  leaves "Agent ID" distinct from "Agent Run ID" without resolving this.
+- The exact Agent Result and Agent Event payload schemas — this document
+  specifies the required event set (Section 9) and result contents
+  (Section 4) at the field-list level, not as JSON Schemas, mirroring how
+  `action-mapping.md`'s vocabulary table is left as "implementation-phase
+  content, not an architectural decision."
+- Whether `agent.*` should be formally added to `EventBus.md`'s
+  trust-sensitive domain list (alongside `execution.*` and `permission.*`)
+  now, or only when EventBus authentication is actually implemented.
+- The precise mechanism the Agent Runtime should use to detect a
+  Principal status change once Identity Service gaps #37/#39 close —
+  poll `resolve()` before each Agent Step, subscribe to `identity.*`
+  events, or both — is not decided here; Section 7 records the
+  dependency but not the eventual detection strategy.
+- `Agent.health()`'s return type, `AgentHealth`, remains undefined
+  (`docs/architecture/IMPLEMENTATION_GAPS.md` #20). This document does
+  not resolve it; an Agent Instance's lifecycle state (Section 5) is a
+  distinct concept from Agent health/liveness reporting, and this
+  document takes no position on whether the two should eventually be
+  related.
+- The exact cascading behaviour when an owning Principal (Section 7) is
+  Revoked mirrors `IdentityService.md`'s own still-open cascading
+  -revocation question (`IMPLEMENTATION_GAPS.md` #35) — this document
+  does not settle that question, only restates that whatever rule is
+  eventually chosen there applies to Agent Instances as owned Principals
+  like any other. This is distinct from the detection-and-response
+  dependency in Section 7, which concerns learning that a revocation
+  already happened, not whether it should cascade in the first place.
+
+## Related
+
+- Chapter 9 – Trust Framework
+- Chapter 10 – Permission Engine
+- Chapter 11 – Execution Pipeline
+- Chapter 12 – Tool Framework
+- Chapter 13 – Event Bus
+- Chapter 14 – Agent Framework
+- Chapter 15 – Plugin SDK
+- Chapter 16 – World Model
+- Chapter 17 – Memory Architecture
+- Chapter 20 – Planning and Deliberation Framework
+- Chapter 27 – Android Platform Services
+- Chapter 37 – Task Manager
+- Chapter 38 – Workflow Engine
+- Chapter 41 – Identity Service
+- Chapter 43 – Audit and Observability
+- ADR-001 – Models Never Execute Tools
+- ADR-002 – Memory, Context and World Model Remain Separate
+- ADR-003 – Single Execution Pipeline
+- ADR-012 – Task and Workflow Separation
+- ADR-013 – Agents and Services Use Principal Identities
+- ADR-017 – ExecutionRequest Is Canonical
+- ADR-018 – ExecutionRequests Are Immutable After Validation
+- `docs/architecture/IdentityService.md`
+- `docs/architecture/tool-registry.md`
+- `docs/architecture/action-mapping.md`
+- `docs/specifications/volume-01-core-contracts/Principal.md`
+- `docs/specifications/volume-02-core-schemas/Task-Schema.md`
+- `docs/specifications/volume-03-core-interfaces/Agent.md`
+- `docs/specifications/volume-03-core-interfaces/EventBus.md`
+- `docs/specifications/volume-03-core-interfaces/EventType.md`
+- `docs/diagrams/task-lifecycle-state-machine.mmd`
+- `docs/architecture/IMPLEMENTATION_GAPS.md`
+- `docs/reviews/AgentRuntimeSpecificationReview.md`
