@@ -3,8 +3,18 @@
 ## Status
 
 Version: 0.1-draft
-Status: New specification. Commissioned as the next Parker architecture
-specification after the corrected Agent Runtime Specification
+Status: **Corrected draft.** This revision applies the correction pass
+recorded in `docs/reviews/TaskManagerRuntimeSpecificationReview.md`: it
+makes explicit that cross-Principal Task control actions are not
+Permission-Engine-gated by default (Section 8), states that the Task
+Status resulting from a revoked/inactive Owner or Assignee is a
+Task-Manager-rule-governed choice rather than an automatically prescribed
+one (Sections 8 and 11), adds the two Task Events the review found
+missing for the `Expired` and `Superseded` terminal transitions (Section
+10), and clarifies that Task Context and Agent Context are distinct,
+non-overlapping stores (Section 9). No issue outside the review's
+findings was changed. Originally commissioned as the next Parker
+architecture specification after the corrected Agent Runtime Specification
 (`docs/specifications/volume-04-agent-runtime/AgentRuntimeSpecification.md`,
 "Pre-publication corrected draft"). **This document is specification
 only.** No Kotlin is implemented, proposed as a diff, or changed by it,
@@ -540,6 +550,17 @@ sequenceDiagram
   an explicit `PermissionAction.CONTROL` evaluation, the way Tool
   Registry registration already does, is recorded as an Open Question
   rather than decided here.
+- **Attribution is not authorisation.** As specified today, this
+  document does not restrict *who* may request a given Task Status
+  transition beyond requiring that the request be attributable to an
+  authenticated Principal (above). Concretely: nothing in this document
+  prevents an authenticated Principal from requesting the cancellation,
+  reassignment, or Constraint/Dependency change of a Task it does not own
+  or is not assigned to — attribution records who made the request; it
+  does not, by itself, gate whether they may. This is stated explicitly
+  here so it is not left to be inferred only from the Open Question
+  above; whether to add such a gate is a decision for that Open Question
+  to resolve, not a behaviour this document invents in the meantime.
 - **Revoked or inactive Principals affect future task processing.**
   Restating the Agent Runtime Specification's own corrected framing
   (Section 7 there) for Task Owner and Task Assignee: the Task Manager
@@ -566,6 +587,18 @@ sequenceDiagram
   when that report arrives is bounded by the same two gaps the Agent
   Runtime Specification already depends on, not a stronger guarantee
   invented here.
+
+  This document does not prescribe which Task Status a `Running` Task
+  moves to once its Owner or Assignee is reported non-Active. Which of
+  `Paused`, `Failed`, or `Cancelled` (Section 5) applies is a Task
+  Manager rule, evaluated deliberately per Section 6 — the same
+  "not an automatic mirror" treatment already given to every other
+  informational trigger in this document (`task.blocked`,
+  `task.deferred`, `task.permission_denied` — Section 10). The
+  requirement above is a hard constraint on what the Task Manager
+  Runtime MUST NOT do (allow further execution); it is deliberately not
+  paired with a prescribed transition, so as not to invent a stronger
+  rule than this document has established elsewhere.
 
 ## 9. Task Context Model
 
@@ -610,6 +643,18 @@ reality (Chapter 16). A Task Constraint may reference a real-world
 condition (e.g. "only between 9am and 5pm"), but evaluating whether that
 condition currently holds is not something Task Context stores a belief
 about — it is, at most, a query Task Context's holder directs elsewhere.
+
+**Task Context is not Agent Context.** Task Context (this section) and
+Agent Context (Agent Runtime Specification, Section 8) are two distinct,
+non-overlapping stores, neither a copy of the other. Task Context holds
+Agent Run References (Section 4) that identify an associated Agent Run by
+ID, not that Agent Run's own Agent Context; symmetrically, an Agent Run
+executing within a Task holds only a `taskId` reference in its Agent
+Context (Agent Runtime Specification, Section 8, "Agent Step state"), not
+a copy of this Task's Context. Each side reads the other only by
+resolving the reference through its owning component — the Task Manager
+Runtime for Task Context, the Agent Runtime for Agent Context — never by
+direct access to the other's internal state.
 
 **Task Context may later reference Memory or World Model entries, but
 does not implement them.** A future integration (Section 13) may let a
@@ -660,11 +705,17 @@ event corresponds to a real status transition or is informational only.
 | TaskCancelled | `task.cancelled` | An explicit cancellation request is processed. | cancelling `PrincipalId` | Real transition: `{Created, Queued, Running, Paused} --> Cancelled`. |
 | TaskSuspended | `task.suspended` | The Task is paused. The event name follows the Agent Runtime Specification's `SUSPENDED` vocabulary for cross-specification consistency; `Task.schema.json`'s own `status` value remains `Paused`, unrenamed. | reason | Real transition: `Running --> Paused`. |
 | TaskResumed | `task.resumed` | A paused Task resumes active progress. | — | Real transition: `Paused --> Running`. |
+| TaskExpired | `task.expired` | The Task Manager Runtime determines the Task has reached `Expired` — an existing `Task.schema.json` terminal status (Section 5). This document does not define the expiry condition itself beyond what `Task-Schema.md` already specifies. | — | Real transition: `{Queued, Paused} --> Expired`. |
+| TaskSuperseded | `task.superseded` | The Task Manager Runtime determines the Task has reached `Superseded` — an existing `Task.schema.json` terminal status (Section 5). This document does not define the supersession mechanism itself beyond what `Task-Schema.md` already specifies. | — | Real transition: `{Created, Queued, Paused} --> Superseded`. |
 
-This document does not define dedicated Task Events for the `Expired` or
-`Superseded` terminal transitions — no such event was in scope for this
-pass, and adding one is recorded as an Open Question rather than
-introduced here.
+`TaskExpired` and `TaskSuperseded` complete Task Event coverage for all
+five terminal states, matching the treatment already given to
+`task.completed`/`task.failed`/`task.cancelled`. Consistent with those
+three, neither event defines new expiry or supersession *behaviour* —
+both terminal statuses, and the edges into them, are already specified
+unchanged in Section 5; these two entries only give the already-existing
+transitions an observable Task Event, the same gap-closing this document
+already performs for the other three terminal transitions.
 
 Per `EventBus.md`'s "Authentication" and "Authorisation" sections: every
 Task Event MUST resolve to a Principal in good standing to be accepted.
@@ -699,7 +750,10 @@ authentication is implemented.
   proceed into or remain in `Running`. Full, timely enforcement of this
   is dependent on Identity Service gap closure (`IMPLEMENTATION_GAPS.md`
   #37, #39), identically to the Agent Runtime Specification's own
-  dependency.
+  dependency. Which Task Status (`Paused`, `Failed`, or `Cancelled` —
+  Section 5) the Task moves to instead is not prescribed here; per
+  Section 8, that choice is a Task Manager rule, not an automatic
+  mirror of the Principal status change.
 - **Missing resource.** A Resource Registry resolution failure for a
   Task's declared Resource references surfaces as a `FAILED`
   `ExecutionResult` for whatever `ExecutionRequest` attempted to resolve
@@ -871,15 +925,15 @@ and the Agent Runtime Specification:
 - Whether Task Status transitions that affect another Principal's Task
   (e.g. cancelling a Task owned by someone else) should require an
   explicit `PermissionAction.CONTROL` evaluation, the way Tool Registry
-  registration already does (Section 8).
+  registration already does (Section 8). Section 8 now states plainly
+  that, as specified today, no such gate exists — this question is about
+  whether to add one, not about what the current, already-explicit
+  behaviour is.
 - The precise mechanism the Task Manager Runtime should use to detect a
   Task Owner's or Assignee's Principal status change once Identity
   Service gaps #37/#39 close — poll `resolve()`, subscribe to
   `identity.*` events, or both — mirroring the identical open question
   already recorded in the Agent Runtime Specification.
-- Whether dedicated Task Events for the `Expired` and `Superseded`
-  terminal transitions should be added (Section 10), and if so, whether
-  they follow the same real-transition pattern as `task.completed`/`task.failed`/`task.cancelled`.
 - Whether `task.*` should be formally added to `EventBus.md`'s
   trust-sensitive domain list now, or only when EventBus authentication
   is actually implemented — mirroring the identical open question already
