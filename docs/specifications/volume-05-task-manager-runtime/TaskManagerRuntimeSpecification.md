@@ -3,18 +3,30 @@
 ## Status
 
 Version: 0.1-draft
-Status: **Corrected draft.** This revision applies the correction pass
-recorded in `docs/reviews/TaskManagerRuntimeSpecificationReview.md`: it
-makes explicit that cross-Principal Task control actions are not
-Permission-Engine-gated by default (Section 8), states that the Task
-Status resulting from a revoked/inactive Owner or Assignee is a
-Task-Manager-rule-governed choice rather than an automatically prescribed
-one (Sections 8 and 11), adds the two Task Events the review found
-missing for the `Expired` and `Superseded` terminal transitions (Section
-10), and clarifies that Task Context and Agent Context are distinct,
-non-overlapping stores (Section 9). No issue outside the review's
-findings was changed. Originally commissioned as the next Parker
-architecture specification after the corrected Agent Runtime Specification
+Status: **Corrected draft, with a Sprint 1 contract-closure addendum.**
+This revision applies the correction pass recorded in
+`docs/reviews/TaskManagerRuntimeSpecificationReview.md`: it makes explicit
+that cross-Principal Task control actions are not Permission-Engine-gated
+by default (Section 8), states that the Task Status resulting from a
+revoked/inactive Owner or Assignee is a Task-Manager-rule-governed choice
+rather than an automatically prescribed one (Sections 8 and 11), adds the
+two Task Events the review found missing for the `Expired` and
+`Superseded` terminal transitions (Section 10), and clarifies that Task
+Context and Agent Context are distinct, non-overlapping stores (Section
+9). No issue outside the review's findings was changed.
+
+**Sprint 1 addendum.** Sections 15 and 16 were added afterward, per
+`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md`'s Blocker 1
+(Task Proposal intake) and Blocker 3 (Agent Run command channel), and
+`docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md` records the full
+closure rationale. They are appended as new sections rather than inserted
+in sequence, and no existing section is renumbered, so that every
+existing cross-reference to this document from elsewhere in the
+repository (`ARCHITECTURE_DECISIONS.md`, `INTER_SPECIFICATION_CONTRACTS.md`,
+`PlannerRuntimeSpecification.md`, and the review documents) remains
+accurate. Nothing in Sections 1–14 was altered by the addendum.
+Originally commissioned as the next Parker architecture specification
+after the corrected Agent Runtime Specification
 (`docs/specifications/volume-04-agent-runtime/AgentRuntimeSpecification.md`,
 "Pre-publication corrected draft"). **This document is specification
 only.** No Kotlin is implemented, proposed as a diff, or changed by it,
@@ -903,6 +915,106 @@ This specification is complete when, and only to the extent that:
 - **No implementation code has changed.** This document adds no file
   under `src/` or `tests/`, and proposes no Kotlin.
 
+## 15. Task Proposal Intake
+
+**Added by the Sprint 1 contract-closure addendum (see Status header).**
+This section closes the dependency `PlannerRuntimeSpecification.md`
+Section 6 records against this document: "The Task Manager Runtime
+Specification, as it stands today, does not define a Task Proposal
+intake operation, nor a Task Event or other mechanism by which the Task
+Manager Runtime communicates an accept/defer/split/merge/reject
+disposition back to the Planner Runtime."
+
+The intake operation and its five possible outcomes are now named and
+shaped in `src/contracts/TaskProposal.kt`
+(`TaskProposalIntake.submitProposal`, `TaskProposal`,
+`TaskProposalDisposition`). This section states what each outcome means
+for *this* document's own model; it does not add a sixth outcome, and it
+does not change Section 5's Task lifecycle, Section 6's Agent Run
+relationship, or Section 8's identity/permission rules — it only
+completes the previously-unnamed connection point between this document
+and `PlannerRuntimeSpecification.md`.
+
+| Disposition | Task Manager Task created? | Further Planner input needed? | Agent Runtime may be involved later? | Required event | Terminal for this proposal? |
+|---|---|---|---|---|---|
+| `Accepted` | Yes — exactly one, per Section 5's existing lifecycle (enters `Created`). | No. | Yes, at the Task Manager Runtime's own discretion (Section 6), via Section 16's Agent Run Command Channel. | `task.created` (Section 10) and, on the Planner side, `planner.session_completed` (`PlannerRuntimeSpecification.md` Section 11), sharing this proposal's `correlationId`. | Yes. |
+| `Deferred` | No. | Possibly, if the deferral reason names something only the Planner Runtime can supply (e.g. a revised Constraint) — this document does not decide that; see Open Questions below. | No, until (if ever) a later, separate submission is `Accepted`/`Split`/`Merged`. | No `task.created`. `PlannerRuntimeSpecification.md` Section 11 has no dedicated event for this outcome today — see that document's own Open Questions. | Yes, for this specific submission — reconsideration is a new submission, not a reopening of this one, consistent with AD-016 (Terminal Lifecycle States Are Final) applied to the disposition itself. |
+| `Rejected` | No, and none ever will be for this specific proposal. | No. | No. | No dedicated Task Event (no Task exists). On the Planner side, the Planning Session transitions `SUBMITTED --> REJECTED` (`PlannerRuntimeSpecification.md` Section 5), which AD-015 (Invalid Is Not Denied) already distinguishes from `FAILED`: this is a well-formed proposal an external component declined, not an internal Planner failure. | Yes. |
+| `Split` | Yes — two or more, per this document's existing Section 5 lifecycle, each independently. | No, for the split itself. | Yes, independently per resulting Task, at the Task Manager Runtime's own discretion. | One `task.created` per resulting Task, all sharing this proposal's `correlationId`, plus `planner.session_completed`. | Yes. |
+| `Merged` | Yes — exactly one, combining this proposal with one or more named sibling proposals. | No. | Yes, at the Task Manager Runtime's own discretion, for the merged Task. | One `task.created` (not one per merged proposal), plus `planner.session_completed` for each contributing Planning Session. | Yes. |
+
+**This section does not resolve who may submit a Task Proposal beyond
+what Section 8 already requires** (every Task Manager Runtime operation
+is performed by an authenticated Principal or service identity) — a
+Task Proposal's `initiatingPrincipalId` (`src/contracts/TaskProposal.kt`)
+is resolved through the Identity Service exactly as Task Owner and Task
+Assignee already are, never through a Planner-local or
+Task-Manager-local identity store.
+
+**No implementation of `TaskProposalIntake` exists yet.** This section,
+and the contract it names, are preparation for Sprint 1 coding
+(`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Unit 6), not an
+implementation of it.
+
+## 16. Agent Run Command Channel
+
+**Added by the Sprint 1 contract-closure addendum (see Status header).**
+This section closes `INTER_SPECIFICATION_CONTRACTS.md` Section 6's Gap 7
+("Agent Run Request has no named, shaped object") from this document's
+own side, and the identical asymmetry that document's Gap 11 names for
+Agent Run *cancellation* — both are the same underlying need: a named
+channel by which this document's own Section 7 sequence diagram
+("`TM->>AR: create Agent Run`") and Section 5's cancellation-cascade
+requirement ("Cancelling a Task MUST cause the Task Manager Runtime to
+request cancellation of every Agent Run Reference... still active")
+actually reach the Agent Runtime.
+
+`src/contracts/AgentRunCommand.kt` now names and shapes this channel:
+`AgentRunCommandChannel.submit`, taking an `AgentRunCommand` with
+`commandType` one of `START`, `SUSPEND`, `RESUME`, or `CANCEL`. This
+document's own Section 6 ("Relationship to Agent Runtime") and Section 5
+("Cancellation semantics") are otherwise unchanged — this section names
+the mechanism those already say must exist; it does not add a new
+capability to either.
+
+- **`START`** is how this document's Section 6 ("Agent Runs operate
+  within or on behalf of Task Manager Tasks") and Section 7's sequence
+  diagram ("create Agent Run") are actually realised — carrying the
+  `taskId` (Section 4) the resulting Agent Run will operate within or on
+  behalf of, and (where declared) the Task Proposal's own
+  `requiredCapabilities` (Section 15) carried forward as a planning-time
+  hint, never a grant (Section 8).
+- **`SUSPEND`** and **`RESUME`** correspond to
+  `AgentRuntimeSpecification.md` Section 5's own, already-specified
+  "explicit suspend request" and "`SUSPENDED --> RUNNING`... resume path"
+  — that document names the transitions; this contract names who may
+  request them and how, from this document's side. This section does not
+  change when this document itself chooses to issue either — Section 6's
+  existing "not an automatic mirror" rule for Task Status still applies
+  identically to whether and when this document sends a `SUSPEND` or
+  `RESUME` command.
+- **`CANCEL`** is the mechanism Section 5's "Cancellation semantics"
+  already requires ("MUST cause the Task Manager Runtime to request
+  cancellation of every Agent Run Reference... still active") — the
+  `cancellationReason` field is required (non-blank) for this command
+  type specifically, per `src/contracts/AgentRunCommand.kt`'s own
+  validation.
+
+**Every `AgentRunCommand` is issued by an authenticated Principal or
+service identity** (Section 8, restated identically here), resolved
+through the Identity Service, never a local store. **No `AgentRunCommand`
+grants execution authority by itself** (AD-002, AD-007): a `START`
+command accepted by the Agent Runtime means an Agent Run now exists and
+will begin its own lifecycle (`AgentRuntimeSpecification.md` Section 5),
+not that any action it later proposes is pre-approved — every
+`ExecutionRequest` that Agent Run eventually submits is still
+independently evaluated by `PermissionEngine.evaluate`, unchanged.
+
+**No implementation of `AgentRunCommandChannel` exists yet.** This
+section, and the contract it names, are preparation for Sprint 1 coding
+(`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Units 6 and 7), not
+an implementation of it.
+
 ## Open Questions (not resolved by this document)
 
 Recorded rather than invented, following the convention already
@@ -943,6 +1055,17 @@ and the Agent Runtime Specification:
   after `docs/architecture/tool-registry.md`), and if so, what its
   minimal operation surface should be — not proposed here, since no
   Kotlin interface sketch was in scope for this pass.
+- **(Added by the Sprint 1 addendum.)** Whether a `Deferred`
+  `TaskProposalDisposition` (Section 15) should have its own dedicated
+  Task Event and Planning Event, rather than none — recorded as still
+  open in `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md`, not decided
+  here, since inventing one was outside that closure task's own scope.
+- **(Added by the Sprint 1 addendum.)** Whether `TaskProposalIntake`
+  (Section 15) and `AgentRunCommandChannel` (Section 16), once
+  implemented, should be exposed as Volume 3 interfaces alongside a
+  future formal Task Manager Runtime interface — the same open question
+  already recorded above for the Task Manager Runtime as a whole, now
+  extended to these two additional operation surfaces.
 
 ## Related
 
@@ -987,3 +1110,8 @@ and the Agent Runtime Specification:
 - `docs/diagrams/task-lifecycle-state-machine.mmd`
 - `src/contracts/ExecutionRequest.kt` (`RequestOrigin`, `RequestPriority`)
 - `docs/architecture/IMPLEMENTATION_GAPS.md`
+- `docs/specifications/volume-06-planner-runtime/PlannerRuntimeSpecification.md`
+- `docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md`
+- `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md`
+- `src/contracts/TaskProposal.kt`
+- `src/contracts/AgentRunCommand.kt`

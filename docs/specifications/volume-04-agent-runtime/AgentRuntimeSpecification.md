@@ -25,6 +25,21 @@ already used for `docs/architecture/IdentityService.md`,
 `docs/architecture/tool-registry.md`, and `docs/architecture/action-mapping.md`
 before each of their own implementation phases.
 
+**Sprint 1 contract-closure addendum.** Section 5 below (an "explicit
+suspend request" and "external cancellation request," each previously
+unnamed) is now backed by a named channel: `src/contracts/AgentRunCommand.kt`'s
+`AgentRunCommandChannel.submit`, taking an `AgentRunCommand` with
+`commandType` one of `START`, `SUSPEND`, `RESUME`, or `CANCEL`, issued by
+the Task Manager Runtime (`TaskManagerRuntimeSpecification.md` Section 16,
+added by the same addendum; `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md`
+records the full closure rationale). This does not change which
+transitions exist, when this document says the Agent Runtime itself
+chooses to enter them, or any other part of Section 5 — it only names the
+previously-unnamed source of the request. **No implementation of
+`AgentRunCommandChannel` exists yet** — this is a contract-preparation
+change, not Sprint 1 coding, which remains
+`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Unit 7's work.
+
 This document assumes familiarity with Chapter 9 (Trust Framework),
 Chapter 10 (Permission Engine), Chapter 11 (Execution Pipeline), Chapter
 12 (Tool Framework), Chapter 13 (Event Bus), Chapter 14 (Agent Framework),
@@ -326,8 +341,11 @@ CANCELLED --> [*]
   none will begin until the Agent Run is explicitly resumed. Reached from
   a `PermissionDecisionOutcome.DEFERRED` result (Section 9,
   `agent.action_deferred`), from `WAITING_FOR_INPUT` timing out, from an
-  explicit suspend request, or from the failure categories in Section 10
-  that are recoverable rather than terminal.
+  explicit suspend request (now named: an `AgentRunCommand` with
+  `commandType SUSPEND`, `src/contracts/AgentRunCommand.kt`, per the
+  Sprint 1 contract-closure addendum in the Status header), or from the
+  failure categories in Section 10 that are recoverable rather than
+  terminal.
 - **RUNNING** (resumed) — `SUSPENDED --> RUNNING` resumes the same Agent
   Run; no new Agent Run is created (see "Agent Run" in Section 4).
 - **COMPLETED** — the Agent Run's Goal was achieved; terminal.
@@ -384,7 +402,10 @@ specifies. In particular:
   treats a failed Agent Step's effect on the containing Agent Run. See
   Section 9 (`agent.action_denied`).
 - Cancellation (`--> CANCELLED`) is reachable from every non-terminal
-  state, since an external cancellation request can legitimately arrive at
+  state, since an external cancellation request (now named: an
+  `AgentRunCommand` with `commandType CANCEL` and a required
+  `cancellationReason`, `src/contracts/AgentRunCommand.kt`, per the
+  Sprint 1 contract-closure addendum) can legitimately arrive at
   any point in an Agent Run, mirroring the general principle behind
   `ExecutionLifecycleState`'s own `Queued --> Cancelled` edge, extended
   here to every pre-terminal Agent lifecycle state because an Agent Run is
@@ -760,9 +781,11 @@ authentication is implemented.
 - **Safe suspension.** `SUSPENDED` (Section 5) is the Agent Runtime's
   general-purpose recoverable pause state: reached from a `DEFERRED`
   permission decision, a `WAITING_FOR_INPUT` timeout, an Agent
-  Policy-defined bound being exceeded, or an explicit suspend request. A
-  suspended Agent Run holds no active Agent Step and consumes no further
-  Execution Pipeline capacity until resumed.
+  Policy-defined bound being exceeded, or an explicit suspend request (an
+  `AgentRunCommand` with `commandType SUSPEND`, per the Status header's
+  Sprint 1 contract-closure addendum). A suspended Agent Run holds no
+  active Agent Step and consumes no further Execution Pipeline capacity
+  until resumed.
 
 ## 11. Safety Boundaries
 
@@ -956,3 +979,7 @@ unresolved decisions remain:
 - `docs/diagrams/task-lifecycle-state-machine.mmd`
 - `docs/architecture/IMPLEMENTATION_GAPS.md`
 - `docs/reviews/AgentRuntimeSpecificationReview.md`
+- `docs/specifications/volume-05-task-manager-runtime/TaskManagerRuntimeSpecification.md`
+- `docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md`
+- `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md`
+- `src/contracts/AgentRunCommand.kt`

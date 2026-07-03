@@ -27,13 +27,24 @@ the Agent Runtime Specification, and the Task Manager Runtime
 Specification before each of their own implementation phases.
 
 This document introduces one new boundary object — the **Task
-Proposal** (Section 4, Section 10) — that the existing Task Manager
-Runtime Specification does not yet define an intake operation or event
-set for. This is an explicit, currently-unclosed dependency this
-document creates on a future revision of that specification, recorded in
-Open Questions rather than resolved here: this task's instructions do
-not permit altering existing specifications, so the Task Manager Runtime
-Specification is not amended by this document.
+Proposal** (Section 4, Section 10) — that, at this document's original
+time of writing, the Task Manager Runtime Specification did not yet
+define an intake operation or disposition mechanism for.
+
+**Sprint 1 contract-closure addendum.** That dependency is now closed.
+`docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md` records the closure;
+`src/contracts/TaskProposal.kt` names and shapes the intake operation
+(`TaskProposalIntake.submitProposal`, `TaskProposal`,
+`TaskProposalDisposition`); and
+`TaskManagerRuntimeSpecification.md` Section 15 ("Task Proposal Intake",
+added by the same addendum) states what each of the five dispositions
+(`Accepted`, `Deferred`, `Rejected`, `Split`, `Merged`) means from that
+document's own side. Section 6 below is updated accordingly. This
+remains a contract-preparation change only: no `TaskProposalIntake`
+implementation exists yet (Section 6, Section 15 there), and nothing in
+this document's own lifecycle (Section 5), Event Model (Section 11), or
+Non-Goals (Section 3) is altered by the addendum beyond naming the
+previously-unnamed mechanism.
 
 This document assumes familiarity with Chapter 9 (Trust Framework),
 Chapter 10 (Permission Engine), Chapter 11 (Execution Pipeline), Chapter
@@ -492,12 +503,12 @@ sequenceDiagram
     PL->>TM: submit Task Proposal(s) (Section 10)
     alt Task Manager accepts, defers, splits, or merges
         TM->>TM: create/update Task Manager Task(s) (Task Manager Runtime Specification, Section 5)
-        TM-->>PL: disposition (dependency; mechanism not yet defined -- Open Questions)
+        TM-->>PL: TaskProposalDisposition (Accepted/Deferred/Split/Merged -- src/contracts/TaskProposal.kt; Task Manager Runtime Specification, Section 15)
         PL->>PL: SUBMITTED --> COMPLETED
         TM->>AR: create Agent Run (Task Manager Runtime Specification, Section 6), where applicable
         AR->>EP: submit(ExecutionRequest) (Agent Runtime Specification, Section 6)
     else Task Manager rejects every proposal
-        TM-->>PL: rejection (dependency; mechanism not yet defined -- Open Questions)
+        TM-->>PL: TaskProposalDisposition.Rejected (src/contracts/TaskProposal.kt; Task Manager Runtime Specification, Section 15)
         PL->>PL: SUBMITTED --> REJECTED
     end
 ```
@@ -537,19 +548,28 @@ sequenceDiagram
   places on Agent Runs (Agent Runtime Specification, Section 5,
   "Relationship to the Task Manager Task Lifecycle").
 
-**Explicit, currently-unclosed dependency on the Task Manager Runtime
-Specification.** The Task Manager Runtime Specification, as it stands
-today, does not define a Task Proposal intake operation, nor a Task
-Event or other mechanism by which the Task Manager Runtime communicates
-an accept/defer/split/merge/reject disposition back to the Planner
-Runtime that submitted it (its Section 10 event table predates this
-document and has no such event). This document depends on that
-disposition existing in order for `SUBMITTED --> COMPLETED` and
-`SUBMITTED --> REJECTED` (Section 5) to ever fire, but does not invent
-the mechanism itself, since this task's instructions do not permit
-altering the existing Task Manager Runtime Specification. This is
-recorded as an Open Question for a future revision of that document, not
-resolved here.
+**Dependency on the Task Manager Runtime Specification — now closed.**
+At this document's original time of writing, the Task Manager Runtime
+Specification did not define a Task Proposal intake operation, nor a
+mechanism by which the Task Manager Runtime communicates an
+accept/defer/split/merge/reject disposition back to the Planner Runtime
+that submitted it. The Sprint 1 contract-closure addendum (Status
+header) closes this: `src/contracts/TaskProposal.kt` names
+`TaskProposalIntake.submitProposal(proposal: TaskProposal):
+TaskProposalDisposition`, and `TaskManagerRuntimeSpecification.md`
+Section 15 states what each of the five `TaskProposalDisposition` outcomes
+(`Accepted`, `Deferred`, `Rejected`, `Split`, `Merged`) means for that
+document's own model. Concretely: the disposition is a **direct return
+value** of `submitProposal`, not solely an asynchronous Task Event — this
+is why `SUBMITTED --> COMPLETED` and `SUBMITTED --> REJECTED` (Section 5)
+can now fire deterministically without requiring a new `task.*` event of
+their own for every case (see Section 11's note on
+`planner.session_rejected`, still open). **No implementation of
+`TaskProposalIntake` exists yet** (`TaskManagerRuntimeSpecification.md`
+Section 15's own closing statement) — this closure is a named, shaped
+contract, not a claim that Task Proposal submission is wired up and
+working end-to-end. That remains Sprint 1 coding work
+(`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Unit 6).
 
 ## 7. Relationship to Agent Runtime
 
@@ -863,12 +883,12 @@ transition or is informational only.
 This document does not define a dedicated Planning Event for the
 `SUBMITTED --> REJECTED` transition. That transition is driven by the
 Task Manager Runtime's own decision to decline every submitted Task
-Proposal, and — per Section 6's recorded dependency — the Task Manager
-Runtime Specification does not yet define an event or other mechanism for
-communicating that decision back to the Planner Runtime. Adding
-`planner.session_rejected` (or an equivalent) is recorded as an Open
-Question, to be resolved once that dependency closes, not invented here
-in its absence.
+Proposal — now a named, direct return value
+(`TaskProposalDisposition.Rejected`, Section 6) rather than an
+undefined mechanism, per the Sprint 1 contract-closure addendum. Whether
+to *additionally* publish a dedicated `planner.session_rejected` Planning
+Event (as opposed to relying on the direct disposition return value
+alone) remains recorded as an Open Question, not decided here.
 
 Per `EventBus.md`'s "Authentication" and "Authorisation" sections: every
 Planning Event MUST resolve to a Principal in good standing to be
@@ -1084,16 +1104,17 @@ Specification:
   from what this document calls Plan Decision (Section 1, Section 4), or
   whether Plan Decision as defined here is the complete realisation of
   Chapter 20's "Deliberation" step.
-- How the Task Manager Runtime Specification should be revised to define
-  a Task Proposal intake operation and a disposition mechanism
-  (accept/defer/split/merge/reject) communicated back to the Planner
-  Runtime (Section 6, Section 11) — this document depends on that
-  mechanism existing but cannot define it here, since altering the
-  existing Task Manager Runtime Specification was out of scope for this
-  task.
+- **(Resolved by the Sprint 1 contract-closure addendum.)** How the Task
+  Manager Runtime Specification should define a Task Proposal intake
+  operation and a disposition mechanism communicated back to the Planner
+  Runtime — closed via `src/contracts/TaskProposal.kt` and
+  `TaskManagerRuntimeSpecification.md` Section 15 (Section 6). Retained
+  here, marked resolved, rather than deleted, so the historical record of
+  this document's original dependency is not lost.
 - Whether a dedicated Planning Event (e.g. `planner.session_rejected`)
-  should be added for the `SUBMITTED --> REJECTED` transition once the
-  above dependency closes (Section 11).
+  should be added for the `SUBMITTED --> REJECTED` transition, now that
+  the disposition itself is a named, direct return value rather than an
+  undefined mechanism (Section 11) — still open.
 - Whether the Task Manager Runtime should perform a speculative or
   advisory Permission Engine evaluation at Task Proposal acceptance time,
   or whether permission evaluation should continue to occur only once a
@@ -1165,3 +1186,7 @@ Specification:
 - `docs/diagrams/task-lifecycle-state-machine.mmd`
 - `src/contracts/ExecutionRequest.kt` (`RequestOrigin`, `RequestPriority`, `RiskEstimate`)
 - `docs/architecture/IMPLEMENTATION_GAPS.md`
+- `docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md`
+- `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md`
+- `src/contracts/TaskProposal.kt`
+- `src/contracts/AgentRunCommand.kt`

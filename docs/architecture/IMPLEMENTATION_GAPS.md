@@ -526,6 +526,24 @@ actually ran." This is disclosed prominently in `DefaultExecutionPipeline`'s
 own KDoc and in the Phase 2 completion report -- recorded here so it
 isn't lost as a footnote.
 
+**Sprint 1 contract-closure addendum.** The missing *contract* between a
+resolved `ToolDescriptor` and something invocable is now named:
+`src/contracts/ToolInvocationBinding.kt` adds `ToolInvocationBinding`
+(`bind(descriptor, tool)` / `invocableFor(descriptor): Tool?`) as a
+minimal, purely additive, Execution-Pipeline-only lookup a future
+implementation MAY wire up so `DefaultExecutionPipeline` can go from an
+already-`Resolved` descriptor to an actual `Tool` instance, without
+changing `ToolRegistry.resolve`'s or `ToolResolution.Resolved`'s existing,
+already-tested shape. This closes the *contract-shape* half of this gap
+only -- it does not close this gap itself: no implementation of
+`ToolInvocationBinding` exists, no concrete `Tool` implementation exists,
+and `DefaultExecutionPipeline` is not wired to call it. Providing both
+remains Sprint 1 coding work
+(`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Units 3-4;
+`docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md` records the full
+investigation, including why this was chosen over folding an invocable
+handle directly into `ToolResolution.Resolved`).
+
 ### 33. `execution.timed_out` (an event name from the original runtime task's lifecycle list) has no corresponding `ExecutionLifecycleState`
 
 **Status: Minor terminology gap, not blocking.**

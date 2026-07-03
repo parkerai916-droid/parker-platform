@@ -16,6 +16,17 @@ Task Manager Runtime Specification (`docs/architecture/IMPLEMENTATION_ORDER.md`,
 Section 6). This document introduces no new runtime behaviour and
 authorises no implementation.
 
+**Sprint 1 contract-closure addendum.** `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md`
+records a contract-preparation pass that closes Gaps 1, 2, and 7 below
+(and the previously-uncatalogued Gap 11, now added), via three new,
+purely additive Kotlin files: `src/contracts/TaskProposal.kt`,
+`src/contracts/AgentRunCommand.kt`, and `src/contracts/ToolInvocationBinding.kt`
+(the last closing part of Gap 8/`IMPLEMENTATION_GAPS.md` #32's tool-
+invocation question — see that row's Notes). Section 3 and Section 6
+below are updated accordingly. None of these closures is a runtime
+implementation: every one is a named, shaped contract with **no
+implementation yet**, per each new file's own doc comments.
+
 ## 2. Purpose
 
 Parker's architecture is now spread across six specification volumes, a
@@ -55,18 +66,18 @@ status and explains the split in Notes.
 | Producer | Contract / Object / Event | Consumer | Current status | Source document | Notes |
 |---|---|---|---|---|---|
 | User / Front End | Goal / Planning Request | Planner Runtime | Proposed contract | `PlannerRuntimeSpecification.md` §4; `AgentRuntimeSpecification.md` §4 (Goal) | No front end is specified yet (Chapter 27 is future work in every existing document); Goal formation itself remains explicitly out of scope everywhere it is used. |
-| Planner Runtime | Task Proposal | Task Manager Runtime | Open dependency | `PlannerRuntimeSpecification.md` §6, §10, Open Questions | `PlannerRuntimeSpecification.md` §6 records this as an explicit, currently-unclosed dependency: the Task Manager Runtime Specification does not yet define a Task Proposal intake operation. See Section 6, Gap 1. |
+| Planner Runtime | Task Proposal | Task Manager Runtime | Proposed contract | `PlannerRuntimeSpecification.md` §6, §10; `TaskManagerRuntimeSpecification.md` §15; `src/contracts/TaskProposal.kt` | Named and shaped by the Sprint 1 contract-closure addendum: `TaskProposalIntake.submitProposal(proposal: TaskProposal): TaskProposalDisposition`. Closes Gap 1/Gap 2 (Section 6). Status is "Proposed" rather than "Approved" because no implementation of `TaskProposalIntake` exists yet — only the contract shape does. |
 | Task Manager Runtime | Task Manager Task | Agent Runtime | Approved specification contract | `TaskManagerRuntimeSpecification.md` §6; `AgentRuntimeSpecification.md` §4–5 | Both documents agree, from both sides, that the Task Manager Task is canonical and that an Agent Run may execute within one without ever owning or redefining it. Not yet implemented in Kotlin. |
-| Task Manager Runtime | Agent Run Request / Agent Run Reference | Agent Runtime | Proposed contract | `TaskManagerRuntimeSpecification.md` §4 (Agent Run Reference), §7 (sequence diagram: "create Agent Run") | Agent Run Reference is a named, defined concept. A distinct "Agent Run Request" object — the thing the Task Manager Runtime would actually pass to the Agent Runtime to create an Agent Run — is implied by §7's sequence diagram but not separately named or shaped by either document. See Section 6, Gap 7. |
+| Task Manager Runtime | Agent Run Command (`AgentRunCommand`: `START`/`SUSPEND`/`RESUME`/`CANCEL`) | Agent Runtime | Proposed contract | `TaskManagerRuntimeSpecification.md` §4 (Agent Run Reference), §16; `AgentRuntimeSpecification.md` §5, Status header; `src/contracts/AgentRunCommand.kt` | Named and shaped by the Sprint 1 contract-closure addendum, closing both Gap 7 (Agent Run creation) and Gap 11 (Agent Run cancellation/suspend/resume) with one contract: `AgentRunCommandChannel.submit(command: AgentRunCommand): AgentRunCommandResult`. Status is "Proposed" rather than "Approved" because no implementation of `AgentRunCommandChannel` exists yet. |
 | Agent Runtime | Execution Request (`ExecutionRequest`) | Execution Pipeline | Existing schema-backed contract | `src/contracts/ExecutionRequest.kt`; `AgentRuntimeSpecification.md` §6; `ExecutionPipeline.md` | Implemented and tested. The Agent Runtime is simply another `RequestOrigin` (`AGENT`) submitting through the unchanged `ExecutionPipeline.submit`. |
-| Execution Pipeline | Tool Invocation | Tool Registry / Tool Runtime | Existing schema-backed contract | `ExecutionPipeline.md`; `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`; `docs/architecture/tool-registry.md` | Implemented and tested (`DefaultExecutionPipeline`, `InMemoryToolRegistry`). `resolve()` is callable only by the Execution Pipeline and only returns a Tool in `ENABLED` state. |
+| Execution Pipeline | Tool Invocation | Tool Registry / Tool Runtime | Existing schema-backed contract (resolution); Proposed contract (invocation binding) | `ExecutionPipeline.md`; `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`; `docs/architecture/tool-registry.md`; `IMPLEMENTATION_GAPS.md` #32; `src/contracts/ToolInvocationBinding.kt` | Resolution (`resolve()`, `ENABLED`-state filtering) is implemented and tested. `resolve()` returns only a `ToolDescriptor`, never an invocable `Tool` (`ToolResolution.Resolved`'s own doc comment; `IMPLEMENTATION_GAPS.md` #32), and `DefaultExecutionPipeline` never calls `Tool.execute`. The Sprint 1 contract-closure addendum adds `ToolInvocationBinding` (`bind`/`invocableFor`) as a minimal, additive, Execution-Pipeline-only lookup closing the missing step — not yet implemented or wired up; see Section 6, Gap 8. |
 | Tool Registry | Tool Capability / Tool Metadata | Execution Pipeline / Planner Runtime / Task Manager Runtime | Existing schema-backed contract (Execution Pipeline); Proposed contract (Planner/Task Manager) | `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`; `PlannerRuntimeSpecification.md` §9–10; `TaskManagerRuntimeSpecification.md` §7 | The descriptor-only discovery surface (`listAll`/`findCandidates`) is implemented and already used by the Execution Pipeline path. Its consumption by the Planner Runtime ("required capabilities," a planning-time hint) and the Task Manager Runtime (checking capability exists for a Task Constraint) is specified but not implemented, and never yields anything invocable either way. |
 | Identity Service | Principal / Identity Status | Planner Runtime / Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract (resolution); Open dependency (revocation propagation) | `docs/architecture/IdentityService.md`; `docs/architecture/IMPLEMENTATION_GAPS.md` #37, #39; `AgentRuntimeSpecification.md` §7; `TaskManagerRuntimeSpecification.md` §8; `PlannerRuntimeSpecification.md` §8 | `register`/`resolve`/`updateStatus` are implemented. Two dependencies all three Phase 3 documents rely on remain open: `resolve()` does not yet suppress or flag non-Active Principals (gap #37), and `identity.*` events are not yet published (gap #39). See Section 6, Gap 4. |
 | Permission Engine | Permission Decision (`PermissionDecision`) | Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract | `src/contracts/Permission.kt`; `PermissionEngine.md`; `TaskManagerRuntimeSpecification.md` §7; `AgentRuntimeSpecification.md` §6 | `evaluate()` is called exactly once per `ExecutionRequest`, regardless of origin. Note the related, still-open gap that `PermissionEngine.evaluate` is not yet wired to resolve identity first (`IMPLEMENTATION_GAPS.md` #40) — a caveat on this contract's current reliability, not a different contract. |
 | Resource Registry | Resource Reference | Planner Runtime / Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract (registry itself); Proposed contract (Planning/Task Context usage) | `ResourceRegistry.md`; `PlannerRuntimeSpecification.md` §9; `TaskManagerRuntimeSpecification.md` §9 | `register`/`resolve`/`update`/`listByOwner` are implemented. Planning Context's and Task Context's own "Resource references" categories are specified, reference-only, and not yet implemented. |
 | EventBus | Runtime Events (`ParkerEvent`) | Platform observers and audit consumers (Chapter 43) | Existing schema-backed contract (bus mechanism); the audit-consumer side is not confirmed implemented | `src/contracts/EventContracts.kt`; `EventBus.md`; Chapter 43 | `publish`/`subscribe`, authentication, and correlation-ID preservation are implemented for the bus itself. Whether a concrete Chapter 43 Audit subscriber exists and consumes these events is not established by any document reviewed for this catalogue. |
 | Task Manager Runtime | Task Events (`task.*`) | EventBus | Approved specification contract | `TaskManagerRuntimeSpecification.md` §10 | 19-event table, each with trigger, payload, and lifecycle relevance. Not yet implemented in Kotlin. |
-| Agent Runtime | Agent Events (`agent.*`) | EventBus | Approved specification contract | `AgentRuntimeSpecification.md` §9 | 16-event table, including the corrected `agent.action_denied`/`agent.action_deferred` split. Not yet implemented in Kotlin. |
+| Agent Runtime | Agent Events (`agent.*`) | EventBus | Approved specification contract | `AgentRuntimeSpecification.md` §9 | 17-event table, including the corrected `agent.action_denied`/`agent.action_deferred` split. Not yet implemented in Kotlin. |
 | Planner Runtime | Planner Events (`planner.*`) | EventBus | Approved specification contract | `PlannerRuntimeSpecification.md` §11 | 13-event table. One known gap: no dedicated event for `SUBMITTED --> REJECTED` (Section 6, Gap 3). Not yet implemented in Kotlin. |
 
 ## 4. Key Platform Flow
@@ -158,18 +169,34 @@ specification or `IMPLEMENTATION_GAPS.md`; none is introduced by this
 document. Numbering is for cross-reference within this document only and
 does not correspond to `IMPLEMENTATION_GAPS.md`'s own numbering.
 
-1. **Task Proposal intake contract in Task Manager Runtime.** The Task
-   Manager Runtime Specification does not define an operation for
-   receiving a Task Proposal. Recorded in `PlannerRuntimeSpecification.md`
-   §6 and Open Questions.
-2. **Task Manager response contract for accept/defer/split/merge/reject.**
-   Even once a Task Proposal can be received, no mechanism (operation,
-   event, or otherwise) exists for the Task Manager Runtime to
-   communicate its disposition back to the Planner Runtime. Recorded in
-   `PlannerRuntimeSpecification.md` §6, §11, and Open Questions.
-3. **Planner `SUBMITTED --> REJECTED` event gap.** Because of Gap 2, the
-   Planner Runtime Specification's own event table has no dedicated event
-   for this transition. Recorded in `PlannerRuntimeSpecification.md` §11
+1. **(Closed by the Sprint 1 contract-closure addendum.) Task Proposal
+   intake contract in Task Manager Runtime.** The Task Manager Runtime
+   Specification did not define an operation for receiving a Task
+   Proposal. Closed via `src/contracts/TaskProposal.kt`
+   (`TaskProposalIntake.submitProposal`) and
+   `TaskManagerRuntimeSpecification.md` §15. Originally recorded in
+   `PlannerRuntimeSpecification.md` §6 and Open Questions (now marked
+   resolved there); `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md` has
+   the full closure record. No implementation of `TaskProposalIntake`
+   exists yet — this closes the contract, not the runtime behaviour.
+2. **(Closed by the Sprint 1 contract-closure addendum.) Task Manager
+   response contract for accept/defer/split/merge/reject.** No mechanism
+   existed for the Task Manager Runtime to communicate its disposition
+   back to the Planner Runtime. Closed via
+   `TaskProposalDisposition` (`src/contracts/TaskProposal.kt`) — a direct,
+   typed return value of `submitProposal`, not solely an event — and
+   `TaskManagerRuntimeSpecification.md` §15's five-outcome table
+   (`Accepted`/`Deferred`/`Rejected`/`Split`/`Merged`). Originally recorded
+   in `PlannerRuntimeSpecification.md` §6, §11, and Open Questions (now
+   marked resolved there).
+3. **Planner `SUBMITTED --> REJECTED` event gap — narrowed, not closed, by
+   the Sprint 1 addendum.** The Planner Runtime Specification's own event
+   table still has no dedicated event for this transition. Gap 2's
+   closure means this is no longer blocking (the disposition is now a
+   named, direct return value — `TaskProposalDisposition.Rejected` — so
+   `SUBMITTED --> REJECTED` can fire deterministically without one), but
+   whether to *additionally* publish a dedicated `planner.session_rejected`
+   event remains open. Recorded in `PlannerRuntimeSpecification.md` §11
    and Open Questions.
 4. **Identity revocation detection and propagation gaps.**
    `IdentityService.resolve()` does not yet suppress or flag non-Active
@@ -192,21 +219,30 @@ does not correspond to `IMPLEMENTATION_GAPS.md`'s own numbering.
    absorbs that role, with the question of whether they should split left
    open. Recorded in `PlannerRuntimeSpecification.md` §1 and Open
    Questions.
-7. **Agent Run Request has no named, shaped object.** Unlike Agent Run
-   Reference (a defined Core Concept), the object the Task Manager
-   Runtime would pass to the Agent Runtime to actually create an Agent
-   Run is only implied by a sequence diagram
-   (`TaskManagerRuntimeSpecification.md` §7: "create Agent Run") and never
-   separately named or field-shaped by either document. Not separately
-   recorded as an Open Question in either existing specification; surfaced
-   here as a gap evidenced directly by the asymmetry between the two
-   documents' own Core Concepts sections.
+7. **(Closed by the Sprint 1 contract-closure addendum.) Agent Run Request
+   has no named, shaped object.** Unlike Agent Run Reference (a defined
+   Core Concept), the object the Task Manager Runtime would pass to the
+   Agent Runtime to actually create an Agent Run was only implied by a
+   sequence diagram (`TaskManagerRuntimeSpecification.md` §7: "create
+   Agent Run") and never separately named or field-shaped by either
+   document. Closed via `src/contracts/AgentRunCommand.kt`
+   (`AgentRunCommandChannel.submit`, `commandType START`) and
+   `TaskManagerRuntimeSpecification.md` §16 /
+   `AgentRuntimeSpecification.md` Status header. Closed together with Gap
+   11 below, since both are the same underlying need. No implementation
+   of `AgentRunCommandChannel` exists yet.
 8. **`PermissionEngine.evaluate` not yet wired to resolve identity
    first.** `IdentityService.md` ("Integration with Permission Engine")
    specifies this; `IMPLEMENTATION_GAPS.md` #40 records it as deliberately
    not yet done. This affects the reliability of every Permission Decision
    contract in Section 3 that depends on Principal status being checked
-   as part of evaluation, not just the Identity Service row.
+   as part of evaluation, not just the Identity Service row. Distinct from
+   the tool-invocation-binding gap `IMPLEMENTATION_GAPS.md` #32 records
+   (see the Tool Invocation row in Section 3): `resolve()` never yielding
+   an invocable `Tool` is a separate, now-partially-addressed gap (a
+   named, not-yet-implemented `ToolInvocationBinding` contract, per the
+   Sprint 1 contract-closure addendum), not renumbered here to keep this
+   catalogue's existing numbering stable.
 9. **Exact cascading-revocation rule undecided.** `IdentityService.md`
    ("Trust Relationships") requires the Identity Service to evaluate
    whether an owned Principal should also transition on revocation, but
@@ -224,6 +260,23 @@ does not correspond to `IMPLEMENTATION_GAPS.md`'s own numbering.
     ordering or atomicity across such a set at acceptance time is
     recorded as an Open Question there, and is directly entangled with
     Gap 1 and Gap 2 above.
+11. **(Closed by the Sprint 1 contract-closure addendum, together with Gap
+    7.) Agent Run cancellation/suspend/resume has no named, shaped
+    object.** `docs/reviews/Phase3ArchitecturePositionReview.md` Section 6
+    evidences this identical asymmetry for Agent Run *cancellation*
+    specifically (`TaskManagerRuntimeSpecification.md` Section 5's
+    "Cancellation semantics" requires the Task Manager Runtime to request
+    cancellation of every active Agent Run Reference, and
+    `AgentRuntimeSpecification.md` Section 5 already anticipates an
+    "explicit suspend request" and an "external cancellation request,"
+    neither naming its source) but this item was never previously folded
+    into this catalogue's own numbered list — the audit
+    (`docs/reviews/RepositoryArchitectureConsistencyAudit.md` Section 10,
+    Finding T-2) flagged this omission. Recorded here now, already closed:
+    `src/contracts/AgentRunCommand.kt`'s `commandType SUSPEND`/`RESUME`/
+    `CANCEL` (the last requiring a non-blank `cancellationReason`) name and
+    shape the same `AgentRunCommandChannel.submit` operation that closes
+    Gap 7. No implementation exists yet.
 
 ## 7. Safety Rules Across Contracts
 
@@ -334,3 +387,10 @@ they are cross-cutting — each spans more than one contract in Section 3
 - `src/contracts/Permission.kt`
 - `src/contracts/EventContracts.kt`
 - `docs/architecture/IMPLEMENTATION_GAPS.md`
+- `docs/reviews/RepositoryArchitectureConsistencyAudit.md`
+- `docs/reviews/Phase3ArchitecturePositionReview.md`
+- `docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md`
+- `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md`
+- `src/contracts/TaskProposal.kt`
+- `src/contracts/AgentRunCommand.kt`
+- `src/contracts/ToolInvocationBinding.kt`
