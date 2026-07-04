@@ -33,10 +33,10 @@ Default Branch:
 - main
 
 Latest Implementation Commit:
-- 770c204
+- a11def3
 
 Current Android Studio Test Count:
-- 199/199 passing
+- 223/223 passing
 
 Working Tree:
 - Clean
@@ -165,6 +165,59 @@ Implementation Notes
 
 ---
 
+### Unit 9 – Runtime Lifecycle Event Publication
+
+Commit:
+cfd1b0e
+
+Completed:
+2026-07-04
+
+Android Studio Tests:
+212/212
+
+Summary
+- Added runtime lifecycle event publication.
+- Planner, Task Manager and Agent Runtime now publish lifecycle events.
+- Completed Sprint 1 runtime observability.
+
+Implementation Notes
+- Added EventBus publication to the runtime components without changing their responsibilities.
+- Publishes only events corresponding to lifecycle transitions already implemented.
+- Uses existing EventBus infrastructure and existing EventType contract.
+- Introduced no new lifecycle states or runtime authority.
+- Established the event stream consumed by the EventCollector in Unit 10.
+- Satisfies AD-009 by making runtime lifecycle transitions observable.
+
+---
+
+### Unit 10 – EventCollector
+
+Commit:
+a11def3
+
+Completed:
+2026-07-04
+
+Android Studio Tests:
+223/223
+
+Summary
+- Added EventCollector test harness.
+- Records Sprint 1 lifecycle events.
+- Enables end-to-end event sequence verification.
+- No production runtime changes.
+
+Implementation Notes
+- Implemented entirely in `tests/runtime/`; no production runtime code was added or modified.
+- Subscribes explicitly to each concrete Sprint 1 `EventType`; wildcard subscription remains intentionally unresolved.
+- Collects events in deterministic publish order using the existing `EventBus` interface without publishing or modifying events.
+- Provides correlation-based filtering and ordered event inspection for runtime verification.
+- Uses a documented Sprint 1 snapshot of known event types rather than introducing a general event catalogue.
+- Confirms AD-009 ("Everything Important Is Auditable") through observation rather than altering runtime behaviour.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
@@ -237,6 +290,8 @@ Planner
 → Execution Request
 → Permission Engine
 → Execution Pipeline
+→ Runtime Lifecycle Events
+→ EventCollector (test harness)
 
-Tool execution, EventBus publication, and full runtime orchestration
-remain intentionally deferred to later Sprint 1 units.
+Tool execution and full runtime orchestration remain intentionally
+deferred to the remaining Sprint 1 units.
