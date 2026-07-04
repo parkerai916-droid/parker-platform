@@ -20,7 +20,7 @@ Architecture Version:
 - architecture-v1.0
 
 Implementation Status:
-- Sprint 1 in progress
+- Sprint 1 complete — first executable vertical slice achieved
 
 Purpose:
 - First executable vertical slice.
@@ -33,10 +33,10 @@ Default Branch:
 - main
 
 Latest Implementation Commit:
-- a11def3
+- 4a44abe
 
 Current Android Studio Test Count:
-- 223/223 passing
+- 234/234 passing
 
 Working Tree:
 - Clean
@@ -218,6 +218,55 @@ Implementation Notes
 
 ---
 
+### Unit 11A – ToolInvocationBinding Execution Wiring
+
+Commit:
+13c9322
+
+Completed:
+2026-07-04
+
+Android Studio Tests:
+227/227
+
+Summary
+- Wired DefaultExecutionPipeline to ToolInvocationBinding.
+- Real Tool.validate() and Tool.execute() now invoked.
+- Closed IMPLEMENTATION_GAPS.md #32.
+
+Implementation Notes
+- Permission Engine still evaluates before Tool binding.
+- SUCCESS now means a Tool actually executed.
+- Unbound Tool, failed validation and failed execution all produce FAILED, never DENIED.
+- No Planner, Task Manager or Agent Runtime contracts changed.
+
+---
+
+### Unit 11B – Resource Reference Propagation
+
+Commit:
+4a44abe
+
+Completed:
+2026-07-04
+
+Android Studio Tests:
+234/234
+
+Summary
+- Added TaskProposal.resourceReferences.
+- Propagated ResourceIds through the runtime.
+- Completed the first honest end-to-end vertical slice.
+
+Implementation Notes
+- contextReferences remain Planner-only and unchanged.
+- ResourceIds now flow:
+  TaskProposal → AgentRunCommand → ExecutionRequest.
+- The vertical slice now reaches real Tool execution without manual patching.
+- EventCollector verifies the complete audited execution path.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
@@ -261,7 +310,28 @@ ExecutionRequest
 Permission Engine
   │
   ▼
-Execution Pipeline
+Action Mapping
+  │
+  ▼
+Tool Registry
+  │
+  ▼
+ToolInvocationBinding
+  │
+  ▼
+Tool.validate()
+  │
+  ▼
+Tool.execute()
+  │
+  ▼
+ExecutionResult
+  │
+  ▼
+Lifecycle Events
+  │
+  ▼
+EventCollector
 ```
 
 ---
@@ -272,7 +342,7 @@ Execution Pipeline
 - Planning Session models only the Sprint 1 deterministic lifecycle subset.
 - Task Manager implements only the minimal acceptance path.
 - Agent Runtime currently supports START only.
-- DefaultExecutionPipeline is not yet wired to ToolInvocationBinding.
+- ToolInvocationBinding access remains convention-based rather than construction-enforced.
 - Real PermissionEngine policy is not yet implemented.
 
 ---
@@ -281,17 +351,26 @@ Execution Pipeline
 
 As of the latest implementation, the executable runtime path is:
 
-Planner
-→ Task Proposal
+Goal
+→ Planner
+→ TaskProposal
 → Task Manager
 → Task
-→ Agent Run Command
+→ AgentRunCommand
 → Agent Runtime
-→ Execution Request
+→ ExecutionRequest
 → Permission Engine
-→ Execution Pipeline
-→ Runtime Lifecycle Events
-→ EventCollector (test harness)
+→ Action Mapping
+→ Tool Registry
+→ ToolInvocationBinding
+→ Tool.validate()
+→ Tool.execute()
+→ ExecutionResult
+→ Lifecycle Events
+→ EventCollector
 
-Tool execution and full runtime orchestration remain intentionally
-deferred to the remaining Sprint 1 units.
+This chain now executes end-to-end under test, from a fixed Goal through
+real Tool execution to a verified `SUCCESS` `ExecutionResult`, per Unit
+11A (Tool invocation) and Unit 11B (resource reference propagation and
+the honest end-to-end proof). Sprint 1's first executable vertical slice
+is complete.
