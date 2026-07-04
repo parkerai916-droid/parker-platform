@@ -197,16 +197,14 @@ class EventCollectorTest {
         val actionMapper = ActionMapper(vocabulary)
 
         val tools = InMemoryToolRegistry(resources)
-        tools.register(
-            ToolDescriptor(
-                toolId = "tool.calendar.read",
-                displayName = "Calendar Reader",
-                description = "Reads calendar entries",
-                supportedActions = setOf(PermissionAction.READ),
-                supportedResourceTypes = setOf(ResourceType.CALENDAR),
-            ),
-            toolResourceId,
+        val toolDescriptor = ToolDescriptor(
+            toolId = "tool.calendar.read",
+            displayName = "Calendar Reader",
+            description = "Reads calendar entries",
+            supportedActions = setOf(PermissionAction.READ),
+            supportedResourceTypes = setOf(ResourceType.CALENDAR),
         )
+        tools.register(toolDescriptor, toolResourceId)
         tools.setLifecycleState("tool.calendar.read", "0.1.0", ToolLifecycleState.ENABLED)
 
         val permissionEngine = FakePermissionEngine {
@@ -220,7 +218,11 @@ class EventCollectorTest {
                 timestamp = Instant.parse("2026-01-01T00:00:00Z"),
             )
         }
-        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, bus)
+        // Sprint 1, Unit 11A: bind a MockTool so this suite's event-collection assertions
+        // are unaffected by DefaultExecutionPipeline now actually invoking the bound Tool.
+        val toolInvocationBinding = InMemoryToolInvocationBinding()
+        toolInvocationBinding.bind(toolDescriptor, MockTool(toolDescriptor))
+        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, bus, toolInvocationBinding)
 
         val identity = InMemoryIdentityService()
         identity.register(

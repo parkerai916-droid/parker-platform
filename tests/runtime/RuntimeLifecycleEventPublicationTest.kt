@@ -273,21 +273,23 @@ class RuntimeLifecycleEventPublicationTest {
         val actionMapper = ActionMapper(vocabulary)
 
         val tools = InMemoryToolRegistry(resources)
-        tools.register(
-            ToolDescriptor(
-                toolId = "tool.calendar.read",
-                displayName = "Calendar Reader",
-                description = "Reads calendar entries",
-                supportedActions = setOf(PermissionAction.READ),
-                supportedResourceTypes = setOf(ResourceType.CALENDAR),
-            ),
-            toolResourceId,
+        val toolDescriptor = ToolDescriptor(
+            toolId = "tool.calendar.read",
+            displayName = "Calendar Reader",
+            description = "Reads calendar entries",
+            supportedActions = setOf(PermissionAction.READ),
+            supportedResourceTypes = setOf(ResourceType.CALENDAR),
         )
+        tools.register(toolDescriptor, toolResourceId)
         tools.setLifecycleState("tool.calendar.read", "0.1.0", ToolLifecycleState.ENABLED)
 
         val bus = RecordingEventBus()
         val permissionEngine = FakePermissionEngine(decisionFor)
-        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, bus)
+        // Sprint 1, Unit 11A: bind a MockTool so this suite's event-sequence assertions are
+        // unaffected by DefaultExecutionPipeline now actually invoking the bound Tool.
+        val toolInvocationBinding = InMemoryToolInvocationBinding()
+        toolInvocationBinding.bind(toolDescriptor, MockTool(toolDescriptor))
+        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, bus, toolInvocationBinding)
 
         val identity = InMemoryIdentityService()
         identity.register(
@@ -388,7 +390,17 @@ class RuntimeLifecycleEventPublicationTest {
         val vocabulary = InMemoryActionVocabulary()
         val actionMapper = ActionMapper(vocabulary)
         val tools = InMemoryToolRegistry(resources)
-        val pipeline = DefaultExecutionPipeline(resources, actionMapper, FakePermissionEngine { approvedDecision() }, tools, bus)
+        // Sprint 1, Unit 11A: DefaultExecutionPipeline's constructor now requires a
+        // ToolInvocationBinding; this test's flow rejects at the Agent Identity step,
+        // before ever reaching the pipeline, so an empty (unbound) binding is sufficient.
+        val pipeline = DefaultExecutionPipeline(
+            resources,
+            actionMapper,
+            FakePermissionEngine { approvedDecision() },
+            tools,
+            bus,
+            InMemoryToolInvocationBinding(),
+        )
         val identity = InMemoryIdentityService() // Agent Identity deliberately not registered
         val runtime = InMemoryAgentRuntime(identity, pipeline, bus)
 

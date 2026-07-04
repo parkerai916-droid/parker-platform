@@ -20,10 +20,13 @@ import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.RequestId
 import parker.core.interfaces.ResourceRegistry
 import parker.core.interfaces.ResultId
+import parker.core.interfaces.Tool
 import parker.core.interfaces.ToolDescriptor
+import parker.core.interfaces.ToolInvocationBinding
 import parker.core.interfaces.ToolRegistry
 import parker.core.interfaces.ToolResolution
 import parker.core.interfaces.ToolResult
+import parker.core.interfaces.ValidationResult
 
 /**
  * Runtime Integration: wires Execution Pipeline -> Permission Engine ->
@@ -33,16 +36,14 @@ import parker.core.interfaces.ToolResult
  * constructor -- this class invents no policy of its own; it only
  * orchestrates calls to what those interfaces already promise.
  *
- * IMPORTANT HONEST LIMITATION: no concrete `Tool` implementation exists
- * anywhere in this codebase yet (`ToolRegistry.resolve` deliberately
- * returns a [ToolDescriptor], never a live `Tool` -- see
- * `docs/architecture/tool-registry.md` "Lookup Process"). This pipeline
- * therefore proves the orchestration up to and including tool
- * *resolution*, but stops short of actually invoking `Tool.execute` --
- * there is nothing to invoke yet. A `SUCCESS` result from this pipeline
- * means "every stage up to and including finding the right Tool
- * succeeded," not "a Tool actually ran." Recorded in
- * IMPLEMENTATION_GAPS.md #32.
+ * FORMER HONEST LIMITATION, closed by Unit 11A (see below): `ToolRegistry.resolve`
+ * still deliberately returns only a [ToolDescriptor], never a live `Tool`
+ * -- see `docs/architecture/tool-registry.md` "Lookup Process" -- but this
+ * pipeline no longer stops at that resolution. It now also obtains the
+ * actual invocable `Tool` via [ToolInvocationBinding] and calls it. A
+ * `SUCCESS` result means a Tool actually ran and reported success, not
+ * merely that the right one was found. `IMPLEMENTATION_GAPS.md` #32 is
+ * closed by this change.
  *
  * Also deliberately simplified (documented, not silently invented):
  * processing is synchronous within [submit] (no background execution
@@ -50,6 +51,26 @@ import parker.core.interfaces.ToolResult
  * (a real confirmation workflow is Chapter 42 territory, out of scope),
  * and no timeout/expiry-during-execution handling exists beyond the
  * up-front `expiresAt` check (IMPLEMENTATION_GAPS.md #33).
+ *
+ * ## Sprint 1, Unit 11A (ToolInvocationBinding execution wiring)
+ *
+ * Closes `IMPLEMENTATION_GAPS.md` #32: once [toolRegistry] resolves a
+ * [ToolDescriptor], this class now obtains the actual invocable [Tool]
+ * bound to it via [toolInvocationBinding] -- the same
+ * Execution-Pipeline-only path [ToolInvocationBinding]'s own KDoc
+ * documents -- calls [Tool.validate] and only then [Tool.execute], and
+ * builds the [ExecutionResult] from the real [ToolResult] returned.
+ * Previously this class fabricated an always-`success = true` [ToolResult]
+ * itself the moment a descriptor resolved, without ever calling a [Tool];
+ * a `SUCCESS` result now means a Tool actually ran, not merely that the
+ * right one was found. `PermissionEngine.evaluate` still runs, and its
+ * outcome is still branched on, entirely unchanged, strictly *before* this
+ * new binding/validate/execute step -- a `DENIED`/`DEFERRED` decision
+ * never reaches [toolInvocationBinding] at all. A resolved-but-unbound
+ * descriptor, a failed [Tool.validate], and a failed [Tool.execute] all
+ * produce `ExecutionResultStatus.FAILED` (AD-015: invalid is not denied),
+ * never `DENIED` -- `DENIED` remains exclusively the Permission Engine's
+ * own outcome.
  */
 class DefaultExecutionPipeline(
     private val resourceRegistry: ResourceRegistry,
@@ -57,6 +78,7 @@ class DefaultExecutionPipeline(
     private val permissionEngine: PermissionEngine,
     private val toolRegistry: ToolRegistry,
     private val eventBus: EventBus,
+    private val toolInvocationBinding: ToolInvocationBinding,
 ) : ExecutionPipeline {
 
     private data class Tracked(var state: ExecutionLifecycleState, var lastUpdatedAt: Instant)
@@ -143,11 +165,7 @@ class DefaultExecutionPipeline(
                 val toolResolution = toolRegistry.resolve(decision.action, actionTypes)
 
                 when (toolResolution) {
-                    is ToolResolution.Resolved -> {
-                        transition(request.requestId, ExecutionLifecycleState.EXECUTING, ExecutionLifecycleState.COMPLETED)
-                        publishLifecycleEvent("execution.completed", request)
-                        successResult(request, toolResolution.descriptor, now)
-                    }
+                    is ToolResolution.Resolved -> executeResolvedTool(request, toolResolution.descriptor, now)
                     is ToolResolution.Failed -> {
                         transition(request.requestId, ExecutionLifecycleState.EXECUTING, ExecutionLifecycleState.FAILED)
                         publishLifecycleEvent("execution.failed", request)
@@ -234,7 +252,49 @@ class DefaultExecutionPipeline(
         errors = errors,
     )
 
-    private fun successResult(request: ExecutionRequest, toolDescriptor: ToolDescriptor, startedAt: Instant): ExecutionResult =
+    /**
+     * Sprint 1, Unit 11A: the one place [Tool.validate]/[Tool.execute] are
+     * ever called from -- see this class's own "Unit 11A" KDoc. Called
+     * only after `PermissionEngine.evaluate` has already returned
+     * `APPROVED`/`APPROVED_WITH_CONFIRMATION`; nothing here can grant
+     * execution authority the Permission Engine did not already grant.
+     */
+    private suspend fun executeResolvedTool(request: ExecutionRequest, descriptor: ToolDescriptor, startedAt: Instant): ExecutionResult {
+        val tool = toolInvocationBinding.invocableFor(descriptor)
+        if (tool == null) {
+            transition(request.requestId, ExecutionLifecycleState.EXECUTING, ExecutionLifecycleState.FAILED)
+            publishLifecycleEvent("execution.failed", request)
+            return terminalResult(
+                request,
+                ExecutionResultStatus.FAILED,
+                startedAt,
+                errors = listOf(
+                    "resolved Tool '${descriptor.toolId}' (${descriptor.version}) has no invocable Tool " +
+                        "bound via ToolInvocationBinding",
+                ),
+            )
+        }
+
+        val validation = tool.validate(request)
+        if (validation is ValidationResult.Invalid) {
+            transition(request.requestId, ExecutionLifecycleState.EXECUTING, ExecutionLifecycleState.FAILED)
+            publishLifecycleEvent("execution.failed", request)
+            return terminalResult(request, ExecutionResultStatus.FAILED, startedAt, errors = validation.reasons)
+        }
+
+        val toolResult = tool.execute(request)
+        return if (toolResult.success) {
+            transition(request.requestId, ExecutionLifecycleState.EXECUTING, ExecutionLifecycleState.COMPLETED)
+            publishLifecycleEvent("execution.completed", request)
+            successResult(request, toolResult, startedAt)
+        } else {
+            transition(request.requestId, ExecutionLifecycleState.EXECUTING, ExecutionLifecycleState.FAILED)
+            publishLifecycleEvent("execution.failed", request)
+            terminalResult(request, ExecutionResultStatus.FAILED, startedAt, errors = listOfNotNull(toolResult.errorMessage))
+        }
+    }
+
+    private fun successResult(request: ExecutionRequest, toolResult: ToolResult, startedAt: Instant): ExecutionResult =
         ExecutionResult(
             resultId = ResultId("result-${request.requestId.value}"),
             requestId = request.requestId,
@@ -242,12 +302,6 @@ class DefaultExecutionPipeline(
             startedAt = startedAt,
             completedAt = Instant.now(),
             affectedResources = request.targetResources,
-            toolResults = listOf(
-                ToolResult(
-                    toolId = toolDescriptor.toolId,
-                    success = true,
-                    output = mapOf("resolvedVersion" to toolDescriptor.version),
-                ),
-            ),
+            toolResults = listOf(toolResult),
         )
 }

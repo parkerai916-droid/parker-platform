@@ -20,8 +20,11 @@ import parker.core.interfaces.ResourceSensitivity
 import parker.core.interfaces.ResourceId
 import parker.core.interfaces.ResourceLifecycleState
 import parker.core.interfaces.ResourceType
+import parker.core.interfaces.Tool
 import parker.core.interfaces.ToolDescriptor
 import parker.core.interfaces.ToolLifecycleState
+import parker.core.interfaces.ToolResult
+import parker.core.interfaces.ValidationResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -33,15 +36,33 @@ import kotlin.test.assertTrue
  * Event Bus, using a [FakePermissionEngine] test double so this suite
  * does not need to invent authorisation policy either (see
  * IMPLEMENTATION_GAPS.md #25/#30).
+ *
+ * Sprint 1, Unit 11A: [buildPipeline] also wires an
+ * [InMemoryToolInvocationBinding] and, by default, binds a [MockTool] to
+ * the registered `tool.calendar.read` descriptor, so every existing test
+ * below keeps reaching the same `SUCCESS`/tool-resolution outcomes it did
+ * before -- except now via a real bound `Tool`, not a fabricated result.
+ * [toolFor] lets a test override or omit that binding to exercise the new
+ * failure paths Unit 11A adds (unbound Tool, failed validation, failed
+ * execution) without duplicating the whole fixture.
  */
 class DefaultExecutionPipelineTest {
 
     private val calendarResourceId = ResourceId("res.calendar.1")
     private val toolResourceId = ResourceId("res.tool.calendar-reader")
 
+    private data class PipelineBuild(
+        val pipeline: DefaultExecutionPipeline,
+        val eventBus: InMemoryEventBus,
+        val permissionEngine: FakePermissionEngine,
+        val toolInvocationBinding: InMemoryToolInvocationBinding,
+        val toolDescriptor: ToolDescriptor,
+    )
+
     private suspend fun buildPipeline(
+        toolFor: (ToolDescriptor) -> Tool? = { MockTool(it) },
         decisionFor: (ExecutionRequest) -> PermissionDecision,
-    ): Triple<DefaultExecutionPipeline, InMemoryEventBus, FakePermissionEngine> {
+    ): PipelineBuild {
         val resources = InMemoryResourceRegistry()
         resources.register(
             Resource(
@@ -80,23 +101,23 @@ class DefaultExecutionPipelineTest {
         val actionMapper = ActionMapper(vocabulary)
 
         val tools = InMemoryToolRegistry(resources)
-        tools.register(
-            ToolDescriptor(
-                toolId = "tool.calendar.read",
-                displayName = "Calendar Reader",
-                description = "Reads calendar entries",
-                supportedActions = setOf(PermissionAction.READ),
-                supportedResourceTypes = setOf(ResourceType.CALENDAR),
-            ),
-            toolResourceId,
+        val toolDescriptor = ToolDescriptor(
+            toolId = "tool.calendar.read",
+            displayName = "Calendar Reader",
+            description = "Reads calendar entries",
+            supportedActions = setOf(PermissionAction.READ),
+            supportedResourceTypes = setOf(ResourceType.CALENDAR),
         )
+        tools.register(toolDescriptor, toolResourceId)
         tools.setLifecycleState("tool.calendar.read", "0.1.0", ToolLifecycleState.ENABLED)
 
         val eventBus = InMemoryEventBus()
         val permissionEngine = FakePermissionEngine(decisionFor)
+        val toolInvocationBinding = InMemoryToolInvocationBinding()
+        toolFor(toolDescriptor)?.let { toolInvocationBinding.bind(toolDescriptor, it) }
 
-        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus)
-        return Triple(pipeline, eventBus, permissionEngine)
+        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus, toolInvocationBinding)
+        return PipelineBuild(pipeline, eventBus, permissionEngine, toolInvocationBinding, toolDescriptor)
     }
 
     private fun request(
@@ -149,19 +170,96 @@ class DefaultExecutionPipelineTest {
         assertEquals(ExecutionLifecycleState.COMPLETED, status.state)
     }
 
-    @Test
-    fun `denied request never reaches Tool resolution`() = runTest {
-        val (pipeline, eventBus, _) = buildPipeline {
-            approvedDecision().copy(decision = PermissionDecisionOutcome.DENIED)
-        }
-        var sawDenied = false
-        eventBus.subscribe(EventType("permission.denied"), PrincipalId("test-subscriber")) { sawDenied = true }
+    // --- Unit 11A: the bound Tool is actually invoked, not merely resolved ---
 
-        val result = pipeline.submit(request())
+    @Test
+    fun `the happy path actually calls the bound Tool's validate then execute -- not merely resolves its descriptor`() = runTest {
+        var mockTool: MockTool? = null
+        val build = buildPipeline(
+            decisionFor = { approvedDecision() },
+            toolFor = { descriptor -> MockTool(descriptor).also { mockTool = it } },
+        )
+
+        val result = build.pipeline.submit(request())
+
+        assertEquals(ExecutionResultStatus.SUCCESS, result.status)
+        assertEquals(1, mockTool?.validateCallCount)
+        assertEquals(1, mockTool?.executeCallCount)
+        // The real ToolResult MockTool.execute produces (not a fabricated "resolvedVersion" stand-in).
+        assertEquals(mapOf("intent" to request().intent), result.toolResults.single().output)
+    }
+
+    @Test
+    fun `a resolved Tool with no invocable binding produces a FAILED result, never DENIED`() = runTest {
+        val build = buildPipeline(decisionFor = { approvedDecision() }, toolFor = { null })
+
+        val result = build.pipeline.submit(request())
+
+        assertEquals(ExecutionResultStatus.FAILED, result.status)
+        assertTrue(result.errors.single().contains("no invocable Tool"))
+        assertTrue(result.toolResults.isEmpty())
+    }
+
+    @Test
+    fun `a Tool that fails validation produces a FAILED result and execute is never called`() = runTest {
+        var mockTool: MockTool? = null
+        val build = buildPipeline(
+            decisionFor = { approvedDecision() },
+            toolFor = { descriptor ->
+                MockTool(descriptor, validation = ValidationResult.Invalid(listOf("simulated validation failure")))
+                    .also { mockTool = it }
+            },
+        )
+
+        val result = build.pipeline.submit(request())
+
+        assertEquals(ExecutionResultStatus.FAILED, result.status)
+        assertEquals(listOf("simulated validation failure"), result.errors)
+        assertEquals(1, mockTool?.validateCallCount)
+        assertEquals(0, mockTool?.executeCallCount)
+    }
+
+    @Test
+    fun `a Tool whose execute reports failure produces a FAILED result carrying its errorMessage`() = runTest {
+        val build = buildPipeline(
+            decisionFor = { approvedDecision() },
+            toolFor = { descriptor ->
+                MockTool(
+                    descriptor,
+                    resultFor = { _ ->
+                        ToolResult(
+                            toolId = descriptor.toolId,
+                            success = false,
+                            errorMessage = "simulated Tool execution failure",
+                        )
+                    },
+                )
+            },
+        )
+
+        val result = build.pipeline.submit(request())
+
+        assertEquals(ExecutionResultStatus.FAILED, result.status)
+        assertEquals(listOf("simulated Tool execution failure"), result.errors)
+    }
+
+    @Test
+    fun `denied request never reaches Tool resolution, and the bound Tool is never validated or executed`() = runTest {
+        var mockTool: MockTool? = null
+        val build = buildPipeline(
+            decisionFor = { approvedDecision().copy(decision = PermissionDecisionOutcome.DENIED) },
+            toolFor = { descriptor -> MockTool(descriptor).also { mockTool = it } },
+        )
+        var sawDenied = false
+        build.eventBus.subscribe(EventType("permission.denied"), PrincipalId("test-subscriber")) { sawDenied = true }
+
+        val result = build.pipeline.submit(request())
 
         assertEquals(ExecutionResultStatus.DENIED, result.status)
         assertTrue(result.toolResults.isEmpty())
         assertTrue(sawDenied)
+        assertEquals(0, mockTool?.validateCallCount)
+        assertEquals(0, mockTool?.executeCallCount)
     }
 
     @Test

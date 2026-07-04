@@ -105,21 +105,25 @@ class InMemoryAgentRuntimeTest {
         val actionMapper = ActionMapper(vocabulary)
 
         val tools = InMemoryToolRegistry(resources)
-        tools.register(
-            ToolDescriptor(
-                toolId = "tool.calendar.read",
-                displayName = "Calendar Reader",
-                description = "Reads calendar entries",
-                supportedActions = setOf(PermissionAction.READ),
-                supportedResourceTypes = setOf(ResourceType.CALENDAR),
-            ),
-            toolResourceId,
+        val toolDescriptor = ToolDescriptor(
+            toolId = "tool.calendar.read",
+            displayName = "Calendar Reader",
+            description = "Reads calendar entries",
+            supportedActions = setOf(PermissionAction.READ),
+            supportedResourceTypes = setOf(ResourceType.CALENDAR),
         )
+        tools.register(toolDescriptor, toolResourceId)
         tools.setLifecycleState("tool.calendar.read", "0.1.0", ToolLifecycleState.ENABLED)
 
         val eventBus = InMemoryEventBus()
         val permissionEngine = FakePermissionEngine(decisionFor)
-        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus)
+        // Sprint 1, Unit 11A: DefaultExecutionPipeline now actually invokes a bound Tool
+        // rather than merely resolving its descriptor -- bind a MockTool here purely to
+        // preserve this suite's existing SUCCESS-path assertions unchanged; this unit's
+        // own ToolInvocationBinding behaviour is proved in DefaultExecutionPipelineTest.
+        val toolInvocationBinding = InMemoryToolInvocationBinding()
+        toolInvocationBinding.bind(toolDescriptor, MockTool(toolDescriptor))
+        val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus, toolInvocationBinding)
 
         val identity = InMemoryIdentityService()
         val runtime = InMemoryAgentRuntime(identity, pipeline, eventBus)
