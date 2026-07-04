@@ -831,6 +831,17 @@ specification chooses to.
   Pointers into the Planning Context (Section 9) that produced this Task
   Proposal, so that whatever accepts it can trace back to the reasoning
   behind it without that Context being copied forward.
+- **Resource references** **(Planner-only, backfilled — see Section 9's
+  existing "a Plan Candidate or Task Proposal may target" language).**
+  Identifiers of Resources this Task Proposal targets, resolved through
+  the Resource Registry exactly as Section 9's Resource references are —
+  distinct from Context references above, which point into Planning
+  Context rather than at a Resource directly. Implemented as
+  `TaskProposal.resourceReferences: List<ResourceId>` (Sprint 1 Unit
+  11B), carrying only caller-supplied Resource identifiers forward; this
+  document's own field list previously omitted this field even though
+  Section 9's prose already anticipated it for both Plan Candidate and
+  Task Proposal.
 - **Rationale** **(Planner-only, proposed).** A free-text explanation of
   why this Task Proposal's underlying Plan Candidate was selected via
   Plan Decision (Section 4) over any others considered and rejected

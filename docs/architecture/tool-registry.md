@@ -9,6 +9,16 @@ Completion Phase). Written to close the Phase 1/2 blocker recorded in
 interface existed anywhere in the repository. This document is
 specification only. No Kotlin is implemented here.
 
+**Architecture v1.1 reconciliation note.** The "Lookup Process
+(Resolution)" sequence diagram and its surrounding text were corrected
+during the Architecture v1.1 documentation pass to remove a stale
+implication -- written before `ToolInvocationBinding` existed -- that
+`resolve()` itself hands back an invocable `Tool`. `resolve()` has
+always been specified to yield a descriptor only (`ToolResolution.Resolved`);
+the correction only makes the already-existing `ToolInvocationBinding`
+step (Sprint 1, Unit 11A) visible in this document's diagrams and
+prose. No architectural rule in this document changed.
+
 ## Purpose
 
 The Tool Registry is the authoritative catalogue of every Tool the
@@ -62,13 +72,20 @@ each without duplicating their authority:
   **nothing except the Execution Pipeline ever holds a live `Tool`
   reference.** Other components may query the Tool Registry's *discovery*
   surface (read-only descriptor listing) for planning purposes, but never
-  its *resolution* surface (which yields an invocable `Tool`).
+  its *resolution* surface. Resolution itself (`resolve`) yields only a
+  `ToolDescriptor`, never a live `Tool` reference directly; the Execution
+  Pipeline separately binds an already-resolved descriptor to an
+  invocable `Tool` via `ToolInvocationBinding`
+  (`docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`),
+  the same Execution-Pipeline-only restriction extended one step further
+  down the pipeline.
 
 ## Responsibilities
 
 - Maintain the authoritative set of registered Tools and their descriptors.
-- Resolve a `toolId` (plus version constraint) to an invocable `Tool`,
-  exclusively for the Execution Pipeline.
+- Resolve a `toolId` (plus version constraint) to a `ToolDescriptor`,
+  exclusively for the Execution Pipeline, which then binds that
+  descriptor to an invocable `Tool` via `ToolInvocationBinding`.
 - Provide a read-only discovery surface for planning components (Planner,
   Conversation Engine, future Reasoning Engine) that returns descriptors,
   never executable references.
@@ -146,9 +163,13 @@ this kind of request," without exposing an executable reference.
 
 ## Lookup Process (Resolution)
 
-Resolution is the Execution-Pipeline-only operation that yields an
-invocable `Tool`. It happens after `PermissionEngine.evaluate` has already
-approved the request.
+Resolution is the Execution-Pipeline-only operation that yields a
+`ToolDescriptor`. It happens after `PermissionEngine.evaluate` has already
+approved the request. Resolution alone does not yield anything invocable;
+the Execution Pipeline separately binds the resolved descriptor to an
+invocable `Tool` via `ToolInvocationBinding.invocableFor`, then calls
+`Tool.validate()` before `Tool.execute()`
+(`docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`).
 
 ```mermaid
 sequenceDiagram
@@ -156,6 +177,7 @@ sequenceDiagram
     participant PE as PermissionEngine
     participant TR as ToolRegistry
     participant RR as ResourceRegistry
+    participant TIB as ToolInvocationBinding
     participant T as Tool
 
     EP->>PE: evaluate(request)
@@ -165,9 +187,23 @@ sequenceDiagram
     RR-->>TR: Resource (lifecycleState, resourceType)
     TR->>TR: match capability declarations, filter ENABLED tools
     alt exactly one candidate resolves
-        TR-->>EP: Tool (bound instance)
-        EP->>T: execute(request)
-        T-->>EP: ToolResult
+        TR-->>EP: ToolDescriptor
+        EP->>TIB: invocableFor(descriptor)
+        alt Tool bound
+            TIB-->>EP: Tool
+            EP->>T: validate(request)
+            alt validation succeeds
+                T-->>EP: valid
+                EP->>T: execute(request)
+                T-->>EP: ToolResult
+            else validation fails
+                T-->>EP: validation failure
+                EP-->>EP: produce ExecutionResult(FAILED, errors=[reason])
+            end
+        else no Tool bound to descriptor
+            TIB-->>EP: null
+            EP-->>EP: produce ExecutionResult(FAILED, errors=[reason])
+        end
     else zero or multiple candidates
         TR-->>EP: ToolResolutionFailure (typed reason)
         EP-->>EP: produce ExecutionResult(FAILED, errors=[reason])
@@ -307,11 +343,20 @@ Two categories of failure are distinguished, with different owners:
    is proposed — v0.7 treats these as a subtype of `FAILED` distinguished
    by error code, to avoid schema churn; whether a dedicated status is
    warranted is recorded as an open question in the completion report.
-2. **Tool-level failures** — occur once `Tool.execute` has been invoked
-   and are entirely the Tool's own responsibility to report via
-   `ToolResult`/`ExecutionResult`, per `Tool.md`'s existing normative
-   requirements. The Tool Registry has no visibility into or
-   responsibility for these.
+2. **Tool-level failures** — occur once a descriptor has already resolved
+   and a `Tool` has been bound to it via `ToolInvocationBinding`: a
+   failed `Tool.validate()` call, or a failed `Tool.execute()` call once
+   validation succeeds, are entirely the Tool's own responsibility to
+   report via `ToolResult`/`ExecutionResult`, per `Tool.md`'s existing
+   normative requirements. A resolved descriptor with no `Tool` bound to
+   it (`ToolInvocationBinding.invocableFor` returning nothing invocable)
+   is a related but distinct case: the descriptor resolved successfully,
+   but nothing exists yet to invoke. All three cases produce
+   `ExecutionResultStatus.FAILED`, never `DENIED`
+   (`docs/architecture/ARCHITECTURE_DECISIONS.md` AD-015). The Tool
+   Registry itself has no visibility into or responsibility for any of
+   these — they occur after resolution, in `ToolInvocationBinding` and
+   the Tool itself.
 
 Registration-time failures (e.g. missing Resource Registry entry, denied
 `CONTROL` permission) never partially register a Tool — registration is
@@ -377,6 +422,7 @@ sequenceDiagram
 - ADR-018 – ExecutionRequests Are Immutable After Validation
 - `docs/specifications/volume-03-core-interfaces/Tool.md`
 - `docs/specifications/volume-03-core-interfaces/ToolDescriptor.md`
+- `docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`
 - `docs/architecture/action-mapping.md`
 - `docs/reviews/PARKER_V0_6_CONSISTENCY_REVIEW.md` §2.1
 

@@ -459,6 +459,8 @@ sequenceDiagram
     participant PE as PermissionEngine
     participant TR as ToolRegistry
     participant RR as ResourceRegistry
+    participant TIB as ToolInvocationBinding
+    participant T as Tool
     participant EB as EventBus
 
     alt Task progressed via an Agent Run
@@ -475,7 +477,12 @@ sequenceDiagram
         EP->>TR: resolve(decision.action, request.targetResources)
         TR->>RR: resolve(resourceId)
         RR-->>TR: Resource
-        TR-->>EP: Tool (bound instance) or ToolResolutionFailure
+        TR-->>EP: ToolDescriptor or ToolResolutionFailure
+        EP->>TIB: invocableFor(descriptor)
+        TIB-->>EP: Tool or nothing bound
+        EP->>T: validate(request)
+        EP->>T: execute(request)
+        T-->>EP: ToolResult
         EP-->>TM: ExecutionResult (Execution Reference recorded)
     else DENIED
         EP-->>TM: ExecutionResult (DENIED)
@@ -484,6 +491,14 @@ sequenceDiagram
     TM->>TM: apply Task Manager rules; transition Task Status per Section 5/6
     TM->>EB: publish corresponding task.* event (Section 10)
 ```
+
+`ToolRegistry.resolve` yields a `ToolDescriptor`, never a live `Tool`
+directly; the Execution Pipeline separately binds it to an invocable
+`Tool` via `ToolInvocationBinding` before calling `validate()` then
+`execute()` (Sprint 1, Unit 11A;
+`docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`).
+The Task Manager Runtime observes only the resulting `ExecutionResult`,
+never these intermediate steps.
 
 - **The Task Manager Runtime may request execution through the Execution
   Pipeline.** Exactly like Agent Instances, Plugins, Scheduled Tasks, and
@@ -498,7 +513,8 @@ sequenceDiagram
   a Task's execution is requested directly by the Task Manager Runtime
   or by an Agent Run acting on the Task's behalf, the path from
   `ExecutionRequest` onward is identical and unmodified: `ExecutionPipeline.submit`
-  → `PermissionEngine.evaluate` → `ToolRegistry.resolve` → `Tool.execute`.
+  → `PermissionEngine.evaluate` → `ToolRegistry.resolve` →
+  `ToolInvocationBinding.invocableFor` → `Tool.validate` → `Tool.execute`.
   The Task Manager Runtime introduces no second path.
 - **The Permission Engine still authorises actions.** `PermissionEngine.evaluate`
   is invoked exactly once per `ExecutionRequest` regardless of whether
@@ -632,7 +648,13 @@ Task Status). It MAY be linked to:
   associated with this Task, past and present.
 - **Resource references** — identifiers of Resources this Task's
   execution has touched or targeted, for continuity across Agent Runs
-  and direct execution requests.
+  and direct execution requests. Distinct from
+  `TaskProposal.resourceReferences` (`PlannerRuntimeSpecification.md`
+  §10, Sprint 1 Unit 11B): that field carries caller-supplied Resource
+  identifiers forward from proposal to `AgentRunCommand` construction,
+  before a Task exists. `Task.kt` itself carries no corresponding field
+  today — this Task Context concept remains transient orchestration
+  state, not a Task record field, per this section's own scope.
 - **Event history references** — a reference (e.g. a `correlationId`) by
   which this Task's own Task Events, and the Agent Events/execution
   events of anything it caused, can be retrieved — not a copy of that

@@ -493,6 +493,8 @@ sequenceDiagram
     participant PE as PermissionEngine
     participant TR as ToolRegistry
     participant RR as ResourceRegistry
+    participant TIB as ToolInvocationBinding
+    participant T as Tool
     participant EB as EventBus
 
     AI->>AR: propose action (within current Agent Step)
@@ -505,7 +507,12 @@ sequenceDiagram
         EP->>TR: resolve(decision.action, request.targetResources)
         TR->>RR: resolve(resourceId)
         RR-->>TR: Resource
-        TR-->>EP: Tool (bound instance) or ToolResolutionFailure
+        TR-->>EP: ToolDescriptor or ToolResolutionFailure
+        EP->>TIB: invocableFor(descriptor)
+        TIB-->>EP: Tool or nothing bound
+        EP->>T: validate(request)
+        EP->>T: execute(request)
+        T-->>EP: ToolResult
         EP-->>AR: ExecutionResult
         AR->>EB: publish agent.step_completed
     else DENIED
@@ -516,6 +523,14 @@ sequenceDiagram
         AR->>AR: transition to SUSPENDED per Section 5
     end
 ```
+
+`ToolInvocationBinding.invocableFor`, `Tool.validate()`, and
+`Tool.execute()` are internal to `DefaultExecutionPipeline`'s handling of
+an approved request (Sprint 1, Unit 11A;
+`docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`)
+— the Agent Runtime observes only the resulting `ExecutionResult`, never
+these intermediate steps directly, consistent with AD-003 (Execution
+Pipeline Is the Sole Execution Authority).
 
 - **Agents propose actions.** An Agent Instance's only channel for having
   any effect is constructing an `ExecutionRequest` (via the Agent Runtime)
@@ -718,11 +733,14 @@ authentication is implemented.
 
 ## 10. Failure and Recovery
 
-- **Tool failure.** A `Tool.execute` failure is reported via
-  `ExecutionResult`/`ToolResult` exactly as it already is for any
-  Execution Pipeline caller (`Tool.md`'s existing normative
-  requirements). The Agent Runtime does not add a parallel Tool-failure
-  channel; an Agent Step whose `ExecutionResult.status` is `FAILED`
+- **Tool failure.** A `Tool.validate()` failure, a resolved descriptor
+  with no `Tool` bound to it via `ToolInvocationBinding`, or a
+  `Tool.execute()` failure are each reported via
+  `ExecutionResult`/`ToolResult` exactly as they already are for any
+  Execution Pipeline caller (`Tool.md`'s existing normative requirements;
+  `docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`).
+  The Agent Runtime does not add a parallel Tool-failure channel; an
+  Agent Step whose `ExecutionResult.status` is `FAILED`
   records that outcome and, per Agent Policy (Section 4), either ends the
   Agent Run (`--> FAILED`) or allows the Agent Run to continue with a
   different proposed action — this document does not prescribe which,

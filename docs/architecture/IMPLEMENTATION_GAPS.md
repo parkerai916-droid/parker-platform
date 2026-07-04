@@ -512,7 +512,18 @@ to the state machine and to `ExecutionLifecycleTransitions`.
 
 ### 32. No concrete `Tool` implementation exists to actually invoke
 
-**Status: Known, expected limitation -- not a defect in this phase's scope.**
+**Status: Closed by Sprint 1, Unit 11A (commit `13c9322`).**
+`DefaultExecutionPipeline` now obtains the bound `Tool` via
+`ToolInvocationBinding.invocableFor` once `ToolRegistry.resolve` returns
+a `ToolDescriptor`, and calls `Tool.validate()` then `Tool.execute()`
+(`src/runtime/DefaultExecutionPipeline.kt`, `executeResolvedTool`). A
+`SUCCESS` `ExecutionResult` now means a Tool actually ran, not merely
+that the right one was found -- confirmed by
+`tests/runtime/DefaultExecutionPipelineTest.kt`'s Unit 11A tests,
+including that `PermissionEngine` denial, an unbound descriptor, a
+failed `Tool.validate()`, and a failed `Tool.execute()` are all handled
+without a fabricated success path. Original finding retained below for
+historical context (describes the pre-Unit-11A state):
 
 `ToolRegistry.resolve` deliberately returns a `ToolDescriptor`, never a
 live `Tool` (per `docs/architecture/tool-registry.md`'s own design: models
@@ -534,15 +545,19 @@ minimal, purely additive, Execution-Pipeline-only lookup a future
 implementation MAY wire up so `DefaultExecutionPipeline` can go from an
 already-`Resolved` descriptor to an actual `Tool` instance, without
 changing `ToolRegistry.resolve`'s or `ToolResolution.Resolved`'s existing,
-already-tested shape. This closes the *contract-shape* half of this gap
-only -- it does not close this gap itself: no implementation of
-`ToolInvocationBinding` exists, no concrete `Tool` implementation exists,
-and `DefaultExecutionPipeline` is not wired to call it. Providing both
-remains Sprint 1 coding work
+already-tested shape. At the time this addendum was written, this closed
+only the *contract-shape* half of this gap -- an implementation of
+`ToolInvocationBinding`, a concrete `Tool`, and the
+`DefaultExecutionPipeline` wiring to call it were all still outstanding
 (`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Units 3-4;
 `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md` records the full
 investigation, including why this was chosen over folding an invocable
-handle directly into `ToolResolution.Resolved`).
+handle directly into `ToolResolution.Resolved`). **All three were
+subsequently completed**: `InMemoryToolInvocationBinding` (Unit 4,
+`src/runtime/InMemoryToolInvocationBinding.kt`), `MockTool` (Unit 4,
+`tests/runtime/MockTool.kt`), and the `DefaultExecutionPipeline` wiring
+itself (Unit 11A, commit `13c9322`) -- see this item's own Status line
+above.
 
 ### 33. `execution.timed_out` (an event name from the original runtime task's lifecycle list) has no corresponding `ExecutionLifecycleState`
 
@@ -679,9 +694,33 @@ are all untouched by this work. The Identity Service foundation exists
 and is ready for that wiring; doing it is the natural next milestone, not
 done here.
 
+### 41. `ToolInvocationBinding.invocableFor` and `ToolRegistry.resolve` restrict callers to the Execution Pipeline by convention only, not by construction
+
+**Status: Deliberate scope boundary, matching an existing, older
+instance of the identical gap. Distinct from item #32 (which was about
+no invocation existing at all -- now closed by Sprint 1, Unit 11A).**
+
+Both `InMemoryToolInvocationBinding.invocableFor` and
+`InMemoryToolRegistry.resolve` are documented as "Execution-Pipeline-only"
+in their own KDoc, but neither performs a caller-identity check or
+restricts visibility in any way -- any caller in the same process can
+call either method directly. `InMemoryToolInvocationBinding`'s own KDoc
+states this plainly: enforcing the restriction "would mean introducing a
+caller-identity or visibility mechanism that does not exist anywhere
+else in this repository today (including on `ToolRegistry.resolve`
+itself, which this type is deliberately built to match)."
+`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` §7's own
+acceptance criterion for this mechanism -- "true by construction... not
+merely true by convention" -- is not fully met by either method.
+**Requires human decision:** whether closing this requires a
+caller-identity/visibility mechanism (which would be a first for this
+repository, per `ToolRegistry.resolve`'s identical, pre-existing
+limitation), or whether the convention-based restriction remains
+acceptable for the platform's current trust model.
+
 ---
 
-## Phase 2 Runtime — Gap Closure Summary (all 40 items, current status)
+## Phase 2 Runtime — Gap Closure Summary (all 41 items, current status)
 
 Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
 EventBus, Runtime Integration, Targeted Refinement Pass, Identity Service
@@ -693,7 +732,8 @@ scroll through the full history above.
 (Resource.sensitivity enum), #11 (architecture level), #12 (architecture
 level), #13, #14, #15, #17, #18, #19, #21 (ToolRegistry.md backfill), #27
 (EventBus subscriber identity), #28 (tool lifecycle diagram), #31
-(Created -> Failed edge).
+(Created -> Failed edge), #32 (Tool invocation -- closed by Sprint 1,
+Unit 11A, commit `13c9322`).
 
 **Partially resolved:** #5 (Principal half done via
 `PrincipalLifecycleTransitions`; Resource half still deferred), #30
@@ -701,15 +741,19 @@ level), #13, #14, #15, #17, #18, #19, #21 (ToolRegistry.md backfill), #27
 itself is unchanged, per explicit instruction).
 
 **Deliberate scope boundaries / known, documented limitations (not
-defects, not pending):** #7, #22, #23, #24, #25, #26, #32, #33, #34, #35,
-#36, #37, #38, #39, #40.
+defects, not pending):** #7, #22, #23, #24, #25, #26, #33, #34, #35,
+#36, #37, #38, #39, #40, #41 (ToolInvocationBinding/ToolRegistry access
+enforcement).
 
 **Still requires a human decision:** #8/#16 (`Permission.schema.json` vs
 `PermissionDecision.schema.json` duplication), #20 (`AgentHealth`'s
 shape), #35 (exact cascading-revocation rule), #36 (whether the Principal
 lifecycle needs an Active -> Revoked or Suspended -> Active edge), #37
 (whether `resolve()` should suppress non-Active Principals), #38 (whether
-the owner-validation interpretation is correct).
+the owner-validation interpretation is correct), #41 (whether closing
+`ToolInvocationBinding`/`ToolRegistry.resolve`'s convention-based access
+restriction requires a caller-identity/visibility mechanism, or whether
+convention-based restriction remains acceptable).
 
 No item in this file was closed by inventing behaviour beyond what its
 governing architecture document already specified.

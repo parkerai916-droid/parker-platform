@@ -248,11 +248,18 @@ PermissionEngine"); `docs/specifications/volume-03-core-interfaces/ToolRegistry.
 ... is intended to be called only by the Execution Pipeline"); restated
 identically in `AgentRuntimeSpecification.md` §6/§11,
 `TaskManagerRuntimeSpecification.md` §7/§12, and `PlannerRuntimeSpecification.md`
-§3/§8/§13.
+§3/§8/§13. Sprint 1 Unit 11A confirms this by construction, not just by
+specification: `docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`
+and `DefaultExecutionPipeline.executeResolvedTool` are the only call site
+anywhere in the repository that invokes `ToolInvocationBinding.invocableFor`,
+`Tool.validate`, or `Tool.execute` -- so the rule now governs a real
+invocation, not merely a resolution, as it did before `IMPLEMENTATION_GAPS.md`
+#32 closed.
 
 **Affected specifications:** Agent Runtime Specification, Task Manager
 Runtime Specification, Planner Runtime Specification,
-`ExecutionPipeline.md`, `ToolRegistry.md`, `docs/architecture/tool-registry.md`.
+`ExecutionPipeline.md`, `ToolRegistry.md`, `ToolInvocationBinding.md`,
+`docs/architecture/tool-registry.md`.
 
 **Consequences:** Every origin — voice, text, scheduled task, Agent, Plugin,
 Task-Manager-direct — submits the identical `ExecutionRequest` shape
@@ -325,11 +332,16 @@ Runtime Specification.
 Manager Task; it becomes one only if and when the Task Manager Runtime
 accepts it.
 
-**Future considerations:** The Task Manager Runtime Specification does
-not yet define a Task Proposal intake operation or a disposition
-mechanism (accept/defer/split/merge/reject) reported back to the Planner
-— an open contract gap (`docs/architecture/INTER_SPECIFICATION_CONTRACTS.md`
-§6, Gaps 1–2), not a disagreement about this decision.
+**Future considerations:** Sprint 1 Unit 6 gives the previously-open Task
+Proposal intake operation and disposition mechanism a real, tested
+implementation: `InMemoryTaskManagerRuntime.submitProposal` is the intake
+operation, and `TaskProposalDisposition` is the disposition mechanism
+reported back. Only the `Accept` disposition is implemented --
+`Deferred`, `Split`, `Merged`, and any business-reason `Rejected` remain
+unimplemented, a Sprint 1 scope boundary rather than a contract gap. The
+contract shape itself (`docs/architecture/INTER_SPECIFICATION_CONTRACTS.md`
+§6, Gaps 1–2) is no longer open; what remains is implementation breadth,
+not a disagreement about this decision.
 
 ---
 
@@ -363,12 +375,17 @@ share several state-name tokens (`CREATED`, `RUNNING`, `COMPLETED`,
 `FAILED`, `CANCELLED`) — explicitly documented as a naming coincidence,
 not a shared machine.
 
-**Future considerations:** No named contract yet exists for the Task
-Manager Runtime to request an Agent Run's creation or cancellation (a
-named object or operation, as opposed to prose/sequence-diagram
-description) — an open contract gap
-(`docs/architecture/INTER_SPECIFICATION_CONTRACTS.md` §6, Gap 7; `docs/reviews/Phase3ArchitecturePositionReview.md`
-§6, Gap 11), not a disagreement about this decision.
+**Future considerations:** `AgentRunCommand` (Blocker 3, pre-Sprint-1
+contract closure) is the previously-missing named contract, and Sprint 1
+Units 6–7 give it a real construction path
+(`InMemoryTaskManagerRuntime`) and consumption path
+(`InMemoryAgentRuntime`). Only `START` is implemented -- `SUSPEND`,
+`RESUME`, and `CANCEL` remain unimplemented, each returning an explicit
+`Rejected` outcome rather than a silent no-op. The contract shape itself
+(`docs/architecture/INTER_SPECIFICATION_CONTRACTS.md` §6, Gap 7;
+`docs/reviews/Phase3ArchitecturePositionReview.md` §6, Gap 11) is no
+longer open; what remains is implementation breadth, not a disagreement
+about this decision.
 
 ---
 
@@ -410,7 +427,11 @@ Task control actions (e.g. cancelling another Principal's Task) are not
 Permission-Engine-gated by default today, disclosed explicitly as an open
 question in `TaskManagerRuntimeSpecification.md` §8. Both are
 enforcement-completeness or scope-boundary gaps, not violations of this
-decision.
+decision. Gap #40's real-world stakes have increased since Sprint 1 Unit
+11A: before Unit 11A, an incorrect `APPROVED` decision had no downstream
+consequence (no Tool ever ran); after Unit 11A, an incorrect `APPROVED`
+decision now causes a real `Tool.execute()` call. The gap itself is
+unchanged; its consequence is not.
 
 ---
 
@@ -479,6 +500,25 @@ Task, Agent Run, and Planning Session lifecycles has a corresponding
 event, with one disclosed exception (the Planner's `SUBMITTED --> REJECTED`
 transition has no dedicated event yet, pending the Task Manager response
 contract — AD-005's future considerations).
+
+**Clarification (Architecture v1.1):** Sprint 1 distinguishes three
+concepts this Decision's single sentence does not separate by name:
+**publication** (a producer calling `EventBus.publish` for a meaningful
+lifecycle transition — Unit 9 exercises this across the `planner.*`,
+`task.*`, and `agent.*` domains), **observation** (any subscriber
+consuming published events — `EventCollector`, Unit 10, is the concrete
+Sprint 1 example), and **audit reconstruction** (Chapter 43's own Audit
+and Observability responsibility, which no component in this repository
+implements). `EventCollector`'s own KDoc states this plainly: it is a
+"test-only fixture... nothing in the specifications requires a
+production auditing/collection component; this exists solely so a test
+can reconstruct what a run actually published." "Auditable" as used in
+this Decision's text means "structurally reconstructable by some future
+or test-time subscriber" — Sprint 1 satisfies publication and
+demonstrates observation is possible, without implementing audit
+reconstruction itself. This clarifies the existing rule; it does not
+narrow or weaken it — every meaningful lifecycle transition still MUST
+emit an event.
 
 **Future considerations:** Whether `task.*`, `agent.*`, and `planner.*`
 should be formally added to `EventBus.md`'s trust-sensitive domain list is
@@ -623,6 +663,23 @@ pass touches `src/` or `tests/`; the 101 tests referenced in
 `docs/architecture/IMPLEMENTATION_ORDER.md` §2 exercise only the
 already-implemented foundation, not any Phase 3 document.
 
+**Implementation note (Architecture v1.1):** Sprint 1 exposed a case this
+Decision's text does not name: a contract addition grounded in a
+specification's own existing prose, ahead of that specification's
+normative field list being updated to match. This is not "writing a
+specification alongside the Kotlin it describes" (the Decision's already-
+named backfill exception) — the specification predates the Kotlin in
+both instances — but it is also not full alignment, since the field list
+itself lags the prose. Two independent instances exist:
+`AgentRunCommand`'s Suspend/Resume/Cancel shape (Blocker 3, pre-Sprint-1
+contract closure) and `TaskProposal.resourceReferences` (Unit 11B,
+grounded in `PlannerRuntimeSpecification.md` §9's own "a Plan Candidate
+or Task Proposal may target" language, even though §10's field list did
+not yet name the field). The corresponding specification field lists
+should be updated to match where not already done. This is recorded as
+an implementation note, not a change to the Decision text itself, which
+remains correct.
+
 **Future considerations:** None currently open against this decision
 itself.
 
@@ -705,7 +762,17 @@ Actions' section, **invalid, not denied** — the underlying
 `ExecutionRequest` never reaches `PermissionPending`"); `TaskManagerRuntimeSpecification.md`
 §8 ("An unresolvable Task Owner is invalid, not denied, mirroring
 `Principal.md`'s existing rule and the Agent Runtime Specification's
-identical treatment of an unresolvable Agent Identity").
+identical treatment of an unresolvable Agent Identity"). Sprint 1 Unit
+11A extends this same rule to a later, post-approval pipeline stage,
+proven by `tests/runtime/DefaultExecutionPipelineTest.kt`: a resolved
+Tool with no invocable `ToolInvocationBinding` produces a `FAILED`
+result, never `DENIED`; a Tool that fails `validate()` produces a
+`FAILED` result, never `DENIED`; and a Tool whose `execute()` reports
+failure produces a `FAILED` result, never `DENIED` —
+`DefaultExecutionPipeline.executeResolvedTool`'s own KDoc cites this
+Decision by name. These are the first Evidence instances of this
+Decision applying after `PermissionEngine.evaluate` has already
+approved a request, rather than before it.
 
 **Affected specifications:** `action-mapping.md`, `IdentityService.md`,
 Agent Runtime Specification, Task Manager Runtime Specification. The
@@ -765,7 +832,14 @@ terminal state" and "Retryable states... **None, by transition**...
 'Retry' at the Task Manager Runtime level means creating a **new** Task
 Manager Task"); `PlannerRuntimeSpecification.md` §5 ("Any transition out
 of `COMPLETED`, `REJECTED`, `CANCELLED`, or `FAILED`... matching every
-other lifecycle state machine in this repository").
+other lifecycle state machine in this repository"). Sprint 1 added three
+new lifecycle machines that each independently enforce this same rule --
+`PlanningSessionLifecycleTransitions`, `TaskLifecycleTransitions`, and
+`AgentRunLifecycleTransitions` -- with dedicated negative tests per
+`SPRINT_1_VERTICAL_SLICE_PLAN.md` §7's requirement for a terminal-state
+test at each new lifecycle introduced: `tests/runtime/DeterministicPlannerHarnessTest.kt`
+("SUBMITTED is terminal for this fixed harness"), and contract-level
+tests for `TaskLifecycleTransitions` and `AgentRunLifecycleTransitions`.
 
 **Affected specifications:** Task Manager Runtime Specification, Agent
 Runtime Specification, Planner Runtime Specification, `Task-Schema.md`,

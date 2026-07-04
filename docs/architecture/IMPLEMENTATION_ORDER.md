@@ -41,8 +41,8 @@ directly).
 |---|---|
 | Core Contracts (Volume 1) | The typed data shapes every other component depends on: `ExecutionRequest`, `ExecutionResult`, `PermissionDecision`, `Principal`, `Resource`, and related enums (`RequestOrigin`, `RequestPriority`, `RiskEstimate`, `PermissionAction`, `PermissionDecisionOutcome`, `ExecutionResultStatus`). |
 | Runtime contracts | The Kotlin interfaces and lifecycle state machines (`ExecutionLifecycleState`, `ToolLifecycleState`/`ToolLifecycleTransitions`, `PrincipalLifecycleTransitions`) that give the contracts above enforceable, deterministic behaviour. |
-| Execution Pipeline | The single, mandatory path (ADR-003) by which any proposed action becomes a tool invocation: `submit → PermissionEngine.evaluate → ToolRegistry.resolve → Tool.execute`. No component in this repository is specified to bypass it. |
-| Tool Registry | The authoritative catalogue of Tools: registration, capability-filtered discovery (`listAll`/`findCandidates`, descriptor-only), and `resolve` (invocable, Execution-Pipeline-only). |
+| Execution Pipeline | The single, mandatory path (ADR-003) by which any proposed action becomes a tool invocation: `submit → PermissionEngine.evaluate → ToolRegistry.resolve → ToolInvocationBinding.invocableFor → Tool.validate → Tool.execute`. `resolve` yields a descriptor only; `ToolInvocationBinding` (Sprint 1, Unit 11A) is the separate, additive step that binds it to an invocable `Tool`. No component in this repository is specified to bypass it. |
+| Tool Registry | The authoritative catalogue of Tools: registration, capability-filtered discovery (`listAll`/`findCandidates`, descriptor-only), and `resolve` (descriptor-only, Execution-Pipeline-only; binding to an invocable `Tool` is `ToolInvocationBinding`'s separate responsibility). |
 | EventBus | Structured publish/subscribe communication between Parker services, with authentication, correlation-ID preservation, and (for `execution.*`/`permission.*`) signature requirements. |
 | Resource Registry | The authoritative catalogue of Resources: registration, resolution, ownership, and sensitivity classification. |
 | Action Mapping | The deterministic translation from free-text `proposedActions` to closed `PermissionAction` vocabulary, owned by the Planner-to-be and consumed identically by the Permission Engine. |
@@ -141,7 +141,8 @@ flowchart TD
 The solid path is the only path with any external effect: Planner
 proposes, Task Manager tracks, Agent Runtime executes within a Task,
 Execution Pipeline mediates permission and enforces the single execution
-path, Tool Registry resolves the invocable Tool. World Model and Memory
+path, Tool Registry resolves the Tool descriptor and ToolInvocationBinding
+binds it to an invocable Tool. World Model and Memory
 are read-only *context* inputs to the three orchestration layers above
 them — they do not sit in the execution path and do not orchestrate
 anything themselves (Agent Runtime Specification, Section 3 and 8; Task

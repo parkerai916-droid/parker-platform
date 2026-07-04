@@ -23,9 +23,22 @@ purely additive Kotlin files: `src/contracts/TaskProposal.kt`,
 `src/contracts/AgentRunCommand.kt`, and `src/contracts/ToolInvocationBinding.kt`
 (the last closing part of Gap 8/`IMPLEMENTATION_GAPS.md` #32's tool-
 invocation question — see that row's Notes). Section 3 and Section 6
-below are updated accordingly. None of these closures is a runtime
-implementation: every one is a named, shaped contract with **no
-implementation yet**, per each new file's own doc comments.
+below are updated accordingly. At the time this addendum was written,
+none of these closures was a runtime implementation: every one was a
+named, shaped contract with **no implementation yet**, per each new
+file's own doc comments.
+
+**Architecture v1.1 update.** All three contracts named above have since
+received a Sprint 1 implementation: `InMemoryTaskManagerRuntime.submitProposal`
+(Unit 6) implements `TaskProposalIntake`/`TaskProposalDisposition`
+(Accept-only); `InMemoryTaskManagerRuntime` (construction) and
+`InMemoryAgentRuntime` (consumption) implement `AgentRunCommandChannel`
+(`START` only; Units 6–7); and `InMemoryToolInvocationBinding`, wired
+into `DefaultExecutionPipeline.executeResolvedTool`, implements
+`ToolInvocationBinding` (Sprint 1, Unit 11A, commit `13c9322`, closing
+`IMPLEMENTATION_GAPS.md` #32). Section 3 and Section 6 below reflect
+this. The paragraph above is retained for historical context describing
+the contract-preparation pass that preceded implementation.
 
 ## 2. Purpose
 
@@ -66,19 +79,19 @@ status and explains the split in Notes.
 | Producer | Contract / Object / Event | Consumer | Current status | Source document | Notes |
 |---|---|---|---|---|---|
 | User / Front End | Goal / Planning Request | Planner Runtime | Proposed contract | `PlannerRuntimeSpecification.md` §4; `AgentRuntimeSpecification.md` §4 (Goal) | No front end is specified yet (Chapter 27 is future work in every existing document); Goal formation itself remains explicitly out of scope everywhere it is used. |
-| Planner Runtime | Task Proposal | Task Manager Runtime | Proposed contract | `PlannerRuntimeSpecification.md` §6, §10; `TaskManagerRuntimeSpecification.md` §15; `src/contracts/TaskProposal.kt` | Named and shaped by the Sprint 1 contract-closure addendum: `TaskProposalIntake.submitProposal(proposal: TaskProposal): TaskProposalDisposition`. Closes Gap 1/Gap 2 (Section 6). Status is "Proposed" rather than "Approved" because no implementation of `TaskProposalIntake` exists yet — only the contract shape does. |
-| Task Manager Runtime | Task Manager Task | Agent Runtime | Approved specification contract | `TaskManagerRuntimeSpecification.md` §6; `AgentRuntimeSpecification.md` §4–5 | Both documents agree, from both sides, that the Task Manager Task is canonical and that an Agent Run may execute within one without ever owning or redefining it. Not yet implemented in Kotlin. |
-| Task Manager Runtime | Agent Run Command (`AgentRunCommand`: `START`/`SUSPEND`/`RESUME`/`CANCEL`) | Agent Runtime | Proposed contract | `TaskManagerRuntimeSpecification.md` §4 (Agent Run Reference), §16; `AgentRuntimeSpecification.md` §5, Status header; `src/contracts/AgentRunCommand.kt` | Named and shaped by the Sprint 1 contract-closure addendum, closing both Gap 7 (Agent Run creation) and Gap 11 (Agent Run cancellation/suspend/resume) with one contract: `AgentRunCommandChannel.submit(command: AgentRunCommand): AgentRunCommandResult`. Status is "Proposed" rather than "Approved" because no implementation of `AgentRunCommandChannel` exists yet. |
+| Planner Runtime | Task Proposal | Task Manager Runtime | Existing schema-backed contract | `PlannerRuntimeSpecification.md` §6, §10; `TaskManagerRuntimeSpecification.md` §15; `src/contracts/TaskProposal.kt` | Named and shaped by the Sprint 1 contract-closure addendum: `TaskProposalIntake.submitProposal(proposal: TaskProposal): TaskProposalDisposition`. Closes Gap 1/Gap 2 (Section 6). Implemented and tested by `InMemoryTaskManagerRuntime.submitProposal` (Sprint 1, Unit 6; `tests/runtime/InMemoryTaskManagerRuntimeTest.kt`) — Accept-only; `Deferred`/`Split`/`Merged`/business-reason `Rejected` remain unimplemented. |
+| Task Manager Runtime | Task Manager Task | Agent Runtime | Existing schema-backed contract | `TaskManagerRuntimeSpecification.md` §6; `AgentRuntimeSpecification.md` §4–5 | Both documents agree, from both sides, that the Task Manager Task is canonical and that an Agent Run may execute within one without ever owning or redefining it. Implemented by `src/contracts/Task.kt`, `InMemoryTaskManagerRuntime`, and `InMemoryAgentRuntime` (Sprint 1, Units 6–7); `InMemoryAgentRuntime` reads `command.taskId` as a reference only and never mutates Task state. |
+| Task Manager Runtime | Agent Run Command (`AgentRunCommand`: `START`/`SUSPEND`/`RESUME`/`CANCEL`) | Agent Runtime | Existing schema-backed contract | `TaskManagerRuntimeSpecification.md` §4 (Agent Run Reference), §16; `AgentRuntimeSpecification.md` §5, Status header; `src/contracts/AgentRunCommand.kt` | Named and shaped by the Sprint 1 contract-closure addendum, closing both Gap 7 (Agent Run creation) and Gap 11 (Agent Run cancellation/suspend/resume) with one contract: `AgentRunCommandChannel.submit(command: AgentRunCommand): AgentRunCommandResult`. Implemented by `InMemoryTaskManagerRuntime` (construction) and `InMemoryAgentRuntime` (consumption) (Sprint 1, Units 6–7) — `START` only; `SUSPEND`/`RESUME`/`CANCEL` remain unimplemented, each returning an explicit `Rejected` rather than a silent no-op. |
 | Agent Runtime | Execution Request (`ExecutionRequest`) | Execution Pipeline | Existing schema-backed contract | `src/contracts/ExecutionRequest.kt`; `AgentRuntimeSpecification.md` §6; `ExecutionPipeline.md` | Implemented and tested. The Agent Runtime is simply another `RequestOrigin` (`AGENT`) submitting through the unchanged `ExecutionPipeline.submit`. |
-| Execution Pipeline | Tool Invocation | Tool Registry / Tool Runtime | Existing schema-backed contract (resolution); Proposed contract (invocation binding) | `ExecutionPipeline.md`; `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`; `docs/architecture/tool-registry.md`; `IMPLEMENTATION_GAPS.md` #32; `src/contracts/ToolInvocationBinding.kt` | Resolution (`resolve()`, `ENABLED`-state filtering) is implemented and tested. `resolve()` returns only a `ToolDescriptor`, never an invocable `Tool` (`ToolResolution.Resolved`'s own doc comment; `IMPLEMENTATION_GAPS.md` #32), and `DefaultExecutionPipeline` never calls `Tool.execute`. The Sprint 1 contract-closure addendum adds `ToolInvocationBinding` (`bind`/`invocableFor`) as a minimal, additive, Execution-Pipeline-only lookup closing the missing step — not yet implemented or wired up; see Section 6, Gap 8. |
-| Tool Registry | Tool Capability / Tool Metadata | Execution Pipeline / Planner Runtime / Task Manager Runtime | Existing schema-backed contract (Execution Pipeline); Proposed contract (Planner/Task Manager) | `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`; `PlannerRuntimeSpecification.md` §9–10; `TaskManagerRuntimeSpecification.md` §7 | The descriptor-only discovery surface (`listAll`/`findCandidates`) is implemented and already used by the Execution Pipeline path. Its consumption by the Planner Runtime ("required capabilities," a planning-time hint) and the Task Manager Runtime (checking capability exists for a Task Constraint) is specified but not implemented, and never yields anything invocable either way. |
+| Execution Pipeline | Tool Invocation | Tool Registry / Tool Runtime | Existing schema-backed contract | `ExecutionPipeline.md`; `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`; `docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`; `docs/architecture/tool-registry.md`; `IMPLEMENTATION_GAPS.md` #32 (closed), #41 (open); `src/contracts/ToolInvocationBinding.kt` | Resolution (`resolve()`, `ENABLED`-state filtering) is implemented and tested; `resolve()` returns only a `ToolDescriptor`, never an invocable `Tool` (`ToolResolution.Resolved`'s own doc comment), by design. `ToolInvocationBinding` (`bind`/`invocableFor`) closes the remaining step: `InMemoryToolInvocationBinding`, wired into `DefaultExecutionPipeline.executeResolvedTool` (Sprint 1, Unit 11A, commit `13c9322`), binds a resolved descriptor to an invocable `Tool` and calls `Tool.validate()` then `Tool.execute()`. A `SUCCESS` `ExecutionResult` now means a Tool actually ran. The Execution-Pipeline-only restriction on `invocableFor` remains convention-based, not construction-enforced (`IMPLEMENTATION_GAPS.md` #41). |
+| Tool Registry | Tool Capability / Tool Metadata | Execution Pipeline / Planner Runtime / Task Manager Runtime | Existing schema-backed contract (Execution Pipeline); Proposed contract (Planner/Task Manager) | `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`; `PlannerRuntimeSpecification.md` §9–10; `TaskManagerRuntimeSpecification.md` §7 | The descriptor-only discovery surface (`listAll`/`findCandidates`) is implemented and already used by the Execution Pipeline path. Its consumption by the Planner Runtime ("required capabilities," a planning-time hint) and the Task Manager Runtime (checking capability exists for a Task Constraint) remains specified but not implemented as of Sprint 1, and never yields anything invocable either way. |
 | Identity Service | Principal / Identity Status | Planner Runtime / Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract (resolution); Open dependency (revocation propagation) | `docs/architecture/IdentityService.md`; `docs/architecture/IMPLEMENTATION_GAPS.md` #37, #39; `AgentRuntimeSpecification.md` §7; `TaskManagerRuntimeSpecification.md` §8; `PlannerRuntimeSpecification.md` §8 | `register`/`resolve`/`updateStatus` are implemented. Two dependencies all three Phase 3 documents rely on remain open: `resolve()` does not yet suppress or flag non-Active Principals (gap #37), and `identity.*` events are not yet published (gap #39). See Section 6, Gap 4. |
-| Permission Engine | Permission Decision (`PermissionDecision`) | Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract | `src/contracts/Permission.kt`; `PermissionEngine.md`; `TaskManagerRuntimeSpecification.md` §7; `AgentRuntimeSpecification.md` §6 | `evaluate()` is called exactly once per `ExecutionRequest`, regardless of origin. Note the related, still-open gap that `PermissionEngine.evaluate` is not yet wired to resolve identity first (`IMPLEMENTATION_GAPS.md` #40) — a caveat on this contract's current reliability, not a different contract. |
-| Resource Registry | Resource Reference | Planner Runtime / Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract (registry itself); Proposed contract (Planning/Task Context usage) | `ResourceRegistry.md`; `PlannerRuntimeSpecification.md` §9; `TaskManagerRuntimeSpecification.md` §9 | `register`/`resolve`/`update`/`listByOwner` are implemented. Planning Context's and Task Context's own "Resource references" categories are specified, reference-only, and not yet implemented. |
-| EventBus | Runtime Events (`ParkerEvent`) | Platform observers and audit consumers (Chapter 43) | Existing schema-backed contract (bus mechanism); the audit-consumer side is not confirmed implemented | `src/contracts/EventContracts.kt`; `EventBus.md`; Chapter 43 | `publish`/`subscribe`, authentication, and correlation-ID preservation are implemented for the bus itself. Whether a concrete Chapter 43 Audit subscriber exists and consumes these events is not established by any document reviewed for this catalogue. |
-| Task Manager Runtime | Task Events (`task.*`) | EventBus | Approved specification contract | `TaskManagerRuntimeSpecification.md` §10 | 19-event table, each with trigger, payload, and lifecycle relevance. Not yet implemented in Kotlin. |
-| Agent Runtime | Agent Events (`agent.*`) | EventBus | Approved specification contract | `AgentRuntimeSpecification.md` §9 | 17-event table, including the corrected `agent.action_denied`/`agent.action_deferred` split. Not yet implemented in Kotlin. |
-| Planner Runtime | Planner Events (`planner.*`) | EventBus | Approved specification contract | `PlannerRuntimeSpecification.md` §11 | 13-event table. One known gap: no dedicated event for `SUBMITTED --> REJECTED` (Section 6, Gap 3). Not yet implemented in Kotlin. |
+| Permission Engine | Permission Decision (`PermissionDecision`) | Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract | `src/contracts/Permission.kt`; `PermissionEngine.md`; `TaskManagerRuntimeSpecification.md` §7; `AgentRuntimeSpecification.md` §6 | `evaluate()` is called exactly once per `ExecutionRequest`, regardless of origin. Note the related, still-open gap that `PermissionEngine.evaluate` is not yet wired to resolve identity first (`IMPLEMENTATION_GAPS.md` #40) — a caveat on this contract's current reliability, not a different contract. Sprint 1 Unit 11A raises this gap's real-world stakes: an incorrect `APPROVED` decision now causes a real `Tool.execute()` call, not merely a resolution. |
+| Resource Registry | Resource Reference | Planner Runtime / Task Manager Runtime / Agent Runtime / Execution Pipeline | Existing schema-backed contract (registry itself); Proposed contract (Planning/Task Context usage) | `ResourceRegistry.md`; `PlannerRuntimeSpecification.md` §9; `TaskManagerRuntimeSpecification.md` §9 | `register`/`resolve`/`update`/`listByOwner` are implemented. Planning Context's and Task Context's own "Resource references" categories remain specified, reference-only, and not implemented as of Sprint 1 — distinct from `TaskProposal.resourceReferences`/`AgentRunCommand.resourceReferences` (Sprint 1, Unit 11B), which carry caller-supplied `ResourceId`s forward through the proposal/command chain without implementing either Context model. |
+| EventBus | Runtime Events (`ParkerEvent`) | Platform observers and audit consumers (Chapter 43) | Existing schema-backed contract (bus mechanism); the audit-consumer side is not confirmed implemented | `src/contracts/EventContracts.kt`; `EventBus.md`; Chapter 43 | `publish`/`subscribe`, authentication, and correlation-ID preservation are implemented for the bus itself. `EventCollector` (Sprint 1, Unit 10) is a real, tested subscriber, but is explicitly a test-only fixture, not a Chapter 43 Audit component. Whether a concrete Chapter 43 Audit subscriber exists and consumes these events is not established by any document reviewed for this catalogue. |
+| Task Manager Runtime | Task Events (`task.*`) | EventBus | Existing schema-backed contract | `TaskManagerRuntimeSpecification.md` §10 | 19-event table, each with trigger, payload, and lifecycle relevance. Implemented and tested: `InMemoryTaskManagerRuntime` publishes across this domain (Sprint 1, Unit 9). |
+| Agent Runtime | Agent Events (`agent.*`) | EventBus | Existing schema-backed contract | `AgentRuntimeSpecification.md` §9 | 17-event table, including the corrected `agent.action_denied`/`agent.action_deferred` split. Implemented and tested: `InMemoryAgentRuntime` publishes across this domain (Sprint 1, Unit 9). |
+| Planner Runtime | Planner Events (`planner.*`) | EventBus | Existing schema-backed contract | `PlannerRuntimeSpecification.md` §11 | 13-event table. One known gap: no dedicated event for `SUBMITTED --> REJECTED` (Section 6, Gap 3). Implemented and tested: `DeterministicPlannerHarness` publishes across this domain (Sprint 1, Unit 9), noting this harness lives in `tests/runtime/`, not `src/runtime/`, since the Planner Runtime Specification itself remains unpromoted to an implementation phase (AD-014). |
 
 ## 4. Key Platform Flow
 
@@ -88,21 +101,43 @@ User Intent / Goal
 Planner Runtime
   ↓ Task Proposal
 Task Manager Runtime
-  ↓ Task Manager Task
+  ↓ Task Manager Task / Agent Run Command
 Agent Runtime
   ↓ Execution Request
 Execution Pipeline
-  ↓ Tool Invocation
-Tool Registry / Tool Runtime
+  ↓
+Permission Engine
+  ↓
+Action Mapping
+  ↓
+Tool Registry (resolve → ToolDescriptor)
+  ↓
+ToolInvocationBinding (invocableFor → Tool)
+  ↓
+Tool.validate()
+  ↓
+Tool.execute()
+  ↓
+ExecutionResult
+  ↓
+Lifecycle Events (EventBus)
+  ↓
+EventCollector
 ```
 
 ```mermaid
 flowchart TD
     User["User Intent / Goal"] --> Planner["Planner Runtime"]
     Planner -->|Task Proposal| TaskManager["Task Manager Runtime"]
-    TaskManager -->|Task Manager Task| AgentRuntime["Agent Runtime"]
+    TaskManager -->|Task Manager Task / Agent Run Command| AgentRuntime["Agent Runtime"]
     AgentRuntime -->|Execution Request| ExecutionPipeline["Execution Pipeline"]
-    ExecutionPipeline -->|Tool Invocation| ToolRegistry["Tool Registry / Tool Runtime"]
+    ExecutionPipeline -->|resolve| ToolRegistry["Tool Registry"]
+    ToolRegistry -->|ToolDescriptor| ToolInvocationBinding["ToolInvocationBinding"]
+    ToolInvocationBinding -->|invocableFor: Tool| ToolValidate["Tool.validate()"]
+    ToolValidate --> ToolExecute["Tool.execute()"]
+    ToolExecute -->|ToolResult| ExecutionResult["ExecutionResult"]
+    ExecutionResult --> LifecycleEvents["Lifecycle Events (EventBus)"]
+    LifecycleEvents --> EventCollector["EventCollector"]
 
     Identity["Identity Service"] -.Principal / Identity Status.-> Planner
     Identity -.-> TaskManager
@@ -125,13 +160,20 @@ flowchart TD
 ```
 
 The solid path down the left is the same one every existing
-specification already describes: Planner proposes, Task Manager tracks
-and decides, Agent Runtime executes within a Task, Execution Pipeline
-mediates permission and enforces the single execution path, Tool Registry
-resolves the invocable Tool. Identity Service, Permission Engine, Resource
-Registry, and EventBus are cross-cutting: every orchestration layer
-depends on them, none of them depends on any orchestration layer, and
-none of them sits in the solid execution path itself.
+specification already describes, now extended past the Execution
+Pipeline to the full chain Sprint 1 actually implemented and tested
+(`docs/implementation/IMPLEMENTATION_HISTORY.md`'s "Current Vertical
+Slice"): Planner proposes, Task Manager tracks and decides, Agent Runtime
+executes within a Task, Execution Pipeline mediates permission and
+enforces the single execution path, Tool Registry resolves a
+`ToolDescriptor`, `ToolInvocationBinding` binds it to an invocable
+`Tool` (Sprint 1, Unit 11A), the Tool validates and executes, and the
+resulting `ExecutionResult` and lifecycle events are observable via
+`EventCollector` (a test-only fixture, not a Chapter 43 production
+component). Identity Service, Permission Engine, Resource Registry, and
+EventBus are cross-cutting: every orchestration layer depends on them,
+none of them depends on any orchestration layer, and none of them sits
+in the solid execution path itself.
 
 ## 5. Contract Status Categories
 
@@ -143,7 +185,11 @@ none of them sits in the solid execution path itself.
 - **Approved specification contract.** Defined in a specification that
   has reached at least "corrected draft" status (reviewed and corrected
   per its own review document) but not yet implemented in Kotlin.
-  Example: the Task Manager Runtime's `task.*` event set.
+  Example (historical): the Task Manager Runtime's, Agent Runtime's, and
+  Planner Runtime's `task.*`/`agent.*`/`planner.*` event tables were all
+  in this category until Sprint 1 Unit 9 implemented publication across
+  all three domains — see Section 3, now "Existing schema-backed
+  contract."
 - **Proposed contract.** Named and described within an approved
   specification, but explicitly marked **(proposed)** there rather than
   backed by an existing schema field, and not yet a settled mechanism
@@ -177,8 +223,10 @@ does not correspond to `IMPLEMENTATION_GAPS.md`'s own numbering.
    `TaskManagerRuntimeSpecification.md` §15. Originally recorded in
    `PlannerRuntimeSpecification.md` §6 and Open Questions (now marked
    resolved there); `docs/implementation/SPRINT_1_BLOCKER_CLOSURE.md` has
-   the full closure record. No implementation of `TaskProposalIntake`
-   exists yet — this closes the contract, not the runtime behaviour.
+   the full closure record. At the time this gap was closed, no
+   implementation of `TaskProposalIntake` existed yet — that closed the
+   contract, not the runtime behaviour. Sprint 1 Unit 6 has since
+   implemented it: `InMemoryTaskManagerRuntime.submitProposal`.
 2. **(Closed by the Sprint 1 contract-closure addendum.) Task Manager
    response contract for accept/defer/split/merge/reject.** No mechanism
    existed for the Task Manager Runtime to communicate its disposition
@@ -229,20 +277,26 @@ does not correspond to `IMPLEMENTATION_GAPS.md`'s own numbering.
    (`AgentRunCommandChannel.submit`, `commandType START`) and
    `TaskManagerRuntimeSpecification.md` §16 /
    `AgentRuntimeSpecification.md` Status header. Closed together with Gap
-   11 below, since both are the same underlying need. No implementation
-   of `AgentRunCommandChannel` exists yet.
+   11 below, since both are the same underlying need. At the time this
+   gap was closed, no implementation of `AgentRunCommandChannel` existed
+   yet. Sprint 1 Units 6–7 have since implemented it (`InMemoryTaskManagerRuntime`
+   for construction, `InMemoryAgentRuntime` for consumption) — `START`
+   only; `SUSPEND`/`RESUME`/`CANCEL` remain unimplemented.
 8. **`PermissionEngine.evaluate` not yet wired to resolve identity
    first.** `IdentityService.md` ("Integration with Permission Engine")
    specifies this; `IMPLEMENTATION_GAPS.md` #40 records it as deliberately
    not yet done. This affects the reliability of every Permission Decision
    contract in Section 3 that depends on Principal status being checked
    as part of evaluation, not just the Identity Service row. Distinct from
-   the tool-invocation-binding gap `IMPLEMENTATION_GAPS.md` #32 records
+   the tool-invocation-binding gap `IMPLEMENTATION_GAPS.md` #32 recorded
    (see the Tool Invocation row in Section 3): `resolve()` never yielding
-   an invocable `Tool` is a separate, now-partially-addressed gap (a
-   named, not-yet-implemented `ToolInvocationBinding` contract, per the
-   Sprint 1 contract-closure addendum), not renumbered here to keep this
-   catalogue's existing numbering stable.
+   an invocable `Tool` was a separate gap, since closed by Sprint 1 Unit
+   11A (`ToolInvocationBinding`, implemented and wired into
+   `DefaultExecutionPipeline`). A new, distinct gap,
+   `IMPLEMENTATION_GAPS.md` #41, tracks that `ToolInvocationBinding.invocableFor`
+   and `ToolRegistry.resolve` still restrict callers to the Execution
+   Pipeline by convention only, not by construction — not renumbered
+   here to keep this catalogue's existing numbering stable.
 9. **Exact cascading-revocation rule undecided.** `IdentityService.md`
    ("Trust Relationships") requires the Identity Service to evaluate
    whether an owned Principal should also transition on revocation, but
@@ -276,7 +330,12 @@ does not correspond to `IMPLEMENTATION_GAPS.md`'s own numbering.
     `src/contracts/AgentRunCommand.kt`'s `commandType SUSPEND`/`RESUME`/
     `CANCEL` (the last requiring a non-blank `cancellationReason`) name and
     shape the same `AgentRunCommandChannel.submit` operation that closes
-    Gap 7. No implementation exists yet.
+    Gap 7. At the time this gap was closed, no implementation existed
+    yet. Sprint 1 Units 6–7 have since implemented the same
+    `AgentRunCommandChannel.submit` plumbing named here, but only for
+    `commandType START` — `SUSPEND`/`RESUME`/`CANCEL` themselves remain
+    functionally unimplemented, each returning an explicit `Rejected`
+    rather than a silent no-op.
 
 ## 7. Safety Rules Across Contracts
 
@@ -375,6 +434,7 @@ they are cross-cutting — each spans more than one contract in Section 3
 - `docs/adr/ADR-012-task-and-workflow-separation.md`
 - `src/contracts/ExecutionRequest.kt`
 - `docs/specifications/volume-03-core-interfaces/ToolRegistry.md`
+- `docs/specifications/volume-03-core-interfaces/ToolInvocationBinding.md`
 - `docs/architecture/tool-registry.md`
 - `docs/specifications/volume-03-core-interfaces/EventType.md`
 - `docs/architecture/action-mapping.md`
