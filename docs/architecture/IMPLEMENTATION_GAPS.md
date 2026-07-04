@@ -682,7 +682,19 @@ this is explicitly scoped.
 
 ### 40. `PermissionEngine.evaluate` is not yet wired to resolve identity first
 
-**Status: Deliberately not done -- explicit instruction for this phase.**
+**Status: Closed by Sprint 2, Unit A1 (commit pending).** `DefaultPermissionEngine`
+(`src/runtime/DefaultPermissionEngine.kt`) now resolves
+`request.principalId` via `IdentityService` as the first step of
+`evaluate`, before any delegated permission decision runs, and
+short-circuits to `DENIED` for a Suspended, Revoked, Archived, Created,
+or unresolvable Principal. Only an Active Principal's request reaches
+the caller-supplied decision function, and that function's decision is
+returned unchanged -- confirmed by
+`tests/runtime/DefaultPermissionEngineTest.kt` (Android Studio: 244/244
+tests passing). No permission policy content was introduced by this
+unit; that remains `IMPLEMENTATION_GAPS.md` #25, still open. Original
+finding retained below for historical context (describes the
+pre-Unit-A1 state):
 
 `IdentityService.md` ("Integration with Permission Engine") specifies
 that `PermissionEngine.evaluate(request)` MUST resolve
@@ -733,7 +745,8 @@ scroll through the full history above.
 level), #13, #14, #15, #17, #18, #19, #21 (ToolRegistry.md backfill), #27
 (EventBus subscriber identity), #28 (tool lifecycle diagram), #31
 (Created -> Failed edge), #32 (Tool invocation -- closed by Sprint 1,
-Unit 11A, commit `13c9322`).
+Unit 11A, commit `13c9322`), #40 (PermissionEngine identity resolution --
+closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit pending).
 
 **Partially resolved:** #5 (Principal half done via
 `PrincipalLifecycleTransitions`; Resource half still deferred), #30
@@ -742,7 +755,7 @@ itself is unchanged, per explicit instruction).
 
 **Deliberate scope boundaries / known, documented limitations (not
 defects, not pending):** #7, #22, #23, #24, #25, #26, #33, #34, #35,
-#36, #37, #38, #39, #40, #41 (ToolInvocationBinding/ToolRegistry access
+#36, #37, #38, #39, #41 (ToolInvocationBinding/ToolRegistry access
 enforcement).
 
 **Still requires a human decision:** #8/#16 (`Permission.schema.json` vs

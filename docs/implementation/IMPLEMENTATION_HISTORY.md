@@ -267,6 +267,34 @@ Implementation Notes
 
 ---
 
+## Sprint 2
+
+### Sprint 2 Unit A1 – Identity-Aware Permission Engine
+
+Commit:
+pending
+
+Completed:
+2026-07-04
+
+Android Studio Tests:
+244/244
+
+Summary
+- Added DefaultPermissionEngine.
+- IdentityService is consulted before delegated permission decisions.
+- Suspended, Revoked, Archived, Created and unresolved Principals are denied before policy evaluation.
+- Active Principals delegate unchanged to the supplied decision function.
+- Closed IMPLEMENTATION_GAPS.md #40.
+
+Implementation Notes
+- No permission policy was introduced.
+- Policy remains deferred to Unit A2.
+- FakePermissionEngine remains unchanged.
+- DefaultExecutionPipeline remains unchanged.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
