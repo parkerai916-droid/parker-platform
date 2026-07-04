@@ -41,8 +41,8 @@ package parker.core.interfaces
  *   [AgentRunCommand.goalDescription].
  * - [correlationId]: shared with the originating [AgentRunCommand] and
  *   every `agent.*`/`execution.*` event either side publishes about it
- *   (Section 9) -- not itself published by this unit (Unit 9's job), but
- *   recorded here so a later unit can.
+ *   (Section 9) -- published for the `agent.*` side by
+ *   [InMemoryAgentRuntime] as of Sprint 1, Unit 9.
  */
 data class AgentRun(
     val agentRunId: AgentRunId,

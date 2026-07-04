@@ -1,5 +1,9 @@
 package parker.core.runtime
 
+import java.time.Instant
+import parker.core.interfaces.EventBus
+import parker.core.interfaces.EventType
+import parker.core.interfaces.ParkerEvent
 import parker.core.interfaces.PlanningSessionId
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.RequestOrigin
@@ -127,8 +131,48 @@ data class PlanCandidate(
  * [run], the produced [PlanCandidate] and [TaskProposal] are identical
  * every time -- no randomness, no clock reads beyond what the caller
  * supplies, no external state.
+ *
+ * ## Sprint 1, Unit 9 (Runtime Lifecycle Event Publication)
+ *
+ * [run] publishes one `planner.*` [ParkerEvent] per real transition this
+ * harness models (`PlannerRuntimeSpecification.md` §11): `session_created`,
+ * `context_requested`, `analysis_started`, `proposal_created`,
+ * `proposal_submitted`. The other 7 `planner.*` events that section names
+ * are not published -- either informational-only milestones this fixed
+ * harness has no branch for (`context_received`, `candidate_generated`,
+ * `candidate_rejected`, `permission_flagged`), or real transitions into
+ * states this harness never reaches (`input_required`, `session_completed`,
+ * `session_failed`, `session_cancelled`), consistent with this file's own
+ * top-level "Scope" KDoc.
+ *
+ * `publisherPrincipalId` is [PLANNER_RUNTIME_PRINCIPAL_ID], a hardcoded
+ * Sprint 1 placeholder for "the identity the Planner Runtime itself
+ * operates under" (§11) -- no real Planner Runtime Identity registration
+ * or allocation scheme is specified anywhere yet, mirroring the same
+ * documented-placeholder treatment [InMemoryTaskManagerRuntime]'s `TaskId`
+ * derivation and [InMemoryAgentRuntime]'s `AgentRunId`/agent `PrincipalId`
+ * derivation already receive.
+ *
+ * `correlationId` on every event is [run]'s own caller-supplied
+ * `correlationId` parameter, not `planningSessionId` (which §11 names as
+ * the general convention). Sprint 1's own existing contracts already
+ * thread one shared `correlationId` string end-to-end
+ * (`TaskProposal.correlationId` -> `AgentRunCommand.correlationId` ->
+ * `ExecutionRequest.correlationId`, each copied forward unchanged by
+ * Units 6-7's own code); using that same shared value here, instead of
+ * switching to a different per-domain key mid-slice, is what makes "every
+ * event under the same Planning Session/Task/Agent Run/Execution Request
+ * shares a resolvable correlationId chain" (Vertical Slice Plan §7) true
+ * by construction.
  */
-class DeterministicPlannerHarness {
+class DeterministicPlannerHarness(
+    private val eventBus: EventBus,
+) {
+
+    private companion object {
+        /** Sprint 1 placeholder -- see this class's own KDoc, "Unit 9" section. */
+        val PLANNER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.planner-runtime")
+    }
 
     private val visitedStates = mutableListOf(PlanningSessionLifecycleState.CREATED)
     private var candidate: PlanCandidate? = null
@@ -161,7 +205,7 @@ class DeterministicPlannerHarness {
      * Throws [IllegalStateException] if called more than once on the same
      * instance.
      */
-    fun run(
+    suspend fun run(
         planningSessionId: PlanningSessionId,
         initiatingPrincipalId: PrincipalId,
         goal: String,
@@ -173,13 +217,24 @@ class DeterministicPlannerHarness {
             "DeterministicPlannerHarness.run() may only be called once, from CREATED; current state is $currentState"
         }
 
+        // Enters CREATED (planner.session_created) -- Unit 9: the record this fixed
+        // harness represents is considered "created" at the top of run(), not at
+        // object construction; see this class's own "Unit 9" KDoc for why.
+        publish(
+            eventType = "planner.session_created",
+            correlationId = correlationId,
+            payload = mapOf("initiatingPrincipalId" to initiatingPrincipalId.value, "goal" to goal),
+        )
+
         // CREATED -> CONTEXT_GATHERING: fixed, deterministic Planning Context --
         // Section 9's context categories are not resolved here; this harness's
         // fixed happy path needs none of them to proceed.
         advanceTo(PlanningSessionLifecycleState.CONTEXT_GATHERING)
+        publish(eventType = "planner.context_requested", correlationId = correlationId)
 
         // CONTEXT_GATHERING -> ANALYSING: generate the sole Plan Candidate.
         advanceTo(PlanningSessionLifecycleState.ANALYSING)
+        publish(eventType = "planner.analysis_started", correlationId = correlationId)
         val generatedCandidate = PlanCandidate(
             planCandidateId = "$planningSessionId-candidate-1",
             goal = goal,
@@ -190,6 +245,11 @@ class DeterministicPlannerHarness {
         // candidate. No Plan Decision comparison occurs -- there is nothing to
         // decide among.
         advanceTo(PlanningSessionLifecycleState.PROPOSING)
+        publish(
+            eventType = "planner.proposal_created",
+            correlationId = correlationId,
+            payload = mapOf("planCandidateId" to generatedCandidate.planCandidateId),
+        )
         proposal = TaskProposal(
             taskProposalId = TaskProposalId("$planningSessionId-proposal-1"),
             planningSessionId = planningSessionId,
@@ -209,11 +269,30 @@ class DeterministicPlannerHarness {
         // submit. This harness does not call TaskProposalIntake.submitProposal
         // (Unit 6, not yet implemented) -- see this file's top-level KDoc.
         advanceTo(PlanningSessionLifecycleState.SUBMITTED)
+        publish(
+            eventType = "planner.proposal_submitted",
+            correlationId = correlationId,
+            payload = mapOf("taskProposalId" to requireNotNull(proposal).taskProposalId.value),
+        )
     }
 
     private fun advanceTo(next: PlanningSessionLifecycleState) {
         val current = currentState
         PlanningSessionLifecycleTransitions.requireValidTransition(current, next)
         visitedStates += next
+    }
+
+    /** Sprint 1, Unit 9: publishes one `planner.*` [ParkerEvent] -- see this class's own "Unit 9" KDoc. */
+    private suspend fun publish(eventType: String, correlationId: String, payload: Map<String, String> = emptyMap()) {
+        eventBus.publish(
+            ParkerEvent(
+                eventId = "evt-$correlationId-$eventType",
+                publisherPrincipalId = PLANNER_RUNTIME_PRINCIPAL_ID,
+                eventType = EventType(eventType),
+                timestamp = Instant.now(),
+                correlationId = correlationId,
+                payload = payload,
+            ),
+        )
     }
 }

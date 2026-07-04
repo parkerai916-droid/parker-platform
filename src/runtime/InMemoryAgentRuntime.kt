@@ -11,10 +11,13 @@ import parker.core.interfaces.AgentRunCommandType
 import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.AgentRunLifecycleTransitions
 import parker.core.interfaces.AgentRunStatus
+import parker.core.interfaces.EventBus
+import parker.core.interfaces.EventType
 import parker.core.interfaces.ExecutionPipeline
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.IdentityService
+import parker.core.interfaces.ParkerEvent
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.RequestId
@@ -71,20 +74,47 @@ import parker.core.interfaces.RequestPriority
  * Planner-level retry logic this repository does not specify or
  * implement anywhere yet.
  *
- * **Publishes no Agent Events.** `agent.*` EventBus publication (§9) is
- * real, specified behaviour this unit does not implement -- that is
- * Unit 9's "Event assertion harness" territory.
- *
  * **Derives `AgentRunId` and the Agent Identity deterministically from
  * `taskId`**, exactly the same documented Sprint-1 placeholder pattern as
  * [InMemoryTaskManagerRuntime]'s `TaskId` derivation from `taskProposalId`
  * -- not a claim about the real allocation scheme, and, per that same
  * precedent, replaceable later without changing any public contract
  * (`AgentRunId`/`PrincipalId` are both opaque string wrappers).
+ *
+ * ## Sprint 1, Unit 9 (Runtime Lifecycle Event Publication)
+ *
+ * Publishes `agent.created`, `agent.initialised`, `agent.ready`,
+ * `agent.started`, `agent.step_completed`, and `agent.completed`/
+ * `agent.failed` (`AgentRuntimeSpecification.md` §9) -- exactly the
+ * `AgentRunStatus` transitions this class already drives, plus
+ * `agent.step_completed` for the one Agent Step's conclusion (matching
+ * the Vertical Slice Plan's own §5 sequence diagram: "`agent.step_completed,
+ * agent.completed`"). `agent.created` fires even on the two `Rejected`
+ * early-exit paths below (unresolvable identity; wrong Principal type) --
+ * the Agent Run record genuinely enters `CREATED` before either check
+ * runs, regardless of what happens next. Not published: `agent.step_started`,
+ * `agent.action_proposed`, `agent.permission_required`,
+ * `agent.action_approved/denied/deferred`, `agent.input_required`,
+ * `agent.suspended/resumed/cancelled` -- informational milestones with no
+ * corresponding code path today, or states this synchronous runtime never
+ * enters (`WAITING_FOR_PERMISSION`/`WAITING_FOR_INPUT`/`SUSPENDED`), per
+ * this class's own "only `CREATED -> ... -> {COMPLETED, FAILED}` is
+ * driven" scope note above.
+ *
+ * `publisherPrincipalId` is the resolved `agentIdentityPrincipalId` itself
+ * (§9: "the Agent Instance's own Agent Identity"), used even before
+ * identity resolution succeeds for `agent.created` -- [InMemoryEventBus]'s
+ * default [AllowAllPrincipalAuthenticator] performs no real trust check
+ * here regardless (a pre-existing, documented gap, not something this unit
+ * closes). `correlationId` is `command.correlationId`, the same shared
+ * value threaded from [InMemoryTaskManagerRuntime]'s `AgentRunCommand`
+ * construction -- see [DeterministicPlannerHarness]'s "Unit 9" KDoc for
+ * the full shared-correlationId rationale.
  */
 class InMemoryAgentRuntime(
     private val identityService: IdentityService,
     private val executionPipeline: ExecutionPipeline,
+    private val eventBus: EventBus,
 ) : AgentRunCommandChannel {
 
     private val mutex = Mutex()
@@ -120,6 +150,7 @@ class InMemoryAgentRuntime(
             correlationId = command.correlationId,
         )
         agentRuns[agentRunId] = run
+        publish(run, "agent.created")
 
         val identity = identityService.resolve(agentIdentityPrincipalId)
             ?: return AgentRunCommandResult.Rejected(
@@ -139,11 +170,14 @@ class InMemoryAgentRuntime(
 
         // INITIALISED -- Agent Identity resolved.
         run = advance(run, AgentRunStatus.INITIALISED)
+        publish(run, "agent.initialised")
         // READY -- Sprint 1 placeholder: no Agent Capability/Policy binding logic exists yet, so
         // this transition is unconditional rather than a real validation step.
         run = advance(run, AgentRunStatus.READY)
+        publish(run, "agent.ready")
         // RUNNING -- begin the one Agent Step this unit models.
         run = advance(run, AgentRunStatus.RUNNING)
+        publish(run, "agent.started")
 
         val executionRequest = ExecutionRequest(
             requestId = RequestId("exec-for-${agentRunId.value}"),
@@ -157,12 +191,14 @@ class InMemoryAgentRuntime(
             correlationId = command.correlationId,
         )
         val result = executionPipeline.submit(executionRequest)
+        publish(run, "agent.step_completed")
 
         run = if (result.status == ExecutionResultStatus.SUCCESS) {
             advance(run, AgentRunStatus.COMPLETED)
         } else {
             advance(run, AgentRunStatus.FAILED)
         }
+        publish(run, if (run.status == AgentRunStatus.COMPLETED) "agent.completed" else "agent.failed")
 
         return AgentRunCommandResult.Accepted(run.agentRunId, command.commandType)
     }
@@ -179,4 +215,18 @@ class InMemoryAgentRuntime(
 
     /** Every Agent Run this runtime has created so far, in no particular order. */
     suspend fun listAgentRuns(): List<AgentRun> = mutex.withLock { agentRuns.values.toList() }
+
+    /** Sprint 1, Unit 9: publishes one `agent.*` [ParkerEvent] -- see this class's own "Unit 9" KDoc. */
+    private suspend fun publish(run: AgentRun, eventType: String) {
+        eventBus.publish(
+            ParkerEvent(
+                eventId = "evt-${run.agentRunId.value}-$eventType",
+                publisherPrincipalId = run.agentIdentityPrincipalId,
+                eventType = EventType(eventType),
+                timestamp = Instant.now(),
+                correlationId = run.correlationId,
+                payload = mapOf("taskId" to run.taskId.value),
+            ),
+        )
+    }
 }

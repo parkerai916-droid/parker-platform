@@ -1,5 +1,6 @@
 package parker.core.runtime
 
+import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.PlanningSessionId
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.RequestOrigin
@@ -25,6 +26,14 @@ import kotlin.test.assertTrue
  * `COMPLETED`, `REJECTED`, `CANCELLED`, or `FAILED` -- those are out of
  * this unit's scope per `DeterministicPlannerHarness.kt`'s own top-level
  * KDoc, and Unit 6 onward.
+ *
+ * Sprint 1, Unit 9: `run()` is now `suspend` (it publishes `planner.*`
+ * events via [EventBus]), so every test that calls it runs inside
+ * `runTest {}`; each constructs its own [InMemoryEventBus], mirroring the
+ * per-test-fresh-dependency convention already used throughout
+ * `tests/runtime/`. This file does not itself assert on published events
+ * -- that is `RuntimeLifecycleEventPublicationTest.kt`'s job; here, the
+ * bus is present only so the harness has somewhere to publish to.
  */
 class DeterministicPlannerHarnessTest {
 
@@ -37,7 +46,7 @@ class DeterministicPlannerHarnessTest {
 
     @Test
     fun `a fresh harness starts at CREATED with no candidates or proposals`() {
-        val harness = DeterministicPlannerHarness()
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
 
         assertEquals(listOf(PlanningSessionLifecycleState.CREATED), harness.stateHistory)
         assertEquals(PlanningSessionLifecycleState.CREATED, harness.currentState)
@@ -48,8 +57,8 @@ class DeterministicPlannerHarnessTest {
     // --- the fixed lifecycle path ---
 
     @Test
-    fun `run transitions exactly CREATED to CONTEXT_GATHERING to ANALYSING to PROPOSING to SUBMITTED`() {
-        val harness = DeterministicPlannerHarness()
+    fun `run transitions exactly CREATED to CONTEXT_GATHERING to ANALYSING to PROPOSING to SUBMITTED`() = runTest {
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
 
         harness.run(planningSessionId, principalId, goal, correlationId)
 
@@ -67,8 +76,8 @@ class DeterministicPlannerHarnessTest {
     }
 
     @Test
-    fun `run may not be called a second time on the same instance`() {
-        val harness = DeterministicPlannerHarness()
+    fun `run may not be called a second time on the same instance`() = runTest {
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
         harness.run(planningSessionId, principalId, goal, correlationId)
 
         assertFailsWith<IllegalStateException> {
@@ -79,8 +88,8 @@ class DeterministicPlannerHarnessTest {
     // --- exactly one Plan Candidate ---
 
     @Test
-    fun `run produces exactly one well-formed PlanCandidate for the fixed Goal`() {
-        val harness = DeterministicPlannerHarness()
+    fun `run produces exactly one well-formed PlanCandidate for the fixed Goal`() = runTest {
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
 
         harness.run(planningSessionId, principalId, goal, correlationId)
 
@@ -93,8 +102,8 @@ class DeterministicPlannerHarnessTest {
     // --- exactly one well-formed Task Proposal ---
 
     @Test
-    fun `run produces exactly one well-formed TaskProposal`() {
-        val harness = DeterministicPlannerHarness()
+    fun `run produces exactly one well-formed TaskProposal`() = runTest {
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
 
         harness.run(
             planningSessionId = planningSessionId,
@@ -120,8 +129,8 @@ class DeterministicPlannerHarnessTest {
     }
 
     @Test
-    fun `run uses sensible defaults for source and priority when not supplied`() {
-        val harness = DeterministicPlannerHarness()
+    fun `run uses sensible defaults for source and priority when not supplied`() = runTest {
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
 
         harness.run(planningSessionId, principalId, goal, correlationId)
 
@@ -133,9 +142,9 @@ class DeterministicPlannerHarnessTest {
     // --- determinism ---
 
     @Test
-    fun `two harnesses given identical arguments produce identical PlanCandidate and TaskProposal`() {
-        val first = DeterministicPlannerHarness()
-        val second = DeterministicPlannerHarness()
+    fun `two harnesses given identical arguments produce identical PlanCandidate and TaskProposal`() = runTest {
+        val first = DeterministicPlannerHarness(InMemoryEventBus())
+        val second = DeterministicPlannerHarness(InMemoryEventBus())
 
         first.run(planningSessionId, principalId, goal, correlationId)
         second.run(planningSessionId, principalId, goal, correlationId)

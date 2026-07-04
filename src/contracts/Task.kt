@@ -36,9 +36,10 @@ package parker.core.interfaces
  *   Task Priority.
  * - [correlationId]: not itself a named Section 4 field, but required for
  *   consistency with every other correlation-bearing type in this
- *   repository, and needed so a `task.created` event (Section 10, not
- *   published by this unit) could eventually share it with this Task's
- *   originating [TaskProposal] and Planning Session.
+ *   repository, and needed so a `task.created` event (Section 10,
+ *   published by `InMemoryTaskManagerRuntime` as of Sprint 1, Unit 9) can
+ *   share it with this Task's originating [TaskProposal] and Planning
+ *   Session.
  * - [originatingTaskProposalId]: not a Section 4 field at all -- this
  *   file's own addition, so a [Task] can be traced back to the
  *   [TaskProposal] that produced it (Section 15:

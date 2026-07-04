@@ -77,7 +77,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `submitting a well-formed proposal with a resolvable owner results in exactly one Task in Queued state`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity)
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
 
         val disposition = runtime.submitProposal(proposal())
 
@@ -98,7 +98,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         val registered = principal("user-1")
         identity.register(registered)
-        val runtime = InMemoryTaskManagerRuntime(identity)
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
 
         val disposition = runtime.submitProposal(proposal(ownerPrincipalId = "user-1"))
 
@@ -113,7 +113,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `accepting a proposal constructs exactly one AgentRunCommand referencing the created Task`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity)
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
 
         val disposition = runtime.submitProposal(proposal())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(disposition)
@@ -133,7 +133,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `requiredCapabilities on the proposal carry forward to targetAgentCapability on the command`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity)
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
 
         val withCapabilities = proposal().copy(requiredCapabilities = setOf(PermissionAction.READ))
         val disposition = runtime.submitProposal(withCapabilities)
@@ -148,7 +148,7 @@ class InMemoryTaskManagerRuntimeTest {
     @Test
     fun `an unresolvable owner is Rejected, and no Task or AgentRunCommand is created`() = runTest {
         val identity = InMemoryIdentityService() // no Principal registered
-        val runtime = InMemoryTaskManagerRuntime(identity)
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
 
         val disposition = runtime.submitProposal(proposal(ownerPrincipalId = "ghost-user"))
 
@@ -162,7 +162,7 @@ class InMemoryTaskManagerRuntimeTest {
 
     @Test
     fun `getTask returns null for an unknown taskId, not an exception`() = runTest {
-        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService())
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus())
 
         assertNull(runtime.getTask(TaskId("task-for-nonexistent")))
         assertTrue(runtime.agentRunCommandsFor(TaskId("task-for-nonexistent")).isEmpty())
@@ -174,7 +174,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `resubmitting the same taskProposalId is rejected as caller misuse`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity)
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
 
         runtime.submitProposal(proposal())
 
@@ -190,7 +190,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal("user-1"))
         identity.register(principal("user-2"))
-        val runtime = InMemoryTaskManagerRuntime(identity)
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
 
         val first = assertIs<TaskProposalDisposition.Accepted>(
             runtime.submitProposal(proposal(taskProposalId = "proposal-1", ownerPrincipalId = "user-1", correlationId = "corr-1")),

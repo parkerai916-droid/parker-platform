@@ -122,7 +122,7 @@ class InMemoryAgentRuntimeTest {
         val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus)
 
         val identity = InMemoryIdentityService()
-        val runtime = InMemoryAgentRuntime(identity, pipeline)
+        val runtime = InMemoryAgentRuntime(identity, pipeline, eventBus)
         return Triple(runtime, identity, permissionEngine)
     }
 

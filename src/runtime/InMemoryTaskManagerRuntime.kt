@@ -1,10 +1,15 @@
 package parker.core.runtime
 
+import java.time.Instant
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.AgentRunCommand
 import parker.core.interfaces.AgentRunCommandType
+import parker.core.interfaces.EventBus
+import parker.core.interfaces.EventType
 import parker.core.interfaces.IdentityService
+import parker.core.interfaces.ParkerEvent
+import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.Task
 import parker.core.interfaces.TaskId
 import parker.core.interfaces.TaskLifecycleTransitions
@@ -75,10 +80,37 @@ import parker.core.interfaces.TaskStatus
  * submission, not a mutation of this result"); this class enforces that
  * by throwing rather than inventing a sixth outcome or silently
  * overwriting the original Task.
+ *
+ * ## Sprint 1, Unit 9 (Runtime Lifecycle Event Publication)
+ *
+ * Publishes `task.created` and `task.ready` -- the two real Task Status
+ * transitions this class performs (`TaskManagerRuntimeSpecification.md`
+ * §10). Not published: `task.agent_run_started` -- its trigger is "an
+ * Agent Run is created ... on behalf of this Task," and this class only
+ * *constructs* an [AgentRunCommand] value object, never submits it to an
+ * [parker.core.interfaces.AgentRunCommandChannel]; no Agent Run exists yet
+ * for this method to truthfully report. Also not published: any event for
+ * the unresolvable-owner `Rejected` path -- no [Task] record is ever
+ * created there, so there is no `taskId` to correlate an event against.
+ *
+ * `publisherPrincipalId` is [TASK_MANAGER_RUNTIME_PRINCIPAL_ID], the same
+ * kind of hardcoded Sprint 1 placeholder as
+ * [DeterministicPlannerHarness]'s `PLANNER_RUNTIME_PRINCIPAL_ID`, for "the
+ * identity the Task Manager Runtime itself operates under" (§10) -- not a
+ * claim about a real allocation scheme. `correlationId` is
+ * `proposal.correlationId`, the same shared, already-threaded value Units
+ * 5-7 use throughout (see [DeterministicPlannerHarness]'s own "Unit 9"
+ * KDoc for the full rationale), not `taskId` (§10's general convention).
  */
 class InMemoryTaskManagerRuntime(
     private val identityService: IdentityService,
+    private val eventBus: EventBus,
 ) : TaskProposalIntake {
+
+    private companion object {
+        /** Sprint 1 placeholder -- see this class's own KDoc, "Unit 9" section. */
+        val TASK_MANAGER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.task-manager-runtime")
+    }
 
     private val mutex = Mutex()
     private val tasks = mutableMapOf<TaskId, Task>()
@@ -111,10 +143,17 @@ class InMemoryTaskManagerRuntime(
             originatingTaskProposalId = proposal.taskProposalId,
         )
         tasks[taskId] = created
+        publish(
+            eventType = "task.created",
+            taskId = taskId,
+            correlationId = proposal.correlationId,
+            payload = mapOf("ownerPrincipalId" to owner.principalId.value, "source" to proposal.source.name),
+        )
 
         // Created -> Queued: accept-only, Sprint 1's fixed happy path.
         TaskLifecycleTransitions.requireValidTransition(TaskStatus.CREATED, TaskStatus.QUEUED)
         tasks[taskId] = created.copy(status = TaskStatus.QUEUED)
+        publish(eventType = "task.ready", taskId = taskId, correlationId = proposal.correlationId)
 
         // Construct (do not submit) exactly one AgentRunCommand.
         val command = AgentRunCommand(
@@ -140,5 +179,19 @@ class InMemoryTaskManagerRuntime(
     /** Every [AgentRunCommand] constructed for [taskId] so far -- empty if none, never `null`. */
     suspend fun agentRunCommandsFor(taskId: TaskId): List<AgentRunCommand> = mutex.withLock {
         agentRunCommands[taskId]?.toList() ?: emptyList()
+    }
+
+    /** Sprint 1, Unit 9: publishes one `task.*` [ParkerEvent] -- see this class's own "Unit 9" KDoc. */
+    private suspend fun publish(eventType: String, taskId: TaskId, correlationId: String, payload: Map<String, String> = emptyMap()) {
+        eventBus.publish(
+            ParkerEvent(
+                eventId = "evt-${taskId.value}-$eventType",
+                publisherPrincipalId = TASK_MANAGER_RUNTIME_PRINCIPAL_ID,
+                eventType = EventType(eventType),
+                timestamp = Instant.now(),
+                correlationId = correlationId,
+                payload = payload,
+            ),
+        )
     }
 }
