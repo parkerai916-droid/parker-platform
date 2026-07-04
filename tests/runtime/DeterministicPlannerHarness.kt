@@ -8,6 +8,7 @@ import parker.core.interfaces.PlanningSessionId
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
+import parker.core.interfaces.ResourceId
 import parker.core.interfaces.RiskEstimate
 import parker.core.interfaces.TaskProposal
 import parker.core.interfaces.TaskProposalId
@@ -204,6 +205,15 @@ class DeterministicPlannerHarness(
      *
      * Throws [IllegalStateException] if called more than once on the same
      * instance.
+     *
+     * [targetResourceReferences] (Sprint 1, Unit 11B): caller-supplied
+     * [ResourceId]s to carry onto the produced [TaskProposal]'s own
+     * [TaskProposal.resourceReferences] -- exactly like [goal] and
+     * [correlationId], this harness does not discover or resolve these
+     * itself (no [parker.core.interfaces.ResourceRegistry] dependency is
+     * added here); it only carries forward what its caller already
+     * knows. Defaults to `emptyList()` so every existing call site is
+     * unaffected.
      */
     suspend fun run(
         planningSessionId: PlanningSessionId,
@@ -212,6 +222,7 @@ class DeterministicPlannerHarness(
         correlationId: String,
         source: RequestOrigin = RequestOrigin.TEXT,
         priority: RequestPriority = RequestPriority.NORMAL,
+        targetResourceReferences: List<ResourceId> = emptyList(),
     ) {
         check(currentState == PlanningSessionLifecycleState.CREATED) {
             "DeterministicPlannerHarness.run() may only be called once, from CREATED; current state is $currentState"
@@ -258,6 +269,7 @@ class DeterministicPlannerHarness(
             goal = goal,
             source = source,
             priority = priority,
+            resourceReferences = targetResourceReferences,
             rationale = "Selected the sole Plan Candidate generated for this fixed Sprint 1 " +
                 "Planning Session (${generatedCandidate.planCandidateId}); no alternative " +
                 "candidates were generated or rejected.",

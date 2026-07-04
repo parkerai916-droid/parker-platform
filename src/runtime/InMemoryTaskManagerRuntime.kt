@@ -163,6 +163,12 @@ class InMemoryTaskManagerRuntime(
             targetAgentCapability = proposal.requiredCapabilities,
             goalDescription = proposal.goal,
             contextReferences = proposal.contextReferences,
+            // Sprint 1, Unit 11B: propagate the Task Proposal's own resourceReferences
+            // (Unit 11B addition to TaskProposal.kt) forward unchanged -- this is the one
+            // missing link that previously left AgentRunCommand.resourceReferences always
+            // empty in a real (non-hand-built) chain. See TaskProposal.kt's own KDoc for
+            // this field's provenance.
+            resourceReferences = proposal.resourceReferences,
             correlationId = proposal.correlationId,
         )
         agentRunCommands.getOrPut(taskId) { mutableListOf() }.add(command)

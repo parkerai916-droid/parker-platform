@@ -10,6 +10,7 @@ import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
+import parker.core.interfaces.ResourceId
 import parker.core.interfaces.TaskId
 import parker.core.interfaces.TaskProposal
 import parker.core.interfaces.TaskProposalDisposition
@@ -141,6 +142,36 @@ class InMemoryTaskManagerRuntimeTest {
 
         val command = runtime.agentRunCommandsFor(accepted.taskId).single()
         assertEquals(setOf(PermissionAction.READ), command.targetAgentCapability)
+    }
+
+    // --- resourceReferences propagation (Sprint 1, Unit 11B) ---
+
+    @Test
+    fun `proposal resourceReferences propagate unchanged to the command's resourceReferences`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val calendarResourceId = ResourceId("res.calendar.1")
+
+        val withResources = proposal().copy(resourceReferences = listOf(calendarResourceId))
+        val disposition = runtime.submitProposal(withResources)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(disposition)
+
+        val command = runtime.agentRunCommandsFor(accepted.taskId).single()
+        assertEquals(listOf(calendarResourceId), command.resourceReferences)
+    }
+
+    @Test
+    fun `a proposal with no resourceReferences produces a command with an empty resourceReferences, not a default fabrication`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+
+        val disposition = runtime.submitProposal(proposal())
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(disposition)
+
+        val command = runtime.agentRunCommandsFor(accepted.taskId).single()
+        assertEquals(emptyList(), command.resourceReferences)
     }
 
     // --- unresolvable owner ---

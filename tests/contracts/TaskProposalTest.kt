@@ -63,7 +63,29 @@ class TaskProposalTest {
         assertEquals(emptySet(), p.requiredCapabilities)
         assertEquals(emptySet(), p.anticipatedPermissionActions)
         assertEquals(emptyList(), p.contextReferences)
+        assertEquals(emptyList(), p.resourceReferences)
         assertEquals(null, p.riskEstimate)
+    }
+
+    // --- resourceReferences (Sprint 1, Unit 11B) ---
+
+    @Test
+    fun `resourceReferences defaults to emptyList and does not affect contextReferences`() {
+        val p = proposal()
+
+        assertEquals(emptyList(), p.resourceReferences)
+        assertEquals(emptyList(), p.contextReferences)
+    }
+
+    @Test
+    fun `a Task Proposal may declare resourceReferences independently of contextReferences`() {
+        val p = proposal().copy(
+            resourceReferences = listOf(ResourceId("res.calendar.1")),
+            contextReferences = listOf("ctx-ref-1"),
+        )
+
+        assertEquals(listOf(ResourceId("res.calendar.1")), p.resourceReferences)
+        assertEquals(listOf("ctx-ref-1"), p.contextReferences)
     }
 
     @Test

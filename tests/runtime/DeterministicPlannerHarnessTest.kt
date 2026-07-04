@@ -5,6 +5,7 @@ import parker.core.interfaces.PlanningSessionId
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
+import parker.core.interfaces.ResourceId
 import parker.core.interfaces.RiskEstimate
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -137,6 +138,33 @@ class DeterministicPlannerHarnessTest {
         val proposal = harness.taskProposals.single()
         assertEquals(RequestOrigin.TEXT, proposal.source)
         assertEquals(RequestPriority.NORMAL, proposal.priority)
+    }
+
+    // --- targetResourceReferences (Sprint 1, Unit 11B) ---
+
+    @Test
+    fun `run defaults targetResourceReferences to emptyList, carried onto the proposal's resourceReferences`() = runTest {
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
+
+        harness.run(planningSessionId, principalId, goal, correlationId)
+
+        assertEquals(emptyList(), harness.taskProposals.single().resourceReferences)
+    }
+
+    @Test
+    fun `run carries a caller-supplied targetResourceReferences onto the proposal's resourceReferences unchanged`() = runTest {
+        val harness = DeterministicPlannerHarness(InMemoryEventBus())
+        val calendarResourceId = ResourceId("res.calendar.1")
+
+        harness.run(
+            planningSessionId,
+            principalId,
+            goal,
+            correlationId,
+            targetResourceReferences = listOf(calendarResourceId),
+        )
+
+        assertEquals(listOf(calendarResourceId), harness.taskProposals.single().resourceReferences)
     }
 
     // --- determinism ---

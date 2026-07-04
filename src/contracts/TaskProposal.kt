@@ -144,6 +144,25 @@ sealed class ProposalDependency {
  * - [contextReferences]: Section 4's Context Reference -- opaque
  *   identifiers into Planning Context, resolved only by the Planner
  *   Runtime that produced them (Section 9), never copied inline.
+ * - [resourceReferences]: Sprint 1, Unit 11B. Not itself a named Section
+ *   10 "Proposal Model" field, but Section 9 ("Planning Context Model")
+ *   already states, in its own words, that Planning Context's "Resource
+ *   references" are "identifiers of Resources **a Plan Candidate or Task
+ *   Proposal may target**, resolved through the Resource Registry" --
+ *   i.e. the specification's own prose already anticipates a Task
+ *   Proposal carrying resource-target information; Section 10 simply
+ *   never gave it a shaped field. This closes that naming gap the same
+ *   way `AgentRunCommand.kt`'s Blocker 3 closed an analogous one
+ *   (prose-anticipated, never shaped): a pure additive field, defaulted
+ *   to `emptyList()` so no existing caller is affected. Distinct from
+ *   [contextReferences] -- that field remains exactly what it always
+ *   was (opaque, Planner-Runtime-only identifiers into Planning Context)
+ *   and is neither reinterpreted nor reused to carry this. This field
+ *   carries concrete [ResourceId]s already known to be relevant to the
+ *   proposal, mirroring [parker.core.interfaces.AgentRunCommand.resourceReferences]'s
+ *   own identical shape and name one step downstream, so a value placed
+ *   here can be propagated by a [TaskProposalIntake] implementation
+ *   without renaming or reinterpretation.
  * - [rationale]: Section 10's free-text explanation of why this
  *   proposal's Plan Candidate was selected.
  * - [riskEstimate]: Section 10 proposes this reuse the existing
@@ -178,6 +197,7 @@ data class TaskProposal(
     val expectedOutputs: String = "",
     val anticipatedPermissionActions: Set<PermissionAction> = emptySet(),
     val contextReferences: List<String> = emptyList(),
+    val resourceReferences: List<ResourceId> = emptyList(),
     val rationale: String = "",
     val riskEstimate: RiskEstimate? = null,
     val correlationId: String,
