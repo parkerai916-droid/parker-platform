@@ -754,9 +754,24 @@ acceptable for the platform's current trust model.
 
 ### 42. `InMemoryTaskManagerRuntime` does not subscribe to Agent lifecycle events
 
-**Status: Open. This is not an architecture gap; it is an implementation
-gap, and it is the explicit prerequisite for Sprint 2 Track B, Unit B1
-(`docs/implementation/SPRINT_2_IMPLEMENTATION_PLAN.md`).**
+**Status: Closed by Sprint 2, Track B, Unit B1 (commit pending).**
+`InMemoryTaskManagerRuntime` (`src/runtime/InMemoryTaskManagerRuntime.kt`)
+now subscribes, once each at construction, to `agent.completed` and
+`agent.failed` on its injected `EventBus`, and records each received event
+against the correct Task by reading the `taskId` entry
+`InMemoryAgentRuntime.publish` already carries in every `agent.*` event's
+payload -- confirmed by `tests/runtime/InMemoryTaskManagerRuntimeTest.kt`
+(Android Studio: 261/261 tests passing). This unit closes only the
+subscription/recording half of this gap: no `TaskLifecycleTransitions`
+call and no `Task.status` mutation results from any Agent Event -- Task
+status transition behaviour in response to an Agent Event remains
+intentionally deferred to Sprint 2 Track B, Unit B2, per
+`SPRINT_2_IMPLEMENTATION_PLAN.md`'s own two-unit split. `agent.cancelled`,
+`agent.action_denied`, and `agent.action_deferred` remain unsubscribed,
+since no production code emits any of the three today (see this gap's
+original finding below, which still describes their status accurately).
+Original finding retained below for historical context (describes the
+pre-Unit-B1 state):
 
 `docs/architecture/TaskManagerRuntimeSpecification.md` §6 and §11 already
 specify that the Task Manager Runtime subscribes to Agent Run lifecycle
@@ -804,17 +819,16 @@ level), #13, #14, #15, #17, #18, #19, #21 (ToolRegistry.md backfill), #27
 Unit 11A, commit `13c9322`), #40 (PermissionEngine identity resolution --
 closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit pending),
 #25 (Action Mapping wired into `PermissionEngine.evaluate` via policy --
-closed by Sprint 2, Unit A2, `DefaultPermissionPolicy`, commit pending).
+closed by Sprint 2, Unit A2, `DefaultPermissionPolicy`, commit pending),
+#42 (`InMemoryTaskManagerRuntime` Agent-Event subscription/recording --
+closed by Sprint 2, Track B, Unit B1, commit pending; Task status
+transition behaviour in response to an Agent Event remains deferred to
+Unit B2).
 
 **Partially resolved:** #5 (Principal half done via
 `PrincipalLifecycleTransitions`; Resource half still deferred), #30
 (action-mapping.md's prose now matches the interface; the interface
 itself is unchanged, per explicit instruction).
-
-**Open, scheduled for closure:** #42 (`InMemoryTaskManagerRuntime` does
-not subscribe to Agent lifecycle events -- the explicit prerequisite for
-Sprint 2 Track B, Unit B1; not a deliberate scope boundary and not
-awaiting a human decision, simply not yet implemented).
 
 **Deliberate scope boundaries / known, documented limitations (not
 defects, not pending):** #7, #22, #23, #24, #26, #33, #34, #35,

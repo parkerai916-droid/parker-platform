@@ -324,6 +324,34 @@ Implementation Notes
 
 ---
 
+### Sprint 2 Track B Unit B1 – Task Manager Agent-Event Subscription
+
+Commit:
+pending
+
+Completed:
+2026-07-05
+
+Android Studio Tests:
+261/261
+
+Summary
+- InMemoryTaskManagerRuntime now subscribes to agent.completed and agent.failed.
+- Agent lifecycle events are recorded against the correct Task using taskId.
+- Added agentEventsFor(taskId) inspection support mirroring agentRunCommandsFor.
+- No Task status transitions were implemented.
+- Closed IMPLEMENTATION_GAPS.md #42.
+
+Implementation Notes
+- Task Manager remains event-driven only.
+- It does not execute Agents.
+- It does not alter Task lifecycle.
+- It only records Agent lifecycle events.
+- agent.cancelled, agent.action_denied and agent.action_deferred remain future work because no production emitters currently exist.
+- Task completion and failure semantics remain intentionally deferred to Unit B2.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
