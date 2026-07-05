@@ -101,6 +101,54 @@ import parker.core.interfaces.TaskStatus
  * `proposal.correlationId`, the same shared, already-threaded value Units
  * 5-7 use throughout (see [DeterministicPlannerHarness]'s own "Unit 9"
  * KDoc for the full rationale), not `taskId` (§10's general convention).
+ *
+ * ## Sprint 2, Track B, Unit B1 (Agent-Event Subscription)
+ *
+ * Closes the subscription/recording half of `IMPLEMENTATION_GAPS.md` #42:
+ * `TaskManagerRuntimeSpecification.md` §6 already specifies that "the Task
+ * Manager Runtime subscribes to (or is otherwise informed of) relevant
+ * Agent Events... for Agent Runs it has a recorded Agent Run Reference
+ * for." This constructor subscribes to exactly the two of the five
+ * §6-named event types any production code currently emits --
+ * `agent.completed` and `agent.failed` (`InMemoryAgentRuntime`'s own class
+ * KDoc: it "only ever drives `CREATED -> INITIALISED -> READY -> RUNNING
+ * -> {COMPLETED, FAILED}`"). `agent.cancelled`, `agent.action_denied`, and
+ * `agent.action_deferred` have no production emitter today and remain out
+ * of this unit's scope, per gap #42's own text.
+ *
+ * **Correlation is by `taskId`, read from each event's own payload, not a
+ * separate Agent Run Reference field.** `AgentRunCommand.agentRunId` is
+ * always `null` for `START` (the Agent Run does not exist yet at
+ * command-construction time -- see `AgentRunCommand.kt`'s own invariant),
+ * so this class has no Agent Run identifier to record ahead of time.
+ * `InMemoryAgentRuntime.publish` already carries `"taskId" to
+ * run.taskId.value` in every `agent.*` event's payload; reading that back
+ * is the only correlation mechanism already available end-to-end, and it
+ * is exactly what `SPRINT_2_IMPLEMENTATION_PLAN.md`'s own Unit B1
+ * acceptance criterion names ("recording the event against the correct
+ * Task (by `taskId`)").
+ *
+ * **Receipt and recording only -- no Task Status transition.** An
+ * incoming event's `taskId` is looked up only to decide whether to record
+ * it (see [agentEventsFor]); this class never calls
+ * [TaskLifecycleTransitions] or mutates a stored [Task]'s `status` in
+ * response to an Agent Event. Per §6's own "Agent Events may inform Task
+ * state, but do not automatically control it," deciding whether and how a
+ * received event should move a Task's `status` is Unit B2's
+ * responsibility, not this one's.
+ *
+ * **Unknown or unaddressed events are ignored, not errors.** An
+ * `agent.completed`/`agent.failed` event with no `taskId` payload entry,
+ * or naming a `taskId` this runtime never created, is silently dropped --
+ * consistent with `EventHandler.md`'s fire-and-forget delivery model and
+ * with this unit's own "subscription and recording only" scope; it is not
+ * a caller error and never throws.
+ *
+ * **Subscribes exactly once per event type, at construction.** Each of
+ * the two `EventBus.subscribe` calls below happens exactly once, in the
+ * constructor -- never per-Task, per-proposal, or per-event -- so a single
+ * `InMemoryTaskManagerRuntime` instance never creates more than one
+ * `Subscription` per event type on its [eventBus].
  */
 class InMemoryTaskManagerRuntime(
     private val identityService: IdentityService,
@@ -110,11 +158,32 @@ class InMemoryTaskManagerRuntime(
     private companion object {
         /** Sprint 1 placeholder -- see this class's own KDoc, "Unit 9" section. */
         val TASK_MANAGER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.task-manager-runtime")
+
+        /**
+         * Sprint 2, Track B, Unit B1: the only two of the five `agent.*` event
+         * types `TaskManagerRuntimeSpecification.md` §6 names that any
+         * production code currently emits -- see this class's own "Unit B1"
+         * KDoc section above.
+         */
+        val SUBSCRIBED_AGENT_EVENT_TYPES = listOf("agent.completed", "agent.failed")
     }
 
     private val mutex = Mutex()
     private val tasks = mutableMapOf<TaskId, Task>()
     private val agentRunCommands = mutableMapOf<TaskId, MutableList<AgentRunCommand>>()
+
+    /** Sprint 2, Track B, Unit B1: `agent.completed`/`agent.failed` events recorded per Task -- see [agentEventsFor]. */
+    private val agentEvents = mutableMapOf<TaskId, MutableList<ParkerEvent>>()
+
+    init {
+        // Sprint 2, Track B, Unit B1: one subscription per event type, exactly once, at
+        // construction -- see this class's own "Unit B1" KDoc section above.
+        SUBSCRIBED_AGENT_EVENT_TYPES.forEach { eventType ->
+            eventBus.subscribe(EventType(eventType), TASK_MANAGER_RUNTIME_PRINCIPAL_ID) { event ->
+                recordAgentEvent(event)
+            }
+        }
+    }
 
     override suspend fun submitProposal(proposal: TaskProposal): TaskProposalDisposition = mutex.withLock {
         val taskId = TaskId("task-for-${proposal.taskProposalId.value}")
@@ -185,6 +254,32 @@ class InMemoryTaskManagerRuntime(
     /** Every [AgentRunCommand] constructed for [taskId] so far -- empty if none, never `null`. */
     suspend fun agentRunCommandsFor(taskId: TaskId): List<AgentRunCommand> = mutex.withLock {
         agentRunCommands[taskId]?.toList() ?: emptyList()
+    }
+
+    /**
+     * Sprint 2, Track B, Unit B1: every `agent.completed`/`agent.failed`
+     * [ParkerEvent] recorded against [taskId] so far -- empty if none, never
+     * `null`. Recording only; does not reflect or imply any [TaskStatus]
+     * change -- see this class's own "Unit B1" KDoc section.
+     */
+    suspend fun agentEventsFor(taskId: TaskId): List<ParkerEvent> = mutex.withLock {
+        agentEvents[taskId]?.toList() ?: emptyList()
+    }
+
+    /**
+     * Sprint 2, Track B, Unit B1: the handler registered for
+     * [SUBSCRIBED_AGENT_EVENT_TYPES] in `init`. Records [event] against the
+     * Task named in its own `taskId` payload entry, or does nothing if that
+     * entry is absent or names a Task this runtime never created -- see this
+     * class's own "Unit B1" KDoc section for why this is not an error.
+     */
+    private suspend fun recordAgentEvent(event: ParkerEvent) {
+        val taskIdValue = event.payload["taskId"] ?: return
+        val taskId = TaskId(taskIdValue)
+        mutex.withLock {
+            if (taskId !in tasks) return@withLock
+            agentEvents.getOrPut(taskId) { mutableListOf() }.add(event)
+        }
     }
 
     /** Sprint 1, Unit 9: publishes one `task.*` [ParkerEvent] -- see this class's own "Unit 9" KDoc. */

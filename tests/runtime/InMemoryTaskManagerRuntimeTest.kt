@@ -2,6 +2,8 @@ package parker.core.runtime
 
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.AgentRunCommandType
+import parker.core.interfaces.EventType
+import parker.core.interfaces.ParkerEvent
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PlanningSessionId
 import parker.core.interfaces.Principal
@@ -43,6 +45,12 @@ import kotlin.test.assertTrue
  * Status beyond `Created`/`Queued` -- see `TaskLifecycleTransitionsTest.kt`
  * for the full 9-state lifecycle's own coverage, independent of this
  * runtime.
+ *
+ * Sprint 2, Track B, Unit B1 adds coverage (below, its own section) for
+ * `InMemoryTaskManagerRuntime`'s new `agent.completed`/`agent.failed`
+ * subscription -- recording only, per `IMPLEMENTATION_GAPS.md` #42; no
+ * `TaskStatus` transition results from any Agent Event, which remains
+ * Unit B2's scope.
  */
 class InMemoryTaskManagerRuntimeTest {
 
@@ -236,5 +244,154 @@ class InMemoryTaskManagerRuntimeTest {
         assertEquals(PrincipalId("user-2"), runtime.getTask(second.taskId)?.ownerPrincipalId)
         assertEquals(1, runtime.agentRunCommandsFor(first.taskId).size)
         assertEquals(1, runtime.agentRunCommandsFor(second.taskId).size)
+    }
+
+    // ================= Sprint 2, Track B, Unit B1: Agent-Event Subscription =================
+    //
+    // Closes the subscription/recording half of IMPLEMENTATION_GAPS.md #42
+    // (TaskManagerRuntimeSpecification.md §6/§11). Only agent.completed/agent.failed are
+    // exercised -- the only two of the five §6-named event types any production code
+    // currently emits (InMemoryAgentRuntime never drives CANCELLED, and
+    // agent.action_denied/agent.action_deferred have no corresponding AgentRunStatus or
+    // code path at all). No test in this section asserts a TaskStatus change -- that is
+    // Unit B2's scope, not this one's.
+
+    /** A synthetic `agent.*` [ParkerEvent] carrying `taskId` in its payload, exactly as `InMemoryAgentRuntime.publish` already does. */
+    private fun agentEvent(
+        eventType: String,
+        taskId: TaskId,
+        agentIdentityPrincipalId: String = "agent-1",
+        correlationId: String = "corr-1",
+    ) = ParkerEvent(
+        eventId = "evt-test-$eventType-${taskId.value}",
+        publisherPrincipalId = PrincipalId(agentIdentityPrincipalId),
+        eventType = EventType(eventType),
+        timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+        correlationId = correlationId,
+        payload = mapOf("taskId" to taskId.value),
+    )
+
+    @Test
+    fun `an agent-completed event is recorded against the correct Task`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        val recorded = runtime.agentEventsFor(accepted.taskId)
+        assertEquals(1, recorded.size)
+        assertEquals(EventType("agent.completed"), recorded.single().eventType)
+    }
+
+    @Test
+    fun `an agent-failed event is recorded against the correct Task`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        eventBus.publish(agentEvent("agent.failed", accepted.taskId))
+
+        val recorded = runtime.agentEventsFor(accepted.taskId)
+        assertEquals(1, recorded.size)
+        assertEquals(EventType("agent.failed"), recorded.single().eventType)
+    }
+
+    @Test
+    fun `agent events for two different Tasks are not cross-contaminated`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal("user-1"))
+        identity.register(principal("user-2"))
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val first = assertIs<TaskProposalDisposition.Accepted>(
+            runtime.submitProposal(proposal(taskProposalId = "proposal-1", ownerPrincipalId = "user-1")),
+        )
+        val second = assertIs<TaskProposalDisposition.Accepted>(
+            runtime.submitProposal(proposal(taskProposalId = "proposal-2", ownerPrincipalId = "user-2")),
+        )
+
+        eventBus.publish(agentEvent("agent.completed", first.taskId))
+        eventBus.publish(agentEvent("agent.failed", second.taskId))
+
+        assertEquals(1, runtime.agentEventsFor(first.taskId).size)
+        assertEquals(EventType("agent.completed"), runtime.agentEventsFor(first.taskId).single().eventType)
+        assertEquals(1, runtime.agentEventsFor(second.taskId).size)
+        assertEquals(EventType("agent.failed"), runtime.agentEventsFor(second.taskId).single().eventType)
+    }
+
+    @Test
+    fun `publishing one agent-completed event records exactly one event -- no duplicate subscription`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        // A duplicate `EventBus.subscribe` call in the constructor would cause this same
+        // handler to run twice per publish, recording the event twice for one publish call.
+        assertEquals(1, runtime.agentEventsFor(accepted.taskId).size)
+    }
+
+    @Test
+    fun `an agent-completed event with no taskId payload is ignored safely, not an exception`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        val malformed = ParkerEvent(
+            eventId = "evt-test-malformed",
+            publisherPrincipalId = PrincipalId("agent-1"),
+            eventType = EventType("agent.completed"),
+            timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+            correlationId = "corr-1",
+            payload = emptyMap(), // no "taskId" entry
+        )
+
+        eventBus.publish(malformed) // must not throw
+
+        assertTrue(runtime.agentEventsFor(accepted.taskId).isEmpty())
+    }
+
+    @Test
+    fun `an agent-completed event naming an unknown taskId is ignored safely and creates no Task`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+
+        eventBus.publish(agentEvent("agent.completed", TaskId("task-for-nonexistent"))) // must not throw
+
+        assertTrue(runtime.listTasks().isEmpty())
+        assertTrue(runtime.agentEventsFor(TaskId("task-for-nonexistent")).isEmpty())
+    }
+
+    @Test
+    fun `recording an agent-completed event does not change the Task's status`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+        assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
+    }
+
+    @Test
+    fun `agentEventsFor returns empty for a Task with no recorded events, not an exception`() = runTest {
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus())
+
+        assertTrue(runtime.agentEventsFor(TaskId("task-for-nonexistent")).isEmpty())
     }
 }
