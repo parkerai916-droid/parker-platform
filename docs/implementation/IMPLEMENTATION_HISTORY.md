@@ -327,7 +327,7 @@ Implementation Notes
 ### Sprint 2 Track B Unit B1 – Task Manager Agent-Event Subscription
 
 Commit:
-pending
+7bbf909
 
 Completed:
 2026-07-05

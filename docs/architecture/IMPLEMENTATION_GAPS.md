@@ -754,7 +754,7 @@ acceptable for the platform's current trust model.
 
 ### 42. `InMemoryTaskManagerRuntime` does not subscribe to Agent lifecycle events
 
-**Status: Closed by Sprint 2, Track B, Unit B1 (commit pending).**
+**Status: Closed by Sprint 2, Track B, Unit B1 (commit `7bbf909`).**
 `InMemoryTaskManagerRuntime` (`src/runtime/InMemoryTaskManagerRuntime.kt`)
 now subscribes, once each at construction, to `agent.completed` and
 `agent.failed` on its injected `EventBus`, and records each received event
@@ -787,11 +787,13 @@ Of the five event types §6 names, only `agent.completed` and
 `src/runtime/InMemoryAgentRuntime.kt`'s own class KDoc states it "only
 ever drives `CREATED -> INITIALISED -> READY -> RUNNING -> {COMPLETED,
 FAILED}`," so these are the only two of the five events a subscriber
-could observe from production code today. `agent.cancelled`,
-`agent.action_denied`, and `agent.action_deferred` remain specified
-concepts -- `AgentRunStatus.CANCELLED` exists in the lifecycle enum, and
-"action_denied"/"action_deferred" correspond to no `AgentRunStatus` value
-at all -- but none of the three has a production emitter today.
+could observe from production code today. `agent.cancelled` remains a
+specified concept -- `AgentRunStatus.CANCELLED` exists in the lifecycle
+enum -- with no production emitter today. `agent.action_denied` and
+`agent.action_deferred` correspond to per-action permission outcomes
+within an Agent Step, but no production path currently emits either event
+because `InMemoryAgentRuntime` does not implement `WAITING_FOR_PERMISSION`
+or per-action permission handling.
 
 Closing this gap is scoped in two parts, matching the two-unit split
 already recorded in `SPRINT_2_IMPLEMENTATION_PLAN.md`: Unit B1 closes only
