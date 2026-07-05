@@ -130,12 +130,14 @@ import parker.core.interfaces.TaskStatus
  *
  * **Receipt and recording only -- no Task Status transition.** An
  * incoming event's `taskId` is looked up only to decide whether to record
- * it (see [agentEventsFor]); this class never calls
- * [TaskLifecycleTransitions] or mutates a stored [Task]'s `status` in
- * response to an Agent Event. Per §6's own "Agent Events may inform Task
- * state, but do not automatically control it," deciding whether and how a
- * received event should move a Task's `status` is Unit B2's
- * responsibility, not this one's.
+ * it (see [agentEventsFor]). Recording itself never calls
+ * [TaskLifecycleTransitions] or mutates a stored [Task]'s `status` --
+ * **Sprint 2, Track B, Unit B2 update:** `agent.completed` now *also*
+ * drives a Task Status transition, in addition to being recorded; see
+ * this class's own "Unit B2" KDoc section below for exactly what that
+ * transition is and is not. `agent.failed` still never mutates `status`,
+ * per §6's own "Agent Events may inform Task state, but do not
+ * automatically control it" and per Unit B2's own scope.
  *
  * **Unknown or unaddressed events are ignored, not errors.** An
  * `agent.completed`/`agent.failed` event with no `taskId` payload entry,
@@ -149,6 +151,32 @@ import parker.core.interfaces.TaskStatus
  * constructor -- never per-Task, per-proposal, or per-event -- so a single
  * `InMemoryTaskManagerRuntime` instance never creates more than one
  * `Subscription` per event type on its [eventBus].
+ *
+ * ## Sprint 2, Track B, Unit B2 (Task Status Transitions)
+ *
+ * Implements the fixed, minimal rule
+ * `docs/implementation/SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md` settles,
+ * for a Task with exactly one Agent Run Reference (this runtime's only
+ * scope so far): on `agent.completed`, a Task at `QUEUED` moves through
+ * both already-valid edges in sequence -- `QUEUED -> RUNNING`, then
+ * `RUNNING -> COMPLETED` -- publishing `task.started` then `task.completed`
+ * (`TaskManagerRuntimeSpecification.md` §10); a Task already `RUNNING`
+ * takes only the second edge; a Task already `COMPLETED` is left
+ * unmutated. `TaskLifecycleTransitions` has no direct `QUEUED ->
+ * COMPLETED` edge, which is why both steps are required -- no new state
+ * or edge is introduced (`SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md` items 1
+ * and 4). `agent.failed` continues to perform no transition at all
+ * (`SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md` item 2): the event is
+ * recorded exactly as Unit B1 already did, and nothing else happens.
+ *
+ * No other starting `TaskStatus` is acted on by `agent.completed` --
+ * `CREATED`, `FAILED`, `CANCELLED`, `PAUSED`, `EXPIRED`, and `SUPERSEDED`
+ * are all currently unreachable for any Task this runtime creates (no
+ * code path drives any of them yet), so attempting a transition for one
+ * of them would be inventing behaviour for a case no specification or
+ * decision document defines, not implementing an already-specified edge.
+ * [applyCompletedTransition] treats all of them, and `COMPLETED`, as a
+ * no-op.
  */
 class InMemoryTaskManagerRuntime(
     private val identityService: IdentityService,
@@ -158,14 +186,6 @@ class InMemoryTaskManagerRuntime(
     private companion object {
         /** Sprint 1 placeholder -- see this class's own KDoc, "Unit 9" section. */
         val TASK_MANAGER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.task-manager-runtime")
-
-        /**
-         * Sprint 2, Track B, Unit B1: the only two of the five `agent.*` event
-         * types `TaskManagerRuntimeSpecification.md` §6 names that any
-         * production code currently emits -- see this class's own "Unit B1"
-         * KDoc section above.
-         */
-        val SUBSCRIBED_AGENT_EVENT_TYPES = listOf("agent.completed", "agent.failed")
     }
 
     private val mutex = Mutex()
@@ -176,12 +196,18 @@ class InMemoryTaskManagerRuntime(
     private val agentEvents = mutableMapOf<TaskId, MutableList<ParkerEvent>>()
 
     init {
-        // Sprint 2, Track B, Unit B1: one subscription per event type, exactly once, at
-        // construction -- see this class's own "Unit B1" KDoc section above.
-        SUBSCRIBED_AGENT_EVENT_TYPES.forEach { eventType ->
-            eventBus.subscribe(EventType(eventType), TASK_MANAGER_RUNTIME_PRINCIPAL_ID) { event ->
-                recordAgentEvent(event)
-            }
+        // Sprint 2, Track B, Unit B1/B2: one subscription per event type, exactly once, at
+        // construction -- see this class's own "Unit B1"/"Unit B2" KDoc sections above.
+        // agent.completed both records the event (Unit B1) and drives the Task Status
+        // transition (Unit B2); agent.failed only records -- these are deliberately two
+        // separate subscribe calls, not a shared loop, because the two event types are no
+        // longer handled identically.
+        eventBus.subscribe(EventType("agent.completed"), TASK_MANAGER_RUNTIME_PRINCIPAL_ID) { event ->
+            recordAgentEvent(event)
+            applyCompletedTransition(event)
+        }
+        eventBus.subscribe(EventType("agent.failed"), TASK_MANAGER_RUNTIME_PRINCIPAL_ID) { event ->
+            recordAgentEvent(event)
         }
     }
 
@@ -267,11 +293,11 @@ class InMemoryTaskManagerRuntime(
     }
 
     /**
-     * Sprint 2, Track B, Unit B1: the handler registered for
-     * [SUBSCRIBED_AGENT_EVENT_TYPES] in `init`. Records [event] against the
-     * Task named in its own `taskId` payload entry, or does nothing if that
-     * entry is absent or names a Task this runtime never created -- see this
-     * class's own "Unit B1" KDoc section for why this is not an error.
+     * Sprint 2, Track B, Unit B1: registered for both `agent.completed` and
+     * `agent.failed` in `init`. Records [event] against the Task named in
+     * its own `taskId` payload entry, or does nothing if that entry is
+     * absent or names a Task this runtime never created -- see this class's
+     * own "Unit B1" KDoc section for why this is not an error.
      */
     private suspend fun recordAgentEvent(event: ParkerEvent) {
         val taskIdValue = event.payload["taskId"] ?: return
@@ -279,6 +305,45 @@ class InMemoryTaskManagerRuntime(
         mutex.withLock {
             if (taskId !in tasks) return@withLock
             agentEvents.getOrPut(taskId) { mutableListOf() }.add(event)
+        }
+    }
+
+    /**
+     * Sprint 2, Track B, Unit B2: the handler registered for
+     * `agent.completed` in `init`, applied in addition to (not instead of)
+     * [recordAgentEvent]. Implements
+     * `docs/implementation/SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md`'s fixed
+     * rule exactly -- see this class's own "Unit B2" KDoc section for the
+     * full rationale. A missing `taskId` payload entry, or one naming a
+     * Task this runtime never created, is ignored the same way
+     * [recordAgentEvent] ignores it -- no exception, no new Task, no
+     * mutation.
+     */
+    private suspend fun applyCompletedTransition(event: ParkerEvent) {
+        val taskIdValue = event.payload["taskId"] ?: return
+        val taskId = TaskId(taskIdValue)
+        mutex.withLock {
+            val task = tasks[taskId] ?: return@withLock
+            when (task.status) {
+                TaskStatus.QUEUED -> {
+                    TaskLifecycleTransitions.requireValidTransition(TaskStatus.QUEUED, TaskStatus.RUNNING)
+                    val running = task.copy(status = TaskStatus.RUNNING)
+                    tasks[taskId] = running
+                    publish(eventType = "task.started", taskId = taskId, correlationId = task.correlationId)
+
+                    TaskLifecycleTransitions.requireValidTransition(TaskStatus.RUNNING, TaskStatus.COMPLETED)
+                    tasks[taskId] = running.copy(status = TaskStatus.COMPLETED)
+                    publish(eventType = "task.completed", taskId = taskId, correlationId = task.correlationId)
+                }
+                TaskStatus.RUNNING -> {
+                    TaskLifecycleTransitions.requireValidTransition(TaskStatus.RUNNING, TaskStatus.COMPLETED)
+                    tasks[taskId] = task.copy(status = TaskStatus.COMPLETED)
+                    publish(eventType = "task.completed", taskId = taskId, correlationId = task.correlationId)
+                }
+                else -> Unit // COMPLETED (already terminal) and every other currently-unreachable
+                // status -- see this class's own "Unit B2" KDoc section for why no transition
+                // is attempted for any of them.
+            }
         }
     }
 

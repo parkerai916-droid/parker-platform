@@ -13,7 +13,9 @@ import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
 import parker.core.interfaces.ResourceId
+import parker.core.interfaces.Task
 import parker.core.interfaces.TaskId
+import parker.core.interfaces.TaskLifecycleTransitions
 import parker.core.interfaces.TaskProposal
 import parker.core.interfaces.TaskProposalDisposition
 import parker.core.interfaces.TaskProposalId
@@ -22,6 +24,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -48,9 +51,12 @@ import kotlin.test.assertTrue
  *
  * Sprint 2, Track B, Unit B1 adds coverage (below, its own section) for
  * `InMemoryTaskManagerRuntime`'s new `agent.completed`/`agent.failed`
- * subscription -- recording only, per `IMPLEMENTATION_GAPS.md` #42; no
- * `TaskStatus` transition results from any Agent Event, which remains
- * Unit B2's scope.
+ * subscription -- recording only, per `IMPLEMENTATION_GAPS.md` #42.
+ *
+ * Sprint 2, Track B, Unit B2 adds further coverage (its own section,
+ * below Unit B1's) for the fixed, minimal `TaskStatus` transition rule
+ * `docs/implementation/SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md` settles
+ * for `agent.completed` -- `agent.failed` still causes no transition.
  */
 class InMemoryTaskManagerRuntimeTest {
 
@@ -374,8 +380,63 @@ class InMemoryTaskManagerRuntimeTest {
         assertTrue(runtime.agentEventsFor(TaskId("task-for-nonexistent")).isEmpty())
     }
 
+    // NOTE: A Unit B1-era test previously stood here --
+    // `recording an agent-completed event does not change the Task's status` --
+    // asserting the Task remained QUEUED after `agent.completed`. That was
+    // correct for Unit B1's own scope (recording only, no transition wiring
+    // existed yet). Sprint 2, Track B, Unit B2 deliberately superseded this:
+    // per `SPRINT_2_IMPLEMENTATION_PLAN.md`'s own Unit B2 Definition of Done
+    // ("A Task with one Agent Run transitions Queued -> Completed on
+    // agent.completed") and `SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md` item 1,
+    // `agent.completed` is now required to drive exactly that transition. The
+    // old assertion is removed, not rewritten, because rewriting it to expect
+    // COMPLETED would duplicate the Unit B2 test below verbatim
+    // (`agent-completed transitions a QUEUED Task through valid lifecycle
+    // edges to COMPLETED`), which already covers this exact scenario with the
+    // correct, current assertion.
+
     @Test
-    fun `recording an agent-completed event does not change the Task's status`() = runTest {
+    fun `agentEventsFor returns empty for a Task with no recorded events, not an exception`() = runTest {
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus())
+
+        assertTrue(runtime.agentEventsFor(TaskId("task-for-nonexistent")).isEmpty())
+    }
+
+    // ================= Sprint 2, Track B, Unit B2: Task Status Transitions =================
+    //
+    // Implements the fixed rule docs/implementation/SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md
+    // settles: agent.completed drives QUEUED -> RUNNING -> COMPLETED (or RUNNING -> COMPLETED
+    // only, if already RUNNING; or no mutation, if already COMPLETED); agent.failed still
+    // performs no transition. No test in this section relies on, or introduces, a
+    // QUEUED -> COMPLETED edge -- TaskLifecycleTransitions has none.
+
+    /**
+     * Test-only arrangement helper. There is no public path to observe a
+     * Task sitting at `RUNNING`: the only way [InMemoryTaskManagerRuntime]
+     * currently reaches `RUNNING` is via `agent.completed` for a `QUEUED`
+     * Task, and that same event handler immediately continues on to
+     * `COMPLETED` before returning -- see that class's own "Unit B2" KDoc
+     * section. This helper only arranges the precondition, via reflection
+     * on the private `tasks` map; it does not call, stub, or bypass
+     * `applyCompletedTransition` itself. The transition under test --
+     * `applyCompletedTransition`'s `TaskStatus.RUNNING` branch, validated
+     * by the real, unmodified `TaskLifecycleTransitions.requireValidTransition`
+     * -- still runs exactly as production code would when the test
+     * publishes `agent.completed`.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun forceTaskStatus(runtime: InMemoryTaskManagerRuntime, taskId: TaskId, status: TaskStatus) {
+        val tasksField = InMemoryTaskManagerRuntime::class.java.getDeclaredField("tasks")
+        tasksField.isAccessible = true
+        val tasksMap = tasksField.get(runtime) as MutableMap<TaskId, Task>
+        val current = tasksMap.getValue(taskId)
+        tasksMap[taskId] = current.copy(status = status)
+    }
+
+    // --- 1. agent.completed on a QUEUED Task reaches COMPLETED via both real edges ---
+
+    @Test
+    fun `agent-completed transitions a QUEUED Task through valid lifecycle edges to COMPLETED`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
@@ -385,13 +446,137 @@ class InMemoryTaskManagerRuntimeTest {
 
         eventBus.publish(agentEvent("agent.completed", accepted.taskId))
 
+        assertEquals(TaskStatus.COMPLETED, runtime.getTask(accepted.taskId)?.status)
+    }
+
+    @Test
+    fun `agent-completed for a QUEUED Task publishes both task-started and task-completed, proving both edges fired`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val publishedTypes = mutableListOf<String>()
+        eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { publishedTypes += "task.started" }
+        eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { publishedTypes += "task.completed" }
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        assertEquals(listOf("task.started", "task.completed"), publishedTypes)
+    }
+
+    // --- 2. agent.completed on an already-RUNNING Task takes only the second edge ---
+
+    @Test
+    fun `agent-completed transitions an already-RUNNING Task to COMPLETED, taking only the second edge`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val publishedTypes = mutableListOf<String>()
+        eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { publishedTypes += "task.started" }
+        eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { publishedTypes += "task.completed" }
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+        forceTaskStatus(runtime, accepted.taskId, TaskStatus.RUNNING)
+        assertEquals(TaskStatus.RUNNING, runtime.getTask(accepted.taskId)?.status)
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        assertEquals(TaskStatus.COMPLETED, runtime.getTask(accepted.taskId)?.status)
+        assertEquals(listOf("task.completed"), publishedTypes) // task.started not re-published
+    }
+
+    // --- 3. agent.completed on an already-COMPLETED Task is a no-op ---
+
+    @Test
+    fun `agent-completed does not mutate an already-COMPLETED Task`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+        assertEquals(TaskStatus.COMPLETED, runtime.getTask(accepted.taskId)?.status)
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId)) // must not throw
+
+        assertEquals(TaskStatus.COMPLETED, runtime.getTask(accepted.taskId)?.status)
+    }
+
+    // --- 4. agent.failed still performs no transition (Unit B1 behaviour, restated for B2) ---
+
+    @Test
+    fun `agent-failed records the event but leaves Task status unchanged`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+        assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
+
+        eventBus.publish(agentEvent("agent.failed", accepted.taskId))
+
+        assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
+        assertEquals(1, runtime.agentEventsFor(accepted.taskId).size)
+        assertEquals(EventType("agent.failed"), runtime.agentEventsFor(accepted.taskId).single().eventType)
+    }
+
+    // --- 5/6. Missing/unknown taskId are ignored safely for the transition path too ---
+
+    @Test
+    fun `agent-completed with a missing taskId payload mutates no Task`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+        val malformed = ParkerEvent(
+            eventId = "evt-test-malformed-b2",
+            publisherPrincipalId = PrincipalId("agent-1"),
+            eventType = EventType("agent.completed"),
+            timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+            correlationId = "corr-1",
+            payload = emptyMap(), // no "taskId" entry
+        )
+
+        eventBus.publish(malformed) // must not throw
+
         assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
     }
 
     @Test
-    fun `agentEventsFor returns empty for a Task with no recorded events, not an exception`() = runTest {
-        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus())
+    fun `agent-completed with an unknown taskId is ignored safely and creates no Task`() = runTest {
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), eventBus)
 
-        assertTrue(runtime.agentEventsFor(TaskId("task-for-nonexistent")).isEmpty())
+        eventBus.publish(agentEvent("agent.completed", TaskId("task-for-nonexistent"))) // must not throw
+
+        assertTrue(runtime.listTasks().isEmpty())
+    }
+
+    // --- 7. B1 event recording still works once B2's transition logic runs alongside it ---
+
+    @Test
+    fun `agent-completed both records the event and transitions status`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        assertEquals(TaskStatus.COMPLETED, runtime.getTask(accepted.taskId)?.status)
+        assertEquals(1, runtime.agentEventsFor(accepted.taskId).size)
+        assertEquals(EventType("agent.completed"), runtime.agentEventsFor(accepted.taskId).single().eventType)
+    }
+
+    // --- 8. No direct QUEUED -> COMPLETED edge exists or is relied on ---
+
+    @Test
+    fun `TaskLifecycleTransitions has no direct QUEUED to COMPLETED edge -- two edges are required`() {
+        assertFalse(TaskLifecycleTransitions.isValidTransition(TaskStatus.QUEUED, TaskStatus.COMPLETED))
+        assertTrue(TaskLifecycleTransitions.isValidTransition(TaskStatus.QUEUED, TaskStatus.RUNNING))
+        assertTrue(TaskLifecycleTransitions.isValidTransition(TaskStatus.RUNNING, TaskStatus.COMPLETED))
     }
 }
