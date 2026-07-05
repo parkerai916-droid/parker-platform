@@ -369,7 +369,29 @@ exists.
 
 ### 25. Action Mapping implements the vocabulary/mapping layer only, not `PermissionEngine.evaluate`
 
-**Status: Deliberate scope boundary, not an oversight.**
+**Status: Closed by Sprint 2, Unit A2 (commit pending).** `DefaultPermissionPolicy`
+(`src/runtime/DefaultPermissionPolicy.kt`) now implements the policy model
+`docs/specifications/volume-03-core-interfaces/PermissionPolicy.md`
+describes, and `DefaultPermissionEngine`
+(`src/runtime/DefaultPermissionEngine.kt`) delegates every Active-principal
+request to it, after Unit A1's identity-status gating has already run.
+`DefaultPermissionPolicy` re-derives the same `PermissionAction`/
+`ResourceType` pairs `ActionMapper` and `ResourceRegistry` already produce
+for a request, rather than inventing a second interpretation, so
+`PermissionDecision.action` stays consistent with what
+`DefaultExecutionPipeline` resolved moments earlier. Unknown action,
+unknown resource, unknown permission, and "no matching policy rule" all
+resolve to `DENIED`, per PermissionPolicy.md's own conservative default --
+confirmed by `tests/runtime/DefaultPermissionPolicyTest.kt` and
+`tests/runtime/DefaultPermissionEngineTest.kt` (Android Studio: 253/253
+tests passing). `APPROVED_WITH_CONFIRMATION` is returned as a policy
+outcome only; no confirmation UI or workflow was implemented, and none of
+RBAC, ABAC, capability security, delegated authority, temporary
+permissions, policy persistence, policy editing, organisation policy, or
+plugin policy was introduced -- all remain out of scope, per
+PermissionPolicy.md's own Non-Goals and Future Considerations. Original
+finding retained below for historical context (describes the
+pre-Unit-A2 state):
 
 `src/runtime/ActionMapper.kt` implements exactly the process
 action-mapping.md specifies as sitting *before* the Permission Engine:
@@ -746,7 +768,9 @@ level), #13, #14, #15, #17, #18, #19, #21 (ToolRegistry.md backfill), #27
 (EventBus subscriber identity), #28 (tool lifecycle diagram), #31
 (Created -> Failed edge), #32 (Tool invocation -- closed by Sprint 1,
 Unit 11A, commit `13c9322`), #40 (PermissionEngine identity resolution --
-closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit pending).
+closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit pending),
+#25 (Action Mapping wired into `PermissionEngine.evaluate` via policy --
+closed by Sprint 2, Unit A2, `DefaultPermissionPolicy`, commit pending).
 
 **Partially resolved:** #5 (Principal half done via
 `PrincipalLifecycleTransitions`; Resource half still deferred), #30
@@ -754,7 +778,7 @@ closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit pending).
 itself is unchanged, per explicit instruction).
 
 **Deliberate scope boundaries / known, documented limitations (not
-defects, not pending):** #7, #22, #23, #24, #25, #26, #33, #34, #35,
+defects, not pending):** #7, #22, #23, #24, #26, #33, #34, #35,
 #36, #37, #38, #39, #41 (ToolInvocationBinding/ToolRegistry access
 enforcement).
 

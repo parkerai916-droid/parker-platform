@@ -24,16 +24,17 @@ import parker.core.interfaces.ResourceId
  * short-circuiting to `DENIED` before any other decision logic runs for
  * a Principal that is not in good standing.
  *
- * **This is identity-status enforcement only.** No authorisation policy
- * is invented here -- `IMPLEMENTATION_GAPS.md` #25 remains open, to be
- * closed by a later unit. For any Principal this class does not itself
- * deny, [evaluate] delegates unchanged to [decisionFor] -- a
- * caller-supplied decision function that exists only as a temporary
- * bridge until real policy content exists, mirroring the shape
- * `tests/runtime/FakePermissionEngine.kt` already uses for
- * orchestration-only tests, but now gated by a real identity check.
- * `FakePermissionEngine` itself is untouched by this unit and remains
- * `DefaultExecutionPipelineTest`'s fixture.
+ * **Sprint 2, Unit A2 update:** the Unit A1 placeholder
+ * (`decisionFor: (ExecutionRequest) -> PermissionDecision`) has been
+ * replaced by [policy] -- a real [DefaultPermissionPolicy] implementing
+ * `docs/specifications/volume-03-core-interfaces/PermissionPolicy.md`.
+ * `IMPLEMENTATION_GAPS.md` #25 is closed by this change (see
+ * `DefaultPermissionPolicy`'s own KDoc for the policy mechanism itself).
+ * For any Principal this class does not itself deny, [evaluate] still
+ * delegates unchanged to [policy] -- this class remains identity-status
+ * enforcement only; it does not itself decide policy outcomes.
+ * `tests/runtime/FakePermissionEngine.kt` remains untouched and remains
+ * `DefaultExecutionPipelineTest`'s own fixture.
  *
  * ## Status coverage (an explicit interpretive decision, recorded here
  * for review, the same way `InMemoryIdentityService.register`'s
@@ -48,14 +49,14 @@ import parker.core.interfaces.ResourceId
  * already passed through `Revoked`. Neither the specification nor this
  * unit's own instructions address `Created` explicitly. This
  * implementation treats `Created` as `DENIED` as well -- only `Active`
- * reaches [decisionFor] -- on the grounds that a Principal which has
- * been registered but never activated should not be authorised by
+ * reaches [policy]'s `evaluate` -- on the grounds that a Principal which
+ * has been registered but never activated should not be authorised by
  * default. This is a deliberate, narrow interpretation, not a claim that
  * `IdentityService.md` settles the question either way.
  */
 class DefaultPermissionEngine(
     private val identityService: IdentityService,
-    private val decisionFor: (ExecutionRequest) -> PermissionDecision,
+    private val policy: DefaultPermissionPolicy,
 ) : PermissionEngine {
 
     override suspend fun evaluate(request: ExecutionRequest): PermissionDecision {
@@ -68,7 +69,7 @@ class DefaultPermissionEngine(
             PrincipalStatus.ARCHIVED,
             PrincipalStatus.CREATED,
             -> deniedDecision(request)
-            PrincipalStatus.ACTIVE -> decisionFor(request)
+            PrincipalStatus.ACTIVE -> policy.evaluate(request)
         }
     }
 
@@ -81,7 +82,7 @@ class DefaultPermissionEngine(
      * mirroring `FakePermissionEngine.explain`'s own minimal precedent.
      */
     override suspend fun explain(decisionId: DecisionId): PermissionExplanation =
-        PermissionExplanation(decisionId, "DefaultPermissionEngine does not retain decision history in Unit A1")
+        PermissionExplanation(decisionId, "DefaultPermissionEngine does not retain decision history")
 
     /**
      * Builds a self-contained `DENIED` [PermissionDecision] for the

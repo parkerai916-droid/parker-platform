@@ -295,6 +295,35 @@ Implementation Notes
 
 ---
 
+### Sprint 2 Unit A2 – Permission Policy Model and Enforcement
+
+Commit:
+pending
+
+Completed:
+2026-07-05
+
+Android Studio Tests:
+253/253
+
+Summary
+- Added DefaultPermissionPolicy.
+- Added data-defined PermissionPolicyRule support.
+- DefaultPermissionEngine now delegates Active-principal requests to DefaultPermissionPolicy after identity-status enforcement.
+- Unknown action, unknown resource, unknown permission, and no matching policy rule resolve to DENIED.
+- APPROVED_WITH_CONFIRMATION is returned as a policy outcome only; no confirmation UI or workflow was implemented.
+- Closed IMPLEMENTATION_GAPS.md #25.
+
+Implementation Notes
+- PermissionPolicy.md was implemented without changing its specification.
+- Policy evaluation uses ActionMapper and ResourceRegistry to derive the same PermissionAction and ResourceType the Execution Pipeline uses.
+- Policy evaluation remains deterministic and side-effect free.
+- No RBAC, ABAC, capability security, delegated authority, temporary permissions, persistence, editing UI, organisation policy, or plugin policy was introduced.
+- Gap #30's composite-action simplification remains accepted and documented.
+- Unit A1 identity gating remains intact.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
