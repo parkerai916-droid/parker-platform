@@ -1,6 +1,8 @@
 Parker Platform
 A Trust-First Personal Intelligence Platform
 
+Parker is to personal AI what Linux is to operating systems: an open, model-independent platform where the owner, not the vendor, is ultimately in control.
+
 Own your AI. Own your data. Own your decisions.
 
 Parker is an open-source platform for building trustworthy personal AI systems.
