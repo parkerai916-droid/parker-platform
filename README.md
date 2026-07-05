@@ -4,6 +4,12 @@
 
 Parker's constitutional architecture is now established.
 
+## Engineering Standard
+
+Parker Engineering Standard (PES-001) governs the engineering process for developing the platform. Future Architecture Decisions that alter engineering practice should cite the relevant PES-001 section.
+
+The Constitution defines what Parker is. Architecture Decisions define how Parker is structured. PES-001 defines how Parker is engineered.
+
 This milestone defines the immutable principles that govern the platform and provides the foundation for all future implementation. From this point forward, new features, runtime components, plugins, reasoning providers, and services must conform to Parker's constitutional architecture rather than redefining it.
 
 ### Constitutional Principles
