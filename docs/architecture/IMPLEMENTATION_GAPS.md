@@ -754,7 +754,8 @@ acceptable for the platform's current trust model.
 
 ### 42. `InMemoryTaskManagerRuntime` does not subscribe to Agent lifecycle events
 
-**Status: Closed by Sprint 2, Track B, Unit B1 (commit `7bbf909`).**
+**Status: Closed by Sprint 2, Track B, Unit B1 (commit `7bbf909`) and
+Unit B2 (commit pending).**
 `InMemoryTaskManagerRuntime` (`src/runtime/InMemoryTaskManagerRuntime.kt`)
 now subscribes, once each at construction, to `agent.completed` and
 `agent.failed` on its injected `EventBus`, and records each received event
@@ -770,6 +771,25 @@ intentionally deferred to Sprint 2 Track B, Unit B2, per
 `agent.action_denied`, and `agent.action_deferred` remain unsubscribed,
 since no production code emits any of the three today (see this gap's
 original finding below, which still describes their status accurately).
+
+**Sprint 2, Track B, Unit B2 update:** `InMemoryTaskManagerRuntime` now
+also drives a `TaskStatus` transition in response to `agent.completed`,
+closing the second half of this gap. For a Task with exactly one Agent
+Run Reference, `agent.completed` moves the Task through both already-valid
+`TaskLifecycleTransitions` edges in sequence -- `QUEUED -> RUNNING`, then
+`RUNNING -> COMPLETED` -- publishing `task.started` then `task.completed`;
+a Task already `RUNNING` takes only the second edge; a Task already
+`COMPLETED` is left unmutated. No new lifecycle edge was introduced.
+`agent.failed` still performs no transition -- the event is recorded
+exactly as Unit B1 already did, and nothing else happens, per this unit's
+own scope (`docs/implementation/SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md`).
+Confirmed by `tests/runtime/InMemoryTaskManagerRuntimeTest.kt` (Android
+Studio: 269/269 tests passing). The general Task-completion policy for a
+Task with more than one Agent Run Reference remains explicitly out of
+scope, per `SPRINT_2_IMPLEMENTATION_PLAN.md`'s own Unit B2 scope text --
+not resolved here, not silently assumed. `agent.cancelled`,
+`agent.action_denied`, and `agent.action_deferred` remain unsubscribed and
+cause no transition, unchanged from Unit B1's own scope boundary.
 Original finding retained below for historical context (describes the
 pre-Unit-B1 state):
 
@@ -822,10 +842,11 @@ Unit 11A, commit `13c9322`), #40 (PermissionEngine identity resolution --
 closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit pending),
 #25 (Action Mapping wired into `PermissionEngine.evaluate` via policy --
 closed by Sprint 2, Unit A2, `DefaultPermissionPolicy`, commit pending),
-#42 (`InMemoryTaskManagerRuntime` Agent-Event subscription/recording --
-closed by Sprint 2, Track B, Unit B1, commit pending; Task status
-transition behaviour in response to an Agent Event remains deferred to
-Unit B2).
+#42 (`InMemoryTaskManagerRuntime` Agent-Event subscription/recording,
+closed by Sprint 2, Track B, Unit B1, commit `7bbf909`; Task status
+transition on `agent.completed`, closed by Unit B2, commit pending; the
+general Task-completion policy for a Task with more than one Agent Run
+Reference remains explicitly out of scope, not a pending item).
 
 **Partially resolved:** #5 (Principal half done via
 `PrincipalLifecycleTransitions`; Resource half still deferred), #30

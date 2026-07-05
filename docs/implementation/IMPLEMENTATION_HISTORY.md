@@ -352,6 +352,35 @@ Implementation Notes
 
 ---
 
+### Sprint 2 Track B Unit B2 – Task Manager Agent-Event Status Transitions
+
+Commit:
+pending
+
+Completed:
+2026-07-05
+
+Android Studio Tests:
+269/269
+
+Summary
+- InMemoryTaskManagerRuntime now drives a Task status transition on agent.completed.
+- A Task with exactly one Agent Run Reference transitions Queued -> Running -> Completed using existing TaskLifecycleTransitions edges.
+- task.started and task.completed are published for the respective edges.
+- A Task already Running transitions directly to Completed.
+- agent.failed continues to cause no Task status transition; the event is still recorded only.
+- Closed IMPLEMENTATION_GAPS.md #42 in full.
+
+Implementation Notes
+- No new TaskLifecycleTransitions edge was introduced; both edges already existed.
+- Task Manager remains event-driven only.
+- It does not call Agent Runtime, ExecutionPipeline, ToolRegistry, or PermissionEngine.
+- General Task-completion policy for a Task with more than one Agent Run Reference remains out of scope.
+- agent.cancelled, agent.action_denied and agent.action_deferred remain unsubscribed and cause no transition.
+- One Unit B1-era test asserting agent.completed left Task status unchanged was removed as obsolete, since Unit B2 deliberately supersedes that behaviour; the scenario is now covered by a test asserting the correct Completed outcome.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
