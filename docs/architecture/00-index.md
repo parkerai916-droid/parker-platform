@@ -1,5 +1,9 @@
 # Parker Platform Architecture v0.4
 
+## Project History
+
+- [ARCHITECTURE_HISTORY.md](ARCHITECTURE_HISTORY.md) — why major architectural and constitutional milestones were made, not just what changed.
+
 ## Constitutional Foundation
 
 These documents sit above the numbered chapters below and take precedence over them. They define Parker's philosophy and behavioural contracts rather than implementation detail, and every chapter that follows is a specialization of what they establish.
