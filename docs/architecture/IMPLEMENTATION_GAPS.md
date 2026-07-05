@@ -752,9 +752,43 @@ repository, per `ToolRegistry.resolve`'s identical, pre-existing
 limitation), or whether the convention-based restriction remains
 acceptable for the platform's current trust model.
 
+### 42. `InMemoryTaskManagerRuntime` does not subscribe to Agent lifecycle events
+
+**Status: Open. This is not an architecture gap; it is an implementation
+gap, and it is the explicit prerequisite for Sprint 2 Track B, Unit B1
+(`docs/implementation/SPRINT_2_IMPLEMENTATION_PLAN.md`).**
+
+`docs/architecture/TaskManagerRuntimeSpecification.md` §6 and §11 already
+specify that the Task Manager Runtime subscribes to Agent Run lifecycle
+events (`agent.completed`, `agent.failed`, `agent.cancelled`,
+`agent.action_denied`, `agent.action_deferred`) so that Agent Run outcomes
+can be recorded against the relevant Task. No numbered gap has previously
+recorded that `src/runtime/InMemoryTaskManagerRuntime.kt` does not yet do
+this: it holds an `EventBus` dependency (added by Sprint 1 Unit 9) only to
+*publish* `task.*` events, and calls no `EventBus.subscribe` of its own.
+
+Of the five event types §6 names, only `agent.completed` and
+`agent.failed` are currently emitted by any Sprint 2 runtime code --
+`src/runtime/InMemoryAgentRuntime.kt`'s own class KDoc states it "only
+ever drives `CREATED -> INITIALISED -> READY -> RUNNING -> {COMPLETED,
+FAILED}`," so these are the only two of the five events a subscriber
+could observe from production code today. `agent.cancelled`,
+`agent.action_denied`, and `agent.action_deferred` remain specified
+concepts -- `AgentRunStatus.CANCELLED` exists in the lifecycle enum, and
+"action_denied"/"action_deferred" correspond to no `AgentRunStatus` value
+at all -- but none of the three has a production emitter today.
+
+Closing this gap is scoped in two parts, matching the two-unit split
+already recorded in `SPRINT_2_IMPLEMENTATION_PLAN.md`: Unit B1 closes only
+the subscription and recording of Agent Events against the correct Task
+(observation, not a Task status change); Unit B2 is responsible for what,
+if anything, a received Agent Event does to `TaskStatus`. This gap should
+not be marked resolved until Unit B1's own subscription/recording scope is
+implemented and verified.
+
 ---
 
-## Phase 2 Runtime — Gap Closure Summary (all 41 items, current status)
+## Phase 2 Runtime — Gap Closure Summary (all 42 items, current status)
 
 Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
 EventBus, Runtime Integration, Targeted Refinement Pass, Identity Service
@@ -776,6 +810,11 @@ closed by Sprint 2, Unit A2, `DefaultPermissionPolicy`, commit pending).
 `PrincipalLifecycleTransitions`; Resource half still deferred), #30
 (action-mapping.md's prose now matches the interface; the interface
 itself is unchanged, per explicit instruction).
+
+**Open, scheduled for closure:** #42 (`InMemoryTaskManagerRuntime` does
+not subscribe to Agent lifecycle events -- the explicit prerequisite for
+Sprint 2 Track B, Unit B1; not a deliberate scope boundary and not
+awaiting a human decision, simply not yet implemented).
 
 **Deliberate scope boundaries / known, documented limitations (not
 defects, not pending):** #7, #22, #23, #24, #26, #33, #34, #35,
