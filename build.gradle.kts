@@ -30,7 +30,10 @@ kotlin {
 // Agent's AgentHealth, MemoryStore's Memory/MemoryQuery/etc.) didn't exist
 // yet. Phase 2 (v0.7 Architecture Completion Phase follow-on) specifies
 // and implements EventBus's supporting types, so EventBus.kt is back in
-// the build. Agent/AuditService/MemoryStore/ModelManager/NotificationService/
+// the build. Sprint 4, Track A, Unit A3 specifies and implements
+// MemoryStore's supporting types (docs/architecture/MEMORY_RUNTIME_ARCHITECTURE.md,
+// docs/architecture/MEMORY_CONTRACT_DESIGN.md), so MemoryStore.kt is back
+// in the build too. Agent/AuditService/ModelManager/NotificationService/
 // Plugin/WorldModel remain excluded -- their supporting types are still
 // unspecified (AgentHealth is a known, recorded gap; the rest are entirely
 // out of this phase's scope). src/runtime holds Phase 2's concrete
@@ -45,7 +48,6 @@ sourceSets {
             exclude(
                 "Agent.kt",
                 "AuditService.kt",
-                "MemoryStore.kt",
                 "ModelManager.kt",
                 "NotificationService.kt",
                 "Plugin.kt",
