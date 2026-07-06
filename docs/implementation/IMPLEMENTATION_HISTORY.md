@@ -533,6 +533,33 @@ Implementation Notes
 
 ---
 
+### Sprint 4 Track B Unit B3 – World Model Runtime Implementation
+
+Commit:
+pending
+
+Completed:
+2026-07-06
+
+Android Studio Tests:
+Android Studio verification pending. Not yet run by a human (PES-001: test execution and commit remain Human authority; no working Kotlin/Gradle toolchain was available in this session's sandbox either). Based on the previous verified total (360) and 53 newly added tests (`tests/contracts/WorldModelContractsTest.kt`: 19, `tests/runtime/DefaultWorldModelUpdatePolicyTest.kt`: 12, `tests/runtime/InMemoryWorldModelTest.kt`: 22; `tests/runtime/FakeWorldModelUpdatePolicy.kt` is a fixture, no tests of its own), the expected total is 413. This number is not considered authoritative until confirmed by Android Studio.
+
+Summary
+- Implemented every contract `docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md` (Unit B2) approved as required, field-by-field, in `src/interfaces/WorldModel.kt` (replacing the original three-operation, named-only stub in place): `WorldBelief` (renamed from `WorldState`; subject, value, confidence [required], timestamp, source, optional derivedFrom); `WorldObservation` (subject, confidence [required], source, optional value [required unless retracting], optional sourceTimestamp, optional derivedFrom, retraction indicator); `ObservationResult` (a three-variant sealed outcome: `Accepted`, `Invalidated`, `Rejected` with a free-text reason); `WorldQuery` (subjectMatch, maximumResults, optional minimumConfidence — deliberately no requesting-Principal field or correlation identifier); and `WorldModelUpdatePolicy` (a `suspend fun evaluate(observation, existing): ObservationResult` plus a `suspend fun isStillCurrent(belief): Boolean` seam). `current`'s parameter changed from `resourceId: ResourceId` to a plain, non-blank subject `String`, per Unit B2's Resource Identity resolution.
+- Added `src/runtime/DefaultWorldModelUpdatePolicy.kt`: the concrete, deterministic `WorldModelUpdatePolicy` this Unit supplies. A retraction invalidates an existing belief or is rejected if none exists; absent any existing belief, the first valid Observation is always accepted; otherwise an Observation is accepted only at or above the existing belief's confidence, and rejected (with reason) if weaker. `isStillCurrent` compares a belief's timestamp against now, bounded by a configurable `staleAfter` (default 15 minutes) — a pure, read-time check with no background sweep. Implements exactly the minimal deterministic rule set this Unit's own instructions named; no probabilistic reasoning or sensor fusion.
+- Added `src/runtime/InMemoryWorldModel.kt`: the first in-memory `WorldModel` implementation. `observe` performs Validation, evaluation (via the injected `WorldModelUpdatePolicy`, defaulted to `DefaultWorldModelUpdatePolicy`), and Update/Invalidation in one call, guarded by an internal `Mutex` so concurrent Observations for the same subject are resolved entirely inside the class. `current` and `query` both consult `WorldModelUpdatePolicy.isStillCurrent` before returning a belief, lazily excluding any that have become stale; `query` additionally applies a case-insensitive subject-substring match and an optional minimum-confidence filter, truncated to `maximumResults`, with no ranking algorithm.
+- Added `tests/contracts/WorldModelContractsTest.kt` (construction-time validation for `WorldBelief`, `WorldObservation`, `ObservationResult`, `WorldQuery`), `tests/runtime/DefaultWorldModelUpdatePolicyTest.kt` (the four-rule evaluation, determinism, custom `staleAfter`), `tests/runtime/InMemoryWorldModelTest.kt` (acceptance, replacement, rejection, invalidation, timestamp ownership, derived-belief carry-forward, query matching/bounds/filtering, lazy expiry, internal-only policy invocation, the `WorldModel` public-surface boundary, real concurrent-submission safety, and structural proof that no excluded/deferred type exists), and `tests/runtime/FakeWorldModelUpdatePolicy.kt` (a lambda-based test fixture mirroring `FakeMemoryPromotionPolicy`'s precedent).
+
+Implementation Notes
+- `src/interfaces/WorldModel.kt`'s original stub conflicted with the approved contract design in two ways, each corrected in place rather than preserved: (1) the current-belief type is now named `WorldBelief`, not `WorldState` (`WORLD_MODEL_CONTRACT_DESIGN.md`'s naming resolution); (2) `current(resourceId: ResourceId)` is now `current(subject: String)` — not every Information Category maps onto a registered Resource, so the World Model no longer requires Resource registration for every subject it can hold a belief about.
+- No excluded contract (`WorldModelUpdateDecision`, `WorldModelRuntime`) was implemented. No deferred addition (a belief-category enumeration, a `WorldModelPolicy` bounded-configuration record, richer derivation lineage, pagination/ranking metadata, a requesting-Principal field, or a correlation identifier on `WorldQuery`) was implemented.
+- `WorldModelUpdatePolicy` is invoked only from inside `InMemoryWorldModel`; no public `WorldModel` member reaches it, and `DefaultWorldModelUpdatePolicy` constructs the accepted `WorldBelief` (including its authoritative timestamp) as part of evaluation — a disclosed interpretation of `WORLD_MODEL_CONTRACT_DESIGN.md` §5's "does not itself construct a `WorldBelief`" language, read as a boundary against an external actor constructing one, not against any class inside the World Model's own, entirely internal implementation. See this Unit's Post-Implementation Review for the full reasoning.
+- No `EventBus` publication was added. `WorldModel.md` names "Publish state change events" as a Responsibility; this Unit reports, rather than resolves, how that could be added without granting orchestration authority (see `docs/architecture/IMPLEMENTATION_GAPS.md` #47) and does not implement it.
+- No dependency on Memory, the Planner Runtime, the Agent Runtime, or the Permission Engine was introduced. `InMemoryWorldModel`'s constructor takes only a `WorldModelUpdatePolicy` (defaulted).
+- `docs/architecture/WORLD_MODEL_RUNTIME_ARCHITECTURE.md`, `docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md`, the Parker Constitution, the Architecture Decisions, and PES-001 were not modified.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

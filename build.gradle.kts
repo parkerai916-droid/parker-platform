@@ -33,10 +33,13 @@ kotlin {
 // the build. Sprint 4, Track A, Unit A3 specifies and implements
 // MemoryStore's supporting types (docs/architecture/MEMORY_RUNTIME_ARCHITECTURE.md,
 // docs/architecture/MEMORY_CONTRACT_DESIGN.md), so MemoryStore.kt is back
-// in the build too. Agent/AuditService/ModelManager/NotificationService/
-// Plugin/WorldModel remain excluded -- their supporting types are still
-// unspecified (AgentHealth is a known, recorded gap; the rest are entirely
-// out of this phase's scope). src/runtime holds Phase 2's concrete
+// in the build too. Sprint 4, Track B, Unit B3 specifies and implements
+// WorldModel's supporting types (docs/architecture/WORLD_MODEL_RUNTIME_ARCHITECTURE.md,
+// docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md), so WorldModel.kt is
+// back in the build too. Agent/AuditService/ModelManager/NotificationService/
+// Plugin remain excluded -- their supporting types are still unspecified
+// (AgentHealth is a known, recorded gap; the rest are entirely out of
+// this phase's scope). src/runtime holds Phase 2's concrete
 // implementations (ToolRegistry, ActionMapper, EventBus), kept separate
 // from src/contracts (data types) and src/interfaces (Volume 3 interface
 // stubs) per the existing two-directory convention. See
@@ -51,7 +54,6 @@ sourceSets {
                 "ModelManager.kt",
                 "NotificationService.kt",
                 "Plugin.kt",
-                "WorldModel.kt",
             )
         }
     }

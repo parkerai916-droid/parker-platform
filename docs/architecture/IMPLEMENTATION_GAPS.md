@@ -1004,9 +1004,60 @@ model-or-heuristic-backed work, and that `DefaultMemoryPromotionPolicy`'s
 two-factor rule is intentionally the minimal deterministic baseline, not
 a placeholder awaiting completion.
 
+### 47. `InMemoryWorldModel` does not publish state change events
+
+**Status: Open, not yet closed. Surfaced (not created) by Sprint 4, Track
+B, Unit B3** -- the first unit to actually implement `WorldModel`.
+`docs/specifications/volume-03-core-interfaces/WorldModel.md`'s
+Responsibilities list names five items, one of which is "Publish state
+change events." `InMemoryWorldModel` (`src/runtime/InMemoryWorldModel.kt`)
+implements the other four (store transient state, track confidence,
+expire stale observations, resolve current state) but does not publish
+anything to the `EventBus` when a belief is accepted, invalidated, or
+excluded at expiry.
+
+This is a genuine, disclosed gap, not a silent omission, and this Unit's
+own instructions asked explicitly that it be reported rather than
+resolved unilaterally: "If EventBus publication appears necessary because
+`WorldModel.md` requires state change events, stop and report how it can
+be implemented without giving World Model autonomous orchestration
+authority."
+
+**How it could be implemented without granting orchestration authority
+(reported, not yet done):** `InMemoryWorldModel` could accept an optional,
+injected `EventBus` reference and publish a one-way, read-only event
+(for example, `worldmodel.belief_accepted` /
+`worldmodel.belief_invalidated`) immediately after `observe` accepts or
+invalidates a belief -- strictly as an observability/audit broadcast, the
+same role every other Runtime component's own event publication already
+plays (`agent.*`, `task.*`, `planner.*`). This would not, by itself, grant
+the World Model orchestration authority, provided the same rule already
+governing every other event in this codebase continues to hold: no
+subscriber may treat receipt of a `worldmodel.*` event as authorization to
+act, and the World Model itself never subscribes to anything. Publishing
+is a broadcast outward, never a channel back in.
+
+**Why it was not implemented now:** Unit B3's own Implementation Scope and
+Testing sections name no `EventBus` requirement, its own "Do NOT
+Implement" list says "EventBus publication unless already required by the
+existing WorldModel specification and safely scoped," and adding a new
+`EventBus` constructor dependency to `InMemoryWorldModel` was judged safer
+to report and defer than to add speculatively, mid-implementation, without
+an approved event-name/payload contract (no `worldmodel.*` event is named
+anywhere in `docs/architecture/16-world-model.md`,
+`WORLD_MODEL_RUNTIME_ARCHITECTURE.md`, or `WORLD_MODEL_CONTRACT_DESIGN.md`
+today). **Recommended closure (a future unit's decision, not this one's):**
+either a small, additive follow-up unit that adds the injected `EventBus`
+dependency and the two events described above, or an explicit architecture-level
+decision that `WorldModel.md`'s "Publish state change events" responsibility
+is satisfied by callers observing `current`/`query` themselves rather than
+by the World Model pushing events, closing the Open Question the other
+way -- mirroring gap #45's identical two-path resolution for
+`planner.session_rejected`.
+
 ---
 
-## Phase 2 Runtime — Gap Closure Summary (all 46 items, current status)
+## Phase 2 Runtime — Gap Closure Summary (all 47 items, current status)
 
 Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
 EventBus, Runtime Integration, Targeted Refinement Pass, Identity Service
@@ -1073,7 +1124,15 @@ submission against Memory's own existing records, which
 supply; found by Sprint 4 Track A Unit A3; recommended closure is either
 extending the seam with a way to consult existing records or explicitly
 documenting the two-factor rule as an intentional, non-placeholder
-minimal baseline).
+minimal baseline); #47 (`InMemoryWorldModel` does not publish state
+change events, per `WorldModel.md`'s own "Publish state change events"
+responsibility -- found and explicitly reported by Sprint 4 Track B Unit
+B3, per that Unit's own instruction to stop and report rather than
+implement unilaterally; recommended closure is either an additive
+follow-up adding an injected `EventBus` dependency and two new,
+purely-observational events, or an explicit architecture-level decision
+that this responsibility is satisfied by callers polling `current`/`query`
+instead).
 
 No item in this file was closed by inventing behaviour beyond what its
 governing architecture document already specified.
