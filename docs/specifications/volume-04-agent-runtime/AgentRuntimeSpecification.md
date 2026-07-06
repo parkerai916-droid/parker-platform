@@ -40,6 +40,23 @@ previously-unnamed source of the request. **No implementation of
 change, not Sprint 1 coding, which remains
 `docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Unit 7's work.
 
+**Sprint 5 terminology clarification.** `docs/reviews/ARCHITECTURE_V2_BASELINE_REVIEW.md`
+found that this document's own Section 1 could be read as implying the
+Agent Runtime instantiates or manages `docs/specifications/volume-03-core-interfaces/Agent.md`'s
+long-lived, daemon-style `Agent` interface (`start()`/`stop()`/`health()`).
+It does not. Everything this Specification calls "Agent," "Agent
+Instance," or "Agent Run" refers to the bounded, per-Task execution
+model Section 4 defines and Sprint 3, Track C implemented
+(`AgentRun`, `AgentRunCommandChannel`, `AgentStep`,
+`src/runtime/InMemoryAgentRuntime.kt`) — a repository-wide search
+confirms that implementation never references `src/interfaces/Agent.kt`
+anywhere. `Agent.md` now carries the reciprocal clarification and has
+been retitled "Background Agent Interface" to keep the two concepts
+textually distinct going forward. Any future connection between a
+background, long-lived Agent and Agent Runtime is not authorised by
+this Specification and would require its own Architecture Decision or
+Contract Design pass.
+
 This document assumes familiarity with Chapter 9 (Trust Framework),
 Chapter 10 (Permission Engine), Chapter 11 (Execution Pipeline), Chapter
 12 (Tool Framework), Chapter 13 (Event Bus), Chapter 14 (Agent Framework),
@@ -50,9 +67,12 @@ the Agent Runtime sits on top of them.
 
 ## 1. Overview
 
-The Agent Runtime is the execution environment in which a Parker Agent —
-Chapter 14's "specialised internal worker" — actually runs. It is the
-component responsible for giving an Agent a bounded lifecycle, an
+The Agent Runtime is the execution environment in which a bounded Agent
+Instance — this document's own Section 4 concept, distinct from
+`docs/specifications/volume-03-core-interfaces/Agent.md`'s long-lived
+Background Agent interface (see this document's Status section, "Sprint
+5 terminology clarification") — actually runs. It is the component
+responsible for giving an Agent Instance a bounded lifecycle, an
 identity, a scoped set of capabilities, and a controlled channel back into
 the platform, without giving it anything the platform's existing Trust
 Framework does not already mediate.

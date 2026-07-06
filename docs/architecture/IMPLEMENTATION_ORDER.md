@@ -26,6 +26,24 @@ specifications on top of it; it is not yet an agentic system, has no
 Planner, Memory, World Model, or Workflow Runtime, and has no Android
 integration.
 
+**Sprint 5 status update.** The paragraph above described Parker's
+state at the time this document was written, before Sprint 3 and Sprint
+4. It is no longer current and is left in place only as a historical
+record of the reasoning that follows in Sections 4–7, which remains
+architecturally valid even though the status labels attached to it are
+now stale. As of Sprint 4: Agent Runtime, Planner Runtime, Memory
+Runtime, and World Model Runtime are each specified, contract-designed,
+implemented, tested, and reviewed. Parker **does** now have a Planner,
+a Memory Runtime, and a World Model Runtime. It does not yet have a
+Workflow Runtime or Android integration — those two items, and only
+those two, remain accurately described as "not yet specified" anywhere
+in this document. See
+`docs/reviews/ARCHITECTURE_V2_BASELINE_REVIEW.md` for the current,
+authoritative architecture status (Architecture v2.0, achieved with
+minor reservations) and
+`docs/implementation/IMPLEMENTATION_HISTORY.md` for the current,
+unit-by-unit implementation record.
+
 ## 2. Current Completed Foundation
 
 The following components are implemented (`src/`), tested
@@ -84,7 +102,21 @@ establish: a Task Manager Task is the platform's one canonical unit of
 tracked work; an Agent Run may execute within a Task Manager Task but
 never owns or redefines it; Agent Run state never directly mutates Task
 Status — every reflection of one into the other is a deliberate Task
-Manager rule, not an automatic mirror. Neither document is authorised for
+Manager rule, not an automatic mirror.
+
+**Sprint 5 status update.** "Neither document is authorised for
+implementation yet," below, described this document's original state
+and is no longer true. The Task Manager Runtime Specification was
+implemented in Sprint 1 (`src/runtime/InMemoryTaskManagerRuntime.kt`),
+and the Agent Runtime Specification was implemented, in bounded
+multi-step form, in Sprint 3, Track C
+(`src/runtime/InMemoryAgentRuntime.kt`, `docs/architecture/MULTI_STEP_AGENT_RUN_DESIGN.md`).
+Both remain accurate as field-level contracts; only their
+implementation status has changed since this section was written. The
+sentence below is left in place as the historical record it was at the
+time.
+
+Neither document is authorised for
 implementation yet (see Section 1 and each document's own Status
 header).
 
@@ -97,11 +129,24 @@ a separate question from an order to implement them in (implementation
 of any one remains gated on its own future review and correction pass,
 per Section 6).
 
-| Order | Component | Status | Reason |
+**Sprint 5 status update on the table below.** The "Status" column
+describes each item's state at the time this document was written.
+Items 1–3 (Planner, World Model, Memory) have since been specified,
+contract-designed, implemented, tested, and reviewed — see
+`docs/architecture/PLANNER_RUNTIME_PROGRESSION_DESIGN.md`/`PLANNER_RUNTIME_CONTRACT_DESIGN.md`,
+`docs/architecture/WORLD_MODEL_RUNTIME_ARCHITECTURE.md`/`WORLD_MODEL_CONTRACT_DESIGN.md`,
+and `docs/architecture/MEMORY_RUNTIME_ARCHITECTURE.md`/`MEMORY_CONTRACT_DESIGN.md`
+respectively. Items 4–5 (Workflow Runtime, Android Integration) remain
+accurately described as "Not yet specified." The original "Status" and
+"Reason" text is left unchanged below as the historical record of the
+sequencing decision, which remains architecturally valid regardless of
+each item's now-updated implementation status.
+
+| Order | Component | Status (at time of writing) | Reason |
 |---|---|---|---|
-| 1 | Planner Runtime Specification (Chapter 20) | Not yet specified | The Planner is the one component neither existing baseline defines: both the Agent Runtime Specification (Section 3) and the Task Manager Runtime Specification (Section 3, 13) explicitly assume Goals and proposed actions "arrive already formed." Nothing upstream of Agent Run/Task Manager Task creation is specified today, so it is the most direct gap connecting existing Trust-Framework-grounded work to anything resembling autonomous behaviour. Planner also already has a named seam in `action-mapping.md` ("the Planner is the sole owner of the translation" from intent to Permission Action), so specifying it completes a boundary that already partially exists rather than opening a new one. |
-| 2 | World Model Specification (Chapter 16) | Not yet specified | Both existing baselines already reserve a seam for it (Agent Context/Task Context "may later reference... World Model entries, but does not implement them") without specifying how. A Planner that decomposes Goals into Tasks and Agent Runs plausibly needs to consult current-state beliefs (e.g. "is it within the allowed time window") to do so meaningfully, so specifying World Model early gives Planner something concrete to depend on rather than a placeholder. It is sequenced second, not first, because the Trust Framework, Task Manager, and Agent Runtime do not themselves require it to already exist — only Planner's *decomposition quality* benefits from it, not correctness or safety of the layers below it. |
-| 3 | Memory Specification (Chapter 17) | Not yet specified | Symmetric to World Model: already reserved as a seam by both baselines ("Agent Context is not long-term Memory," "Task Context is not long-term Memory"), and useful to Planner (e.g. "this kind of Task usually takes N minutes") without being required for Task Manager or Agent Runtime correctness. Sequenced after World Model because World Model concerns current-state belief a Planner needs synchronously, whereas Memory concerns historical pattern that improves Planner quality over time but is not a precondition for a first working decomposition. |
+| 1 | Planner Runtime Specification (Chapter 20) | Not yet specified — **now specified and implemented (Sprint 3, Track D)** | The Planner is the one component neither existing baseline defines: both the Agent Runtime Specification (Section 3) and the Task Manager Runtime Specification (Section 3, 13) explicitly assume Goals and proposed actions "arrive already formed." Nothing upstream of Agent Run/Task Manager Task creation is specified today, so it is the most direct gap connecting existing Trust-Framework-grounded work to anything resembling autonomous behaviour. Planner also already has a named seam in `action-mapping.md` ("the Planner is the sole owner of the translation" from intent to Permission Action), so specifying it completes a boundary that already partially exists rather than opening a new one. |
+| 2 | World Model Specification (Chapter 16) | Not yet specified — **now specified and implemented (Sprint 4, Track B)** | Both existing baselines already reserve a seam for it (Agent Context/Task Context "may later reference... World Model entries, but does not implement them") without specifying how. A Planner that decomposes Goals into Tasks and Agent Runs plausibly needs to consult current-state beliefs (e.g. "is it within the allowed time window") to do so meaningfully, so specifying World Model early gives Planner something concrete to depend on rather than a placeholder. It is sequenced second, not first, because the Trust Framework, Task Manager, and Agent Runtime do not themselves require it to already exist — only Planner's *decomposition quality* benefits from it, not correctness or safety of the layers below it. |
+| 3 | Memory Specification (Chapter 17) | Not yet specified — **now specified and implemented (Sprint 4, Track A)** | Symmetric to World Model: already reserved as a seam by both baselines ("Agent Context is not long-term Memory," "Task Context is not long-term Memory"), and useful to Planner (e.g. "this kind of Task usually takes N minutes") without being required for Task Manager or Agent Runtime correctness. Sequenced after World Model because World Model concerns current-state belief a Planner needs synchronously, whereas Memory concerns historical pattern that improves Planner quality over time but is not a precondition for a first working decomposition. |
 | 4 | Workflow Runtime Specification (Chapter 38) | Not yet specified | ADR-012 ("Tasks track work. Workflows define structured multi-step behaviour") and both existing baselines already draw this boundary without filling it in. Workflow Runtime is sequenced after Planner and Task Manager specifically because it composes *them* — multiple Task Manager Tasks, conditions, branching, retries, and rollback — rather than replacing either; specifying it before Planner exists risks inventing orchestration Planner should own, and specifying it before Task Manager was stable would have risked exactly the terminology collision the Task Manager Runtime Specification's own correction pass had to resolve for Agent Runtime. |
 | 5 | Android Runtime / Android Integration Specification (Chapter 27) | Not yet specified | Every existing specification (Agent Runtime Section 12, Task Manager Runtime Section 13) already states it "assumes no particular front end." Android integration is sequenced last because it is a consumer of platform semantics, not a source of them: stabilising Planner, World Model, Memory, and Workflow Runtime first means Android integration is specified once against a settled set of Goal/Task/Agent Run/Workflow semantics, rather than needing revision each time one of those four changes underneath it. |
 
@@ -216,7 +261,15 @@ give Agent Runtime or Execution Pipeline a second entry point.
 - Should this document itself be revisited (or superseded) once the
   Planner Runtime Specification exists, given that document will likely
   sharpen or revise some of the reasoning in Section 4 rather than only
-  confirming it?
+  confirming it? **Answered (Sprint 5):** revisited in place, not
+  superseded — the Sprint 5 status updates added throughout this
+  document correct the now-stale "Status" labels in Sections 1, 3, and
+  4 without rewriting the sequencing reasoning itself, which the
+  Planner, Memory, and World Model Runtime Contract Design documents
+  did not need to revise. `docs/reviews/ARCHITECTURE_V2_BASELINE_REVIEW.md`
+  is the current authoritative status document; this one remains the
+  historical record of the sequencing decision that got the platform
+  there.
 
 ## 8. Related Documents
 
@@ -235,3 +288,13 @@ give Agent Runtime or Execution Pipeline a second entry point.
 - `docs/architecture/IMPLEMENTATION_GAPS.md`
 - `docs/release/v0.8-runtime-complete-checklist.md`
 - `README.md`
+- `docs/reviews/ARCHITECTURE_V2_BASELINE_REVIEW.md` (current,
+  authoritative architecture status — supersedes this document's
+  Section 1/3/4 status claims, not its sequencing reasoning)
+- `docs/architecture/PLANNER_RUNTIME_PROGRESSION_DESIGN.md`,
+  `docs/architecture/PLANNER_RUNTIME_CONTRACT_DESIGN.md`
+- `docs/architecture/MEMORY_RUNTIME_ARCHITECTURE.md`,
+  `docs/architecture/MEMORY_CONTRACT_DESIGN.md`
+- `docs/architecture/WORLD_MODEL_RUNTIME_ARCHITECTURE.md`,
+  `docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md`
+- `docs/implementation/IMPLEMENTATION_HISTORY.md`
