@@ -1136,3 +1136,123 @@ instead).
 
 No item in this file was closed by inventing behaviour beyond what its
 governing architecture document already specified.
+
+---
+
+## Independent Architecture Audit Findings (Sprint 5)
+
+Recorded following a skeptical, feature-agnostic architectural review of
+the repository as it stands today (not scoped to any single unit), and
+triaged in `docs/reviews/ARCHITECTURE_V2_INDEPENDENT_AUDIT_TRIAGE.md`.
+These four items are logged here for tracking, per that triage document's
+"Should fix soon" and "Needs ADR/design unit" categories. None are fixed
+by this entry — this is a tracking addition only.
+
+### 48. Deterministic parent-derived IDs cap multiplicity for AgentRunId and TaskProposalId
+
+**Status: Open, logged for tracking. Latent architectural/implementation
+gap, not a present test failure.**
+
+`InMemoryAgentRuntime.start()` mints
+`AgentRunId("run-for-${command.taskId.value}")`
+(`src/runtime/InMemoryAgentRuntime.kt:143`) and rejects a second `START`
+command for the same Task. `InMemoryPlannerRuntime` mints
+`TaskProposalId("${request.planningSessionId.value}-proposal-1")`
+(`src/runtime/InMemoryPlannerRuntime.kt:223`). Both governing
+specifications leave the corresponding multiplicity open: Task Manager is
+documented as associating "zero, one, or many Agent Runs" with a Task, and
+the Planner Runtime progression design allows "one or more Task Proposals"
+per Planning Session. Neither implementation can produce more than one, by
+construction of its ID-minting scheme -- not by an explicit architectural
+decision to cap it at one.
+
+This is disclosed at runtime (each implementation's uniqueness/precondition
+check carries an explanatory message) but had not previously been recorded
+in this document. **No action required to close** -- the cap is an
+acceptable, existing scope reduction, not a defect. **Recommended
+follow-up:** a future unit that needs a second Agent Run per Task, or a
+second Task Proposal per Planning Session, will require a deliberate
+ID-generation change to `InMemoryAgentRuntime` and/or `InMemoryPlannerRuntime`
+(or their successors); that unit should start from this entry rather than
+rediscover the limitation from source.
+
+### 49. Planner Runtime publisher identity is hardcoded and unresolved
+
+**Status: Open, logged for tracking. Latent integration gap, currently
+masked by the permissive EventBus authenticator (see item #26).**
+
+`InMemoryPlannerRuntime` publishes every Planner event under a hardcoded
+`PrincipalId("system.planner-runtime")`
+(`src/runtime/InMemoryPlannerRuntime.kt:108, 312`) that is never
+registered with or resolved through `IdentityService`. By contrast,
+`InMemoryAgentRuntime` resolves its Agent identity via
+`identityService.resolve(agentIdentityPrincipalId)` (`:166`) before a run
+starts, and republishes under that verified identity (`:539`). This
+asymmetry is invisible today because `InMemoryEventBus`'s wired-in
+`AllowAllPrincipalAuthenticator` accepts every syntactically valid
+`PrincipalId`. It stops being invisible the moment a real, identity-backed
+`EventBus` authenticator is introduced, at which point Planner Runtime's
+every published event would fail authentication while Agent Runtime's
+would not.
+
+**No action required to close now.** **Recommended follow-up:** any future
+unit that implements a real `PrincipalAuthenticator` for `EventBus` (the
+natural successor to item #26) must first either register
+`PLANNER_RUNTIME_PRINCIPAL_ID` with `IdentityService`, or change
+`InMemoryPlannerRuntime` to publish under a resolved identity the same way
+Agent Runtime does. Treat this entry as a precondition check for that
+future unit, not a standalone fix.
+
+### 50. EventBus publish is synchronous; a slow subscriber can block all publishers
+
+**Status: Open, logged for tracking. Deferred scale/design issue --
+correct and low-risk at current scale, not an implementation bug.**
+
+`InMemoryEventBus.publish()` iterates subscribers and calls
+`subscription.deliver(event)` sequentially, inside the publisher's own
+coroutine (`src/runtime/InMemoryEventBus.kt:88-112`). A throwing subscriber
+is caught and isolated; a slow or blocking one is not, and every runtime
+subsystem shares one `EventBus` instance. No current subscriber performs
+blocking work, so this has no observable effect today.
+
+**Requires an ADR before it requires a fix; no action needed now.**
+**Recommended follow-up:** an ADR ("EventBus Delivery Isolation") deciding
+concurrent delivery, per-subscriber timeouts, or an explicit
+fire-and-forget dispatch boundary, authored alongside -- not before -- the
+first future unit that adds a subscriber performing real I/O or
+non-trivial work (the most likely candidate being a future Audit
+subsystem).
+
+### 51. Persistence / durability / audit boundary is not structurally defined
+
+**Status: Open, logged for tracking. Strategic architecture gap -- not a
+defect in the current in-memory reference implementation.**
+
+`MemoryStore.md`'s Purpose statement calls Memory "Parker's durable
+long-term knowledge," but `InMemoryMemoryStore` -- like every other
+runtime store, including `InMemoryIdentityService`'s Principals -- loses
+all state on process restart. Separately, no `AuditService` implementation
+exists, and `InMemoryEventBus` is explicitly at-most-once with no replay
+(item #26), so the Constitution's Auditability principle currently has no
+durable mechanism behind it anywhere in the platform.
+
+**No action required to close now; requires an ADR before persistence or
+durable audit becomes load-bearing.** **Recommended follow-up:** an ADR
+defining the persistence/durability boundary across Memory, Identity, and
+Audit, including whether `MemoryStore.md`'s current "durable" language
+should be scoped ("logically durable within process lifetime; physical
+durability is a reserved seam") until that ADR lands. See
+`docs/reviews/ARCHITECTURE_V2_INDEPENDENT_AUDIT_TRIAGE.md` Finding 4 for
+the full reasoning.
+
+**Note on Agent/Agent Runtime naming.** The independent audit's sixth
+finding (ambiguity between the Background Agent interface and Agent
+Runtime) is **not** added as a gap here. Per
+`ARCHITECTURE_V2_INDEPENDENT_AUDIT_TRIAGE.md` Finding 6, this is resolved
+at the documentation layer (Sprint 5 Cleanup) and the remaining exposure is
+a low-risk, structurally-unenforced residual, not an open gap, while
+`Agent.kt` stays excluded from build scope.
+
+No item in this section was closed by inventing behaviour beyond what its
+governing architecture document already specifies; all four are logged as
+open tracking entries only.
