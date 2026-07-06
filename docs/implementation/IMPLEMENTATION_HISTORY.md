@@ -508,6 +508,31 @@ Implementation Notes
 
 ---
 
+### Sprint 4 Track A Unit A3 – Memory Runtime Implementation
+
+Commit:
+pending
+
+Completed:
+2026-07-06
+
+Android Studio Tests:
+Not yet run by a human in Android Studio (PES-001: test execution and commit remain Human authority; no working Kotlin/Gradle toolchain was available in this session's sandbox either). Static count: the prior suite stood at 315/315; `tests/contracts/MemoryContractsTest.kt` contributes 19 tests, `tests/runtime/DefaultMemoryPromotionPolicyTest.kt` contributes 10, and `tests/runtime/InMemoryMemoryStoreTest.kt` contributes 16 (`tests/runtime/FakeMemoryPromotionPolicy.kt` is a fixture, no tests of its own), a net addition of +45. If every existing and new test passes unchanged, the expected total is 360/360 — this figure is an arithmetic projection from the source, not a verified run, and must be confirmed in Android Studio before commit.
+
+Summary
+- Implemented every contract `docs/architecture/MEMORY_CONTRACT_DESIGN.md` (Unit A2) approved as required, field-by-field, in `src/interfaces/MemoryStore.kt` (replacing the original four-operation, named-only stub in place): `MemoryId` (the established blank-rejecting identifier pattern); `MemoryCategory` (a single five-value enum: `EPISODIC`, `SEMANTIC`, `PROCEDURAL`, `USER_PREFERENCES`, `RELATIONSHIPS`); `CandidateMemory` (knowledge payload, proposed category, provenance, optional confidence, explicit-request flag, sensitivity flag); `MemoryRecord` (required identity/metadata, optional metadata, knowledge payload, and a plain-`List<String>` history); `MemoryPromotionDecision` (a two-variant sealed `Promote`/`Reject` outcome, `Reject.reason` a free-text `String`); `MemoryPromotionPolicy` (a `suspend fun evaluate(candidate, memoryId): MemoryPromotionDecision` seam); and `MemoryQuery` (requesting Principal, relevance text, optional category, correlation id, and a required, positive `maximumResults`).
+- Added `src/runtime/DefaultMemoryPromotionPolicy.kt`: the concrete, deterministic `MemoryPromotionPolicy` this Unit supplies. Promotes unconditionally if `explicitlyRequested`; otherwise promotes if `confidence >= 0.7` (configurable); otherwise rejects with a plain-language reason. Implements 2 of `33-memory-consolidation.md`'s 6 named promotion factors (explicit request, confidence) — the remaining four (repetition, user importance beyond explicit request, goal relevance, frequency) are not implemented and are recorded as `IMPLEMENTATION_GAPS.md` #46, not silently dropped.
+- Added `src/runtime/InMemoryMemoryStore.kt`: the first in-memory `MemoryStore` implementation. `remember` performs submission, Evaluation (via the injected `MemoryPromotionPolicy`, defaulted to `DefaultMemoryPromotionPolicy`), and Promotion in one call, returning the `MemoryPromotionDecision` directly — there is no separate, caller-facing "promote" operation. `retrieve` implements the minimal, deterministic matching this Unit is scoped to (Principal-scoped, category-narrowed, case-insensitive substring match on the knowledge payload, most-recently-promoted-first via internal insertion order, truncated to `maximumResults`) — `MemoryRetrievalPolicy` (a deferred seam) is not implemented. `forget` removes a record from retrieval and records the forgotten `MemoryId` in an internal, auditable set, inspectable via the class-specific `wasForgotten` method (not part of `MemoryStore`, mirroring `InMemoryPlannerRuntime.getSessionStatus`/`InMemoryTaskManagerRuntime.getTask`'s identical "observability method outside the formal interface" precedent).
+- Added `tests/contracts/MemoryContractsTest.kt` (construction-time validation for `MemoryId`, `CandidateMemory`, `MemoryRecord`, `MemoryQuery`, `MemoryPromotionDecision`), `tests/runtime/DefaultMemoryPromotionPolicyTest.kt` (the two-factor evaluation rule, determinism, custom threshold), `tests/runtime/InMemoryMemoryStoreTest.kt` (promotion approved/rejected, retrievability following the decision, category narrowing, `maximumResults`, deterministic ordering, Principal scoping, forgetting and its auditability, forgetting a nonexistent id, the `MemoryStore` public-surface boundary, internal-only `MemoryPromotionPolicy` invocation, and scope discipline), and `tests/runtime/FakeMemoryPromotionPolicy.kt` (a lambda-based test fixture mirroring `FakePermissionEngine`'s precedent).
+
+Implementation Notes
+- `src/interfaces/MemoryStore.kt`'s original stub conflicted with the approved contract design in three ways, each corrected in place rather than preserved: (1) the promoted-record type is now named `MemoryRecord`, not `Memory` (`MEMORY_CONTRACT_DESIGN.md` §3's naming clarification); (2) `promote(memoryId: MemoryId): Memory` no longer exists as a public, caller-facing operation — `remember` now expresses submission, Evaluation, and Promotion as one caller-facing step, per `MEMORY_CONTRACT_DESIGN.md` §9's architectural decision that external callers never invoke promotion directly; (3) `forget`'s return type is a plain `Boolean`, not a `ForgetResult` — `ForgetResult` was never one of Unit A2's eight approved required contracts, and shaping it now would have introduced an unauthorised ninth contract.
+- No excluded contract (`CandidateMemoryId`, `MemoryQueryResult`, `MemoryRuntime`, `MemoryObservation`) was implemented. No deferred seam (`MemoryRetrievalPolicy`, the combined retention/consolidation seam) was implemented; `retrieve`'s minimal matching is hard-coded inside `InMemoryMemoryStore`, not a pluggable policy.
+- No dependency on the Planner Runtime, the Agent Runtime, the Permission Engine, or the Event Bus was introduced. `InMemoryMemoryStore`'s constructor takes only a `MemoryPromotionPolicy` (defaulted). No Memory-to-World-Model mutation and no World-Model-to-Memory automatic copying exist anywhere in this Unit's code.
+- `docs/architecture/MEMORY_RUNTIME_ARCHITECTURE.md`, `docs/architecture/MEMORY_CONTRACT_DESIGN.md`, the Parker Constitution, the Architecture Decisions, and PES-001 were not modified.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

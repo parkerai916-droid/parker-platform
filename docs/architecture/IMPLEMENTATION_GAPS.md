@@ -954,7 +954,59 @@ signal and no dedicated event is needed.
 
 ---
 
-## Phase 2 Runtime — Gap Closure Summary (all 45 items, current status)
+### 46. `DefaultMemoryPromotionPolicy` implements only two of `33-memory-consolidation.md`'s six named promotion factors
+
+**Status: Open, not yet closed. Surfaced (not created) by Sprint 4, Track
+A, Unit A3** -- the first unit to actually implement a
+`MemoryPromotionPolicy`. `docs/architecture/33-memory-consolidation.md`
+names six promotion factors: repetition, user importance, goal relevance,
+frequency, confidence, and explicit request.
+`DefaultMemoryPromotionPolicy` (`src/runtime/DefaultMemoryPromotionPolicy.kt`)
+implements exactly two of them -- explicit request (unconditional
+promotion) and confidence (promotion at or above a fixed threshold) --
+deterministically and without randomness, per this Unit's own
+instructions.
+
+The remaining four factors -- repetition, user importance beyond an
+explicit request, goal relevance, and frequency -- are not implemented,
+and this is a genuine gap, not an oversight quietly worked around: each
+of those four requires comparing a submitted `CandidateMemory` against a
+population of Memory's own existing `MemoryRecord`s (has this, or
+something like it, been said before? how often? how does it relate to
+what else Memory already holds?). Neither
+`docs/architecture/MEMORY_CONTRACT_DESIGN.md` (Unit A2) nor this
+Unit's own instructions shape a way to supply that population to
+`MemoryPromotionPolicy.evaluate(candidate, memoryId)` -- its signature
+takes only the one `CandidateMemory` under evaluation and its assigned
+`MemoryId`. Extending it to accept a queryable view of existing records
+would be a genuine interface change, and inventing one now, mid-Kotlin,
+without an approved design for what that view looks like (a full
+`MemoryStore` reference? a bounded recent-records window? something
+else?) would be exactly the kind of unauthorised architecture invention
+this Unit's instructions forbid.
+
+This is not a defect in Unit A3's own implementation -- Unit A2 approved
+`MemoryPromotionPolicy` as a seam without specifying which or how many of
+the six factors any one implementation must weigh, and this Unit's own
+instructions asked for "explicit-request promotion factor" and
+"confidence-based promotion factor if implemented" specifically, naming
+no requirement to implement the other four. It is a real, disclosed
+limitation of `DefaultMemoryPromotionPolicy` as a *first* implementation,
+not of the `MemoryPromotionPolicy` interface itself, which remains free
+of this limitation (a future, more capable implementation could weigh all
+six without any interface change, provided it is given a way to see
+Memory's existing records). **Recommended closure (a future unit's
+decision, not this one's):** either extend `MemoryPromotionPolicy` (or
+its concrete implementation's constructor) with an explicit way to
+consult existing `MemoryRecord`s, or explicitly document that a
+population-comparison-based promotion policy remains future,
+model-or-heuristic-backed work, and that `DefaultMemoryPromotionPolicy`'s
+two-factor rule is intentionally the minimal deterministic baseline, not
+a placeholder awaiting completion.
+
+---
+
+## Phase 2 Runtime — Gap Closure Summary (all 46 items, current status)
 
 Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
 EventBus, Runtime Integration, Targeted Refinement Pass, Identity Service
@@ -1012,7 +1064,16 @@ event for a real, reachable `SUBMITTED -> REJECTED` transition -- an
 already-recorded `PlannerRuntimeSpecification.md` Section 11 Open Question,
 now attached to a real code path by Sprint 3 Track D Unit D2's
 `InMemoryPlannerRuntime`; recommended closure is either adding the event or
-explicitly closing the Open Question the other way).
+explicitly closing the Open Question the other way); #46
+(`DefaultMemoryPromotionPolicy` implements only 2 of
+`33-memory-consolidation.md`'s 6 named promotion factors --
+repetition/user-importance/goal-relevance/frequency require comparing a
+submission against Memory's own existing records, which
+`MemoryPromotionPolicy.evaluate`'s current signature has no way to
+supply; found by Sprint 4 Track A Unit A3; recommended closure is either
+extending the seam with a way to consult existing records or explicitly
+documenting the two-factor rule as an intentional, non-placeholder
+minimal baseline).
 
 No item in this file was closed by inventing behaviour beyond what its
 governing architecture document already specified.
