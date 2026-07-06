@@ -564,12 +564,17 @@ value** of `submitProposal`, not solely an asynchronous Task Event — this
 is why `SUBMITTED --> COMPLETED` and `SUBMITTED --> REJECTED` (Section 5)
 can now fire deterministically without requiring a new `task.*` event of
 their own for every case (see Section 11's note on
-`planner.session_rejected`, still open). **No implementation of
-`TaskProposalIntake` exists yet** (`TaskManagerRuntimeSpecification.md`
-Section 15's own closing statement) — this closure is a named, shaped
-contract, not a claim that Task Proposal submission is wired up and
-working end-to-end. That remains Sprint 1 coding work
-(`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Unit 6).
+`planner.session_rejected`, still open). **This closure is now also
+implemented, not merely named and shaped:**
+`src/runtime/InMemoryTaskManagerRuntime.kt` (Sprint 1, Unit 6) is the
+first implementation of `TaskProposalIntake`: accept-only, for a
+resolvable proposed owner — every other disposition
+(`Deferred`/`Split`/`Merged`, and any business-reason `Rejected`) remains
+specified but unimplemented, since this runtime has no Plan Decision or
+acceptance-policy logic to weigh against yet (Sprint 3, Track D, Unit D1
+review, `docs/architecture/PLANNER_RUNTIME_PROGRESSION_DESIGN.md` Section
+6, correcting this paragraph's prior stale claim that no implementation
+existed).
 
 ## 7. Relationship to Agent Runtime
 
