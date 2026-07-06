@@ -922,7 +922,39 @@ best-effort/advisory only for a request already `EXECUTING`.
 
 ---
 
-## Phase 2 Runtime — Gap Closure Summary (all 44 items, current status)
+### 45. No dedicated `planner.session_rejected` event exists for a real, reachable `SUBMITTED -> REJECTED` transition
+
+**Status: Open, not yet closed. Surfaced (not created) by Sprint 3, Track
+D, Unit D2** -- the first unit whose production code actually calls
+`TaskProposalIntake.submitProposal` from the Planner Runtime side and
+reaches `SUBMITTED -> REJECTED` for a real disposition.
+`PlannerRuntimeSpecification.md` Section 11 already recorded this as an
+Open Question ("Whether a dedicated Planning Event ... should be added for
+the `SUBMITTED -> REJECTED` transition ... still open"), but until this
+Unit, no code -- production or test -- had ever exercised that transition
+at all: `DeterministicPlannerHarness.kt` never calls `submitProposal`, and
+no other Planner Runtime implementation existed. `InMemoryPlannerRuntime`
+(`src/runtime/`) now reaches this transition for real (confirmed by
+`tests/runtime/InMemoryPlannerRuntimeTest.kt`'s "a Task Manager rejection
+results in a Rejected Planning Session" test), and, per the specification's
+own instruction, does not invent a `planner.session_rejected` event to
+cover it -- `PlanningSessionResult.Rejected` is returned to the caller
+with no corresponding Planning Event published.
+
+This is not a defect in Unit D2's own implementation -- the specification
+explicitly reserves this decision, and inventing an event for it would be
+exceeding this Unit's own "no architecture beyond what Unit D1 settles"
+scope. It is the same already-recorded Open Question, now attached to a
+real, reachable code path instead of a purely theoretical one.
+**Recommended closure (a future unit's decision, not this one's):** either
+add a `planner.session_rejected` event (Section 11's own first-listed
+option) or explicitly close the Open Question the other way, documenting
+that a `TaskProposalDisposition.Rejected` return value is itself sufficient
+signal and no dedicated event is needed.
+
+---
+
+## Phase 2 Runtime — Gap Closure Summary (all 45 items, current status)
 
 Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
 EventBus, Runtime Integration, Targeted Refinement Pass, Identity Service
@@ -975,7 +1007,12 @@ interrupt a `Tool.execute()` call already `EXECUTING` -- a pre-existing
 gap surfaced, not created, by Sprint 3 Track C Unit C2's honest handling of
 `CANCEL`; recommended closure is either a cooperative-cancellation
 contract or explicit documentation that `cancel` is best-effort/advisory
-once a Tool is running).
+once a Tool is running); #45 (no dedicated `planner.session_rejected`
+event for a real, reachable `SUBMITTED -> REJECTED` transition -- an
+already-recorded `PlannerRuntimeSpecification.md` Section 11 Open Question,
+now attached to a real code path by Sprint 3 Track D Unit D2's
+`InMemoryPlannerRuntime`; recommended closure is either adding the event or
+explicitly closing the Open Question the other way).
 
 No item in this file was closed by inventing behaviour beyond what its
 governing architecture document already specified.
