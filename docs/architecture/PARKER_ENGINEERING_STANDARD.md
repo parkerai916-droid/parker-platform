@@ -9,13 +9,32 @@
 A normative document defines mandatory engineering practice. Deviations
 require explicit approval through the Architecture Decision process.
 
-### Version: 2.0
+### Version: 2.1
 
 By this version, this document no longer describes a workflow alone. It
 defines governance, authority, evidence, review policy, risk
 classification, source-of-truth hierarchy, and completion criteria, in
 addition to the workflow itself. Engineering Workflow is therefore one
 chapter of this Standard, not the whole of it.
+
+**Version 2.1 amendment.** Added following
+`docs/reviews/SPRINT_4_ENGINEERING_CONSOLIDATION.md`, a read-only
+cross-subsystem review conducted after Agent Runtime, Planner Runtime,
+Memory Runtime, and World Model Runtime had each independently
+completed the full engineering workflow at least once. That review
+found no constitutional or architectural violation in any of the four
+subsystems, but found four practices that had already converged
+independently, in practice, without being stated here as a
+requirement: a Contract Design stage before new public runtime
+contracts are implemented (Stage 2A, below), a mandatory
+Self-Traceability Review for Level 2/3 units (Stage 9, below), an
+in-memory concurrency discipline (Chapter 7), and guidance on the shape
+of a policy seam (Chapter 7). This amendment states each as a rule
+rather than leaving it as a norm a future unit would otherwise have to
+re-discover. It also considered, and explicitly declined, a fifth
+candidate rule -- standardising public interface naming across
+subsystems -- see `docs/reviews/SPRINT_4_ENGINEERING_CONSOLIDATION.md`
+for why.
 
 This document's identifier is **PES-001**. Future Architecture Decisions
 that modify this Standard should cite it by identifier and section, for
@@ -102,6 +121,11 @@ retrospective needs to re-derive them.
                              │
                              ▼
                   Architecture Review
+                             │
+                             ▼
+                   Contract Design
+              (required for new public
+                runtime contracts)
                              │
                              ▼
                   Implementation Plan
@@ -195,6 +219,49 @@ Questions include:
 **Why this exists**
 
 Implementation should not discover missing architecture.
+
+## Stage 2A – Contract Design
+
+**Purpose**
+
+Define the field-level public contracts a new runtime subsystem
+exposes, before an Implementation Plan is written against them.
+
+**Required when**
+
+A new runtime subsystem introduces public types it does not already
+have approved, field-level Kotlin shapes for -- in practice, this means
+every new runtime subsystem's first implementation unit, and any later
+unit that adds a genuinely new public contract to an existing
+subsystem.
+
+A Contract Design document:
+
+- reviews the existing stub or prior art without assuming it is
+  correct;
+- determines the minimum required set of public contracts, explicitly
+  stating what is required, what is excluded, and what is deferred, and
+  why;
+- resolves named outstanding design questions against approved
+  architecture, never inventing new architecture to answer them;
+- states whether a separate "Runtime" wrapper interface is needed, or
+  whether one interface already suffices;
+- ends with a Self-Traceability Review (see Stage 9) reviewing its own
+  proposed contracts before implementation begins, not only after.
+
+**Why this exists**
+
+`docs/architecture/MEMORY_CONTRACT_DESIGN.md` and
+`docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md` were each written
+this way independently, and each produced an implementation stage that
+required no unauthorised-contract correction afterward.
+`docs/architecture/PLANNER_RUNTIME_CONTRACT_DESIGN.md` was added one
+unit later than the rest of the Planner Runtime track, specifically to
+correct an exploratory implementation that had drifted from approved
+architecture in the absence of one. Three independent subsystems
+converging on the same missing stage, and the one subsystem that
+skipped it needing a correction pass to recover, is sufficient evidence
+to require it going forward rather than leave it optional.
 
 ## Stage 3 – Implementation Plan
 
@@ -351,6 +418,23 @@ Typical questions:
 - Is documentation complete?
 - Does implementation comply with approved specifications?
 
+**Required component: Self-Traceability Review.** For every Level 2 or
+Level 3 implementation unit, the Post-Implementation Review must
+include, or reference, a Self-Traceability Review: for every public
+type or interface the unit introduced or modified, state where it is
+authorised in the governing Contract Design (or Architecture, where no
+Contract Design exists), whether it is required, excluded, or deferred
+by that document, and whether the implementation matches that
+determination. If any public contract is not authorised this way, the
+review must say so and stop rather than accept the implementation as
+complete.
+
+This does not require a specific document format. It requires that the
+question be asked and answered, in writing, before an implementation
+unit is treated as complete -- the table format used in
+`docs/reviews/SPRINT_4_TRACK_B_UNIT_B3_POST_IMPLEMENTATION_REVIEW.md` is
+a reusable example, not the only acceptable one.
+
 Post-Implementation Reviews evaluate implementation quality.
 
 They do not redefine architecture.
@@ -486,6 +570,9 @@ Required:
 
 Engineering Validation always includes a Post-Implementation Review.
 
+The Post-Implementation Review at this level must include the
+Self-Traceability Review defined in Stage 9.
+
 Engineering Checkpoints are required only where implementation may affect
 future sequencing, architecture or implementation planning.
 
@@ -502,9 +589,13 @@ Requires:
 
 - Architecture
 - Architecture Review
+- Contract Design (Stage 2A), for any new public runtime contract
 - Architecture Decision
 - Specification
 - Full engineering workflow
+
+The Post-Implementation Review at this level must include the
+Self-Traceability Review defined in Stage 9.
 
 ---
 
@@ -539,6 +630,86 @@ level:
 - repository is synchronized with GitHub;
 - working tree is clean;
 - implementation scope has been fully closed or explicitly deferred.
+
+---
+
+# Chapter 7 — Runtime Implementation Discipline
+
+This chapter states two implementation-level rules distilled from
+Agent Runtime, Planner Runtime, Memory Runtime, and World Model
+Runtime's independent construction, per
+`docs/reviews/SPRINT_4_ENGINEERING_CONSOLIDATION.md`. Both apply to any
+`InMemory*` or other concrete runtime implementation, present or
+future.
+
+## 7.1 In-Memory Concurrency Rule
+
+A mutex, lock, or other exclusion mechanism guarding a runtime
+component's own state shall not be held across a `suspend` call to an
+injected, replaceable collaborator (a policy seam, an `EventBus`, an
+`ExecutionPipeline`, or any other externally-supplied interface),
+unless a specific Architecture Decision authorises holding it for a
+named reason.
+
+**Reasoning.** Agent Runtime and Planner Runtime were each built to
+this discipline from the start: a lock is acquired only for short,
+synchronous reads and writes of the component's own map-backed state,
+and is released before calling out to an injected collaborator whose
+own duration this component does not control. Memory Runtime and World
+Model Runtime were each built holding their lock across such a call
+instead. Neither approach is incorrect today, because every current
+policy implementation (`DefaultMemoryPromotionPolicy`,
+`DefaultWorldModelUpdatePolicy`) happens to be fast and synchronous in
+practice. The risk is latent, not active: the moment either policy
+seam is given a slower implementation -- one that consults an
+embedding service, an external store, or any other collaborator with
+unbounded duration -- holding the lock across that call would
+serialise every other operation on that subsystem for the call's full
+duration, platform-wide, for as long as it takes.
+
+**Consequence.** Any future `InMemory*` runtime implementation must
+release its own lock before calling an injected collaborator, and
+reacquire it only to apply the collaborator's result to its own state
+-- mirroring `InMemoryAgentRuntime`'s and `InMemoryPlannerRuntime`'s
+existing "read state, unlock, call policy, lock, write state" shape,
+not `InMemoryMemoryStore`'s or `InMemoryWorldModel`'s existing "lock,
+call policy, write state, unlock" shape. Bringing the latter two into
+line with this rule is recorded as deferred, non-urgent engineering
+debt (see `docs/reviews/SPRINT_4_ENGINEERING_CONSOLIDATION.md`), not an
+immediate defect requiring emergency correction.
+
+## 7.2 Policy Seam Guidance
+
+A policy seam -- the interface by which a runtime component consults an
+injected, replaceable collaborator to decide an outcome for one
+submitted input (`AgentStepSource`, `PlanDecision`,
+`MemoryPromotionPolicy`, `WorldModelUpdatePolicy`) -- shall be:
+
+- **internal**, never invoked directly by an external caller of the
+  runtime component it serves;
+- **injected**, supplied to the runtime component's constructor,
+  defaulted to a concrete `Default*` implementation where one exists,
+  never hard-coded;
+- **`suspend`-capable**, even where a current implementation never
+  actually suspends, so a future implementation that must (an external
+  call, a model invocation, a human-in-the-loop wait) does not require
+  a breaking interface change;
+- **a decision provider, not an authority** -- it decides an outcome
+  among or for what it is given; it never grants permission, creates a
+  Task, mutates state outside the runtime component that consults it,
+  or is itself treated as a downstream authorisation step.
+
+This restates, as a standing rule, the lineage each of the four
+existing policy seams already independently cites in its own KDoc. It
+does not require identical naming or identical method shape across
+seams -- `AgentStepSource.nextStep`, `PlanDecision.decide`,
+`MemoryPromotionPolicy.evaluate`, and `WorldModelUpdatePolicy.evaluate`
+remain named as they are. A policy seam combining more than one
+distinct decision responsibility into a single interface (as
+`WorldModelUpdatePolicy` currently combines an acceptance judgment with
+an independent staleness judgment) is not prohibited, but should be a
+deliberate choice recorded in that unit's Contract Design, not a
+default.
 
 ---
 
