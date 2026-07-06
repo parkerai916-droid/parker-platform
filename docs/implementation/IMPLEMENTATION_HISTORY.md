@@ -272,7 +272,7 @@ Implementation Notes
 ### Sprint 2 Unit A1 – Identity-Aware Permission Engine
 
 Commit:
-pending
+4ceeb0e
 
 Completed:
 2026-07-04
@@ -298,7 +298,7 @@ Implementation Notes
 ### Sprint 2 Unit A2 – Permission Policy Model and Enforcement
 
 Commit:
-pending
+e7e1bbf
 
 Completed:
 2026-07-05
@@ -355,7 +355,7 @@ Implementation Notes
 ### Sprint 2 Track B Unit B2 – Task Manager Agent-Event Status Transitions
 
 Commit:
-pending
+115fb42 (implementation), aa5c507 (documentation finalization)
 
 Completed:
 2026-07-05

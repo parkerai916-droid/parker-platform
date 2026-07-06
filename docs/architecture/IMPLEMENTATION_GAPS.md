@@ -369,7 +369,7 @@ exists.
 
 ### 25. Action Mapping implements the vocabulary/mapping layer only, not `PermissionEngine.evaluate`
 
-**Status: Closed by Sprint 2, Unit A2 (commit pending).** `DefaultPermissionPolicy`
+**Status: Closed by Sprint 2, Unit A2 (commit `e7e1bbf`).** `DefaultPermissionPolicy`
 (`src/runtime/DefaultPermissionPolicy.kt`) now implements the policy model
 `docs/specifications/volume-03-core-interfaces/PermissionPolicy.md`
 describes, and `DefaultPermissionEngine`
@@ -704,7 +704,7 @@ this is explicitly scoped.
 
 ### 40. `PermissionEngine.evaluate` is not yet wired to resolve identity first
 
-**Status: Closed by Sprint 2, Unit A1 (commit pending).** `DefaultPermissionEngine`
+**Status: Closed by Sprint 2, Unit A1 (commit `4ceeb0e`).** `DefaultPermissionEngine`
 (`src/runtime/DefaultPermissionEngine.kt`) now resolves
 `request.principalId` via `IdentityService` as the first step of
 `evaluate`, before any delegated permission decision runs, and
@@ -755,7 +755,7 @@ acceptable for the platform's current trust model.
 ### 42. `InMemoryTaskManagerRuntime` does not subscribe to Agent lifecycle events
 
 **Status: Closed by Sprint 2, Track B, Unit B1 (commit `7bbf909`) and
-Unit B2 (commit pending).**
+Unit B2 (commit `115fb42`, documentation finalized in `aa5c507`).**
 `InMemoryTaskManagerRuntime` (`src/runtime/InMemoryTaskManagerRuntime.kt`)
 now subscribes, once each at construction, to `agent.completed` and
 `agent.failed` on its injected `EventBus`, and records each received event
@@ -784,10 +784,14 @@ a Task already `RUNNING` takes only the second edge; a Task already
 exactly as Unit B1 already did, and nothing else happens, per this unit's
 own scope (`docs/implementation/SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md`).
 Confirmed by `tests/runtime/InMemoryTaskManagerRuntimeTest.kt` (Android
-Studio: 269/269 tests passing). The general Task-completion policy for a
-Task with more than one Agent Run Reference remains explicitly out of
-scope, per `SPRINT_2_IMPLEMENTATION_PLAN.md`'s own Unit B2 scope text --
-not resolved here, not silently assumed. `agent.cancelled`,
+Studio: 269/269 tests passing). A Post-Implementation Review for Unit B2
+(`docs/reviews/SPRINT_2_B2_POST_IMPLEMENTATION_REVIEW.md`) was performed
+retroactively, after this commit, per PES-001's Level 2 requirement --
+recorded there as a process finding, not a defect. The general
+Task-completion policy for a Task with more than one Agent Run Reference
+remains explicitly out of scope, per `SPRINT_2_IMPLEMENTATION_PLAN.md`'s
+own Unit B2 scope text -- not resolved here, not silently assumed.
+`agent.cancelled`,
 `agent.action_denied`, and `agent.action_deferred` remain unsubscribed and
 cause no transition, unchanged from Unit B1's own scope boundary.
 Original finding retained below for historical context (describes the
@@ -825,6 +829,34 @@ implemented and verified.
 
 ---
 
+### 43. `task.started` and `task.completed` publish without their §10-specified payload fields
+
+**Status: Open, not yet closed.**
+
+Found during the Sprint 2 Health Review (`docs/reviews/SPRINT_2_B2_POST_IMPLEMENTATION_REVIEW.md`)
+performed after Track A and Track B were both implemented.
+`TaskManagerRuntimeSpecification.md` §10's event table specifies required
+payload beyond `taskId`/`correlationId` for two of the events Unit B2's
+`applyCompletedTransition` publishes: "Agent Run Reference, if any" for
+`TaskStarted` (`task.started`), and "Task Result summary" for
+`TaskCompleted` (`task.completed`). `InMemoryTaskManagerRuntime.applyCompletedTransition`
+(`src/runtime/InMemoryTaskManagerRuntime.kt`) publishes both events with
+an empty payload map -- neither field is populated. This does not affect
+the correctness of any Task Status transition (the transition itself is
+unaffected by event payload content) and is not a violation of any
+Architecture Decision; it is a specification-completeness gap in the
+event's observable detail, consistent with AD-009's "Everything Important
+Is Auditable" being about publication occurring at all, not yet about
+every specified field being present on every published event. No test
+currently asserts either event's payload contents, which is why this went
+unnoticed through Unit B2's own review checkpoint. **Recommended closure:**
+thread an Agent Run Reference (already recorded in `agentEvents`, per Unit
+B1) into the `task.started` payload, and a minimal Task Result summary
+into the `task.completed` payload, as a small, additive follow-up --
+no interface or lifecycle change required.
+
+---
+
 ## Phase 2 Runtime — Gap Closure Summary (all 42 items, current status)
 
 Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
@@ -839,14 +871,15 @@ level), #13, #14, #15, #17, #18, #19, #21 (ToolRegistry.md backfill), #27
 (EventBus subscriber identity), #28 (tool lifecycle diagram), #31
 (Created -> Failed edge), #32 (Tool invocation -- closed by Sprint 1,
 Unit 11A, commit `13c9322`), #40 (PermissionEngine identity resolution --
-closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit pending),
+closed by Sprint 2, Unit A1, `DefaultPermissionEngine`, commit `4ceeb0e`),
 #25 (Action Mapping wired into `PermissionEngine.evaluate` via policy --
-closed by Sprint 2, Unit A2, `DefaultPermissionPolicy`, commit pending),
+closed by Sprint 2, Unit A2, `DefaultPermissionPolicy`, commit `e7e1bbf`),
 #42 (`InMemoryTaskManagerRuntime` Agent-Event subscription/recording,
 closed by Sprint 2, Track B, Unit B1, commit `7bbf909`; Task status
-transition on `agent.completed`, closed by Unit B2, commit pending; the
-general Task-completion policy for a Task with more than one Agent Run
-Reference remains explicitly out of scope, not a pending item).
+transition on `agent.completed`, closed by Unit B2, commit `115fb42`
+(documentation finalized in `aa5c507`); the general Task-completion
+policy for a Task with more than one Agent Run Reference remains
+explicitly out of scope, not a pending item).
 
 **Partially resolved:** #5 (Principal half done via
 `PrincipalLifecycleTransitions`; Resource half still deferred), #30
@@ -867,6 +900,12 @@ the owner-validation interpretation is correct), #41 (whether closing
 `ToolInvocationBinding`/`ToolRegistry.resolve`'s convention-based access
 restriction requires a caller-identity/visibility mechanism, or whether
 convention-based restriction remains acceptable).
+
+**Open, pending implementation (not a human decision, not a deliberate
+boundary):** #43 (`task.started`/`task.completed` publish without their
+§10-specified Agent Run Reference / Task Result summary payload fields --
+found by the Sprint 2 Health Review; recommended closure is a small,
+additive follow-up, not a redesign).
 
 No item in this file was closed by inventing behaviour beyond what its
 governing architecture document already specified.
