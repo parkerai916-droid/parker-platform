@@ -315,7 +315,7 @@ class RuntimeLifecycleEventPublicationTest {
             ),
         )
 
-        return InMemoryAgentRuntime(identity, pipeline, bus) to bus
+        return InMemoryAgentRuntime(identity, pipeline, bus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY) to bus
     }
 
     private fun approvedDecision() = PermissionDecision(
@@ -338,19 +338,33 @@ class RuntimeLifecycleEventPublicationTest {
     )
 
     @Test
-    fun `InMemoryAgentRuntime publishes the 6 agent events in order and ends at agent_completed on SUCCESS`() = runTest {
+    fun `InMemoryAgentRuntime publishes the multi-step agent event sequence in order and ends at agent_completed on SUCCESS`() = runTest {
         val (runtime, bus) = buildAgentRuntime { approvedDecision() }
 
         val result = runtime.submit(startCommand())
 
         assertIs<AgentRunCommandResult.Accepted>(result)
+        // Sprint 3, Track C, Unit C2 supersedes Sprint 1 Unit 7's single-step event assumptions:
+        // this test's name and its original 6-event expectation date from when InMemoryAgentRuntime
+        // modelled exactly one Agent Step per Agent Run and never reached WAITING_FOR_PERMISSION.
+        // Per the accepted MULTI_STEP_AGENT_RUN_DESIGN.md (Section 5.1's per-step event sequence),
+        // InMemoryAgentRuntime now publishes agent.step_started before every AgentStepSource
+        // consultation, agent.action_proposed/agent.permission_required/agent.action_approved around
+        // each Propose'd step, and consults AgentStepSource a second time (this suite's
+        // SingleStepAgentStepSource proposes once, then Completes) -- hence the second
+        // agent.step_started below, for that second (Complete) consultation.
         assertEquals(
             listOf(
                 "agent.created",
                 "agent.initialised",
                 "agent.ready",
                 "agent.started",
+                "agent.step_started",
+                "agent.action_proposed",
+                "agent.permission_required",
+                "agent.action_approved",
                 "agent.step_completed",
+                "agent.step_started",
                 "agent.completed",
             ),
             bus.published.filter { it.eventType.value.startsWith("agent.") }.map { it.eventType.value },
@@ -370,17 +384,35 @@ class RuntimeLifecycleEventPublicationTest {
     }
 
     @Test
-    fun `a DENIED ExecutionResult still publishes agent_step_completed then agent_failed, never agent_completed`() = runTest {
+    fun `a DENIED ExecutionResult publishes agent_action_denied then agent_failed, never agent_step_completed or agent_completed`() = runTest {
         val (runtime, bus) = buildAgentRuntime { approvedDecision().copy(decision = PermissionDecisionOutcome.DENIED) }
 
         runtime.submit(startCommand())
 
         val agentEventTypes = bus.published.filter { it.eventType.value.startsWith("agent.") }.map { it.eventType.value }
+        // Sprint 3, Track C, Unit C2 supersedes this test's original expectation, which dated from
+        // Sprint 1 Unit 7's single branch that published agent.step_completed unconditionally before
+        // deciding COMPLETED vs FAILED. Per the accepted MULTI_STEP_AGENT_RUN_DESIGN.md (Section 6.4),
+        // DENIED and DEFERRED are now distinct outcomes, neither of which is "a step completing" --
+        // DENIED publishes agent.action_denied and ends the Agent Run at FAILED directly,
+        // agent.step_completed is not published on this path at all (it remains reserved for a step
+        // that actually ran to a SUCCESS/PARTIAL_SUCCESS or Tool-failure ExecutionResult).
         assertEquals(
-            listOf("agent.created", "agent.initialised", "agent.ready", "agent.started", "agent.step_completed", "agent.failed"),
+            listOf(
+                "agent.created",
+                "agent.initialised",
+                "agent.ready",
+                "agent.started",
+                "agent.step_started",
+                "agent.action_proposed",
+                "agent.permission_required",
+                "agent.action_denied",
+                "agent.failed",
+            ),
             agentEventTypes,
         )
         assertTrue("agent.completed" !in agentEventTypes)
+        assertTrue("agent.step_completed" !in agentEventTypes)
     }
 
     @Test
@@ -402,7 +434,7 @@ class RuntimeLifecycleEventPublicationTest {
             InMemoryToolInvocationBinding(),
         )
         val identity = InMemoryIdentityService() // Agent Identity deliberately not registered
-        val runtime = InMemoryAgentRuntime(identity, pipeline, bus)
+        val runtime = InMemoryAgentRuntime(identity, pipeline, bus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY)
 
         val result = runtime.submit(startCommand())
 

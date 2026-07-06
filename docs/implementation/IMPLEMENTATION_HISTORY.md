@@ -381,6 +381,61 @@ Implementation Notes
 
 ---
 
+## Sprint 3
+
+### Sprint 3 Track C Unit C1 – Multi-Step Agent Run Design
+
+Commit:
+affc46a
+
+Completed:
+2026-07-06
+
+Android Studio Tests:
+269/269 (unchanged — design-only unit; no Kotlin was written or modified)
+
+Summary
+- Added `docs/architecture/MULTI_STEP_AGENT_RUN_DESIGN.md`.
+- Specified `AgentStepSource`, `AgentStepContext`, `AgentStepDecision` (Propose/Complete/Fail), and `AgentPolicy` as new public interfaces.
+- Specified the multi-step Agent Run execution model, the SUSPEND-deferred/CANCEL-immediate asymmetry, `maxAgentSteps` enforcement, and a revised Agent Runtime locking model in which `ExecutionPipeline.submit` is never called while the Agent Runtime's own mutex is held.
+- Reviewed against the Parker Constitution, Architecture Decisions, PES-001, Project Governance, the Sprint 2 Plan, and the existing Agent Runtime specification, in that priority order.
+- Concluded Go, with one requested change (see below) before proceeding to implementation.
+
+Implementation Notes
+- Design-only unit: no source, test, or existing architecture document was modified.
+- One reviewer-requested change was made after initial drafting: a forward-compatibility note beside `AgentStepDecision` stating that future variants (for example, a "stop for external input" variant) may be added later without redesigning the runtime architecture this document specifies — no such variant was added now.
+- This entry was added retrospectively, alongside Unit C2's own entry below, so Sprint 3's chronological record has no gap between "design accepted" and "design implemented." No commit, tag, or content from Unit C1 was altered in doing so.
+
+---
+
+### Sprint 3 Track C Unit C2 – Multi-Step Agent Run Implementation
+
+Commit:
+pending
+
+Completed:
+2026-07-06
+
+Android Studio Tests:
+Not yet run by a human in Android Studio (PES-001: test execution and commit remain Human authority). Static count: the previous suite stood at 269/269; `InMemoryAgentRuntimeTest.kt` went from 12 tests to 26 (12 removed/superseded, 26 added), a net change of +14. If every existing and new test passes unchanged, the expected total is 283/283 — this figure is an arithmetic projection from the source, not a verified run, and should be confirmed in Android Studio before commit.
+
+Summary
+- Implemented `docs/architecture/MULTI_STEP_AGENT_RUN_DESIGN.md` (Unit C1) exactly, per that document's Section 11 "WILL implement" list and no further.
+- Added `src/contracts/AgentStep.kt`: `AgentStepContext`, `AgentStepDecision` (`Propose`/`Complete`/`Fail`), `AgentStepSource`, `AgentPolicy`.
+- Rewrote `src/runtime/InMemoryAgentRuntime.kt` in full: multi-step execution loop; `SUSPEND` (deferred to the next step boundary), `RESUME` (continues at the next step number, not step 1), and `CANCEL` (immediate from any non-terminal state, with a best-effort `ExecutionPipeline.cancel` of any in-flight step) are now implemented, superseding Sprint 1 Unit 7's "not implemented" rejections; `DENIED` and `DEFERRED` are now distinct outcomes (`FAILED` vs `SUSPENDED`) instead of both collapsing into `FAILED`; `AgentPolicy.maxAgentSteps` is enforced, ending a run at `SUSPENDED`, never `FAILED`; the locking model was redesigned so the Agent Runtime's own mutex is only ever held for short map reads/writes, never across the suspending `ExecutionPipeline.submit` call, so independent Agent Runs progress independently and a `SUSPEND`/`CANCEL` for one Agent Run is never blocked by another Agent Run's in-flight step.
+- Rewrote `tests/runtime/InMemoryAgentRuntimeTest.kt` and added two new test-only fixtures: `FakeAgentStepSource` (mirrors `FakePermissionEngine`'s lambda-based fake precedent) and `ControllableTool` (a genuinely pausable `Tool`, mirroring `MockTool`'s "test fixture, not `src/runtime`" precedent, needed to prove the concurrency properties above that an immediately-returning `Tool` cannot exercise).
+
+Implementation Notes
+- Implements only Section 11's "WILL implement" list: `AgentStepSource`/`AgentStepContext`/`AgentStepDecision` (three variants only)/`AgentPolicy` (`maxAgentSteps` enforced, `maxAgentRunDuration` accepted but not enforced), multi-step execution, `SUSPEND`/`RESUME`/`CANCEL`, required `agent.*` event publication, and the revised locking model.
+- Deliberately does not implement anything from Section 11's "will NOT implement" list: no Planner, no `WAITING_FOR_INPUT`, no Agent Capability system, no `maxAgentRunDuration` enforcement, no World Model or Memory integration, no Workflow Engine, no cross-Agent orchestration.
+- `AgentRunLifecycleTransitions` (`src/contracts/AgentRunLifecycle.kt`) was not modified — no new `AgentRunStatus` value or transition edge was added; this unit simply drives more of the already-specified 10-state machine (`WAITING_FOR_PERMISSION`, `SUSPENDED`, and cancellation from more states) than Unit 7 did.
+- The Task Manager Runtime, Permission Engine, `ExecutionPipeline` interface, and `EventBus` interface were not modified. `DefaultExecutionPipeline` is called exactly as any other existing caller would call it.
+- Two implementation decisions were made that the design document left open, and are recorded here rather than only in code comments: (1) an explicit `SUSPEND` is accepted only while a run is `RUNNING`, not while it is momentarily `WAITING_FOR_PERMISSION` for an already in-flight step — a caller whose `SUSPEND` lands in that narrow window receives a `Rejected` and would need to retry, rather than the runtime silently queuing it; (2) `RESUME` does not re-check `AgentPolicy.maxAgentSteps` specially — if a run was suspended because the bound was already reached, `RESUME` still transitions it back to `RUNNING`, and the loop's own existing bound check immediately re-suspends it before any further step is attempted, rather than the runtime inventing a bound-override or bound-increase mechanism.
+- `ExecutionPipeline.cancel` is called on a best-effort basis when `CANCEL` arrives mid-step; this repository's own `ExecutionLifecycleTransitions` has no `EXECUTING -> CANCELLED` edge, so that call will typically report `cancelled = false` while a `Tool.execute()` call is genuinely in flight — the Agent Run's own `CANCELLED` status does not wait on, or depend on, that call succeeding.
+- All 12 of Sprint 1 Unit 7's original tests are preserved in spirit; two ("SUSPEND is Rejected as not implemented", "RESUME and CANCEL are also Rejected as not implemented") were removed as no longer true and replaced by dedicated `SUSPEND`/`RESUME`/`CANCEL` test sections below, mirroring exactly how Sprint 2 Unit B2 superseded an obsolete Unit B1-era test.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
@@ -455,7 +510,7 @@ EventCollector
 - Execution Pipeline access is still enforced by convention rather than construction.
 - Planning Session models only the Sprint 1 deterministic lifecycle subset.
 - Task Manager implements only the minimal acceptance path.
-- Agent Runtime currently supports START only.
+- Agent Runtime now supports multi-step execution and `START`/`SUSPEND`/`RESUME`/`CANCEL` (Sprint 3, Unit C2); it still has no Planner, no `WAITING_FOR_INPUT`, no Agent Capability system, no `maxAgentRunDuration` enforcement, no World Model or Memory integration, no Workflow Engine, and no cross-Agent orchestration.
 - ToolInvocationBinding access remains convention-based rather than construction-enforced.
 - Real PermissionEngine policy is not yet implemented.
 

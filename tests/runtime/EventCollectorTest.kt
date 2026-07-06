@@ -248,7 +248,7 @@ class EventCollectorTest {
             ),
         )
 
-        return InMemoryAgentRuntime(identity, pipeline, bus)
+        return InMemoryAgentRuntime(identity, pipeline, bus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY)
     }
 
     private fun startCommand(correlationId: String = "corr-1") = AgentRunCommand(

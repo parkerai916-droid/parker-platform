@@ -235,7 +235,7 @@ class VerticalSliceEndToEndTest {
         )
 
         val taskManagerRuntime = InMemoryTaskManagerRuntime(identity, eventBus)
-        val agentRuntime = InMemoryAgentRuntime(identity, pipeline, eventBus)
+        val agentRuntime = InMemoryAgentRuntime(identity, pipeline, eventBus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY)
         val plannerHarness = DeterministicPlannerHarness(eventBus)
         val collector = EventCollector(eventBus)
 

@@ -782,6 +782,24 @@ a Task already `RUNNING` takes only the second edge; a Task already
 `COMPLETED` is left unmutated. No new lifecycle edge was introduced.
 `agent.failed` still performs no transition -- the event is recorded
 exactly as Unit B1 already did, and nothing else happens, per this unit's
+
+**Sprint 3, Track C, Unit C2 update (factual correction, not a status
+change):** the paragraph above states `agent.cancelled`, `agent.action_denied`,
+and `agent.action_deferred` remain unsubscribed "since no production code
+emits any of the three today." That reason is now stale.
+`InMemoryAgentRuntime` (`src/runtime/InMemoryAgentRuntime.kt`), rewritten by
+Unit C2 to implement the multi-step Agent Run model
+(`docs/architecture/MULTI_STEP_AGENT_RUN_DESIGN.md`), now genuinely reaches
+`WAITING_FOR_PERMISSION` and publishes all three events in production code
+-- `agent.action_denied` when a proposed action is `DENIED`,
+`agent.action_deferred` when one is `DEFERRED`, and `agent.cancelled` when a
+`CANCEL` command is accepted. The gap itself is unchanged and still open
+for these three event types: `InMemoryTaskManagerRuntime` still subscribes
+to only `agent.completed` and `agent.failed`, and Unit C2's own scope
+(Sprint 3, Track C, Unit C2) explicitly does not modify Task Manager
+Runtime behaviour. Closing this remaining part of the gap -- deciding what,
+if anything, a Task should do in response to an Agent Run being cancelled,
+denied, or deferred -- remains future work, not a Unit C2 decision.
 own scope (`docs/implementation/SPRINT_2_B2_IMPLEMENTATION_DECISIONS.md`).
 Confirmed by `tests/runtime/InMemoryTaskManagerRuntimeTest.kt` (Android
 Studio: 269/269 tests passing). A Post-Implementation Review for Unit B2
@@ -857,7 +875,54 @@ no interface or lifecycle change required.
 
 ---
 
-## Phase 2 Runtime — Gap Closure Summary (all 42 items, current status)
+### 44. `ExecutionPipeline.cancel` cannot interrupt a `Tool.execute()` call already in flight
+
+**Status: Open, not yet closed. Surfaced (not created) by Sprint 3,
+Track C, Unit C2** -- the first unit to actually call
+`ExecutionPipeline.cancel` against a request that may genuinely be
+`EXECUTING`. `ExecutionLifecycleTransitions`
+(`src/contracts/ExecutionLifecycle.kt`) has never had an
+`EXECUTING -> CANCELLED` edge -- `EXECUTING` may only reach `COMPLETED` or
+`FAILED`. This was always true of `DefaultExecutionPipeline`, but had no
+observable consequence before Unit C2, since no earlier caller ever
+invoked `ExecutionPipeline.cancel` against a request that might be
+mid-`Tool.execute()`: Sprint 1 Unit 7's `InMemoryAgentRuntime` rejected
+`CANCEL` outright, and no other production caller of
+`ExecutionPipeline.cancel` exists yet.
+
+`InMemoryAgentRuntime`'s new `cancelRun` (design document
+`MULTI_STEP_AGENT_RUN_DESIGN.md` §6.5) calls
+`executionPipeline.cancel(requestId)` on a best-effort basis the moment a
+`CANCEL` command is accepted, regardless of whether that request is
+currently `EXECUTING`. Per the existing transition table, that call
+returns `CancellationResult(cancelled = false, reason = "cannot cancel
+from state EXECUTING")` whenever a Tool's `execute()` call is genuinely in
+progress -- the Agent Run itself still transitions to `CANCELLED`
+immediately and correctly (that transition belongs to
+`AgentRunLifecycleTransitions`, a separate state machine, and does not
+depend on this call's outcome), but the underlying Tool invocation runs to
+completion regardless, with its eventual `ToolResult` simply discarded by
+`InMemoryAgentRuntime` (confirmed by
+`tests/runtime/InMemoryAgentRuntimeTest.kt`'s
+"CANCEL received while a step is executing..." test).
+
+This is not a defect in Unit C2's own implementation -- `ExecutionPipeline`
+and `Tool` are unchanged, unmodified interfaces, and Unit C2's own scope
+explicitly excludes changing them. It is a pre-existing architectural gap
+this unit's own honest handling of `CANCEL` makes newly visible: this
+repository specifies no mechanism (cooperative cancellation signal,
+`kotlinx.coroutines` `Job` cancellation propagated into `Tool.execute`,
+etc.) by which a `Tool` can actually be interrupted once it has started
+running. **Recommended closure (a future unit's decision, not this one's):**
+either add a genuine `EXECUTING -> CANCELLED` edge together with a
+cooperative-cancellation contract `Tool.execute` implementations would
+need to honour, or explicitly document (e.g. in `Tool.md`) that Tools are
+expected to run to completion once started and that `cancel` is
+best-effort/advisory only for a request already `EXECUTING`.
+
+---
+
+## Phase 2 Runtime — Gap Closure Summary (all 44 items, current status)
 
 Compiled at the close of Phase 2 Runtime (Tool Registry, Action Mapping,
 EventBus, Runtime Integration, Targeted Refinement Pass, Identity Service
@@ -905,7 +970,12 @@ convention-based restriction remains acceptable).
 boundary):** #43 (`task.started`/`task.completed` publish without their
 §10-specified Agent Run Reference / Task Result summary payload fields --
 found by the Sprint 2 Health Review; recommended closure is a small,
-additive follow-up, not a redesign).
+additive follow-up, not a redesign); #44 (`ExecutionPipeline.cancel` cannot
+interrupt a `Tool.execute()` call already `EXECUTING` -- a pre-existing
+gap surfaced, not created, by Sprint 3 Track C Unit C2's honest handling of
+`CANCEL`; recommended closure is either a cooperative-cancellation
+contract or explicit documentation that `cancel` is best-effort/advisory
+once a Tool is running).
 
 No item in this file was closed by inventing behaviour beyond what its
 governing architecture document already specified.
