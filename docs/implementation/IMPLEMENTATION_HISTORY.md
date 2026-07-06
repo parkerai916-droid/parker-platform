@@ -634,6 +634,33 @@ Implementation Notes
 
 ---
 
+### Sprint 6 Track A Unit M1 -- Module Registry Runtime
+
+Commit:
+pending
+
+Completed:
+2026-07-07
+
+Android Studio Tests:
+Not yet run by a human in Android Studio (PES-001: test execution and commit remain Human authority; no working Kotlin/Gradle toolchain was available in this session's sandbox either). Static count: the prior confirmed/unchanged total stood at 418/418 (Pre-Module Readiness Unit 3); `tests/runtime/InMemoryModuleRegistryTest.kt` adds 23 new tests, a net addition of +23. If every existing and new test passes unchanged, the expected total is 441/441 -- this figure is an arithmetic projection from the source, not a verified run, and must be confirmed in Android Studio before commit.
+
+Summary
+- Implemented every contract `docs/architecture/MODULE_CONTRACT_DESIGN.md` approved as required, field-by-field, in `src/contracts/Module.kt`: `ModuleId` (the established blank-rejecting identifier pattern, caller-declared rather than runtime-minted); `ModuleConnectivityDeclaration` (`LOCAL_ONLY`/`CLOUD_CAPABLE`/`CLOUD_REQUIRED`); `ModulePermissionRequirement` (a `PermissionAction`/`ResourceType` pair); `ModuleDescriptor` (moduleId, name, version, `toolsExposed: List<ToolDescriptor>`, `requiredPermissions`, `connectivityDeclaration`, `eventSubscriptions` defaulted empty, optional `minimumPlatformVersion`); `ModuleStatus` (exactly four tracked values: `REGISTERED`, `ENABLED`, `DISABLED`, `REMOVED`); and `ModuleLifecycleTransitions` (the exact adjacency Contract Design Section 4 specifies).
+- Added `src/interfaces/ModuleRegistry.kt`: the single public Module Framework interface (`register`/`enable`/`disable`/`remove`/`getModuleDescriptor`/`getModuleStatus`/`listModules`), with no separate `ModuleRuntime`, mirroring `MemoryRuntime`'s identical exclusion. Error handling mirrors `IdentityService.register`/`updateStatus` and `ToolRegistry.setLifecycleState`'s existing throw-based precedent exactly (`IllegalArgumentException` on a duplicate `moduleId` or an illegal lifecycle edge, `NoSuchElementException` for an unknown `moduleId`) rather than introducing a new sealed Accepted/Rejected outcome type -- Contract Design left this exact Kotlin shape undecided, and this is the minimal, precedent-consistent choice.
+- Added `src/runtime/InMemoryModuleRegistry.kt`: the first in-memory `ModuleRegistry` implementation. `register` rejects a duplicate `moduleId` and, for each of a module's declared `toolsExposed`, registers a backing `Resource` (`ResourceType.TOOL`) and then the `ToolDescriptor` itself with the injected `ToolRegistry`, tracking each Tool's resulting `ToolLifecycleState` locally. `enable`/`disable` drive every tracked Tool between `REGISTERED`/`DISABLED` and `ENABLED` alongside the module's own `ModuleStatus` transition. `remove` drives every tracked Tool to `REMOVED` via the shortest legal `ToolLifecycleTransitions` path from its current tracked state. `getModuleDescriptor`/`getModuleStatus`/`listModules` are plain map reads guarded by the same `Mutex` pattern as every other `InMemory*` runtime class.
+- Added `tests/runtime/InMemoryModuleRegistryTest.kt` (23 tests): registration (incl. no-tools modules, duplicate `moduleId` rejection, Tool Registry wiring, a Tool-descriptor conflict, an exact-duplicate `AlreadyRegistered` conflict, and the disclosed multi-tool non-atomicity case), lifecycle enforcement for `enable`/`disable`/`remove` (every legal edge, every illegal edge this Unit's own instructions named -- enabling an already-`ENABLED` module, disabling a never-enabled module, removing directly from `ENABLED`, removing an already-`REMOVED` module -- and unknown-`moduleId` throws for each operation), re-enabling after disable, lookup (`null` for unregistered, `listModules` including `REMOVED` modules), and two constitutional-boundary tests (`requiredPermissions` are stored and returned unchanged by `enable`, never mutated into a grant; a module's Tool becomes reachable only through `ToolRegistry.resolve`, never through any `ModuleRegistry` method).
+
+Implementation Notes
+- No architecture or contract was redesigned. `MODULE_FRAMEWORK_ARCHITECTURE.md`, `MODULE_CONTRACT_DESIGN.md`, `ARCHITECTURE_V2_FROZEN_BASELINE.md`, and PES-001 were not modified.
+- No plugin, module loading, module discovery, or dependency-injection framework was implemented. `src/interfaces/Plugin.kt` is untouched and remains excluded from the build.
+- No Home Assistant, Weather, or Gmail integration was implemented.
+- No live `PermissionEngine` gating of `enable`/`disable`/`remove` was wired in -- a disclosed scope reduction mirroring `IMPLEMENTATION_GAPS.md` #24's identical, pre-existing treatment for Tool Registry's own registration/lifecycle operations. `requestingPrincipalId` is accepted and threaded through but not evaluated against any Identity or Permission check in this Unit.
+- The module itself is not registered as an `IdentityService` Principal by this Unit. `ModuleId(moduleId.value)`-derived `PrincipalId`s are used only as the nominal `ownerPrincipalId` on each Tool's backing `Resource`, not as a verified identity.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #52 was added, recording the interpretive decisions this Unit's Resource/Tool wiring required (owner-Principal scheme, sensitivity default, multi-tool registration non-atomicity, and locally-tracked Tool lifecycle state going stale under a cross-module version collision) and the disclosed Permission-Engine deferral above.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

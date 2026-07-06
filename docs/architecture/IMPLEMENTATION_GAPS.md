@@ -1320,3 +1320,109 @@ a low-risk, structurally-unenforced residual, not an open gap, while
 No item in this section was closed by inventing behaviour beyond what its
 governing architecture document already specifies; all four are logged as
 open tracking entries only.
+
+---
+
+## Module Registry Runtime (Sprint 6, Track A, Unit M1) -- findings
+
+### 52. Module Registry's Tool/Resource wiring rests on interpretive choices Contract Design left unspecified, and defers live Permission Engine gating of its own lifecycle operations
+
+**Status: Open, disclosed implementation-level limitations. Surfaced (not
+created) by Sprint 6, Track A, Unit M1** -- the first unit to implement
+`ModuleRegistry`. None of these is a defect in Unit M1's own
+implementation: each is a genuine interpretive gap `docs/architecture/MODULE_CONTRACT_DESIGN.md`
+left open, or a scope reduction that document explicitly authorised an
+implementation unit to make, mirroring this file's own #24 for Tool
+Registry.
+
+**Permission Engine gating of `enable`/`disable`/`remove` is deferred, not
+wired in -- mirrors gap #24 exactly.** Contract Design's own Section 5
+states each of these operations is "architecturally, a
+`PermissionAction.CONTROL`-equivalent decision requiring evaluation," but
+explicitly leaves whether a first implementation wires that evaluation in
+or defers it as "an implementation-unit decision this document does not
+make." `InMemoryModuleRegistry.enable`/`disable`/`remove` accept a
+`requestingPrincipalId: PrincipalId` parameter but do not evaluate it
+against `IdentityService` or `PermissionEngine` -- any syntactically valid
+`PrincipalId`, registered or not, is accepted as-is, identical to
+`InMemoryToolRegistry.register`/`.setLifecycleState`'s own, already-open
+gap #24. **Recommended closure (a future unit's decision, not this one's):**
+wire a live `PermissionEngine.evaluate`-equivalent check once a concrete
+policy for administrative/`CONTROL`-class actions exists, for both Tool
+Registry and Module Registry together, rather than inventing two separate
+mechanisms.
+
+**The module itself is not registered as an `IdentityService` Principal.**
+`docs/adr/ADR-024-module-event-audit-durability-boundary.md` Section A,
+Rule 3 states "every module is an ordinary Principal," but neither
+`MODULE_FRAMEWORK_ARCHITECTURE.md` nor `MODULE_CONTRACT_DESIGN.md` assigns
+`ModuleRegistry.register` (or any other operation this Unit implements)
+the responsibility of calling `IdentityService.register` for the module
+being registered -- that step belongs to whatever future Discovery
+mechanism produces a validated `ModuleDescriptor` in the first place
+(explicitly out of this Unit's scope: "Do not implement discovery").
+`InMemoryModuleRegistry` interprets `ModuleId(moduleId.value)` as a
+`PrincipalId` only for the narrow purpose of naming a `Resource`'s nominal
+owner (see below) -- this is not, and is not intended to be, a claim that
+the module is a verified, resolvable Principal anywhere else in the
+platform. **Recommended closure (a future unit's decision, not this
+one's):** decide, when Discovery is designed, whether Discovery,
+Description, or Registration is the step that calls
+`IdentityService.register` for a module, and reconcile the `PrincipalId`
+derivation below with whatever identity that call actually produces.
+
+**Interpretive choices in `ModuleRegistry`'s Tool Registry/Resource
+Registry wiring, none authorised or forbidden explicitly by Contract
+Design:**
+
+- Each Tool a module exposes needs a backing `Resource`
+  (`tool-registry.md`'s own registration invariant, gap #22's precedent
+  for exactly this kind of prerequisite-filling). `InMemoryModuleRegistry`
+  mints a deterministic `ResourceId("module-tool-<moduleId>-<toolId>")`
+  and sets `ownerPrincipalId = PrincipalId(moduleId.value)` -- treating the
+  module as the nominal owner of its own exposed Tools' Resources, without
+  verifying that identity against `IdentityService` (`InMemoryResourceRegistry.register`
+  performs no such check today, so this is safe to construct but is an
+  interpretive choice, not a specified one).
+- Every such Resource defaults to `ResourceSensitivity.PUBLIC`, since
+  neither `ModuleDescriptor` nor `ToolDescriptor` carries a sensitivity
+  classification field. A module exposing a genuinely sensitive
+  capability would have its backing Resource under-classified until this
+  is revisited.
+- Module registration is **not atomic** across multiple declared Tools: if
+  the Nth Tool fails to register with `ToolRegistry` (a genuine
+  `toolId`+`version` conflict with something already registered), the
+  first `N-1` Tools remain registered there -- and in `ResourceRegistry`
+  -- with no corresponding Module Registry entry, since `ToolLifecycleTransitions`
+  has no legal `REGISTERED -> REMOVED` edge to undo a freshly-registered,
+  never-enabled Tool. `tests/runtime/InMemoryModuleRegistryTest.kt`'s "a
+  failed multi-tool registration is not atomic..." test demonstrates and
+  asserts this honestly rather than hiding it.
+- `ToolRegistry` exposes no operation to read a specific `toolId`+`version`'s
+  current `ToolLifecycleState` from outside. `InMemoryModuleRegistry`
+  tracks each of its own exposed Tools' state locally, mirroring every
+  transition it itself drives via `setLifecycleState`. If a different
+  module later registers a new version of the same `toolId` (a
+  cross-module version collision, causing Tool Registry's own supersession
+  behaviour to move the earlier version to `DEPRECATED`), this module's
+  locally-tracked state becomes stale relative to `ToolRegistry`'s real
+  state, and a subsequent `enable`/`disable`/`remove` call on this module
+  could throw an unexpected `IllegalArgumentException` from
+  `ToolLifecycleTransitions.requireValidTransition`. Not solved by this
+  Unit -- doing so would require either a new read operation on
+  `ToolRegistry` (a Volume 3 interface change, out of this Unit's scope)
+  or a cross-module reconciliation mechanism neither Contract Design nor
+  this Unit's own instructions authorise.
+
+**Recommended closure for the wiring choices above (a future unit's
+decision, not this one's):** if and when module-exposed Tool sensitivity,
+cross-module Tool version collisions, or atomic multi-Tool registration
+become real, observed problems (not before, per this repository's
+established "100,000-line test" discipline), address them together in a
+small, additive Contract Design revision rather than three separate,
+uncoordinated fixes.
+
+No item in this section was closed by inventing behaviour beyond what its
+governing architecture document already specifies. This is a tracking
+addition only -- no Kotlin behaviour was changed as a result of writing
+this entry.
