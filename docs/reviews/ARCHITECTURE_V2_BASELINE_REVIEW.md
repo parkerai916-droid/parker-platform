@@ -398,9 +398,16 @@ by updating `docs/architecture/00-index.md`, `docs/architecture/IMPLEMENTATION_O
 and `docs/architecture/ARCHITECTURE_HISTORY.md` to reflect that Agent
 Runtime, Planner Runtime, Memory Runtime, and World Model Runtime are
 now implemented, without claiming any capability beyond what is
-actually built (World Model event publication, `IMPLEMENTATION_GAPS.md`
-#47, remains explicitly open in all three; the Background Agent
-interface is explicitly noted as unimplemented in all three).
+actually built. World Model event publication (`IMPLEMENTATION_GAPS.md`
+#47) remains explicitly open in `00-index.md` and `ARCHITECTURE_HISTORY.md`;
+the Background Agent interface is likewise explicitly noted as
+unimplemented in those same two. `IMPLEMENTATION_ORDER.md`'s own
+corrections are scoped to the Planner/Memory/World Model status claims
+its own Sections 1, 3, and 4 originally made and do not separately
+restate either point -- consistent with this cleanup's own instruction
+to update only the minimum needed, since neither gap #47 nor the
+Background Agent distinction was ever a claim `IMPLEMENTATION_ORDER.md`
+made incorrectly in the first place.
 
 No constitutional finding in this review changed as a result of this
 cleanup -- both resolutions are documentation-only, per Sprint 5's own
