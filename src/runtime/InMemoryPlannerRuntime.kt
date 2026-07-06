@@ -104,7 +104,19 @@ class InMemoryPlannerRuntime(
 ) : PlannerRuntime {
 
     private companion object {
-        /** Sprint 1 placeholder pattern, matching [DeterministicPlannerHarness]'s own `PLANNER_RUNTIME_PRINCIPAL_ID`. */
+        /**
+         * This runtime's own publisher identity, matching
+         * [DeterministicPlannerHarness]'s own `PLANNER_RUNTIME_PRINCIPAL_ID`
+         * value. Originally a Sprint 1 placeholder published under directly,
+         * with no resolution step (`docs/architecture/IMPLEMENTATION_GAPS.md`
+         * #49); as of Pre-Module Readiness Unit 1, this identifier is only
+         * ever used to [IdentityService.resolve] a real, registered
+         * Principal in [plan] -- it is never passed to [EventBus.publish]
+         * directly. A deployment (or test) of this class must register a
+         * Principal with this `principalId` before calling [plan], the same
+         * precondition [InMemoryAgentRuntime] already imposes on its own
+         * `agentIdentityPrincipalId`.
+         */
         val PLANNER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.planner-runtime")
     }
 
@@ -131,12 +143,21 @@ class InMemoryPlannerRuntime(
      * `PROPOSING -> SUBMITTED -> {COMPLETED, REJECTED}` (a [PlanCandidate]
      * was selected and submitted).
      *
-     * **Identity is resolved *before* `CREATED`.**
-     * `PlannerRuntimeSpecification.md` Section 8: "No Planning Session may
-     * leave `CREATED` ... without a resolvable `PrincipalId`." Section 5's
-     * own diagram has no `CREATED -> FAILED` edge (only
-     * `CONTEXT_GATHERING`/`CANCELLED`), so an unresolvable
-     * [PlanningRequest.initiatingPrincipalId] is deliberately **not**
+     * **Both this runtime's own publisher identity, and the initiating
+     * Principal, are resolved *before* `CREATED`.**
+     * (`docs/architecture/IMPLEMENTATION_GAPS.md` #49, Pre-Module
+     * Readiness Unit 1.) Every event this class publishes -- starting
+     * with `planner.session_created` itself -- carries a
+     * `publisherPrincipalId`; per [InMemoryAgentRuntime]'s own precedent
+     * (`agentIdentityPrincipalId` resolved via [IdentityService] before
+     * any `agent.*` event is published), that identity must resolve to a
+     * registered Principal before this runtime publishes anything under
+     * it. `PlannerRuntimeSpecification.md` Section 8: "No Planning
+     * Session may leave `CREATED` ... without a resolvable
+     * `PrincipalId`." Section 5's own diagram has no `CREATED -> FAILED`
+     * edge (only `CONTEXT_GATHERING`/`CANCELLED`), so an unresolvable
+     * identity -- this runtime's own publisher identity, or
+     * [PlanningRequest.initiatingPrincipalId] -- is deliberately **not**
      * modelled as a lifecycle transition at all: no session record is
      * ever created, no `planner.session_created` event is ever published,
      * and [getSessionStatus] returns `null` afterward -- mirroring
@@ -152,12 +173,36 @@ class InMemoryPlannerRuntime(
         mutex.withLock {
             check(request.planningSessionId !in sessions) {
                 "PlanningSession '${request.planningSessionId.value}' has already been submitted; " +
-                    "reconsideration requires a new PlanningRequest, not resubmitting this one"
+                    "reconsideration requires a new PlanningRequest, not resubmitting this one -- this " +
+                    "runtime also supports exactly one Task Proposal per Planning Session for the current " +
+                    "platform phase, a deliberate, documented constraint " +
+                    "(docs/architecture/IMPLEMENTATION_GAPS.md #48, " +
+                    "docs/architecture/PRE_MODULE_ID_MULTIPLICITY_DECISION.md), not an accidental limitation"
             }
-            // Tentative reservation -- rolled back below if identity does not resolve, so this
-            // Planning Session never appears to have validly entered CREATED at all.
+            // Tentative reservation -- rolled back below if either this runtime's own publisher
+            // identity, or the initiating Principal, does not resolve, so this Planning Session
+            // never appears to have validly entered CREATED at all.
             sessions[request.planningSessionId] = PlannerSessionStatus.CREATED
         }
+
+        // Gap #49 fix: this runtime's own publisher identity must resolve through IdentityService
+        // before anything is published under it -- mirroring InMemoryAgentRuntime's identical
+        // precondition on agentIdentityPrincipalId in `start()`. Checked before the initiating
+        // Principal below because publishing planner.session_created (the very first event) does
+        // not depend on who initiated the request, only on whether this runtime itself has a valid
+        // identity to publish under.
+        val plannerIdentity = identityService.resolve(PLANNER_RUNTIME_PRINCIPAL_ID)
+            ?: run {
+                mutex.withLock { sessions.remove(request.planningSessionId) }
+                return PlanningSessionResult.Failed(
+                    planningSessionId = request.planningSessionId,
+                    reason = "this runtime's own publisher identity '${PLANNER_RUNTIME_PRINCIPAL_ID.value}' " +
+                        "does not resolve to a registered Principal -- Planner Runtime cannot publish any " +
+                        "event, including planner.session_created, until it does",
+                    rejections = emptyList(),
+                )
+            }
+        val publisherPrincipalId = plannerIdentity.principalId
 
         if (identityService.resolve(request.initiatingPrincipalId) == null) {
             mutex.withLock { sessions.remove(request.planningSessionId) }
@@ -170,6 +215,7 @@ class InMemoryPlannerRuntime(
         }
 
         publish(
+            publisherPrincipalId = publisherPrincipalId,
             eventType = "planner.session_created",
             correlationId = request.correlationId,
             payload = mapOf(
@@ -179,13 +225,14 @@ class InMemoryPlannerRuntime(
         )
 
         advance(request.planningSessionId, PlannerSessionStatus.CREATED, PlannerSessionStatus.CONTEXT_GATHERING)
-        publish(eventType = "planner.context_requested", correlationId = request.correlationId)
+        publish(publisherPrincipalId = publisherPrincipalId, eventType = "planner.context_requested", correlationId = request.correlationId)
 
         advance(request.planningSessionId, PlannerSessionStatus.CONTEXT_GATHERING, PlannerSessionStatus.ANALYSING)
-        publish(eventType = "planner.analysis_started", correlationId = request.correlationId)
+        publish(publisherPrincipalId = publisherPrincipalId, eventType = "planner.analysis_started", correlationId = request.correlationId)
 
         for (candidate in candidates) {
             publish(
+                publisherPrincipalId = publisherPrincipalId,
                 eventType = "planner.candidate_generated",
                 correlationId = request.correlationId,
                 payload = mapOf("planCandidateId" to candidate.planCandidateId.value),
@@ -196,7 +243,7 @@ class InMemoryPlannerRuntime(
 
         return when (decision) {
             is PlanDecisionResult.NoViableCandidate -> {
-                publishRejections(decision.rejections, request.correlationId)
+                publishRejections(publisherPrincipalId, decision.rejections, request.correlationId)
                 advance(request.planningSessionId, PlannerSessionStatus.ANALYSING, PlannerSessionStatus.FAILED)
                 val reason = if (candidates.isEmpty()) {
                     "no Plan Candidates were supplied for this Planning Session"
@@ -204,6 +251,7 @@ class InMemoryPlannerRuntime(
                     "no supplied Plan Candidate was viable (${decision.rejections.size} rejected)"
                 }
                 publish(
+                    publisherPrincipalId = publisherPrincipalId,
                     eventType = "planner.session_failed",
                     correlationId = request.correlationId,
                     payload = mapOf("reason" to reason),
@@ -212,19 +260,27 @@ class InMemoryPlannerRuntime(
             }
 
             is PlanDecisionResult.Selected -> {
-                publishRejections(decision.rejections, request.correlationId)
+                publishRejections(publisherPrincipalId, decision.rejections, request.correlationId)
                 advance(request.planningSessionId, PlannerSessionStatus.ANALYSING, PlannerSessionStatus.PROPOSING)
                 publish(
+                    publisherPrincipalId = publisherPrincipalId,
                     eventType = "planner.proposal_created",
                     correlationId = request.correlationId,
                     payload = mapOf("planCandidateId" to decision.winner.planCandidateId.value),
                 )
 
+                // Deterministic, parent-derived ID: exactly one Task Proposal per Planning Session,
+                // by construction, for the current platform phase -- a deliberate, documented decision
+                // (docs/architecture/IMPLEMENTATION_GAPS.md #48, docs/architecture/PRE_MODULE_ID_MULTIPLICITY_DECISION.md),
+                // not an accidental consequence of this ID scheme. PlannerRuntimeSpecification.md's own
+                // "one or more Task Proposals" language is deliberately not narrowed by this decision --
+                // only this implementation's current behaviour is constrained.
                 val taskProposalId = TaskProposalId("${request.planningSessionId.value}-proposal-1")
                 val proposal = buildProposal(taskProposalId, decision.winner, request)
 
                 advance(request.planningSessionId, PlannerSessionStatus.PROPOSING, PlannerSessionStatus.SUBMITTED)
                 publish(
+                    publisherPrincipalId = publisherPrincipalId,
                     eventType = "planner.proposal_submitted",
                     correlationId = request.correlationId,
                     payload = mapOf("taskProposalId" to taskProposalId.value),
@@ -246,6 +302,7 @@ class InMemoryPlannerRuntime(
                         // see this class's own top-level KDoc).
                         advance(request.planningSessionId, PlannerSessionStatus.SUBMITTED, PlannerSessionStatus.COMPLETED)
                         publish(
+                            publisherPrincipalId = publisherPrincipalId,
                             eventType = "planner.session_completed",
                             correlationId = request.correlationId,
                             payload = mapOf("disposition" to (disposition::class.simpleName ?: "")),
@@ -257,9 +314,10 @@ class InMemoryPlannerRuntime(
         }
     }
 
-    private suspend fun publishRejections(rejections: List<PlanRejection>, correlationId: String) {
+    private suspend fun publishRejections(publisherPrincipalId: PrincipalId, rejections: List<PlanRejection>, correlationId: String) {
         for (rejection in rejections) {
             publish(
+                publisherPrincipalId = publisherPrincipalId,
                 eventType = "planner.candidate_rejected",
                 correlationId = correlationId,
                 payload = mapOf(
@@ -304,12 +362,19 @@ class InMemoryPlannerRuntime(
             correlationId = request.correlationId,
         )
 
-    /** Sprint 1, Unit 9 pattern: publishes one `planner.*` [ParkerEvent], with a UUID suffix since several event types fire more than once per Planning Session. */
-    private suspend fun publish(eventType: String, correlationId: String, payload: Map<String, String> = emptyMap()) {
+    /**
+     * Sprint 1, Unit 9 pattern: publishes one `planner.*` [ParkerEvent],
+     * with a UUID suffix since several event types fire more than once per
+     * Planning Session. [publisherPrincipalId] is always the caller's
+     * already-resolved identity (see [plan]'s own gap #49 fix) -- this
+     * method itself performs no resolution and trusts its caller to have
+     * done so.
+     */
+    private suspend fun publish(publisherPrincipalId: PrincipalId, eventType: String, correlationId: String, payload: Map<String, String> = emptyMap()) {
         eventBus.publish(
             ParkerEvent(
                 eventId = "evt-$correlationId-$eventType-${UUID.randomUUID()}",
-                publisherPrincipalId = PLANNER_RUNTIME_PRINCIPAL_ID,
+                publisherPrincipalId = publisherPrincipalId,
                 eventType = EventType(eventType),
                 timestamp = Instant.now(),
                 correlationId = correlationId,

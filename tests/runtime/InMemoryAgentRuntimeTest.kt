@@ -838,9 +838,27 @@ class InMemoryAgentRuntimeTest {
 
         runtime.submit(startCommand())
 
-        assertFailsWith<IllegalStateException> {
+        val exception = assertFailsWith<IllegalStateException> {
             runtime.submit(startCommand())
         }
+        assertTrue(exception.message?.contains("has already been processed") == true)
+    }
+
+    // --- Pre-Module Readiness Unit 2 (gap #48): one Agent Run per Task is a deliberate constraint ---
+
+    @Test
+    fun `the one-Agent-Run-per-Task cap is a deliberate, documented decision, not an accidental limitation`() = runTest {
+        val (runtime, identity, _) = buildRuntime { approvedDecision() }
+        identity.register(owner())
+        identity.register(agentIdentity())
+
+        runtime.submit(startCommand())
+
+        val exception = assertFailsWith<IllegalStateException> {
+            runtime.submit(startCommand())
+        }
+        assertTrue(exception.message?.contains("deliberate, documented constraint") == true)
+        assertTrue(exception.message?.contains("IMPLEMENTATION_GAPS.md #48") == true)
     }
 
     // --- isolation between independent commands ---

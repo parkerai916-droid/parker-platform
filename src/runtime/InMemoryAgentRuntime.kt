@@ -140,6 +140,12 @@ class InMemoryAgentRuntime(
     // --- START --------------------------------------------------------
 
     private suspend fun start(command: AgentRunCommand): AgentRunCommandResult {
+        // Deterministic, parent-derived ID: exactly one Agent Run per Task, by construction, for
+        // the current platform phase -- a deliberate, documented decision
+        // (docs/architecture/IMPLEMENTATION_GAPS.md #48, docs/architecture/PRE_MODULE_ID_MULTIPLICITY_DECISION.md),
+        // not an accidental consequence of this ID scheme. TaskManagerRuntimeSpecification.md's own
+        // "zero, one, or many Agent Run References" language is deliberately not narrowed by this
+        // decision -- only this implementation's current behaviour is constrained.
         val agentRunId = AgentRunId("run-for-${command.taskId.value}")
         val agentIdentityPrincipalId = PrincipalId("agent-for-${command.taskId.value}")
 
@@ -157,7 +163,9 @@ class InMemoryAgentRuntime(
         mutex.withLock {
             check(agentRunId !in agentRuns) {
                 "AgentRunCommand.START for taskId '${command.taskId.value}' has already been processed; " +
-                    "this runtime does not support starting a second Agent Run for the same Task"
+                    "this runtime supports exactly one Agent Run per Task for the current platform phase -- " +
+                    "a deliberate, documented constraint (docs/architecture/IMPLEMENTATION_GAPS.md #48, " +
+                    "docs/architecture/PRE_MODULE_ID_MULTIPLICITY_DECISION.md), not an accidental limitation"
             }
             agentRuns[agentRunId] = run
         }

@@ -1055,6 +1055,16 @@ by the World Model pushing events, closing the Open Question the other
 way -- mirroring gap #45's identical two-path resolution for
 `planner.session_rejected`.
 
+**Update (Pre-Module Readiness Unit 3):** `docs/adr/ADR-024-module-event-audit-durability-boundary.md`
+now gives this gap an architectural decision -- it reaffirms ADR-023's
+existing publish-only shape for World Model, adds the module-access
+framing this gap's own resolution must respect once modules exist, and
+explicitly declines to authorise Memory Runtime publication (Section B).
+**This is a design decision, not an implementation.** `InMemoryWorldModel`
+is unmodified; this gap's status remains **open, pending implementation**,
+now with a settled shape rather than an open design question standing in
+front of it.
+
 ---
 
 ## Phase 2 Runtime — Gap Closure Summary (all 47 items, current status)
@@ -1150,58 +1160,88 @@ by this entry — this is a tracking addition only.
 
 ### 48. Deterministic parent-derived IDs cap multiplicity for AgentRunId and TaskProposalId
 
-**Status: Open, logged for tracking. Latent architectural/implementation
-gap, not a present test failure.**
+**Status: Formally constrained by Pre-Module Readiness Unit 2 -- deferred,
+not closed as a defect, because none existed.**
 
 `InMemoryAgentRuntime.start()` mints
 `AgentRunId("run-for-${command.taskId.value}")`
-(`src/runtime/InMemoryAgentRuntime.kt:143`) and rejects a second `START`
+(`src/runtime/InMemoryAgentRuntime.kt`) and rejects a second `START`
 command for the same Task. `InMemoryPlannerRuntime` mints
 `TaskProposalId("${request.planningSessionId.value}-proposal-1")`
-(`src/runtime/InMemoryPlannerRuntime.kt:223`). Both governing
-specifications leave the corresponding multiplicity open: Task Manager is
-documented as associating "zero, one, or many Agent Runs" with a Task, and
-the Planner Runtime progression design allows "one or more Task Proposals"
-per Planning Session. Neither implementation can produce more than one, by
+(`src/runtime/InMemoryPlannerRuntime.kt`) and rejects a second `plan()`
+call for the same Planning Session. Both governing specifications leave
+the corresponding multiplicity open: Task Manager is documented as
+associating "zero, one, or many Agent Runs" with a Task, and the Planner
+Runtime specification allows "one or more Task Proposals" per Planning
+Session. Neither implementation could previously produce more than one, by
 construction of its ID-minting scheme -- not by an explicit architectural
-decision to cap it at one.
+decision to cap it at one, which is what this item originally recorded as
+a disclosure gap.
 
-This is disclosed at runtime (each implementation's uniqueness/precondition
-check carries an explanatory message) but had not previously been recorded
-in this document. **No action required to close** -- the cap is an
-acceptable, existing scope reduction, not a defect. **Recommended
-follow-up:** a future unit that needs a second Agent Run per Task, or a
-second Task Proposal per Planning Session, will require a deliberate
-ID-generation change to `InMemoryAgentRuntime` and/or `InMemoryPlannerRuntime`
-(or their successors); that unit should start from this entry rather than
-rediscover the limitation from source.
+**Decision (`docs/architecture/PRE_MODULE_ID_MULTIPLICITY_DECISION.md`):**
+one Agent Run per Task and one Task Proposal per Planning Session is now a
+deliberate, documented constraint for the current platform phase --
+**deferred**, not prohibited, since no consumer in this repository today
+(no Workflow Engine, no retry logic, no Multi-agent planning/Resource
+optimisation) needs the wider multiplicity either specification reserves,
+and inventing multiplicity-handling with no real consumer to validate it
+against was rejected under the same "100,000-line test" already applied
+throughout `docs/reviews/SPRINT_4_ARCHITECTURE_ACTIONS.md`. No
+ID-generation change, no public contract change, and no retry/forking
+logic was introduced. Both implementations' existing exception messages
+(thrown on a duplicate `START`/`plan()` call, unchanged in when or how
+they fire) were updated to state explicitly that the cap is deliberate
+and documented, not accidental, and both existing tests covering this
+behaviour (`tests/runtime/InMemoryAgentRuntimeTest.kt` "resubmitting
+START for the same taskId...", `tests/runtime/InMemoryPlannerRuntimeTest.kt`
+"resubmitting the same planningSessionId...") were tightened to check the
+updated message content; one new test per subsystem was added asserting
+the message explicitly cites this decision. **Recommended follow-up:**
+when a real consumer exists (Workflow Engine re-attempting a Task, or
+Multi-agent planning/Resource optimisation splitting one Planning Session
+into several Task Proposals), that unit's own Contract Design pass should
+adopt a per-parent monotonic counter/sequence for the affected ID (per
+the decision document's Section 3), not a caller-supplied or randomly
+generated identifier.
 
 ### 49. Planner Runtime publisher identity is hardcoded and unresolved
 
-**Status: Open, logged for tracking. Latent integration gap, currently
-masked by the permissive EventBus authenticator (see item #26).**
+**Status: Closed by Pre-Module Readiness Unit 1.**
 
-`InMemoryPlannerRuntime` publishes every Planner event under a hardcoded
-`PrincipalId("system.planner-runtime")`
-(`src/runtime/InMemoryPlannerRuntime.kt:108, 312`) that is never
-registered with or resolved through `IdentityService`. By contrast,
-`InMemoryAgentRuntime` resolves its Agent identity via
-`identityService.resolve(agentIdentityPrincipalId)` (`:166`) before a run
-starts, and republishes under that verified identity (`:539`). This
-asymmetry is invisible today because `InMemoryEventBus`'s wired-in
+`InMemoryPlannerRuntime` previously published every Planner event under a
+hardcoded `PrincipalId("system.planner-runtime")` that was never
+registered with or resolved through `IdentityService`, while
+`InMemoryAgentRuntime` resolved its Agent identity via
+`identityService.resolve(agentIdentityPrincipalId)` before a run starts,
+and republished under that verified identity. This asymmetry was
+invisible only because `InMemoryEventBus`'s wired-in
 `AllowAllPrincipalAuthenticator` accepts every syntactically valid
-`PrincipalId`. It stops being invisible the moment a real, identity-backed
-`EventBus` authenticator is introduced, at which point Planner Runtime's
-every published event would fail authentication while Agent Runtime's
-would not.
+`PrincipalId` (see item #26) -- it would have stopped being invisible the
+moment a real, identity-backed `EventBus` authenticator was introduced.
 
-**No action required to close now.** **Recommended follow-up:** any future
-unit that implements a real `PrincipalAuthenticator` for `EventBus` (the
-natural successor to item #26) must first either register
-`PLANNER_RUNTIME_PRINCIPAL_ID` with `IdentityService`, or change
-`InMemoryPlannerRuntime` to publish under a resolved identity the same way
-Agent Runtime does. Treat this entry as a precondition check for that
-future unit, not a standalone fix.
+**Fix (Pre-Module Readiness Unit 1):** `InMemoryPlannerRuntime.plan`
+(`src/runtime/InMemoryPlannerRuntime.kt`) now calls
+`identityService.resolve(PLANNER_RUNTIME_PRINCIPAL_ID)` before publishing
+anything -- checked before the initiating Principal, since publishing the
+first event (`planner.session_created`) does not depend on who initiated
+the request. If unresolved, `plan` rolls back its tentative session
+reservation and returns `PlanningSessionResult.Failed` with an explicit
+reason, exactly mirroring the existing unresolvable-initiating-Principal
+precondition and `InMemoryAgentRuntime`'s own `agentIdentityPrincipalId`
+precedent -- no session record is created and no event is published. The
+resolved `Principal.principalId` (not the raw constant) is threaded
+through every `publish`/`publishRejections` call as an explicit parameter
+for the remainder of that `plan` call. No public contract changed:
+`PlanningSessionResult.Failed` already existed with a `reason` field.
+`tests/runtime/InMemoryPlannerRuntimeTest.kt` adds
+`identityServiceWithPlannerRegistered()` (an `InMemoryIdentityService`
+with `system.planner-runtime` pre-registered, used by every test that
+expects `plan` to proceed) and three new tests: resolution succeeds and
+`plan` proceeds when the identity is registered; an unregistered publisher
+identity produces a `Failed` result with no session record and no events
+published; and every published event's `publisherPrincipalId` equals the
+resolved identity. No EventBus change, no Planner Runtime redesign, and no
+module access were introduced by this fix.
 
 ### 50. EventBus publish is synchronous; a slow subscriber can block all publishers
 
@@ -1222,6 +1262,16 @@ fire-and-forget dispatch boundary, authored alongside -- not before -- the
 first future unit that adds a subscriber performing real I/O or
 non-trivial work (the most likely candidate being a future Audit
 subsystem).
+
+**Update (Pre-Module Readiness Unit 3):** `docs/adr/ADR-024-module-event-audit-durability-boundary.md`
+Section C now settles this ADR: EventBus remains synchronous for today's
+fast, in-process subscriber set; the target future semantic is
+per-subscriber isolated dispatch (concurrent and/or timeout-bounded), not
+a durable queue; and delivery isolation is a precondition for any future
+Audit subscriber or module subscriber, not a concurrent task alongside
+adding one. **This is a design decision, not an implementation.**
+`InMemoryEventBus` is unmodified; this gap's status remains **open,
+pending implementation**, now with a settled target shape.
 
 ### 51. Persistence / durability / audit boundary is not structurally defined
 
@@ -1244,6 +1294,20 @@ should be scoped ("logically durable within process lifetime; physical
 durability is a reserved seam") until that ADR lands. See
 `docs/reviews/ARCHITECTURE_V2_INDEPENDENT_AUDIT_TRIAGE.md` Finding 4 for
 the full reasoning.
+
+**Update (Pre-Module Readiness Unit 3):** `docs/adr/ADR-024-module-event-audit-durability-boundary.md`
+Section D now settles this ADR: Memory Records, Principal records, and an
+Audit log must eventually be durable; World Model beliefs and ordinary
+per-request working state may remain in-memory; Memory may not be treated
+as durable across a restart until a real persistence layer exists and is
+verified (`MemoryStore.md`'s own language is not amended by this ADR, only
+interpreted, pending a future documentation-only pass); and no document
+may claim AD-009's Auditability guarantee is satisfied in a durable,
+reconstructable sense until a real Audit mechanism exists and receives
+events from every subsystem the claim covers. **This is a design
+decision, not an implementation.** No persistence or audit storage was
+implemented; this gap's status remains **open, pending implementation**,
+now with a settled boundary.
 
 **Note on Agent/Agent Runtime naming.** The independent audit's sixth
 finding (ambiguity between the Background Agent interface and Agent

@@ -49,10 +49,45 @@ import kotlin.test.assertTrue
  * separate argument to [PlannerRuntime.plan]), and every assertion against
  * a rejection's reason now checks the exact [PlanRejectionReason] value
  * rather than substring-matching prose.
+ *
+ * **Pre-Module Readiness Unit 1 (`docs/architecture/IMPLEMENTATION_GAPS.md`
+ * #49).** [InMemoryPlannerRuntime] now resolves its own publisher identity
+ * (`system.planner-runtime`) through [InMemoryIdentityService] before
+ * publishing anything, mirroring [InMemoryAgentRuntime]'s existing
+ * `agentIdentityPrincipalId` precondition. Every test below that expects
+ * [PlannerRuntime.plan] to actually proceed therefore uses
+ * [identityServiceWithPlannerRegistered] instead of a bare
+ * `InMemoryIdentityService()`, so it registers the planner's own publisher
+ * identity up front, exactly as a real deployment would need to. The two
+ * "publisher identity does not resolve" tests below are the only ones that
+ * deliberately omit this registration.
  */
 class InMemoryPlannerRuntimeTest {
 
     private val goal = "read today's calendar"
+
+    /**
+     * An [InMemoryIdentityService] with [InMemoryPlannerRuntime]'s own
+     * publisher identity (`system.planner-runtime`) already registered.
+     * Every test that expects [PlannerRuntime.plan] to proceed past its
+     * gap-#49 publisher-identity check uses this instead of a bare
+     * `InMemoryIdentityService()` -- see this class's own KDoc.
+     */
+    private suspend fun identityServiceWithPlannerRegistered(): InMemoryIdentityService {
+        val svc = InMemoryIdentityService()
+        svc.register(
+            Principal(
+                principalId = PrincipalId("system.planner-runtime"),
+                principalType = PrincipalType.SYSTEM,
+                displayName = "Planner Runtime",
+                owner = null,
+                status = PrincipalStatus.CREATED,
+                createdAt = Instant.parse("2026-01-01T00:00:00Z"),
+                lastSeenAt = Instant.parse("2026-01-01T00:00:00Z"),
+            ),
+        )
+        return svc
+    }
 
     private fun principal(id: String = "user-1") = Principal(
         principalId = PrincipalId(id),
@@ -100,7 +135,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `one valid candidate results in a Completed Planning Session and exactly one Task`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -121,7 +156,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `zero candidates results in a Failed Planning Session, and no Task is created`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -140,7 +175,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `multiple candidates -- the first valid one in generation order is submitted, the rest are recorded as rejections`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -162,7 +197,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `re-running the same PlanningRequest candidates twice selects the same winner both times`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal("user-1"))
         identity.register(principal("user-2"))
         val eventBus = InMemoryEventBus()
@@ -184,7 +219,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `a candidate whose goal does not match the session Goal is rejected, and the valid one still succeeds`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -206,7 +241,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `duplicate candidate ids -- the first occurrence is submitted, the duplicate is rejected`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -226,7 +261,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `a successful single-candidate Planning Session publishes the expected planner event sequence`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -251,7 +286,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `a zero-candidate Planning Session publishes analysis_started then session_failed, never a proposal event`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -276,7 +311,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `a rejected candidate publishes a planner-candidate-rejected event carrying its id, reason, and detail`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -313,7 +348,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `getSessionStatus reflects the terminal status after plan returns`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -330,7 +365,10 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `an unresolvable initiating Principal results in a Failed Planning Session with no session record`() = runTest {
-        val identity = InMemoryIdentityService() // no Principal registered
+        // The planner's own publisher identity IS registered here -- this test isolates the
+        // initiating Principal's own resolution failure specifically, distinct from the gap #49
+        // publisher-identity tests below.
+        val identity = identityServiceWithPlannerRegistered() // no *initiating* Principal registered
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
@@ -338,6 +376,7 @@ class InMemoryPlannerRuntimeTest {
         val result = planner.plan(request(initiatingPrincipalId = "ghost-user"), oneCandidate())
 
         val failed = assertIs<PlanningSessionResult.Failed>(result)
+        assertTrue(failed.reason.contains("initiatingPrincipalId", ignoreCase = false))
         assertTrue(failed.reason.contains("does not resolve", ignoreCase = true))
         assertNull(planner.getSessionStatus(PlanningSessionId("session-1")))
         assertTrue(taskManager.listTasks().isEmpty())
@@ -345,7 +384,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `an unresolvable initiating Principal publishes no planner events at all`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
@@ -358,7 +397,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `resubmitting the same planningSessionId is rejected as caller misuse`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -366,14 +405,34 @@ class InMemoryPlannerRuntimeTest {
 
         planner.plan(request(), oneCandidate())
 
-        assertFailsWith<IllegalStateException> {
+        val exception = assertFailsWith<IllegalStateException> {
             planner.plan(request(), oneCandidate())
         }
+        assertTrue(exception.message?.contains("has already been submitted") == true)
+    }
+
+    // --- Pre-Module Readiness Unit 2 (gap #48): one Task Proposal per Planning Session is a deliberate constraint ---
+
+    @Test
+    fun `the one-Task-Proposal-per-Planning-Session cap is a deliberate, documented decision, not an accidental limitation`() = runTest {
+        val identity = identityServiceWithPlannerRegistered()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
+
+        planner.plan(request(), oneCandidate())
+
+        val exception = assertFailsWith<IllegalStateException> {
+            planner.plan(request(), oneCandidate())
+        }
+        assertTrue(exception.message?.contains("deliberate, documented constraint") == true)
+        assertTrue(exception.message?.contains("IMPLEMENTATION_GAPS.md #48") == true)
     }
 
     @Test
     fun `a Task Manager rejection results in a Rejected Planning Session, using a fake disposition`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val fakeIntake = FakeTaskProposalIntake { proposal ->
@@ -391,7 +450,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `a Deferred disposition still results in a Completed Planning Session, per Section 5's own COMPLETED rule`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val fakeIntake = FakeTaskProposalIntake { proposal ->
@@ -408,7 +467,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `the constructed TaskProposal carries the winning candidate's goal, and exactly one proposal is submitted`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val fakeIntake = FakeTaskProposalIntake { proposal ->
@@ -428,7 +487,7 @@ class InMemoryPlannerRuntimeTest {
 
     @Test
     fun `InMemoryPlannerRuntime is usable entirely through the PlannerRuntime interface`() = runTest {
-        val identity = InMemoryIdentityService()
+        val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
@@ -437,5 +496,65 @@ class InMemoryPlannerRuntimeTest {
         val result = planner.plan(request(), oneCandidate())
 
         assertIs<PlanningSessionResult.Completed>(result)
+    }
+
+    // --- Pre-Module Readiness Unit 1 (gap #49): publisher identity resolution ---
+
+    @Test
+    fun `Planner Runtime resolves its own publisher identity before publishing anything`() = runTest {
+        // identityServiceWithPlannerRegistered already registers "system.planner-runtime" --
+        // every passing test above this point is itself evidence this resolution succeeds and
+        // plan() proceeds normally when it does. This test asserts that fact directly.
+        val identity = identityServiceWithPlannerRegistered()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
+
+        assertEquals(
+            PrincipalId("system.planner-runtime"),
+            identity.resolve(PrincipalId("system.planner-runtime"))?.principalId,
+        )
+        val result = planner.plan(request(), oneCandidate())
+        assertIs<PlanningSessionResult.Completed>(result)
+    }
+
+    @Test
+    fun `an unresolvable publisher identity results in a Failed Planning Session, with no session record and no events published`() = runTest {
+        val identity = InMemoryIdentityService() // deliberately no Principal registered at all,
+        // including "system.planner-runtime" itself -- this is the gap #49 failure path.
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
+        val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
+
+        val result = planner.plan(request(), oneCandidate())
+
+        val failed = assertIs<PlanningSessionResult.Failed>(result)
+        assertTrue(failed.reason.contains("system.planner-runtime", ignoreCase = false))
+        assertTrue(failed.reason.contains("does not resolve", ignoreCase = true))
+        assertTrue(failed.rejections.isEmpty())
+        assertNull(planner.getSessionStatus(PlanningSessionId("session-1")))
+        assertTrue(taskManager.listTasks().isEmpty())
+        assertTrue(collector.eventsFor("corr-1").isEmpty())
+    }
+
+    @Test
+    fun `published Planner events carry the resolved publisher Principal, not a hardcoded value`() = runTest {
+        val identity = identityServiceWithPlannerRegistered()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
+        val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
+
+        planner.plan(request(), oneCandidate())
+
+        val events = collector.eventsFor("corr-1")
+        assertTrue(events.isNotEmpty())
+        val resolvedPlannerIdentity = identity.resolve(PrincipalId("system.planner-runtime"))
+        assertEquals(resolvedPlannerIdentity?.principalId, events.first().publisherPrincipalId)
+        assertTrue(events.all { it.publisherPrincipalId == PrincipalId("system.planner-runtime") })
     }
 }

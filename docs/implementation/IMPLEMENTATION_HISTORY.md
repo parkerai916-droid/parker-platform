@@ -560,6 +560,80 @@ Implementation Notes
 
 ---
 
+### Pre-Module Readiness Unit 1 -- Planner Runtime Publisher Identity (gap #49)
+
+Commit:
+pending
+
+Completed:
+2026-07-07
+
+Android Studio Tests:
+Not yet run by a human in Android Studio (PES-001: test execution and commit remain Human authority; no working Kotlin/Gradle toolchain was available in this session's sandbox either). Static count: the prior confirmed total stood at 413/413 (Sprint 4, Track B, Unit B3); `tests/runtime/InMemoryPlannerRuntimeTest.kt` gains 3 new tests (publisher identity resolves and `plan` proceeds; an unresolvable publisher identity produces a safe `Failed` result with no session record and no events published; published events carry the resolved publisher Principal), a net addition of +3. If every existing and new test passes unchanged, the expected total is 416/416 -- this figure is an arithmetic projection from the source, not a verified run, and must be confirmed in Android Studio before commit.
+
+Summary
+- Closed `docs/architecture/IMPLEMENTATION_GAPS.md` #49 (Planner Runtime's publisher identity was hardcoded and never resolved through `IdentityService`, unlike Agent Runtime's own `agentIdentityPrincipalId`), per the independent architecture audit's triage (`docs/reviews/ARCHITECTURE_V2_INDEPENDENT_AUDIT_TRIAGE.md` Finding 2) and Pre-Module Readiness Unit 1's own scope.
+- `src/runtime/InMemoryPlannerRuntime.kt`: `plan` now calls `identityService.resolve(PLANNER_RUNTIME_PRINCIPAL_ID)` before publishing anything, checked before the pre-existing initiating-Principal resolution check. If unresolved, `plan` rolls back its tentative session reservation and returns `PlanningSessionResult.Failed` with an explicit reason -- no session record is created, no event is published, exactly mirroring the pre-existing unresolvable-initiating-Principal precondition and `InMemoryAgentRuntime`'s own `agentIdentityPrincipalId` precedent. The resolved `Principal.principalId` (not the raw `PLANNER_RUNTIME_PRINCIPAL_ID` constant) is threaded explicitly through `publish`/`publishRejections` for the remainder of that `plan` call.
+- `tests/runtime/InMemoryPlannerRuntimeTest.kt`: added `identityServiceWithPlannerRegistered()`, an `InMemoryIdentityService` with `system.planner-runtime` pre-registered as a `SYSTEM` Principal; every existing test that expects `plan` to proceed now uses it in place of a bare `InMemoryIdentityService()` (mechanical update, no behavioural change to what those tests assert). Added three new tests proving: resolution succeeds and `plan` proceeds when the identity is registered; an unregistered publisher identity produces a `Failed` result with no session record and no events published; and every published event's `publisherPrincipalId` equals the resolved identity, not a hardcoded value. The two pre-existing "unresolvable initiating Principal" tests were tightened to assert on `"initiatingPrincipalId"` specifically, so they remain isolated to that failure path now that a second, distinct identity-resolution failure path exists.
+
+Implementation Notes
+- No public contract changed. `PlanningSessionResult.Failed` already existed with a `reason` field; no new variant or field was added.
+- No EventBus authentication change. `InMemoryEventBus`'s `AllowAllPrincipalAuthenticator` is untouched.
+- No Planner Runtime redesign. The Plan Decision algorithm, Task Proposal construction, lifecycle transitions, and event sequence are all unchanged; only the publisher-identity precondition was added, following `InMemoryAgentRuntime`'s existing pattern exactly.
+- No module access was introduced.
+- `docs/architecture/PARKER_ENGINEERING_STANDARD.md`, `docs/architecture/ARCHITECTURE_DECISIONS.md`, and every ADR were not modified.
+
+---
+
+### Pre-Module Readiness Unit 2 -- ID Multiplicity Decision (gap #48)
+
+Commit:
+pending
+
+Completed:
+2026-07-07
+
+Android Studio Tests:
+Not yet run by a human in Android Studio (PES-001: test execution and commit remain Human authority; no working Kotlin/Gradle toolchain was available in this session's sandbox either). Static count: the prior static projection stood at 416/416 (Pre-Module Readiness Unit 1); `tests/runtime/InMemoryAgentRuntimeTest.kt` gains 1 new test and `tests/runtime/InMemoryPlannerRuntimeTest.kt` gains 1 new test, a net addition of +2. If every existing and new test passes unchanged, the expected total is 418/418 -- this figure is an arithmetic projection from the source, not a verified run, and must be confirmed in Android Studio before commit.
+
+Summary
+- Created `docs/architecture/PRE_MODULE_ID_MULTIPLICITY_DECISION.md`, a design decision (performed before any Kotlin change, per this unit's own instruction) resolving `docs/architecture/IMPLEMENTATION_GAPS.md` #48 (deterministic parent-derived IDs capping `AgentRunId`/`TaskProposalId` multiplicity, per the independent architecture audit's Finding 1). Decision: **Option B** -- formally constrain the current platform phase to one Agent Run per Task and one Task Proposal per Planning Session, as a deliberate, documented decision. Multiplicity is **deferred**, not prohibited: no consumer in this repository today (no Workflow Engine, no retry logic, no Multi-agent planning/Resource optimisation) needs it, so implementing general multiplicity support now would be unvalidated speculative generality, rejected under the same "100,000-line test" already applied in `docs/reviews/SPRINT_4_ARCHITECTURE_ACTIONS.md`.
+- `src/runtime/InMemoryAgentRuntime.kt` and `src/runtime/InMemoryPlannerRuntime.kt`: no functional change to when or how either duplicate-submission exception is thrown. Both exception messages, and the KDoc/comments at each ID-minting site, were updated to state explicitly that the one-per-parent cap is a deliberate, documented constraint (citing gap #48 and the decision document by name), not an accidental limitation.
+- `tests/runtime/InMemoryAgentRuntimeTest.kt` and `tests/runtime/InMemoryPlannerRuntimeTest.kt`: the pre-existing "resubmitting..." tests for each subsystem were tightened to assert on (unchanged-behaviour, updated-message) content; one new test per file asserts the message explicitly cites this decision and gap #48.
+- Closed `docs/architecture/IMPLEMENTATION_GAPS.md` #48 as "formally constrained, deferred" -- not "fixed," since no defect existed, only an undisclosed decision.
+
+Implementation Notes
+- No public contract changed: `AgentRunId`, `TaskProposalId`, `AgentRunCommand`, and `PlanningRequest` are unchanged in shape.
+- No ID-generation mechanism changed. Both IDs remain deterministic, parent-derived strings -- the decision document's own Section 3 explains why that is the *correct* shape for "exactly one child per parent," and records (for a future unit, not for this one) that a per-parent monotonic counter, not a generated/random or caller-supplied identifier, is the recommended shape if and when multiplicity is eventually implemented.
+- No retry, forking, or multi-instance orchestration logic was introduced in either runtime.
+- No module access of any kind was introduced.
+- `docs/architecture/PARKER_ENGINEERING_STANDARD.md`, `docs/architecture/ARCHITECTURE_DECISIONS.md`, every ADR, `TaskManagerRuntimeSpecification.md`, and `PlannerRuntimeSpecification.md` were not modified -- both specifications' own "zero, one, or many"/"one or more" language is deliberately left open, not narrowed.
+
+---
+
+### Pre-Module Readiness Unit 3 -- Module, Event, Audit, and Durability Boundary (ADR-024)
+
+Commit:
+pending
+
+Completed:
+2026-07-07
+
+Android Studio Tests:
+418/418 (unchanged -- design-only unit; no Kotlin was written or modified).
+
+Summary
+- Created `docs/adr/ADR-024-module-event-audit-durability-boundary.md`, an ADR/design unit only, addressing `docs/architecture/IMPLEMENTATION_GAPS.md` #47 (World Model event publication), #50 (EventBus delivery isolation), and #51 (persistence/durability/audit boundary), plus a module-access boundary not previously defined anywhere in this repository.
+- Decided: modules are capability/Tool providers by constitutional definition, may also be read-only event subscribers under ADR-023's existing discipline, and are never granted a fourth category of implicit authority (Section A). World Model's event-publication shape is reaffirmed as already governed by ADR-023; Memory Runtime is explicitly not authorised to publish events at this time, for lack of both a named specification responsibility and a present consumer (Section B). EventBus remains synchronous for today's fast, in-process subscriber set; per-subscriber isolated dispatch (not a durable queue) is the target semantic, required before any slow/blocking subscriber -- Audit or module -- is added (Section C). Memory Records, Principal records, and an Audit log must eventually be durable; World Model beliefs and ordinary working state may remain in-memory; Memory may not be treated as durable across a restart, and no document may claim AD-009 is satisfied in a durable sense, until a real persistence/Audit mechanism exists (Section D). A two-bucket pre-module rule is recorded: stateless, non-subscribing, non-Memory/World-Model-reading capability providers may be introduced without waiting on any of the three gaps; subscribing, World-Model-dependent, or durability-dependent modules must wait on the corresponding gap; no module is ever granted implicit trust or a bypass of the Permission Engine (Section E).
+- Updated `docs/architecture/IMPLEMENTATION_GAPS.md` #47, #50, and #51 to record that each now has an architectural decision governing its eventual implementation -- none was implemented, and none was closed.
+
+Implementation Notes
+- No Kotlin, test, or existing specification was modified. `InMemoryWorldModel.kt`, `InMemoryEventBus.kt`, `InMemoryMemoryStore.kt`, and `InMemoryIdentityService.kt` are all unchanged.
+- No module access was introduced -- no module system exists in this repository, and this ADR authorises none; it defines the boundary a future module-access proposal must respect.
+- `docs/architecture/PARKER_ENGINEERING_STANDARD.md` and `docs/architecture/ARCHITECTURE_DECISIONS.md` were not modified. ADR-023 was not modified -- ADR-024 reaffirms and builds on it without reopening it.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
