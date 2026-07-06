@@ -20,10 +20,10 @@ Everything else follows from that.
 
 Today's AI assistants are powerful, but they all share the same assumptions:
 
-* Your conversations belong in someone else's cloud.
-* Your memories belong in someone else's database.
-* Your automation depends on someone else's service.
-* Your intelligence is tied to someone else's model.
+- Your conversations belong in someone else's cloud.
+- Your memories belong in someone else's database.
+- Your automation depends on someone else's service.
+- Your intelligence is tied to someone else's model.
 
 Parker was created to reverse those assumptions.
 
@@ -53,11 +53,11 @@ Parker is not built around any single AI model.
 
 Reasoning engines are replaceable components. Today that might be:
 
-* Qwen
-* Gemma
-* Claude
-* GPT
-* Llama
+- Qwen
+- Gemma
+- Claude
+- GPT
+- Llama
 
 Tomorrow it may be something that does not exist yet.
 
@@ -87,29 +87,42 @@ Core guarantees cannot be casually bypassed by implementation shortcuts.
 
 ---
 
-## What Works Today
+# What Works Today
 
-Parker is currently in foundational implementation.
-
-The constitutional architecture is complete, and core runtime components are being implemented through structured engineering sprints.
+Parker has completed its constitutional foundation and is now implementing the core runtime through disciplined engineering sprints governed by the Parker Engineering Standard (**PES-001**).
 
 Completed runtime work includes:
 
-* Identity-aware Permission Engine
-* Permission Policy model
-* Execution Pipeline integration
-* Tool Registry
-* Tool Invocation Binding
-* Task Manager Agent Event Subscription
-* Task lifecycle transitions
-* Resource Registry foundation
+- Identity-aware Permission Engine
+- Permission Policy model
+- Execution Pipeline
+- Tool Registry
+- Tool Invocation Binding
+- Resource Registry foundation
+- Task Manager Runtime
+- Task lifecycle transitions
+- Multi-step Agent Runtime
+- Suspend / Resume / Cancel semantics
+- Event-driven runtime coordination
+
+## Milestone: Runtime Foundation Complete
+
+The Parker runtime now supports:
+
+- Identity-aware execution
+- Permission-gated execution
+- Multi-step agent runs
+- Suspend / Resume / Cancel
+- Sequential step orchestration
+- Event-driven runtime coordination
+
+This milestone establishes the execution substrate upon which future planning, Memory, World Model, workflows, reasoning providers, and higher-level agent capabilities will be built.
 
 Current verified baseline:
 
-* **Implementation Phase:** Sprint 2
-* **Track A:** Complete
-* **Track B:** In Progress
-* **Latest verification:** Android Studio — **269 / 269 tests passing**
+- **Implementation Phase:** Sprint 3
+- **Sprint Status:** Track C Unit C2 Complete
+- **Latest verification:** Android Studio — **283 / 283 tests passing**
 
 ---
 
@@ -119,45 +132,45 @@ Parker is not yet a finished consumer assistant.
 
 The following areas are still under development:
 
-* Full Android runtime
-* Complete agent framework
-* Production-ready plugin ecosystem
-* End-user installation flow
-* Long-term Memory implementation
-* Complete World Model implementation
-* Multi-device deployment
-* Public developer SDK
-* Production security hardening
-* User-facing release builds
+- Planner / Reasoning orchestration
+- World Model implementation
+- Long-term Memory implementation
+- Workflow Engine
+- Complete Android runtime
+- Production-ready plugin ecosystem
+- Multi-device deployment
+- Public developer SDK
+- Production security hardening
+- End-user release builds
 
-The project is being built deliberately from the constitutional foundation upward.
+The platform is being built deliberately from the constitutional foundation upward.
 
 ---
 
-## Architecture Overview
+# Architecture Overview
 
 Parker separates intelligence into three distinct responsibilities:
 
 ```text
                 +----------------------+
                 |      Reasoning       |
-                |  "What should happen?"|
+                | "What should happen?"|
                 +----------+-----------+
                            |
                            v
                 +----------------------+
                 |     Trust Engine     |
-                |  "Is this permitted?"|
+                | "Is this permitted?" |
                 +----------+-----------+
                            |
                            v
                 +----------------------+
                 | Execution Pipeline   |
-                |   "Make it happen."  |
+                |  "Make it happen."   |
                 +----------+-----------+
                            |
                            v
-                Tools • Plugins • Devices • Services
+             Tools • Plugins • Devices • Services
 ```
 
 The core execution principle is:
@@ -166,17 +179,53 @@ The core execution principle is:
 
 ---
 
+## Runtime Architecture
+
+The runtime now provides a trust-governed execution substrate capable of coordinating complex agent activity while preserving constitutional authority.
+
+```text
+                 Owner
+                   │
+                   ▼
+        Parker Constitution
+                   │
+                   ▼
+           Trust Framework
+                   │
+                   ▼
+        Permission Engine
+                   │
+                   ▼
+        Execution Pipeline
+                   │
+                   ▼
+       Multi-Step Agent Runtime
+                   │
+                   ▼
+     Tool Registry / Resources
+```
+
+Every execution path remains subject to constitutional authority.
+
+Reasoning proposes.
+
+Trust authorises.
+
+Runtime executes.
+
+---
+
 ## Knowledge Architecture
 
 Parker organises knowledge into three distinct layers:
 
-| Layer                 | Purpose                                   |
-| --------------------- | ----------------------------------------- |
-| **Memory**            | What Parker has learned                   |
-| **World Model**       | What Parker currently believes to be true |
-| **Reasoning Context** | What matters for the current task         |
+| Layer | Purpose |
+|-------|---------|
+| **Memory** | What Parker has learned |
+| **World Model** | What Parker currently believes to be true |
+| **Reasoning Context** | What matters for the current task |
 
-Each layer has a different lifecycle and responsibility.
+Each layer has a distinct lifecycle and architectural responsibility.
 
 ---
 
@@ -184,16 +233,16 @@ Each layer has a different lifecycle and responsibility.
 
 Parker aims to become a complete personal intelligence platform capable of:
 
-* Personal assistance
-* Home automation
-* Workflow automation
-* Knowledge management
-* Long-term memory
-* Local AI reasoning
-* Secure tool execution
-* Multi-device operation
-* Plugin extensibility
-* Local and hybrid deployment
+- Personal assistance
+- Home automation
+- Workflow automation
+- Knowledge management
+- Long-term memory
+- Local AI reasoning
+- Secure tool execution
+- Multi-device operation
+- Plugin extensibility
+- Local and hybrid deployment
 
 ---
 
@@ -201,30 +250,34 @@ Parker aims to become a complete personal intelligence platform capable of:
 
 Parker is built around non-negotiable principles:
 
-* Owner authority
-* Trust before execution
-* Local-first operation
-* Model independence
-* Plugin extensibility
-* Explicit permissions
-* Explainable decisions
-* Constitutional governance
-* Auditable runtime behaviour
-* Replaceable reasoning providers
+- Owner authority
+- Trust before execution
+- Local-first operation
+- Model independence
+- Plugin extensibility
+- Explicit permissions
+- Explainable decisions
+- Constitutional governance
+- Auditable runtime behaviour
+- Replaceable reasoning providers
 
 ---
 
 ## Current Architecture Status
 
-**Current Architecture Milestone:** Architecture v1.0 – Constitutional Foundation
+**Current Architecture Milestone:** **Architecture v1.0 – Constitutional Foundation**
 
 Parker's constitutional architecture is complete.
 
-The platform has entered **Implementation Phase – Sprint 2**, where the constitutional architecture is being translated into verified runtime components through incremental engineering units governed by the Parker Engineering Standard (**PES-001**).
+The platform has entered **Implementation Phase – Sprint 3**.
+
+With the completion of **Sprint 3 Track C**, Parker's **Runtime Foundation** is now established.
+
+Future implementation focuses on extending platform capability through planning, Memory, World Model, workflows, reasoning providers, and additional agent capabilities while preserving the constitutional architecture.
 
 The constitutional architecture is no longer evolving during normal implementation.
 
-New runtime components are expected to conform to the Constitution, Architecture Decisions, and Engineering Standard rather than redefining them.
+New runtime components are expected to conform to the Constitution, Architecture Decisions, and the Parker Engineering Standard rather than redefining them.
 
 ---
 
@@ -232,12 +285,12 @@ New runtime components are expected to conform to the Constitution, Architecture
 
 Parker is governed by four complementary constitutional documents:
 
-| Document                                  | Purpose                                                                                     |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Parker Constitution**                   | Defines what Parker is.                                                                     |
-| **Architecture Decisions**                | Define how Parker is architected and why major decisions were made.                         |
-| **Parker Engineering Standard (PES-001)** | Defines how Parker is engineered, verified, reviewed, and evolved.                          |
-| **Project Governance**                    | Defines the relationship between the governing documents and the platform governance model. |
+| Document | Purpose |
+|----------|---------|
+| **Parker Constitution** | Defines what Parker is. |
+| **Architecture Decisions** | Define how Parker is architected and why major decisions were made. |
+| **Parker Engineering Standard (PES-001)** | Defines how Parker is engineered, verified, reviewed, and evolved. |
+| **Project Governance** | Defines the relationship between the governing documents and the platform governance model. |
 
 Future Architecture Decisions that alter engineering practice must explicitly reference the relevant PES-001 section.
 
@@ -249,12 +302,12 @@ Parker Engineering Standard (**PES-001**) governs the engineering lifecycle used
 
 The standard establishes:
 
-* Architecture before implementation.
-* Evidence before opinion.
-* Verification before acceptance.
-* Documentation as a first-class engineering artefact.
-* Explicit implementation gap management.
-* Engineering reviews and retrospectives as part of development.
+- Architecture before implementation
+- Evidence before opinion
+- Verification before acceptance
+- Documentation as a first-class engineering artefact
+- Explicit implementation gap management
+- Engineering reviews and retrospectives as part of development
 
 Implementation is performed as incremental, independently verified engineering units.
 
@@ -266,68 +319,72 @@ Every completed unit must satisfy the Definition of Complete defined by PES-001 
 
 The Constitutional Foundation establishes that:
 
-* **Parker owns authority. Modules provide capability.**
-* **Cognition proposes. Trust authorises. Runtime executes.**
-* **The owner remains in control.**
-* **Trust is earned through architecture, not marketing.**
-* **Local-first and trust-first operation are the default.**
-* **User rights are protected as constitutional principles.**
-* **Knowledge is organised into three layers:** Memory, World Model, and Reasoning Context.
-* **Reasoning providers are model-agnostic and interchangeable.**
-* **No module may grant itself authority or bypass the Trust Framework.**
+- **Parker owns authority. Modules provide capability.**
+- **Cognition proposes. Trust authorises. Runtime executes.**
+- **The owner remains in control.**
+- **Trust is earned through architecture, not marketing.**
+- **Local-first and trust-first operation are the default.**
+- **User rights are protected as constitutional principles.**
+- **Knowledge is organised into three layers:** Memory, World Model, and Reasoning Context.
+- **Reasoning providers are model-agnostic and interchangeable.**
+- **No module may grant itself authority or bypass the Trust Framework.**
 
 ---
 
 ## Constitutional Documents
 
-The constitutional foundation is defined by the following documents:
+The constitutional foundation is defined by:
 
-* [Architecture History](docs/architecture/ARCHITECTURE_HISTORY.md)
-* [Parker Constitution](docs/architecture/parker-constitution.md)
-* [Architecture Decisions](docs/architecture/ARCHITECTURE_DECISIONS.md)
-* [Parker Engineering Standard (PES-001)](docs/architecture/PARKER_ENGINEERING_STANDARD.md)
-* [Project Governance](docs/architecture/PROJECT_GOVERNANCE.md)
-* [User Authorship & Evidence](docs/architecture/user-authorship-and-evidence.md)
-* [Reasoning Context](docs/architecture/reasoning-context.md)
-* [Trust Framework](docs/architecture/09-trust-framework.md)
+- Architecture History
+- Parker Constitution
+- Architecture Decisions
+- Parker Engineering Standard (PES-001)
+- Project Governance
+- User Authorship & Evidence
+- Reasoning Context
+- Trust Framework
 
 ---
 
-## For Developers
+# For Developers
 
-### Current Sprint
+## Current Status
 
-Parker is currently in:
+- **Implementation Phase:** Sprint 3
+- **Runtime Foundation:** Complete
+- **Latest Completed Unit:** Track C Unit C2
+- **Next Focus:** Track D
 
-* **Implementation Phase:** Sprint 2
-* **Track A:** Complete
-* **Track B:** In Progress
+---
 
-### Build Status
+## Build Status
 
 Current verified baseline:
 
 ```text
-Android Studio verification: 269 / 269 tests passing
+Android Studio verification: 283 / 283 tests passing
 ```
 
-### Test Command
+---
 
-The current verified test baseline is from Android Studio.
+## Test Verification
 
-Until a command-line test command is formally documented in the repository, use Android Studio to run the full project test suite and verify that all tests pass before accepting implementation work.
+The current verified baseline is produced using Android Studio.
 
-### Where to Start Reading
+Until command-line verification becomes part of the documented engineering workflow, all implementation units must be verified by running the complete Android Studio test suite before acceptance.
 
-Recommended reading order:
+---
 
-1. [Parker Constitution](docs/architecture/parker-constitution.md)
-2. [Project Governance](docs/architecture/PROJECT_GOVERNANCE.md)
-3. [Parker Engineering Standard (PES-001)](docs/architecture/PARKER_ENGINEERING_STANDARD.md)
-4. [Architecture Decisions](docs/architecture/ARCHITECTURE_DECISIONS.md)
-5. [Trust Framework](docs/architecture/09-trust-framework.md)
-6. [Reasoning Context](docs/architecture/reasoning-context.md)
-7. Implementation plans, gaps, history, reviews, checkpoints, and retrospectives
+## Recommended Reading Order
+
+1. Parker Constitution
+2. Project Governance
+3. Parker Engineering Standard (PES-001)
+4. Architecture Decisions
+5. Trust Framework
+6. Reasoning Context
+7. Runtime specifications
+8. Implementation plans, reviews, checkpoints, retrospectives, history, and implementation gaps
 
 ---
 
@@ -338,6 +395,7 @@ docs/
     architecture/
     specifications/
     decisions/
+    reviews/
 
 runtime/
 
@@ -354,47 +412,61 @@ tests/
 
 Parker is being developed in deliberate stages:
 
-1. Architecture
-2. Runtime
-3. Trust
-4. Execution
-5. Resources
-6. World Model
-7. Memory
-8. Plugins
-9. Agents
-10. Android
-11. Production
+1. Constitutional Architecture
+2. Runtime Foundation ✅
+3. Planner
+4. World Model
+5. Memory
+6. Workflow Engine
+7. Plugins
+8. Agents
+9. Android Integration
+10. Production Platform
 
-Every stage builds on the guarantees established by the previous one.
+Each stage builds upon guarantees established by the previous stage.
 
 ---
 
 ## Contributing
 
-Parker is still in its foundational phase.
+Parker remains in its foundational engineering phase.
 
-Contributors interested in architecture, runtime systems, Android, AI, security, distributed systems, developer tooling, local-first systems, and trustworthy automation are welcome.
+Contributors interested in:
 
-Before submitting significant changes, read the constitutional documents and engineering standard.
+- Runtime systems
+- Android
+- AI
+- Security
+- Distributed systems
+- Local-first computing
+- Developer tooling
+- Personal intelligence platforms
+
+are welcome.
+
+Before submitting significant changes, read the constitutional documents and Parker Engineering Standard.
 
 Contributions should preserve Parker's core guarantees:
 
-* Owner authority
-* Trust-first execution
-* Model independence
-* Local-first operation
-* Auditable runtime behaviour
-* Architecture-led implementation
+- Owner authority
+- Trust-first execution
+- Model independence
+- Local-first operation
+- Auditable runtime behaviour
+- Architecture-led implementation
 
 ---
 
-## Vision
+# Vision
 
 Parker is not another chatbot.
 
 It is an attempt to build a trustworthy personal intelligence platform where the owner remains in control, AI remains replaceable, and trust is enforced by architecture rather than promised through policy.
 
+The completion of the **Runtime Foundation** marks the transition from architectural vision to a functioning execution platform.
+
+Future work builds on this foundation to add planning, memory, world understanding, workflows, and richer personal intelligence while preserving the constitutional principles established at the beginning of the project.
+
 The future of personal AI should not belong only to the companies that build the models.
 
-It should belong to the people who use them.
+**It should belong to the people who use them.**
