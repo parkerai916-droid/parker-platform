@@ -1478,3 +1478,25 @@ Delivery against it, or (b) defines the concrete mechanism by which
 Cognition consumes an accepted `InboundOwnerMessage` from
 `CommunicationIntake` -- per Contract Design Section 14, neither is
 required before `CommunicationIntake` itself can be used as built here.
+
+**Clarification (planning pass, no Kotlin or architecture changed): of
+the two closure paths above, (a) and (b) are not equally ready.** (a)
+requires a Volume 1 core contract revision to `ExecutionRequest` --
+likely a Level 3 Architectural Change under PES-001 (Architecture
+Decision required, wide blast radius across `ExecutionPipeline`,
+`AgentRunCommand`, `PlanDecision`, and every existing caller of
+`ExecutionRequest`). (b) requires Cognition/Conversation Engine to
+first receive real Stage 1 Architecture -- `docs/architecture/19-conversation-engine.md`
+is currently a three-line stub with no responsibilities, ownership,
+trust boundary, lifecycle, invariants, or security model, i.e. none of
+Stage 1's required content exists yet. Neither (a) nor (b) is close to
+implementable. A third, smaller, more immediately ready path -- a
+Contract Design pass for the Local Text Channel itself
+(`docs/architecture/COMMUNICATION_CHANNEL_ARCHITECTURE.md` Section 6),
+scoped to its already-unblocked inbound half only (registering the
+channel as a Module and feeding `CommunicationIntake.submitInboundMessage`,
+both already implemented) -- is recommended as the next Stage 2A
+document to write, ahead of either (a) or (b). This is a recommendation
+only, not a decision: it does not close this gap, and neither
+`COMMUNICATION_CHANNEL_ARCHITECTURE.md` nor `COMMUNICATION_CONTRACT_DESIGN.md`
+was modified to record it.
