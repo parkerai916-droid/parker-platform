@@ -849,7 +849,7 @@ implemented and verified.
 
 ### 43. `task.started` and `task.completed` publish without their §10-specified payload fields
 
-**Status: Open, not yet closed.**
+**Status: Partially resolved -- `task.completed` closed; `task.started` remains open.**
 
 Found during the Sprint 2 Health Review (`docs/reviews/SPRINT_2_B2_POST_IMPLEMENTATION_REVIEW.md`)
 performed after Track A and Track B were both implemented.
@@ -872,6 +872,27 @@ thread an Agent Run Reference (already recorded in `agentEvents`, per Unit
 B1) into the `task.started` payload, and a minimal Task Result summary
 into the `task.completed` payload, as a small, additive follow-up --
 no interface or lifecycle change required.
+
+**Update (Task Event Payload Completion, `docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md`):
+the `task.completed` half is closed; the `task.started` half is deliberately
+left open, not silently dropped.** `task.completed`'s payload is now
+implemented -- `InMemoryTaskManagerRuntime.applyCompletedTransition`'s two
+`task.completed` publish call sites carry `{"taskId": <the Task's own
+id>, "status": "COMPLETED"}`, verified passing in Android Studio
+(482/482). The "Recommended closure" text above turned out to be only
+half achievable as written: `agentEvents` (Unit B1's own recorded
+`agent.completed`/`agent.failed` events) does not actually carry an
+`agentRunId` field to thread -- confirmed by direct inspection,
+`InMemoryAgentRuntime.publish`'s own `agent.completed` payload carries
+only `taskId`, never `agentRunId`. `task.started`'s Agent Run Reference
+therefore **remains intentionally unimplemented**: closing it would
+require either reconstructing `AgentRunId` locally (rejected, as an
+unauthorised inference of a hidden identifier by duplicating another
+subsystem's internal ID-minting scheme) or extending Agent Runtime
+(`InMemoryAgentRuntime.kt`) to expose `agentRunId` on `agent.completed`'s
+own payload -- both explicitly out of this Unit's scope. **The remaining
+work depends on future Agent Runtime support and remains an open gap**,
+not resolved, not closed, and not silently assumed away by this Unit.
 
 ---
 

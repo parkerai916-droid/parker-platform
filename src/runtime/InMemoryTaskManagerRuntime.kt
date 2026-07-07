@@ -177,6 +177,26 @@ import parker.core.interfaces.TaskStatus
  * decision document defines, not implementing an already-specified edge.
  * [applyCompletedTransition] treats all of them, and `COMPLETED`, as a
  * no-op.
+ *
+ * ## Sprint 7, Task Event Payload Completion (closes `IMPLEMENTATION_GAPS.md` #43, in part)
+ *
+ * Per `docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md`
+ * Section 8's decided, conservative option: `task.completed`'s payload
+ * (both call sites in [applyCompletedTransition]) now carries `"taskId"`
+ * and `"status"` (`TaskManagerRuntimeSpecification.md` §10's "Task Result
+ * summary," populated at the level this class has evidence for -- the
+ * terminal status it reaches, since it tracks no Execution Reference or
+ * Agent Result of its own). `task.started`'s payload is deliberately
+ * **not** changed by this unit and remains `emptyMap()` -- §10's "Agent
+ * Run Reference, if any" is left unpopulated because this class has no
+ * field carrying a real `AgentRunId` (`agent.completed`'s own payload,
+ * from `InMemoryAgentRuntime.publish`, carries only `taskId`), and
+ * closing it would require either reconstructing `AgentRunId` locally
+ * (inferring a hidden identifier from another subsystem's internal
+ * minting scheme) or modifying `InMemoryAgentRuntime.kt` directly --
+ * both explicitly out of this unit's scope. `IMPLEMENTATION_GAPS.md` #43
+ * is therefore only partially closed by this change; its `task.started`
+ * half remains open, per the plan's own Section 8.
  */
 class InMemoryTaskManagerRuntime(
     private val identityService: IdentityService,
@@ -333,12 +353,22 @@ class InMemoryTaskManagerRuntime(
 
                     TaskLifecycleTransitions.requireValidTransition(TaskStatus.RUNNING, TaskStatus.COMPLETED)
                     tasks[taskId] = running.copy(status = TaskStatus.COMPLETED)
-                    publish(eventType = "task.completed", taskId = taskId, correlationId = task.correlationId)
+                    publish(
+                        eventType = "task.completed",
+                        taskId = taskId,
+                        correlationId = task.correlationId,
+                        payload = mapOf("taskId" to taskId.value, "status" to TaskStatus.COMPLETED.name),
+                    )
                 }
                 TaskStatus.RUNNING -> {
                     TaskLifecycleTransitions.requireValidTransition(TaskStatus.RUNNING, TaskStatus.COMPLETED)
                     tasks[taskId] = task.copy(status = TaskStatus.COMPLETED)
-                    publish(eventType = "task.completed", taskId = taskId, correlationId = task.correlationId)
+                    publish(
+                        eventType = "task.completed",
+                        taskId = taskId,
+                        correlationId = task.correlationId,
+                        payload = mapOf("taskId" to taskId.value, "status" to TaskStatus.COMPLETED.name),
+                    )
                 }
                 else -> Unit // COMPLETED (already terminal) and every other currently-unreachable
                 // status -- see this class's own "Unit B2" KDoc section for why no transition

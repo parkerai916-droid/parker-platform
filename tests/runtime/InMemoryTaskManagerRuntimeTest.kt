@@ -455,14 +455,29 @@ class InMemoryTaskManagerRuntimeTest {
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val publishedTypes = mutableListOf<String>()
-        eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { publishedTypes += "task.started" }
-        eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { publishedTypes += "task.completed" }
+        val publishedPayloads = mutableMapOf<String, Map<String, String>>()
+        eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { event ->
+            publishedTypes += "task.started"
+            publishedPayloads["task.started"] = event.payload
+        }
+        eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { event ->
+            publishedTypes += "task.completed"
+            publishedPayloads["task.completed"] = event.payload
+        }
         val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         eventBus.publish(agentEvent("agent.completed", accepted.taskId))
 
         assertEquals(listOf("task.started", "task.completed"), publishedTypes)
+        // Task Event Payload Completion (docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md
+        // Section 8's decided, conservative option): task.completed now carries a Task Result
+        // summary; task.started is deliberately left unpopulated, not silently untested.
+        assertEquals(
+            mapOf("taskId" to accepted.taskId.value, "status" to "COMPLETED"),
+            publishedPayloads["task.completed"],
+        )
+        assertEquals(emptyMap(), publishedPayloads["task.started"])
     }
 
     // --- 2. agent.completed on an already-RUNNING Task takes only the second edge ---
@@ -473,8 +488,12 @@ class InMemoryTaskManagerRuntimeTest {
         identity.register(principal())
         val eventBus = InMemoryEventBus()
         val publishedTypes = mutableListOf<String>()
+        var completedPayload: Map<String, String>? = null
         eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { publishedTypes += "task.started" }
-        eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { publishedTypes += "task.completed" }
+        eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { event ->
+            publishedTypes += "task.completed"
+            completedPayload = event.payload
+        }
         val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
         forceTaskStatus(runtime, accepted.taskId, TaskStatus.RUNNING)
@@ -484,6 +503,7 @@ class InMemoryTaskManagerRuntimeTest {
 
         assertEquals(TaskStatus.COMPLETED, runtime.getTask(accepted.taskId)?.status)
         assertEquals(listOf("task.completed"), publishedTypes) // task.started not re-published
+        assertEquals(mapOf("taskId" to accepted.taskId.value, "status" to "COMPLETED"), completedPayload)
     }
 
     // --- 3. agent.completed on an already-COMPLETED Task is a no-op ---
@@ -578,5 +598,58 @@ class InMemoryTaskManagerRuntimeTest {
         assertFalse(TaskLifecycleTransitions.isValidTransition(TaskStatus.QUEUED, TaskStatus.COMPLETED))
         assertTrue(TaskLifecycleTransitions.isValidTransition(TaskStatus.QUEUED, TaskStatus.RUNNING))
         assertTrue(TaskLifecycleTransitions.isValidTransition(TaskStatus.RUNNING, TaskStatus.COMPLETED))
+    }
+
+    // ================= Task Event Payload Completion (closes IMPLEMENTATION_GAPS.md #43, in part) =================
+    //
+    // docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md Section 8's decided,
+    // conservative option: task.completed's payload is populated now; task.started's Agent Run
+    // Reference is deliberately left unpopulated, not silently untested. The two tests above
+    // (Unit B2 section) already assert task.completed's exact payload contents inline; the two
+    // tests below are the plan's own Section 4 "dedicated test" requirements: a scope-discipline
+    // proof that task.completed's payload never claims more than this class actually tracks, and
+    // an explicit proof that task.started's emptiness is intentional.
+
+    @Test
+    fun `task-completed's payload never claims an Execution Reference or Agent Result field this class does not track`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        var completedPayload: Map<String, String>? = null
+        eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { event ->
+            completedPayload = event.payload
+        }
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        // Exactly taskId + status -- the only two components of a Task Result this class has
+        // evidence for (TaskManagerRuntimeSpecification.md §4). No "executionReferences",
+        // "agentResults", or similar key is fabricated for data this class never tracks.
+        assertEquals(setOf("taskId", "status"), completedPayload?.keys)
+    }
+
+    @Test
+    fun `task-started's payload remains deliberately empty -- Agent Run Reference is an intentional deferral, not an oversight`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        var startedPayload: Map<String, String>? = null
+        var startedPublishCount = 0
+        eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { event ->
+            startedPublishCount++
+            startedPayload = event.payload
+        }
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        assertEquals(1, startedPublishCount)
+        // Per the Implementation Plan's Section 8 decision: no AgentRunId is reconstructed
+        // locally, and InMemoryAgentRuntime is not modified to supply one -- task.started's
+        // payload is exactly emptyMap(), unchanged from before this unit.
+        assertEquals(emptyMap(), startedPayload)
     }
 }

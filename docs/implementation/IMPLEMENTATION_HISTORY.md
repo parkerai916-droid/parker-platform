@@ -689,6 +689,31 @@ Implementation Notes
 
 ---
 
+### Sprint 7 -- Task Event Payload Completion (Task Manager Runtime; closes `IMPLEMENTATION_GAPS.md` #43, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-07
+
+Android Studio Tests:
+Android Studio verified: **482/482 passing** (Human authority, PES-001), confirmed by Steven. Prior confirmed total (Sprint 7, Unit C3 -- Local Text Channel) was 480/480, per Steven's own confirmation; that Unit's own entry was not separately recorded in this file, since its Kotlin verification occurred outside this session's own sandbox and this entry is scoped only to Task Event Payload Completion. This Unit adds exactly 2 new test methods (see Summary), a net addition of +2, for the confirmed 482/482 total above. This total has been run and confirmed in Android Studio; it is no longer a static projection.
+
+Summary
+- Closed the `task.completed` half of `IMPLEMENTATION_GAPS.md` #43 exactly as `docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md` specifies: `InMemoryTaskManagerRuntime.applyCompletedTransition`'s two `task.completed` publish call sites (`src/runtime/InMemoryTaskManagerRuntime.kt`) now carry a payload of `{"taskId": <the Task's own id>, "status": "COMPLETED"}`, satisfying `TaskManagerRuntimeSpecification.md` §10's "Task Result summary" requirement at the level this class has evidence for -- the terminal status it reaches, since it tracks no Execution Reference or Agent Result of its own.
+- `task.started`'s publish call is unchanged -- its payload remains `emptyMap()`, exactly as before this Unit. Per the Implementation Plan's Section 8 decision, this Unit does not populate an Agent Run Reference: `InMemoryTaskManagerRuntime` has no field carrying a real `AgentRunId` (confirmed by direct inspection: `InMemoryAgentRuntime.publish`'s own `agent.completed` payload carries only `taskId`, never `agentRunId`), and closing this would require either reconstructing `AgentRunId` locally (rejected -- inferring a hidden identifier by duplicating another subsystem's internal ID-minting scheme) or modifying `InMemoryAgentRuntime.kt` directly (out of this Unit's scope). Neither was done.
+- Extended `tests/runtime/InMemoryTaskManagerRuntimeTest.kt`'s two existing Unit B2 tests (`` `agent-completed for a QUEUED Task publishes both task-started and task-completed, proving both edges fired` `` and `` `agent-completed transitions an already-RUNNING Task to COMPLETED, taking only the second edge` ``) to assert `task.completed`'s exact payload contents (and, in the first, `task.started`'s continued emptiness). Added two new, dedicated tests: `` `task-completed's payload never claims an Execution Reference or Agent Result field this class does not track` `` (a scope-discipline proof that the payload contains exactly `{taskId, status}` and nothing fabricated) and `` `task-started's payload remains deliberately empty -- Agent Run Reference is an intentional deferral, not an oversight` `` (an explicit proof that the omission is intentional, not untested).
+
+Implementation Notes
+- No architecture, contract, or implementation plan document was modified. `TaskManagerRuntimeSpecification.md`, `docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md`, and every other existing specification remain exactly as they were.
+- `InMemoryAgentRuntime.kt` was not modified. No `AgentRunId` was reconstructed, guessed, or inferred anywhere in this Unit.
+- `Task.schema.json` was not modified; "Task Result" remains an informational `Map<String, String>` event-payload entry, not a promoted, structured schema field -- `TaskManagerRuntimeSpecification.md`'s own "Open Questions" section leaves that promotion undecided (subject to ADR-019), and this Unit does not decide it.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #43 was **clarified, not closed** -- see that entry's own updated text. The `task.completed`/Task Result summary half is now implemented and verified; the `task.started`/Agent Run Reference half remains open, depending on future Agent Runtime support (either extending `agent.completed`'s own payload, or some other, not-yet-designed mechanism) that is explicitly out of this Unit's scope.
+- No other implementation gap, Communication Runtime, Local Text Channel, Cognition, Planner Runtime, Memory Runtime, or World Model file was touched.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
