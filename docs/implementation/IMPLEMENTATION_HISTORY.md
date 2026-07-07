@@ -661,6 +661,34 @@ Implementation Notes
 
 ---
 
+## Sprint 7
+
+### Sprint 7 Track B Unit C1 -- Communication Runtime (CommunicationIntake) Implementation
+
+Commit:
+pending
+
+Completed:
+2026-07-07
+
+Android Studio Tests:
+Not yet run by a human in Android Studio (PES-001: test execution and commit remain Human authority; no working Kotlin/Gradle toolchain was available in this session's sandbox either). Static count: the prior static projection stood at 441/441 (Sprint 6, Track A, Unit M1, itself unconfirmed by a human at time of writing). `tests/contracts/CommunicationContractsTest.kt` adds 11 tests and `tests/runtime/InMemoryCommunicationIntakeTest.kt` adds 15, a net addition of +26. If every existing and new test passes unchanged, the expected total is 467/467 -- this figure is an arithmetic projection from the source, not a verified run, and must be confirmed in Android Studio before commit.
+
+Summary
+- Implemented exactly what `docs/architecture/COMMUNICATION_CONTRACT_DESIGN.md`'s Conclusion authorises for a first Communication Runtime unit: `CommunicationIntake` (`src/interfaces/CommunicationIntake.kt`) and its supporting contracts -- `CorrelationId`, `InboundOwnerMessage`, `OutboundParkerResponse`, `CommunicationIntakeDisposition` (a two-variant `Accepted`/`Rejected` sealed type, mirroring `TaskProposalDisposition`'s shape, not its five-way richness) -- and its first implementation, `InMemoryCommunicationIntake` (`src/runtime/InMemoryCommunicationIntake.kt`).
+- `InMemoryCommunicationIntake.submitInboundMessage` performs exactly Contract Design Section 6's two structural checks, in the order that section names them: (1) `message.channelId` must be a currently `ENABLED` module per the injected `ModuleRegistry`; (2) `message.senderPrincipalId` must resolve to a registered `Principal` per the injected `IdentityService`. Both pass -> `Accepted`; either fails -> `Rejected` with a plain-language reason. Per Section 5, a resolved sender is not additionally required to be `ACTIVE` or `USER`-typed.
+- Every accepted `InboundOwnerMessage` is retained in an internal, mutex-guarded list, inspectable via `acceptedMessages()`/`acceptedMessageFor(correlationId)` -- observability methods outside the formal `CommunicationIntake` interface, mirroring `InMemoryMemoryStore.wasForgotten`'s established precedent. This is exactly the shape Contract Design's own Conclusion names as sufficient for a first unit ("making accepted ones inspectable").
+- Added `tests/contracts/CommunicationContractsTest.kt` (11 tests: construction-time validation for `CorrelationId`, `InboundOwnerMessage`, `OutboundParkerResponse`, `CommunicationIntakeDisposition`) and `tests/runtime/InMemoryCommunicationIntakeTest.kt` (15 tests: the successful path, both structural checks individually and in combination across every `ModuleStatus` value, check ordering, deterministic and reproducible rejection reasons, thread safety under 50 concurrent submissions, the observability lookup surface, and two scope-discipline tests proving no `ExecutionPipeline`/`ToolRegistry`/`PlannerRuntime`/`AgentRuntime`/`MemoryStore`/`WorldModel` dependency was introduced).
+
+Implementation Notes
+- **A real scope conflict between this Unit's own task brief and the governing architecture was surfaced and resolved by explicit human decision before any code was written, not silently picked either way.** The task brief describing this Unit asked for a Communication Runtime that "constructs the appropriate Execution Request," "submits work through the existing Execution Pipeline," "awaits completion," and "returns a Communication Response." `COMMUNICATION_CONTRACT_DESIGN.md`'s own Conclusion explicitly forbids exactly that for a first unit: "Implementation must **not** attempt to resolve, in the same unit, either open item Section 14 names (Cognition's consumption mechanism, or `ExecutionRequest`'s content-carrying gap)... A first implementation unit may reasonably stop at: `CommunicationIntake` accepting or rejecting inbound messages and making accepted ones inspectable... with actual Cognition consumption and actual Tool-based response delivery following once their own respective open items are resolved by a future, separately-scoped unit." Presented as a three-way choice (build only what's authorised / build the Section-7 outbound-delivery path instead / build the full brief as written, exceeding current authorisation) -- the human decision was to build only what Contract Design currently authorises. This Unit therefore does not construct or reference an `ExecutionRequest`, and does not call `ExecutionPipeline`, `PermissionEngine`, or `ToolRegistry`, anywhere.
+- `CommunicationIntake` has exactly two collaborators -- `ModuleRegistry` and `IdentityService` -- per Contract Design Section 9. No `PlannerRuntime`, `AgentRuntime`, `MemoryStore`, or `WorldModel` dependency was introduced; engaging any of those remains Cognition's own decision, downstream of an accepted message, per Section 9.
+- No Communication Channel module, local text channel, speech, Android, Home Assistant, notification, or LLM/Cognition behaviour was implemented -- all explicitly out of scope per Contract Design Section 11 and this platform's `IMPLEMENTATION_ORDER.md`.
+- No existing architecture document, ADR, runtime contract, module contract, or `IMPLEMENTATION_GAPS.md`/`IMPLEMENTATION_HISTORY.md` entry was modified except to record this Unit's own completion and add gap #53 below.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was added, recording that Response Delivery (constructing an `ExecutionRequest` and submitting it through `ExecutionPipeline` for an `OutboundParkerResponse`) and Cognition's consumption of an accepted `InboundOwnerMessage` both remain unimplemented, deferred exactly as Contract Design's own Section 14 already disclosed -- not a defect this Unit introduced, and not silently worked around.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

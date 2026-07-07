@@ -1426,3 +1426,55 @@ No item in this section was closed by inventing behaviour beyond what its
 governing architecture document already specifies. This is a tracking
 addition only -- no Kotlin behaviour was changed as a result of writing
 this entry.
+
+---
+
+## Communication Runtime (Sprint 7, Unit C1) -- findings
+
+### 53. Response Delivery and Cognition's consumption of accepted inbound messages remain unimplemented
+
+**Status: Open, not yet closed. Deliberate scope boundary, matching
+`docs/architecture/COMMUNICATION_CONTRACT_DESIGN.md`'s own Conclusion --
+not a defect, not a silent omission.**
+
+Unit C1 implemented `CommunicationIntake`/`InMemoryCommunicationIntake`
+exactly as Contract Design authorises for a first Communication Runtime
+unit: the two structural checks (channel `ENABLED`, sender resolves) and
+nothing more. This Unit's own task brief separately asked for a broader
+Communication Runtime that constructs an `ExecutionRequest`, submits it
+through `ExecutionPipeline`, awaits completion, and returns a response --
+exactly the two things Contract Design's own Section 14 names as genuine,
+disclosed open items a first unit must **not** resolve: (1) the mechanism
+by which Cognition consumes an accepted `InboundOwnerMessage` (no
+Cognition/Conversation Engine contract exists anywhere in this repository
+yet), and (2) `ExecutionRequest`'s lack of a dedicated payload/content
+field, which leaves a response's actual text with nowhere to travel except
+the non-authoritative `metadata` map.
+
+This conflict was surfaced before any code was written and resolved by an
+explicit human decision (recorded in this Unit's own Implementation
+History entry) to build only what Contract Design currently authorises,
+rather than silently picking an interpretation either way. Consequently:
+
+- No `ExecutionRequest` is constructed anywhere in `CommunicationIntake.kt`
+  or `InMemoryCommunicationIntake.kt`, and no `ExecutionPipeline`,
+  `PermissionEngine`, or `ToolRegistry` call is made by either.
+- `OutboundParkerResponse` (the contract Response Delivery would need) is
+  defined, field-shaped, per Contract Design Section 3 -- but nothing in
+  this Unit constructs one, delivers one, or wires it through a channel's
+  exposed "deliver" Tool (Contract Design Section 7).
+- No Cognition, Conversation Engine, `PlannerRuntime`, or `AgentRuntime`
+  call is made from an accepted `InboundOwnerMessage`. `acceptedMessages()`/
+  `acceptedMessageFor` exist only as inspection methods outside the formal
+  interface (mirroring `InMemoryMemoryStore.wasForgotten`'s precedent), not
+  a queue-consumption API for a real consumer.
+
+**Recommended closure (a future unit's decision, not this one's):** a
+separately-scoped Contract Design/implementation pass, once Cognition or a
+Conversation-Engine-shaped intermediary is itself scoped, that either (a)
+resolves `ExecutionRequest`'s content-carrying gap (a Volume 1 core
+contract revision, outside this Unit's authority) and implements Response
+Delivery against it, or (b) defines the concrete mechanism by which
+Cognition consumes an accepted `InboundOwnerMessage` from
+`CommunicationIntake` -- per Contract Design Section 14, neither is
+required before `CommunicationIntake` itself can be used as built here.
