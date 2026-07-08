@@ -835,6 +835,38 @@ Implementation Notes
 
 ---
 
+### Sprint 8 -- Local Text Channel Deliver Tool (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-08
+
+Android Studio Tests:
+Android Studio verified: **541/541 passing** (Human authority, PES-001), confirmed by Steven. Prior confirmed total (Sprint 7, Unit C4 -- Response Delivery) was 532/532. This Unit adds `tests/runtime/LocalTextChannelDeliverToolTest.kt` (9 tests) -- a net addition of +9, reconciling exactly with the confirmed 541/541 total above. This total has been run and confirmed in Android Studio; it is no longer a static projection.
+
+Summary
+- Implemented exactly the Stage 3 Scope-Locked unit `docs/implementation/LOCAL_TEXT_CHANNEL_DELIVER_TOOL_IMPLEMENTATION_PLAN.md` authorises, built on `docs/architecture/LOCAL_TEXT_CHANNEL_CONTRACT_DESIGN.md` (Accepted, Stage 2A, revised to register this Tool in `toolsExposed`), `docs/architecture/RESPONSE_DELIVERY_CONTRACT_DESIGN.md`, `docs/architecture/ADR-025_RESPONSE_DELIVERY_CONTENT_CARRIER.md`, `docs/architecture/ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md`, and `docs/implementation/RESPONSE_DELIVERY_NOTIFY_VOCABULARY_DECISION.md`.
+- Added `src/runtime/LocalTextChannelDeliverTool.kt`: a concrete, non-interface-backed implementation of the existing `Tool` interface. `descriptor` -- a computed property, not a stored value, so this class declares no backing field for it -- fixes `toolId = "deliver"` (`ToolDescriptor.toolId: String`, the approved public contract; not a `ToolId` value class, which does not exist anywhere in this repository), `displayName`/`description`, `supportedActions = setOf(PermissionAction.NOTIFY)`, and `supportedResourceTypes = setOf(ResourceType.TOOL)`. `moduleId = ModuleId("channel.local-text")` is reused, not invented, matching the identity already established across `tests/runtime/ResponseDeliveryTest.kt` and other Sprint 7 tests.
+- `validate(request)` rejects a request whose `request.metadata[RESPONSE_TEXT_METADATA_KEY]` is missing or blank; `execute(request)` reads that same key unchanged (no formatting, trimming, normalisation, or mutation), invokes an injected `suspend (text: String) -> Unit` callback exactly once with the exact text, and returns a successful `ToolResult` (`Tool.execute` returns `ToolResult`, not `ExecutionResult` -- `DefaultExecutionPipeline` builds the `ExecutionResult` from it, unmodified by this Unit).
+- **`ToolDescriptor` single-source-of-truth rule respected throughout.** Every reference to this Tool's descriptor -- the `ModuleDescriptor.toolsExposed` entry, `ToolInvocationBinding.bind`'s second argument, and every test fixture -- reads it from `tool.descriptor` directly; no second `ToolDescriptor(...)` literal exists anywhere in this Unit's code or tests.
+- Added `tests/runtime/LocalTextChannelDeliverToolTest.kt` (9 tests): descriptor shape (`toolId`, capability, resource-type); `validate` rejecting missing metadata, rejecting blank metadata, and accepting non-blank metadata; `execute` invoking the callback exactly once with the exact text (using deliberately unusual leading/trailing whitespace and mixed-case input to prove nothing is silently normalised) and returning the expected `ToolResult`; a reflective statelessness test (exactly one declared field, the injected callback); a direct `InMemoryToolInvocationBinding` binding test proving `tool.descriptor` reuse succeeds; and one end-to-end test registering this real Tool through `InMemoryModuleRegistry.register`/`enable`, confirming the backing `Resource`'s `ownerPrincipalId` (per `ADR-026`) resolves to exactly one `TOOL`-type match, binding it via `ToolInvocationBinding.bind`, registering the `NOTIFY` vocabulary entry, and calling the existing, unmodified `ResponseDelivery.deliver` through a real `DefaultExecutionPipeline`, asserting `ExecutionResultStatus.SUCCESS` and that the injected callback received the response's exact text.
+
+Implementation Notes
+- **`LocalTextChannelDeliverTool` has exactly one side effect.** `execute` invokes the injected callback exactly once, with the exact response text; no file write, network call, `EventBus` publication, or other observable effect exists anywhere in this class.
+- **No formatting, trimming, normalisation, or mutation of response text** -- verified by an exact-string-equality test using deliberately unusual input.
+- **No Android UI, speech, or real notification/display rendering.** The injected callback is a plain function, supplied entirely by the caller (in this Unit, a capturing test lambda); this Unit makes no claim that a response is shown to a human being.
+- **No persistence, no new `EventBus` publication, no Planner integration, no Conversation Engine integration, no Reasoning Provider integration, no Memory, no World Model, no retry policy, no queueing, no streaming, no multiple recipients, no multi-channel fan-out** -- none of these dependencies exist anywhere in this Unit's code.
+- **No production composition root was added.** Registration (`ModuleRegistry.register`/`enable`, `ToolInvocationBinding.bind`, the `NOTIFY` vocabulary entry) happens entirely inside this Unit's own end-to-end test, mirroring Unit C4's own identical precedent for the vocabulary entry -- no `fun main(` exists anywhere under `src/` to perform these calls at real startup; a future, real composition root must perform the identical calls once, named here so it is not silently forgotten.
+- No existing `src/` or `tests/` file was modified. `ModuleRegistry`, `InMemoryModuleRegistry`, `ResourceRegistry`, `InMemoryResourceRegistry`, `ToolRegistry`, `InMemoryToolRegistry`, `ToolInvocationBinding`, `InMemoryToolInvocationBinding`, `ActionVocabulary`, `InMemoryActionVocabulary`, `ActionMapper`, `DefaultExecutionPipeline`, and `ResponseDelivery` are all consumed exactly as they existed before this Unit.
+- No architecture, contract design, ADR, or implementation plan document was modified during implementation. `LOCAL_TEXT_CHANNEL_CONTRACT_DESIGN.md`, `RESPONSE_DELIVERY_CONTRACT_DESIGN.md`, `ADR-025_RESPONSE_DELIVERY_CONTENT_CARRIER.md`, `ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md`, `RESPONSE_DELIVERY_NOTIFY_VOCABULARY_DECISION.md`, and `LOCAL_TEXT_CHANNEL_DELIVER_TOOL_IMPLEMENTATION_PLAN.md` all remain exactly as previously accepted/Scope-Locked. One restatement error in the Scope Lock instruction itself (a locked decision referring to a `ToolId` type that does not exist in this repository) was identified before any Kotlin was written, reported, and corrected by Steven to `toolId: String` -- the underlying locked Plan document was never incorrect on this point and was not modified.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was clarified further, not closed -- see that entry's own updated text below. The Local Text Channel now has a real, registered, end-to-end-verified deliver Tool, but constructing an `OutboundParkerResponse` from a `Reply`, a model-backed `ReasoningProvider`, and `Goal`/Planner Runtime routing all remain unimplemented, and no production composition root exists to perform this Unit's own registration calls at real startup.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #52 was **not** touched. None of this Unit's work bears on its three remaining open items (the `ResourceSensitivity.PUBLIC` default, non-atomic multi-Tool registration, or stale locally-tracked `ToolLifecycleState`) -- this Unit relies only on the one item `ADR-026` already settled.
+- No other implementation gap, Communication Runtime, Conversation Engine, Reasoning Provider, Planner Runtime, Memory Runtime, or World Model file was touched.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

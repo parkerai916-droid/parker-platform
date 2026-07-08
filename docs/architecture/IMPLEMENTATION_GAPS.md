@@ -1682,4 +1682,54 @@ gap's own prior text, restated here explicitly:**
   unimplemented -- nothing routes a `Goal` onward to Planner Runtime,
   exactly as already recorded above.
 
+**Update (Sprint 8 -- Local Text Channel Deliver Tool): the first item
+in the "What remains open" list directly above -- the Local Text
+Channel's own production "deliver" `ToolDescriptor` not being
+registered -- is now resolved. This gap remains Open -- not closed, not
+resolved in full.** `LocalTextChannelDeliverTool`
+(`src/runtime/LocalTextChannelDeliverTool.kt`) now exists: a concrete
+`Tool` implementation, `toolId = "deliver"`, `supportedActions =
+{PermissionAction.NOTIFY}`, `supportedResourceTypes =
+{ResourceType.TOOL}`, whose `execute` reads response text from
+`ExecutionRequest.metadata[RESPONSE_TEXT_METADATA_KEY]`, unchanged, and
+invokes an injected owner-notification callback -- verified passing in
+Android Studio, 541/541. Concretely:
+
+- `ResponseDelivery` can now reach a real, non-placeholder deliver Tool
+  end-to-end, through the real `ModuleRegistry`, `ResourceRegistry`,
+  `ToolRegistry`, `ToolInvocationBinding`, and `DefaultExecutionPipeline`
+  -- verified by this Unit's own end-to-end test, not only by isolated
+  unit tests or by `ResponseDeliveryTest.kt`'s own throwaway placeholder
+  Tool.
+- The backing `Resource` `InMemoryModuleRegistry.register` creates for
+  this Tool resolves, via `ResourceRegistry.listByOwner(PrincipalId(channelModuleId.value))`,
+  to exactly one `TOOL`-type match -- confirmed directly in this Unit's
+  own test, per `ADR-026`'s now-exercised convention.
+- Registration (`ModuleRegistry.register`/`enable`,
+  `ToolInvocationBinding.bind`, the `NOTIFY` vocabulary entry) happens
+  entirely inside this Unit's own test -- no production composition root
+  exists in this repository to perform these calls at real startup,
+  exactly as this gap's own prior text already disclosed for the
+  vocabulary entry specifically, now restated for the Tool's full
+  registration.
+
+**What remains open, preventing closure, is narrower than before but
+still real:**
+
+- Constructing an `OutboundParkerResponse` from a
+  `ReasoningProviderResponse.Reply` -- the wiring that would actually
+  call `ResponseDelivery` in response to a real conversation turn --
+  remains unimplemented. Nothing in this repository calls
+  `ResponseDelivery.deliver` from a real caller today.
+- No concrete, model-backed `ReasoningProvider` implementation exists --
+  only the contract and test-only fakes, unchanged from this gap's prior
+  text.
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented -- nothing routes a `Goal` onward to Planner Runtime,
+  unchanged from this gap's prior text.
+- No production composition root exists to register the Local Text
+  Channel module, its deliver Tool, or the `NOTIFY` vocabulary entry at
+  real startup -- this Unit's own registration is test-level only, per
+  its own Implementation Plan's explicit scope.
+
 **This gap remains Open.**
