@@ -1548,3 +1548,49 @@ document to write, ahead of either (a) or (b). This is a recommendation
 only, not a decision: it does not close this gap, and neither
 `COMMUNICATION_CHANNEL_ARCHITECTURE.md` nor `COMMUNICATION_CONTRACT_DESIGN.md`
 was modified to record it.
+
+**Update (Sprint 7, Conversation Engine Inbound Continuity + Reasoning
+Provider Contract Implementation): a real, load-bearing portion of path
+(b) is now implemented -- this gap remains open, not closed.** At the
+time this gap was written, path (b) was assessed as "not close to
+implementable" because "`docs/architecture/19-conversation-engine.md` is
+currently a three-line stub with no responsibilities, ownership, trust
+boundary, lifecycle, invariants, or security model." That premise no
+longer holds: `19-conversation-engine.md` has since received full Stage 1
+Architecture (reviewed, accepted), `CONVERSATION_ENGINE_CONTRACT_DESIGN.md`
+and `REASONING_PROVIDER_ARCHITECTURE.md`/`REASONING_PROVIDER_CONTRACT_DESIGN.md`
+have since been designed and accepted, and a first Stage 3 implementation
+now exists: `ConversationEngine`/`InMemoryConversationEngine`
+(`src/interfaces/ConversationEngine.kt`, `src/runtime/InMemoryConversationEngine.kt`),
+`ReasoningProvider` and its contract types
+(`src/interfaces/ReasoningProvider.kt`), and
+`ConversationTurnReasoningCoordinator`
+(`src/runtime/ConversationTurnReasoningCoordinator.kt`), which sequences
+`ConversationEngine.submitTurn` into `ReasoningProvider.reason`. Verified
+passing in Android Studio, 506/506.
+
+**What this closes.** The concrete Kotlin mechanism by which an already
+`InboundOwnerMessage`-shaped Turn is bound to a Conversation and handed to
+a Reasoning Provider for interpretation now exists and is tested, where
+none existed before.
+
+**What this does not close -- this gap remains fully open.** (1) Nothing
+in this repository wires `CommunicationIntake`'s own accepted-message
+surface (`acceptedMessages()`/`acceptedMessageFor`) into
+`ConversationEngine.submitTurn` -- no production caller connects the two
+yet. (2) No concrete, model-backed `ReasoningProvider` implementation
+exists -- only the contract and a test-only `FakeReasoningProvider`; this
+Unit's own Scope Lock explicitly stopped after obtaining a
+`ReasoningProviderResponse`. (3) `ReasoningContext` assembly ownership
+remains unassigned, exactly as `REASONING_PROVIDER_CONTRACT_DESIGN.md`
+Section 9 already disclosed. (4) No `PlannerRuntime` integration, no
+`PlanningRequest` construction from a `Goal`, no `OutboundParkerResponse`
+construction from a `Reply`, and no Response Delivery exist anywhere --
+path (a)'s `ExecutionRequest` content-carrying gap is entirely untouched
+and unrelated to this Unit. **Recommended closure (unchanged in kind, a
+future unit's decision):** the next steps toward closing this gap are
+(i) a Contract Design pass connecting `CommunicationIntake`'s accepted
+messages to `ConversationEngine.submitTurn`, and (ii) a separately-scoped
+unit resolving path (a) or extending this Unit's downstream half
+(`Goal`/`Reply` consumption), neither of which this Unit was authorised
+to do.

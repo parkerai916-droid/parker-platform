@@ -743,6 +743,35 @@ Implementation Notes
 
 ---
 
+### Sprint 7 -- Conversation Engine Inbound Continuity + Reasoning Provider Contract Implementation (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-08
+
+Android Studio Tests:
+Android Studio verified: **506/506 passing** (Human authority, PES-001), confirmed by Steven. Prior confirmed total (Sprint 7, Agent Run Reference Exposure) was 484/484. This Unit adds `tests/runtime/InMemoryConversationEngineTest.kt` (8 tests), `tests/runtime/ConversationTurnReasoningCoordinatorTest.kt` (5 tests), and `tests/contracts/ReasoningProviderContractTest.kt` (9 tests) -- `tests/runtime/FakeReasoningProvider.kt` is a fixture, no tests of its own -- a net addition of +22, reconciling exactly with the confirmed 506/506 total above. This total has been run and confirmed in Android Studio; it is no longer a static projection.
+
+Summary
+- Implemented exactly the Stage 3 Scope-Locked unit `docs/implementation/CONVERSATION_ENGINE_IMPLEMENTATION_PLAN.md` authorises, combining the previously-approved `CONVERSATION_ENGINE_CONTRACT_DESIGN.md` and `REASONING_PROVIDER_CONTRACT_DESIGN.md` into one first implementation: `ConversationEngine` inbound continuity binding, the `ReasoningProvider` contract types, and a standalone coordinator sequencing the two.
+- Added `src/interfaces/ConversationEngine.kt`: `ConversationId`, `TurnId`, `Conversation`, `Turn`, `ConversationDisposition`, and the `ConversationEngine` interface (`submitTurn(message: InboundOwnerMessage): ConversationDisposition`).
+- Added `src/interfaces/ReasoningProvider.kt`: `ReasoningContext`, `ReasoningProviderRequest`, `ReasoningProviderResponse` (sealed: `Goal`/`Reply`/`NoAction`, no `Failed` variant), and the `ReasoningProvider` interface (`reason(request: ReasoningProviderRequest): ReasoningProviderResponse`).
+- Added `src/runtime/InMemoryConversationEngine.kt`, the first `ConversationEngine` implementation. Per Required Implementation Decision 1, every inbound Turn begins a new Conversation -- `ConversationDisposition.isNewConversation` is always `true` in this first unit, and the class is accordingly stateless (no stored Conversation map, no `Mutex`). Per Required Implementation Decision 3, `submitTurn` resolves its own operating identity, `system.conversation-engine`, through the injected `IdentityService` before acting, and fails fast (throws `IllegalStateException`) if that identity is not registered; the message's own `senderPrincipalId` is never substituted for it. The engine's only dependency is `IdentityService`.
+- Added `src/runtime/ConversationTurnReasoningCoordinator.kt`. Per Required Implementation Decision 2, this is a plain, concrete class -- deliberately not interface-backed, since it introduces no new public contract type and is ordinary Stage 3 wiring between two already-approved contracts, not a new architectural boundary. Its constructor accepts only `ConversationEngine` and `ReasoningProvider`; `submitTurnAndReason` calls `conversationEngine.submitTurn`, builds a `ReasoningProviderRequest` from the resulting `Turn` and the caller-supplied `ReasoningContext`, calls `reasoningProvider.reason`, and returns the result unchanged -- the unit's explicit stop condition.
+- Added `tests/runtime/FakeReasoningProvider.kt` (a lambda-based fake mirroring `FakeCommunicationIntake`/`FakePermissionEngine`'s established precedent), `tests/runtime/InMemoryConversationEngineTest.kt`, `tests/runtime/ConversationTurnReasoningCoordinatorTest.kt`, and `tests/contracts/ReasoningProviderContractTest.kt`, implementing the Implementation Plan's Section 6 Testing Strategy in full, including the three explicitly required Principal tests (a registered `system.conversation-engine` resolves and `submitTurn` proceeds; a missing/unregistered operating Principal fails fast; the message sender's Principal is never substituted for the operating Principal) and a structural test proving the coordinator's constructor has no slot for `PlannerRuntime`, `ExecutionPipeline`, `MemoryStore`, or `WorldModel`.
+
+Implementation Notes
+- Per the Scope Lock's explicit boundary, this Unit implements the inbound half only and stops after obtaining a `ReasoningProviderResponse`. No `PlannerRuntime` integration, no `PlanningRequest` construction, no Response Delivery, no `OutboundParkerResponse` construction, no Memory writes, no World Model writes, no `ExecutionPipeline` calls, and no Tool invocation exist anywhere in this Unit's code. No persistence was introduced -- `InMemoryConversationEngine` holds no stored Conversation/Turn state, consistent with Required Implementation Decision 1 making such storage unnecessary for this first unit.
+- No concrete `ReasoningProvider` implementation (model-backed or otherwise) was added -- only the contract and a test-only `FakeReasoningProvider`. `ReasoningContext` assembly ownership remains unassigned, exactly as `REASONING_PROVIDER_CONTRACT_DESIGN.md` Section 9 already disclosed.
+- Nothing in this Unit wires `CommunicationIntake`'s own accepted-message surface (`acceptedMessages()`/`acceptedMessageFor`) into `ConversationEngine.submitTurn` -- no production code in this repository calls `submitTurn` yet. See this Unit's `IMPLEMENTATION_GAPS.md` #53 update below for what this does, and does not, close.
+- A test-fixture defect was found and corrected during Android Studio verification, not a production defect: `tests/runtime/InMemoryConversationEngineTest.kt`'s `conversationEnginePrincipal()` helper initially registered `system.conversation-engine` with `PrincipalStatus.ACTIVE`, but `InMemoryIdentityService.register` requires `PrincipalStatus.CREATED` on every newly registered Principal (matching the established `InMemoryPlannerRuntimeTest.identityServiceWithPlannerRegistered()` precedent, which registers `system.planner-runtime` the same way). This caused all six tests that registered that fixture to fail with `"A newly registered Principal must have status CREATED, was ACTIVE"`. The fixture was corrected to `PrincipalStatus.CREATED`; no production code (`InMemoryIdentityService.kt`, `InMemoryConversationEngine.kt`, or any other `src/` file) was modified to address this.
+- No architecture, contract design, or implementation plan document was modified. `19-conversation-engine.md`, `CONVERSATION_ENGINE_CONTRACT_DESIGN.md`, `REASONING_PROVIDER_ARCHITECTURE.md`, `REASONING_PROVIDER_CONTRACT_DESIGN.md`, and `CONVERSATION_ENGINE_IMPLEMENTATION_PLAN.md` all remain exactly as previously accepted/Scope-Locked.
+- No other implementation gap, Communication Runtime, Local Text Channel, Task Manager Runtime, Planner Runtime, Memory Runtime, or World Model file was touched.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
