@@ -130,7 +130,7 @@ differently here:
 | A raw-input seam (e.g. a `TextInputSource`-shaped policy interface, mirroring `AgentStepSource`/`PlanDecision`) | **Exclude.** No approved architecture document names or shapes a raw-input seam for this channel; inventing one now would exceed this Unit's own "do not implement CLI terminal behaviour" boundary (see Section 10, Deferred Items). |
 | A concrete `CorrelationId` minting algorithm | **Exclude from this document.** `COMMUNICATION_CONTRACT_DESIGN.md` Section 4 already declines to mandate one; this document settles *who* mints it and *when* (Section 5, below) but leaves the concrete algorithm to Stage 4 Implementation Decisions, mirroring the parent document's own explicit non-mandate. |
 | A concrete Principal-resolution / login mechanism | **Exclude.** Not named or shaped anywhere in the six authoritative sources. **Deferred** (Section 6, Section 10). |
-| A "deliver" `ToolDescriptor` registered now, for future outbound use | **Exclude.** `COMMUNICATION_CONTRACT_DESIGN.md` Section 7's own disclosed tension (no `ExecutionRequest` payload field) blocks a real deliver Tool from being meaningfully implemented today; registering a non-functional placeholder would misrepresent this module's actual, current capability. Deferred entirely to whichever future unit resolves gap #53. |
+| A "deliver" `ToolDescriptor` registered now, for real outbound use | **Include, as of this revision.** `COMMUNICATION_CONTRACT_DESIGN.md` Section 7's own disclosed tension (no `ExecutionRequest` payload field) — the reason this document originally excluded the Tool — is resolved by `ADR-025_RESPONSE_DELIVERY_CONTENT_CARRIER.md` (`ExecutionRequest.metadata` carries response text). `RESPONSE_DELIVERY_CONTRACT_DESIGN.md` Section 4 has since specified the Tool's exact shape, and `ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md` has settled the `Resource.ownerPrincipalId` convention `ResponseDelivery`'s own Resource-location mechanism depends on to reach it. Registering it no longer risks misrepresenting this module's capability — `ResponseDelivery` (implemented, Sprint 7 Unit C4, verified 532/532 tests) is a real, already-tested consumer waiting for exactly this Tool to exist. |
 | A `communication.*` `EventBus` observability event for this channel | **Exclude.** `COMMUNICATION_CHANNEL_ARCHITECTURE.md` Section 3's own parenthetical already frames this as optional and additive; no concrete need is identified here, and this document does not decide it. |
 | A self-registration helper method on `LocalTextChannel` | **Exclude.** Registration already has a single, existing surface (`ModuleRegistry.register`, `MODULE_CONTRACT_DESIGN.md` Section 5); adding a second, channel-specific registration path would duplicate it, not simplify it (Section 4, below). |
 
@@ -252,15 +252,38 @@ own `ModuleDescriptor`, each traceable to a named authoritative source:
   value is an implementation-time choice (`MODULE_CONTRACT_DESIGN.md`
   Section 1: a `ModuleId` is declared, never minted by Parker), not an
   architectural constraint this document fixes.
-- **`toolsExposed`** — **empty**, for this Unit. No "deliver" Tool is
-  registered yet (see the Minimalism Review above and Section 10,
-  Deferred Items) — registering a Tool that cannot yet be meaningfully
-  invoked, given `COMMUNICATION_CONTRACT_DESIGN.md` Section 7's own
-  disclosed `ExecutionRequest` content-carrying gap, would misrepresent
-  this module's actual capability.
-- **`requiredPermissions`** — **empty**, for this Unit. With no exposed
-  Tool, there is nothing for this channel to declare a
-  `ModulePermissionRequirement` against yet.
+- **`toolsExposed`** — **one element: the "deliver" `ToolDescriptor`**
+  specified by `RESPONSE_DELIVERY_CONTRACT_DESIGN.md` Section 4, now
+  registrable because `ADR-025_RESPONSE_DELIVERY_CONTENT_CARRIER.md`
+  resolved the `ExecutionRequest` content-carrying tension that
+  previously excluded it (see the Minimalism Review above, revised), and
+  `ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md` settled the
+  `Resource.ownerPrincipalId` convention `ResponseDelivery`'s own
+  Resource-location mechanism depends on to reach this Tool at all. This
+  document invents no new Tool shape — it reuses, unchanged, the shape
+  `RESPONSE_DELIVERY_CONTRACT_DESIGN.md` Section 4 already specifies:
+  `supportedActions` including whichever `PermissionAction` the eventual
+  `proposedActions` string maps to (`PermissionAction.NOTIFY` being the
+  natural candidate that document names, not a mandate);
+  `supportedResourceTypes` including `ResourceType.TOOL`, matching its own
+  backing Resource's type; and a `Tool.execute(request: ExecutionRequest)`
+  implementation responsible for reading the response text out of
+  `request.metadata` and performing the channel-specific act of showing
+  it to the owner. The exact metadata key, package name, class name, and
+  `moduleId`/`toolId` string values remain Stage 4 Implementation
+  Decisions and Stage 3 Implementation Plan territory, not settled by
+  this document (Section 10, below).
+- **`requiredPermissions`** — **still empty; not decided by this
+  revision.** The prior reasoning ("with no exposed Tool, there is
+  nothing... to declare against yet") no longer holds now that
+  `toolsExposed` is non-empty, but none of `RESPONSE_DELIVERY_CONTRACT_DESIGN.md`,
+  `ADR-025`, or `ADR-026` specifies what, if any,
+  `ModulePermissionRequirement` this channel's own module should declare
+  for its new Tool. Inventing one here would exceed this revision's own
+  scope (reusing an already-approved Tool shape, not designing a new
+  one). This is named as a small, genuinely open question this revision
+  does not resolve, rather than left silently inconsistent with the field
+  above it.
 - **`connectivityDeclaration`** — **`LOCAL_ONLY`**, per
   `COMMUNICATION_CHANNEL_ARCHITECTURE.md` Section 6's own "almost
   certainly `LOCAL_ONLY` for the first implementation target."
@@ -436,10 +459,17 @@ instruction to mark undecidable items Deferred rather than invent them:
    — the requirement (non-blank, minted once, at receipt) is settled; the
    algorithm is not, mirroring `COMMUNICATION_CONTRACT_DESIGN.md` Section
    4's own explicit non-mandate.
-4. **Outbound response delivery** — this channel's own "deliver" Tool,
-   and any construction or delivery of an `OutboundParkerResponse`.
-   Remains blocked on `ExecutionRequest`'s content-carrying gap
-   (`IMPLEMENTATION_GAPS.md` #53) and is not addressed by this document.
+4. **Constructing or delivering an `OutboundParkerResponse`.** This
+   document's `toolsExposed` revision (Section 4) registers the channel's
+   "deliver" Tool *descriptor* only. It does not implement
+   `Tool.execute`, does not construct or call `ResponseDelivery`, and
+   does not decide what upstream component builds an
+   `OutboundParkerResponse` from a `ReasoningProviderResponse.Reply` —
+   that remains a future, separately-scoped coordinator's job
+   (`RESPONSE_DELIVERY_CONTRACT_DESIGN.md` Section 8, Deferred Item 3),
+   unaffected by this revision. The `ExecutionRequest` content-carrying
+   gap this item previously cited as blocking registration itself is
+   resolved (`ADR-025`) and no longer applies to that narrower question.
 5. **Any Cognition or interpretation behaviour** for an accepted
    `InboundOwnerMessage` — remains Cognition's own, not-yet-scoped
    responsibility, unchanged from `COMMUNICATION_CONTRACT_DESIGN.md`
@@ -475,7 +505,8 @@ instruction to mark undecidable items Deferred rather than invent them:
 | `CommunicationIntake` as the sole downstream collaborator (Section 1) | `COMMUNICATION_CONTRACT_DESIGN.md` Section 6, Section 9 |
 | No new validation rule; reuse of existing constructor validation (Section 3) | `COMMUNICATION_CONTRACT_DESIGN.md` Section 2, Section 4 |
 | Registration via unmodified `ModuleRegistry.register`/`ModuleDescriptor` (Section 4) | `MODULE_CONTRACT_DESIGN.md` Sections 2, 5 |
-| `toolsExposed = emptyList()`, `requiredPermissions = emptyList()` for this Unit (Section 4) | `COMMUNICATION_CONTRACT_DESIGN.md` Section 7 (disclosed tension); `IMPLEMENTATION_GAPS.md` #53 |
+| `toolsExposed` = one "deliver" `ToolDescriptor` (Section 4, revised) | `RESPONSE_DELIVERY_CONTRACT_DESIGN.md` Section 4 (Tool shape: `supportedActions`, `supportedResourceTypes`, `Tool.execute` reading `request.metadata`); `ADR-025_RESPONSE_DELIVERY_CONTENT_CARRIER.md` (resolves the content-carrying tension that previously excluded it); `ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md` (settles the Resource-location convention `ResponseDelivery` depends on to reach it) |
+| `requiredPermissions = emptyList()`, not decided by this revision (Section 4) | Not specified by `RESPONSE_DELIVERY_CONTRACT_DESIGN.md`, `ADR-025`, or `ADR-026`; named as a genuinely open question, not invented here |
 | `connectivityDeclaration = LOCAL_ONLY` (Section 4) | `COMMUNICATION_CHANNEL_ARCHITECTURE.md` Section 6 |
 | Lifecycle via unmodified `ModuleLifecycleTransitions`; no self-enable (Section 4, Section 9) | `MODULE_CONTRACT_DESIGN.md` Section 4; `MODULE_FRAMEWORK_ARCHITECTURE.md` Section 4, Section 7 |
 | `CorrelationId` minted by the channel, once, at receipt (Section 5) | `COMMUNICATION_CONTRACT_DESIGN.md` Section 4 |
