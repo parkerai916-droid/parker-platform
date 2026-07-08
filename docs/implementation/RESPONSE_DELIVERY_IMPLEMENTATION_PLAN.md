@@ -303,10 +303,17 @@ examples exactly, changing nothing:
   or guessing the string. `metadata = mapOf(RESPONSE_TEXT_METADATA_KEY to response.text)`
   — exactly one entry, nothing else, per Contract Design Section 3's own
   "exactly one metadata entry."
-- **`priority`, `sessionId`, `riskEstimate`, `expiresAt`**: left at
-  `ExecutionRequest`'s own existing defaults, per Contract Design Section
-  1's own explicit instruction ("this document identifies no requirement
-  to set any of them").
+- **`priority`, `sessionId`, `riskEstimate`, `expiresAt`**: not uniformly
+  defaulted — distinguished explicitly, not treated as one group:
+  - **`priority`** is specified by Decision 3, below —
+    `RequestPriority.NORMAL` — since this field has no default value in
+    `ExecutionRequest`'s own constructor and must be supplied explicitly.
+  - **`sessionId`** uses `ExecutionRequest`'s own existing default
+    (`null`).
+  - **`riskEstimate`** uses `ExecutionRequest`'s own existing default
+    (`null`).
+  - **`expiresAt`** uses `ExecutionRequest`'s own existing default
+    (`null`).
 
 ### Decision 2 — Distinguishing the two `NotAccepted` reasons
 
@@ -321,6 +328,34 @@ is `String`, consumed only for logging/display per every existing
 precedent use), so this is a presentation-only choice with no structural
 consequence — named explicitly so it is not improvised inconsistently
 during implementation.
+
+### Decision 3 — `ExecutionRequest.priority`
+
+**`ExecutionRequest.priority = RequestPriority.NORMAL`.** A genuine
+implementation omission, identified during Scope Lock implementation, not
+present in this Plan's original text: `src/contracts/ExecutionRequest.kt`'s
+`priority: RequestPriority` field has no default value — unlike
+`sessionId`, `riskEstimate`, and `expiresAt` (Decision 1, above), which do
+default to `null`, `priority` must be supplied explicitly at every
+construction site. `RequestPriority.NORMAL` is chosen because Response
+Delivery represents ordinary execution of an already-authorised request —
+it is neither deferred maintenance nor an exceptional, immediate system
+operation. No other `RequestPriority` value (`IMMEDIATE`, `HIGH`,
+`BACKGROUND`, `DEFERRED`, `MAINTENANCE`) fits what this component does.
+
+### Decision 4 — `ExecutionRequest.requestId`
+
+**`ExecutionRequest.requestId = RequestId("deliver-response-${response.correlationId.value}")`.**
+A second genuine implementation omission, identified during Scope Lock
+implementation: neither `RESPONSE_DELIVERY_CONTRACT_DESIGN.md` nor this
+Plan's original text named a minting strategy for this required,
+non-defaulted field. This deterministic identifier, derived from
+`response.correlationId.value` (already unique per response,
+`COMMUNICATION_CONTRACT_DESIGN.md` Section 3), is consistent with this
+codebase's existing convention of deriving `RequestId`s from contextual
+identifiers already at hand rather than introducing unnecessary
+randomness — precedent: `src/runtime/InMemoryAgentRuntime.kt`'s
+`RequestId("exec-for-${run.agentRunId.value}-step-$stepNumber")`.
 
 ## 6. Testing Strategy
 
