@@ -772,6 +772,35 @@ Implementation Notes
 
 ---
 
+### Sprint 7, Unit C2 -- Communication-to-Conversation Wiring (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-08
+
+Android Studio Tests:
+Android Studio verified: **519/519 passing** (Human authority, PES-001), confirmed by Steven. Prior confirmed total (Sprint 7, Conversation Engine Inbound Continuity + Reasoning Provider Contract Implementation) was 506/506. This Unit adds `tests/runtime/CommunicationConversationCoordinatorTest.kt` (13 tests) and no other test file, a net addition of +13, reconciling exactly with the confirmed 519/519 total above. This total has been run and confirmed in Android Studio; it is no longer a static projection.
+
+Summary
+- Implemented exactly the Stage 3 Scope-Locked unit `docs/implementation/COMMUNICATION_TO_CONVERSATION_WIRING_IMPLEMENTATION_PLAN.md` authorises: the smallest coordinator connecting the already-implemented Communication Runtime (`CommunicationIntake`, Sprint 7 Unit C1) to the already-implemented Conversation Engine + Reasoning Provider unit (`ConversationTurnReasoningCoordinator`), reusing both sides whole and unchanged.
+- Added `src/runtime/GatedOutcome.kt`: `GatedOutcome<T>`, a small, generic upstream-admission-gate wrapper (`Produced<T>`/`NotAccepted`), not specific to Communication -- models "admit, producing one value, or reject with a reason" in general. Introduced only after checking, and rejecting, four alternatives (throwing; a nullable response; reusing `CommunicationIntakeDisposition` unmodified; `kotlin.Result`), each of which either dropped the rejection reason or broke an established codebase precedent (Plan Section 5, Decision 1).
+- Added `src/runtime/CommunicationConversationCoordinator.kt`: a non-interface-backed class (mirroring `ConversationTurnReasoningCoordinator`'s own precedent), constructor-injected with exactly `CommunicationIntake` and `ConversationTurnReasoningCoordinator`. Its one method, `submitAndReason`, calls `CommunicationIntake.submitInboundMessage` first; on `Rejected`, it stops immediately and returns `GatedOutcome.NotAccepted` carrying the rejection reason unchanged, never reaching `ConversationEngine` or `ReasoningProvider`; on `Accepted`, it delegates to `ConversationTurnReasoningCoordinator.submitTurnAndReason` unchanged and returns the resulting `ReasoningProviderResponse` wrapped in `GatedOutcome.Produced`. An accepted `InboundOwnerMessage` now reaches a real `ReasoningProvider` invocation through one tested, production code path -- where previously nothing in this repository called that sequence at all.
+- Added `tests/runtime/CommunicationConversationCoordinatorTest.kt` (13 tests): the accepted path for all three `ReasoningProviderResponse` variants (`Goal`/`Reply`/`NoAction`), the rejected path (with a structural proof that `ReasoningProvider.reason` is never called), the message pass-through invariant (proved via a deliberately-mismatched accepted message, confirming the coordinator threads `disposition.message`, not its own input parameter, downstream), exactly-once call-count assertions, exception propagation from each dependency (with no `try`/`catch` anywhere in the coordinator), the structural constructor test (no dependency slot beyond the two named types), a reflective statelessness test (no field beyond the two constructor-injected dependencies), an independent-invocations non-interference test, and two `GatedOutcome` construction tests.
+
+Implementation Notes
+- **The coordinator is stateless.** It declares no field beyond its two constructor-injected dependencies -- no `var`, no mutable collection, no cache, no `Mutex` -- verified by a reflective test, not only asserted in KDoc.
+- **The coordinator never mutates or reinterprets an accepted `InboundOwnerMessage`.** It sequences only: no `InboundOwnerMessage` is constructed, copied, or read for branching purposes anywhere in this Unit's code.
+- **No retries, no batching, no exception translation.** `CommunicationIntake.submitInboundMessage` is called exactly once and, on acceptance, `ReasoningProvider.reason` (via `ConversationTurnReasoningCoordinator`) is called exactly once -- unconditionally, regardless of which `ReasoningProviderResponse` variant results. An exception thrown by either dependency propagates to the coordinator's own caller unchanged; it is never caught, translated, retried, or converted into a `GatedOutcome.NotAccepted`.
+- **No `PlannerRuntime`, `TaskManagerRuntime`, `AgentRuntime`, `ExecutionPipeline`, Response Delivery, `OutboundParkerResponse` construction, Memory writes, World Model writes, `EventBus` publication, Android, Speech, UI, persistence, or model-backed `ReasoningProvider` implementation exist anywhere in this Unit's code.** Enforced structurally: the coordinator's constructor has no slot for any of the first four, and the dependency list is exhausted by exactly `CommunicationIntake` and `ConversationTurnReasoningCoordinator`, both of which are themselves already structurally proven to lack any such slot.
+- No existing `src/` or `tests/` file was modified. `CommunicationIntake`, `InMemoryCommunicationIntake`, `ConversationEngine`, `InMemoryConversationEngine`, `ReasoningProvider`, `ConversationTurnReasoningCoordinator`, `FakeCommunicationIntake`, and `FakeReasoningProvider` are all consumed exactly as they existed before this Unit.
+- No architecture, contract design, or implementation plan document was modified. `COMMUNICATION_CONTRACT_DESIGN.md`, `CONVERSATION_ENGINE_CONTRACT_DESIGN.md`, `REASONING_PROVIDER_ARCHITECTURE.md`, `REASONING_PROVIDER_CONTRACT_DESIGN.md`, `19-conversation-engine.md`, and `COMMUNICATION_TO_CONVERSATION_WIRING_IMPLEMENTATION_PLAN.md` all remain exactly as previously accepted/Scope-Locked.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was clarified further, not closed -- see that entry's own updated text. This Unit implements the wiring between an accepted `InboundOwnerMessage` and a `ReasoningProviderResponse` in full, but performs no routing of that response anywhere: `ReasoningContext` assembly, a concrete model-backed `ReasoningProvider`, and the downstream Planner Runtime/Response Delivery path all remain unimplemented, and gap #53's own two closure paths both remain fully open.
+- No other implementation gap, Local Text Channel, Task Manager Runtime, Planner Runtime, Memory Runtime, or World Model file was touched.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

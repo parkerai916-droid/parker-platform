@@ -1594,3 +1594,39 @@ messages to `ConversationEngine.submitTurn`, and (ii) a separately-scoped
 unit resolving path (a) or extending this Unit's downstream half
 (`Goal`/`Reply` consumption), neither of which this Unit was authorised
 to do.
+
+**Update (Sprint 7, Unit C2 -- Communication-to-Conversation Wiring):
+recommended closure path (i), above, is now implemented and verified.
+This gap remains Open -- not closed, not resolved.**
+`CommunicationConversationCoordinator` (`src/runtime/CommunicationConversationCoordinator.kt`)
+now connects `CommunicationIntake`'s accepted messages to
+`ConversationEngine.submitTurn` (via the existing
+`ConversationTurnReasoningCoordinator`, reused unchanged), through one
+real, tested, production code path -- verified passing in Android
+Studio, 519/519. Concretely:
+
+- An accepted `InboundOwnerMessage` now reaches a real `ReasoningProvider`
+  invocation through a tested execution path, where previously nothing
+  in this repository called that sequence at all.
+- A rejected `InboundOwnerMessage` never reaches `ConversationEngine` or
+  `ReasoningProvider` -- verified structurally, not merely by inspection.
+- The Conversation Engine and Reasoning Provider contracts (both accepted
+  earlier this Sprint) now have a working inbound implementation, not
+  only an approved shape.
+
+**What remains open, preventing closure, is unchanged in kind from this
+gap's own prior text and is restated here explicitly:**
+
+- No concrete, model-backed `ReasoningProvider` implementation exists --
+  only the contract and test-only fakes.
+- `ReasoningContext` assembly ownership remains unassigned (`REASONING_PROVIDER_CONTRACT_DESIGN.md`
+  Section 9's own disclosed open item).
+- The downstream Planner Runtime / Response Delivery path does not
+  exist: nothing routes a `Goal` onward to Planner Runtime, and nothing
+  routes a `Reply` onward to Response Delivery -- the coordinator's own
+  return value is this Unit's explicit stop condition.
+- Path (a), `ExecutionRequest`'s lack of a dedicated payload/content
+  field, is entirely untouched by this Unit, exactly as already recorded
+  above.
+
+**This gap remains Open.**
