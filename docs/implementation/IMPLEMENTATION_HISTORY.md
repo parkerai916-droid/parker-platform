@@ -801,6 +801,40 @@ Implementation Notes
 
 ---
 
+### Sprint 7, Unit C4 -- Response Delivery (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-08
+
+Android Studio Tests:
+Android Studio verified: **532/532 passing** (Human authority, PES-001), confirmed by Steven. Prior confirmed total (Sprint 7, Unit C2 -- Communication-to-Conversation Wiring) was 519/519. This Unit adds `tests/runtime/ResponseDeliveryTest.kt` (13 tests) -- `tests/runtime/FakeResourceRegistry.kt` and `tests/runtime/FakeExecutionPipeline.kt` are fixtures, no tests of their own -- a net addition of +13, reconciling exactly with the confirmed 532/532 total above. This total has been run and confirmed in Android Studio; it is no longer a static projection.
+
+Summary
+- Implemented exactly the Stage 3 Scope-Locked unit `docs/implementation/RESPONSE_DELIVERY_IMPLEMENTATION_PLAN.md` authorises, built on `docs/architecture/RESPONSE_DELIVERY_CONTRACT_DESIGN.md` (Accepted, Stage 2A), `docs/architecture/ADR-025_RESPONSE_DELIVERY_CONTENT_CARRIER.md`, and `docs/architecture/ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md`.
+- Added `src/runtime/ResponseDelivery.kt`: a concrete, non-interface-backed class, constructor-injected with exactly `ResourceRegistry` and `ExecutionPipeline`. Its one method, `deliver(response: OutboundParkerResponse)`, locates the response's channel's own backing Resource via `ResourceRegistry.listByOwner(PrincipalId(response.channelId.value))`, filtered to `ResourceType.TOOL` (Contract Design Decision 2; formalised as approved architecture by `ADR-026`). Zero matches or more than one match returns `GatedOutcome.NotAccepted(reason)`, with `reason` distinguishing the two cases -- no `ExecutionRequest` is constructed in either case. Exactly one match constructs one `ExecutionRequest` and submits it through the injected `ExecutionPipeline`, returning the resulting `ExecutionResult` wrapped, unchanged, in `GatedOutcome.Produced`.
+- The constructed `ExecutionRequest` uses: `principalId = response.senderPrincipalId`; `origin = RequestOrigin.TEXT`; `intent = "deliver response"`; `targetResources = listOf(<the matching Resource's ResourceId>)`; `proposedActions = listOf("notify owner")`; `priority = RequestPriority.NORMAL` (Plan Section 5, Decision 3); `requestId = RequestId("deliver-response-${response.correlationId.value}")` (Plan Section 5, Decision 4); `correlationId = response.correlationId.value`; `metadata = mapOf(RESPONSE_TEXT_METADATA_KEY to response.text)`, where `RESPONSE_TEXT_METADATA_KEY = "response.text"` is a top-level constant in `src/runtime/ResponseDelivery.kt` (Plan Section 5, Decision 1). `response.metadata` is not forwarded, per Contract Design Section 3.
+- The `"notify owner"` proposed action and its `ActionVocabularyEntry` (`verbPhrase = "notify owner"`, `mappings = setOf(ActionResourceMapping(PermissionAction.NOTIFY, ResourceType.TOOL))`) are fixed by `docs/implementation/RESPONSE_DELIVERY_NOTIFY_VOCABULARY_DECISION.md`; the entry is registered inside this Unit's own end-to-end test only, since no composition root exists in this repository to register it at production startup.
+- Added `tests/runtime/FakeResourceRegistry.kt` and `tests/runtime/FakeExecutionPipeline.kt` (lambda-based fakes mirroring `FakeCommunicationIntake`/`FakePermissionEngine`'s established precedent; each throws if a method `ResponseDelivery` does not call is reached). Added `tests/runtime/ResponseDeliveryTest.kt` (13 tests): the zero-match and many-match paths (each proving `ExecutionPipeline.submit` is never called), non-TOOL Resources being ignored in both directions, the exactly-one-match path, full field-by-field `ExecutionRequest` construction correctness (including `priority` and `requestId`), the `ExecutionResult` pass-through, exception propagation from each dependency with no `try`/`catch` anywhere in `ResponseDelivery`, the structural constructor test (no dependency slot beyond `ResourceRegistry`/`ExecutionPipeline`), a reflective statelessness test (no field beyond the two constructor-injected dependencies), an independent-invocations non-interference test, and one end-to-end test wiring the real `InMemoryResourceRegistry` and `DefaultExecutionPipeline` together with the registered `NOTIFY` vocabulary entry, asserting `ExecutionResultStatus.SUCCESS`.
+
+Implementation Notes
+- **`ResponseDelivery` is stateless.** It declares no field beyond its two constructor-injected dependencies -- no `var`, no mutable collection, no cache -- verified by a reflective test, not only asserted in KDoc.
+- **No retry, batching, queueing, or streaming.** Exactly one `ExecutionRequest` is submitted per call, to exactly one channel, unconditionally.
+- **No persistence.** `ResponseDelivery` holds no state between calls; nothing it produces is written to disk, a database, or any durable store.
+- **No new `EventBus` publication.** `DefaultExecutionPipeline`'s existing `execution.*` lifecycle events already cover the `ExecutionRequest` this Unit constructs; this Unit adds no publication of its own.
+- **No Planner integration, Goal routing, `PlanCandidate` generation, or Workflow Runtime** exist anywhere in this Unit's code.
+- **No Memory writes, World Model writes, Android, UI, or Speech** dependency was introduced.
+- **No production Local Text Channel "deliver" Tool was registered.** This Unit's end-to-end test registers a minimal test `Tool`/`ToolDescriptor` for its own isolated verification only -- `LOCAL_TEXT_CHANNEL_CONTRACT_DESIGN.md`'s own `toolsExposed` list is unmodified, and this remains a separate, not-yet-performed unit.
+- **No composition root was added.** Production registration of the `NOTIFY` vocabulary entry, at whatever future startup path this platform eventually builds, remains unimplemented and is named explicitly, not silently assumed.
+- No existing `src/` or `tests/` file was modified. `ResourceRegistry`, `InMemoryResourceRegistry`, `ExecutionPipeline`, `DefaultExecutionPipeline`, `ActionVocabulary`, `InMemoryActionVocabulary`, `ActionMapper`, `OutboundParkerResponse`, `ExecutionRequest`, `ExecutionResult`, and `GatedOutcome<T>` are all consumed exactly as they existed before this Unit.
+- No architecture, contract design, ADR, or implementation plan document was modified during implementation. `RESPONSE_DELIVERY_CONTRACT_DESIGN.md`, `ADR-025_RESPONSE_DELIVERY_CONTENT_CARRIER.md`, `ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md`, `RESPONSE_DELIVERY_NOTIFY_VOCABULARY_DECISION.md`, and `RESPONSE_DELIVERY_IMPLEMENTATION_PLAN.md` all remain exactly as previously accepted/Scope-Locked. (`RESPONSE_DELIVERY_IMPLEMENTATION_PLAN.md` itself was amended twice, under its own Scope Lock, before Kotlin began -- see that document's own Section 5, Decisions 3 and 4 -- both amendments predate, and are unchanged by, this Unit's implementation.)
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was clarified further, not closed -- see that entry's own updated text below. This Unit implements Response Delivery in full, on its own, but nothing yet calls it: constructing an `OutboundParkerResponse` from a `Reply`, and the downstream Planner Runtime/Goal-routing path, both remain unimplemented, and the Local Text Channel's own production "deliver" Tool remains unregistered.
+- No other implementation gap, Local Text Channel, Task Manager Runtime, Planner Runtime, Memory Runtime, or World Model file was touched.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

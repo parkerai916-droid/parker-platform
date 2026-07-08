@@ -1475,6 +1475,21 @@ governing architecture document already specifies. This is a tracking
 addition only -- no Kotlin behaviour was changed as a result of writing
 this entry.
 
+**Update (Sprint 7, Unit C4 -- Response Delivery): the first of the
+wiring choices above -- `Resource.ownerPrincipalId = PrincipalId(moduleId.value)`
+-- is now approved architecture, not merely an interpretive choice. This
+does not close this gap.** `docs/architecture/ADR-026_MODULE_RESOURCE_OWNERSHIP_CONVENTION.md`
+(Accepted) formally settles that one item, narrowly: any Resource backing
+a module-exposed Tool must derive its `ownerPrincipalId` this way, and
+`ResourceRegistry.listByOwner(PrincipalId(moduleId.value))` may be relied
+upon accordingly (`ResponseDelivery`, `src/runtime/ResponseDelivery.kt`,
+is the first real consumer). ADR-026 does not decide, and this remains
+exactly as open as before, whether or when a module is registered as a
+verified `IdentityService` Principal, and it does not touch the other
+three items in this section (the `ResourceSensitivity.PUBLIC` default,
+multi-Tool registration non-atomicity, or stale locally-tracked
+`ToolLifecycleState`) -- all three remain open.
+
 ---
 
 ## Communication Runtime (Sprint 7, Unit C1) -- findings
@@ -1628,5 +1643,43 @@ gap's own prior text and is restated here explicitly:**
 - Path (a), `ExecutionRequest`'s lack of a dedicated payload/content
   field, is entirely untouched by this Unit, exactly as already recorded
   above.
+
+**Update (Sprint 7, Unit C4 -- Response Delivery): path (a) is now
+implemented and verified. This gap remains Open -- not closed, not
+resolved.** `ResponseDelivery` (`src/runtime/ResponseDelivery.kt`) now
+exists: given an already-constructed `OutboundParkerResponse`, it locates
+the response's channel's own backing Resource, constructs one
+`ExecutionRequest` carrying the response text in `metadata` (per
+`ADR-025`), and submits it through the existing `ExecutionPipeline` --
+verified passing in Android Studio, 532/532. Concretely:
+
+- Communication -> Conversation -> Reasoning -> Response Delivery now
+  exists, end to end, as implemented, individually-tested components --
+  `CommunicationIntake`, `CommunicationConversationCoordinator`,
+  `ConversationEngine`, `ReasoningProvider`, and now `ResponseDelivery`.
+  No single component wires all of them together yet (see below).
+- `ResourceRegistry.listByOwner(PrincipalId(response.channelId.value))`,
+  filtered to `ResourceType.TOOL`, is a real, tested Resource-location
+  path, formalised as approved architecture by `ADR-026` (see that ADR's
+  own clarification under gap #52, above).
+
+**What remains open, preventing closure, is unchanged in kind from this
+gap's own prior text, restated here explicitly:**
+
+- The Local Text Channel's own production "deliver" `ToolDescriptor` is
+  still not registered -- `LOCAL_TEXT_CHANNEL_CONTRACT_DESIGN.md`'s
+  `toolsExposed` list remains empty. `ResponseDelivery`'s own end-to-end
+  test registers a minimal test Tool for its own isolated verification
+  only, not a production capability.
+- Constructing an `OutboundParkerResponse` from a `ReasoningProviderResponse.Reply`
+  -- the wiring that would actually call `ResponseDelivery` -- remains
+  unimplemented. Nothing in this repository calls `ResponseDelivery.deliver`
+  today.
+- No concrete, model-backed `ReasoningProvider` implementation exists --
+  only the contract and test-only fakes, unchanged from this gap's prior
+  text.
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented -- nothing routes a `Goal` onward to Planner Runtime,
+  exactly as already recorded above.
 
 **This gap remains Open.**
