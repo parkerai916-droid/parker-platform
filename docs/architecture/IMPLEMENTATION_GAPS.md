@@ -849,7 +849,7 @@ implemented and verified.
 
 ### 43. `task.started` and `task.completed` publish without their §10-specified payload fields
 
-**Status: Partially resolved -- `task.completed` closed; `task.started` remains open.**
+**Status: Resolved.**
 
 Found during the Sprint 2 Health Review (`docs/reviews/SPRINT_2_B2_POST_IMPLEMENTATION_REVIEW.md`)
 performed after Track A and Track B were both implemented.
@@ -893,6 +893,33 @@ subsystem's internal ID-minting scheme) or extending Agent Runtime
 own payload -- both explicitly out of this Unit's scope. **The remaining
 work depends on future Agent Runtime support and remains an open gap**,
 not resolved, not closed, and not silently assumed away by this Unit.
+
+**Update (Agent Run Reference Exposure, `docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md`):
+closed in full.** The `task.completed` half was implemented by the
+Task Event Payload Completion unit above (verified 482/482). This update
+closes the remaining `task.started` half: `InMemoryAgentRuntime`'s single
+shared `publish(run, eventType)` helper now exposes `"agentRunId"` on
+every event it publishes -- not `agent.completed` alone, exposed
+uniformly per that plan's own consistency finding.
+`InMemoryTaskManagerRuntime.applyCompletedTransition` reads that value
+off the triggering `agent.completed` event, via the same `agent.completed`
+subscription already established since Unit B1 (`IMPLEMENTATION_GAPS.md`
+#42) -- no new `EventBus.subscribe` call was added. `task.started` now
+carries `"agentRunId"` when the triggering event has one, and
+`emptyMap()` when it does not, matching §10's own "if any" language. No
+`AgentRunId` is reconstructed locally anywhere in this repository --
+the value is always read directly from Agent Runtime's own published
+event, never derived or guessed. `correlationId` behaviour was
+intentionally left unchanged throughout: neither its value nor how it is
+set on any event was touched by this closure. Verified passing in
+Android Studio, 484/484. **The pre-existing `correlationId`-vs-`AgentRunId`
+wording tension** between `AgentRuntimeSpecification.md` Section 9's
+prose ("`correlationId` set to the Agent Run ID") and `AgentRun.kt`'s own
+documented convention (`correlationId` as the shared, cross-subsystem
+value, not literally `AgentRunId.value`) **remains a separate
+documentation/specification matter, outside this gap's own scope** --
+it is not resolved by this closure and is not part of what #43 ever
+required.
 
 ---
 

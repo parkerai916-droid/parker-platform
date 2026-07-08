@@ -197,6 +197,24 @@ import parker.core.interfaces.TaskStatus
  * both explicitly out of this unit's scope. `IMPLEMENTATION_GAPS.md` #43
  * is therefore only partially closed by this change; its `task.started`
  * half remains open, per the plan's own Section 8.
+ *
+ * ## Sprint 7, Agent Run Reference Exposure (closes `IMPLEMENTATION_GAPS.md` #43, in full)
+ *
+ * Per `docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md`:
+ * `InMemoryAgentRuntime.publish` now exposes `"agentRunId"` on every
+ * `agent.*` event it publishes, including `agent.completed`.
+ * [applyCompletedTransition] reads that value off the triggering
+ * `agent.completed` event -- the same event it already receives as its
+ * own handler parameter, subscribed to since Unit B1
+ * (`IMPLEMENTATION_GAPS.md` #42) -- and threads it into `task.started`'s
+ * payload as `"agentRunId"`. No new dependency, no new
+ * `EventBus.subscribe` call, and no reconstruction of `AgentRunId` is
+ * introduced: the value is read directly from the incoming event's own
+ * payload, or the `task.started` payload remains `emptyMap()` if that
+ * event has no `agentRunId` entry (mirroring §10's own "if any"
+ * language and this class's established missing-field handling).
+ * `IMPLEMENTATION_GAPS.md` #43 is closed in full by this change, per
+ * that plan's own Section 7.
  */
 class InMemoryTaskManagerRuntime(
     private val identityService: IdentityService,
@@ -342,6 +360,7 @@ class InMemoryTaskManagerRuntime(
     private suspend fun applyCompletedTransition(event: ParkerEvent) {
         val taskIdValue = event.payload["taskId"] ?: return
         val taskId = TaskId(taskIdValue)
+        val agentRunReference = event.payload["agentRunId"]
         mutex.withLock {
             val task = tasks[taskId] ?: return@withLock
             when (task.status) {
@@ -349,7 +368,12 @@ class InMemoryTaskManagerRuntime(
                     TaskLifecycleTransitions.requireValidTransition(TaskStatus.QUEUED, TaskStatus.RUNNING)
                     val running = task.copy(status = TaskStatus.RUNNING)
                     tasks[taskId] = running
-                    publish(eventType = "task.started", taskId = taskId, correlationId = task.correlationId)
+                    publish(
+                        eventType = "task.started",
+                        taskId = taskId,
+                        correlationId = task.correlationId,
+                        payload = if (agentRunReference != null) mapOf("agentRunId" to agentRunReference) else emptyMap(),
+                    )
 
                     TaskLifecycleTransitions.requireValidTransition(TaskStatus.RUNNING, TaskStatus.COMPLETED)
                     tasks[taskId] = running.copy(status = TaskStatus.COMPLETED)

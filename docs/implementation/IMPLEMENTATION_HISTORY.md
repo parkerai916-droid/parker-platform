@@ -714,6 +714,35 @@ Implementation Notes
 
 ---
 
+### Sprint 7 -- Agent Run Reference Exposure (Agent Runtime + Task Manager Runtime; closes `IMPLEMENTATION_GAPS.md` #43, in full)
+
+Commit:
+pending
+
+Completed:
+2026-07-08
+
+Android Studio Tests:
+Android Studio verified: **484/484 passing** (Human authority, PES-001), confirmed by Steven. Prior confirmed total (Sprint 7, Task Event Payload Completion) was 482/482. This Unit adds 2 new test methods to `tests/runtime/InMemoryAgentRuntimeTest.kt` and a net 0 change to `tests/runtime/InMemoryTaskManagerRuntimeTest.kt` (one new test added, one superseded test removed -- see Summary), a net addition of +2, for the confirmed 484/484 total above. This total has been run and confirmed in Android Studio; it is no longer a static projection.
+
+Summary
+- Closed the remaining `task.started` half of `IMPLEMENTATION_GAPS.md` #43 exactly as `docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md` specifies. `InMemoryAgentRuntime`'s single shared `publish(run: AgentRun, eventType: String)` helper (`src/runtime/InMemoryAgentRuntime.kt`) now includes `"agentRunId" to run.agentRunId.value` in every event's payload, alongside the existing `"taskId"` entry. Because every one of this class's currently-emitted event types already routes through this one shared helper, `agentRunId` is now exposed **uniformly across all of them** -- not `agent.completed` alone -- confirmed by a dedicated test proving `agent.created` (a non-terminal event) carries it too.
+- `InMemoryTaskManagerRuntime.applyCompletedTransition` (`src/runtime/InMemoryTaskManagerRuntime.kt`) now reads `event.payload["agentRunId"]` off the triggering `agent.completed` event -- the same event it already receives as its own handler parameter, subscribed to since Unit B1 (`IMPLEMENTATION_GAPS.md` #42) -- and threads it into `task.started`'s payload as `mapOf("agentRunId" to it)`. If the triggering event carries no `agentRunId` entry, `task.started`'s payload remains `emptyMap()`, matching `TaskManagerRuntimeSpecification.md` §10's own "if any" language and this class's established missing-field handling.
+- **`correlationId` behaviour is unchanged throughout.** Neither `InMemoryAgentRuntime.publish` nor `InMemoryTaskManagerRuntime.applyCompletedTransition`/`publish` alters how `correlationId` is set or threaded on any event. The pre-existing, documented tension between `AgentRuntimeSpecification.md` Section 9's prose ("`correlationId` set to the Agent Run ID") and `AgentRun.kt`'s own KDoc (`correlationId` as the shared, cross-subsystem value, not literally `AgentRunId.value`) is untouched by this Unit -- `agentRunId` is exposed through a separate, additive payload key, not through any change to `correlationId`.
+- **No `AgentRunId` is reconstructed anywhere.** `InMemoryTaskManagerRuntime` computes, guesses, or derives nothing; the value it threads into `task.started` is read directly from the incoming event's own payload.
+- Extended `tests/runtime/InMemoryAgentRuntimeTest.kt`'s `buildRuntime` test helper to return a new `RuntimeFixture` (replacing `Triple`) so tests can reach the `EventBus` it already constructs internally; every pre-existing 3-component destructuring call site is unaffected (Kotlin destructuring is positional). Added `` `agent-completed's published payload carries the real, returned AgentRunId` `` and `` `agent-created's published payload also carries agentRunId, proving exposure is uniform, not agent-completed alone` ``.
+- Extended `tests/runtime/InMemoryTaskManagerRuntimeTest.kt`'s `agentEvent(...)` fixture with an optional, defaulted `agentRunId` parameter (every pre-existing call site unaffected). Extended `` `agent-completed for a QUEUED Task publishes both task-started and task-completed, proving both edges fired` `` to assert a populated `task.started` payload. Added `` `agent-completed with no agentRunId payload entry leaves task-started's payload empty, not a fabricated value` ``. The now-superseded `` `task-started's payload remains deliberately empty -- Agent Run Reference is an intentional deferral, not an oversight` `` test (Task Event Payload Completion Unit) was replaced with an explanatory `NOTE` comment, not silently deleted, mirroring this file's own established Unit B1-->B2 supersession convention.
+
+Implementation Notes
+- No architecture, contract, or implementation plan document was modified. `AgentRuntimeSpecification.md`, `TaskManagerRuntimeSpecification.md`, `src/contracts/AgentRun.kt`, `docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md`, and every other existing specification remain exactly as they were.
+- No new public type, interface, constructor parameter, lifecycle edge, or `EventBus.subscribe` call was introduced anywhere in `src/`.
+- Task Manager's existing event-subscription boundary (`agent.completed`/`agent.failed` only, `IMPLEMENTATION_GAPS.md` #42) is unchanged -- no new subscription was added.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #43 was **closed in full** -- see that entry's own updated text. Both halves §10 names (`task.started`'s Agent Run Reference and `task.completed`'s Task Result summary) are now implemented and verified.
+- The `correlationId`-vs-`AgentRunId` wording tension between `AgentRuntimeSpecification.md` Section 9 and `AgentRun.kt`'s own documented convention remains open as a **separate documentation/specification matter**, explicitly not part of gap #43 and not resolved by this Unit.
+- No other implementation gap, Communication Runtime, Local Text Channel, Cognition, Planner Runtime, Memory Runtime, or World Model file was touched.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

@@ -531,14 +531,29 @@ class InMemoryAgentRuntime(
     private suspend fun getRun(agentRunId: AgentRunId): AgentRun? = mutex.withLock { agentRuns[agentRunId] }
 
     /**
-     * Sprint 1, Unit 9 (extended by Unit C2): publishes one `agent.*`
-     * [ParkerEvent]. Unlike Unit 7 (one Agent Step per Agent Run, so
+     * Sprint 1, Unit 9 (extended by Unit C2; extended again by Agent Run
+     * Reference Exposure): publishes one `agent.*` [ParkerEvent]. Unlike
+     * Unit 7 (one Agent Step per Agent Run, so
      * `"evt-<agentRunId>-<eventType>"` was already unique), a multi-step
      * Agent Run publishes the same `eventType` more than once (e.g.
      * `agent.step_completed` once per successful step) -- a random UUID
      * suffix keeps every `eventId` unique, mirroring
      * [InMemoryEventBus.subscribe]'s own existing `UUID.randomUUID()` use
      * for `subscriptionId`.
+     *
+     * **Agent Run Reference Exposure** (`docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md`):
+     * every event this method publishes now also carries `"agentRunId"`
+     * in its payload, alongside the existing `"taskId"`. Because every
+     * one of this class's emitted event types calls this single shared
+     * helper, this exposes `agentRunId` uniformly across all of them --
+     * not `agent.completed` alone -- per that plan's own Section 2/3
+     * consistency finding. `correlationId` (`run.correlationId`) is
+     * unchanged by this addition; the pre-existing, documented
+     * `correlationId`-vs-`AgentRunId` wording tension between this
+     * class's own established convention and
+     * `AgentRuntimeSpecification.md` Section 9's prose is not resolved,
+     * addressed, or touched by this change (see that plan's own Section
+     * 9).
      */
     private suspend fun publish(run: AgentRun, eventType: String) {
         eventBus.publish(
@@ -548,7 +563,7 @@ class InMemoryAgentRuntime(
                 eventType = EventType(eventType),
                 timestamp = Instant.now(),
                 correlationId = run.correlationId,
-                payload = mapOf("taskId" to run.taskId.value),
+                payload = mapOf("taskId" to run.taskId.value, "agentRunId" to run.agentRunId.value),
             ),
         )
     }

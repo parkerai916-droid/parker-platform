@@ -262,19 +262,31 @@ class InMemoryTaskManagerRuntimeTest {
     // code path at all). No test in this section asserts a TaskStatus change -- that is
     // Unit B2's scope, not this one's.
 
-    /** A synthetic `agent.*` [ParkerEvent] carrying `taskId` in its payload, exactly as `InMemoryAgentRuntime.publish` already does. */
+    /**
+     * A synthetic `agent.*` [ParkerEvent] carrying `taskId` in its payload, exactly as
+     * `InMemoryAgentRuntime.publish` already does. [agentRunId] is optional and defaulted to
+     * `null` (omitted from the payload entirely) so every existing call site that predates
+     * Agent Run Reference Exposure (`docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md`)
+     * is unaffected -- when supplied, it mirrors `InMemoryAgentRuntime.publish`'s own
+     * `"agentRunId" to run.agentRunId.value` payload entry.
+     */
     private fun agentEvent(
         eventType: String,
         taskId: TaskId,
         agentIdentityPrincipalId: String = "agent-1",
         correlationId: String = "corr-1",
+        agentRunId: String? = null,
     ) = ParkerEvent(
         eventId = "evt-test-$eventType-${taskId.value}",
         publisherPrincipalId = PrincipalId(agentIdentityPrincipalId),
         eventType = EventType(eventType),
         timestamp = Instant.parse("2026-01-01T00:00:00Z"),
         correlationId = correlationId,
-        payload = mapOf("taskId" to taskId.value),
+        payload = if (agentRunId != null) {
+            mapOf("taskId" to taskId.value, "agentRunId" to agentRunId)
+        } else {
+            mapOf("taskId" to taskId.value)
+        },
     )
 
     @Test
@@ -467,17 +479,41 @@ class InMemoryTaskManagerRuntimeTest {
         val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
-        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId, agentRunId = "run-for-${accepted.taskId.value}"))
 
         assertEquals(listOf("task.started", "task.completed"), publishedTypes)
         // Task Event Payload Completion (docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md
-        // Section 8's decided, conservative option): task.completed now carries a Task Result
-        // summary; task.started is deliberately left unpopulated, not silently untested.
+        // Section 8's decided, conservative option): task.completed carries a Task Result summary.
         assertEquals(
             mapOf("taskId" to accepted.taskId.value, "status" to "COMPLETED"),
             publishedPayloads["task.completed"],
         )
-        assertEquals(emptyMap(), publishedPayloads["task.started"])
+        // Agent Run Reference Exposure (docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md):
+        // task.started now threads the triggering agent.completed event's own agentRunId
+        // through unchanged -- not reconstructed, not derived, read directly from the event.
+        assertEquals(
+            mapOf("agentRunId" to "run-for-${accepted.taskId.value}"),
+            publishedPayloads["task.started"],
+        )
+    }
+
+    @Test
+    fun `agent-completed with no agentRunId payload entry leaves task-started's payload empty, not a fabricated value`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        var startedPayload: Map<String, String>? = null
+        eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { event ->
+            startedPayload = event.payload
+        }
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
+
+        // No agentRunId supplied -- mirrors a triggering agent.completed event that, for
+        // whatever reason, carries no agentRunId entry of its own.
+        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
+
+        assertEquals(emptyMap(), startedPayload)
     }
 
     // --- 2. agent.completed on an already-RUNNING Task takes only the second edge ---
@@ -603,12 +639,9 @@ class InMemoryTaskManagerRuntimeTest {
     // ================= Task Event Payload Completion (closes IMPLEMENTATION_GAPS.md #43, in part) =================
     //
     // docs/implementation/TASK_EVENT_PAYLOAD_COMPLETION_IMPLEMENTATION_PLAN.md Section 8's decided,
-    // conservative option: task.completed's payload is populated now; task.started's Agent Run
-    // Reference is deliberately left unpopulated, not silently untested. The two tests above
-    // (Unit B2 section) already assert task.completed's exact payload contents inline; the two
-    // tests below are the plan's own Section 4 "dedicated test" requirements: a scope-discipline
-    // proof that task.completed's payload never claims more than this class actually tracks, and
-    // an explicit proof that task.started's emptiness is intentional.
+    // conservative option: task.completed's payload is populated. The test below is the plan's own
+    // Section 4 "dedicated test" requirement: a scope-discipline proof that task.completed's payload
+    // never claims more than this class actually tracks.
 
     @Test
     fun `task-completed's payload never claims an Execution Reference or Agent Result field this class does not track`() = runTest {
@@ -630,26 +663,20 @@ class InMemoryTaskManagerRuntimeTest {
         assertEquals(setOf("taskId", "status"), completedPayload?.keys)
     }
 
-    @Test
-    fun `task-started's payload remains deliberately empty -- Agent Run Reference is an intentional deferral, not an oversight`() = runTest {
-        val identity = InMemoryIdentityService()
-        identity.register(principal())
-        val eventBus = InMemoryEventBus()
-        var startedPayload: Map<String, String>? = null
-        var startedPublishCount = 0
-        eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { event ->
-            startedPublishCount++
-            startedPayload = event.payload
-        }
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
-        val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
-
-        eventBus.publish(agentEvent("agent.completed", accepted.taskId))
-
-        assertEquals(1, startedPublishCount)
-        // Per the Implementation Plan's Section 8 decision: no AgentRunId is reconstructed
-        // locally, and InMemoryAgentRuntime is not modified to supply one -- task.started's
-        // payload is exactly emptyMap(), unchanged from before this unit.
-        assertEquals(emptyMap(), startedPayload)
-    }
+    // NOTE: A Task Event Payload Completion-era test previously stood here --
+    // `task-started's payload remains deliberately empty -- Agent Run Reference is an
+    // intentional deferral, not an oversight` -- asserting task.started's payload was always
+    // emptyMap(). That was correct for that unit's own scope (task.completed closed; the
+    // task.started half of IMPLEMENTATION_GAPS.md #43 deliberately deferred, per that plan's own
+    // Section 8 decision). Agent Run Reference Exposure
+    // (docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md) deliberately
+    // supersedes this: task.started's payload is no longer always empty -- see, earlier in this
+    // file (Unit B2 section), `agent-completed for a QUEUED Task publishes both task-started and
+    // task-completed, proving both edges fired` (now asserts a populated agentRunId) and
+    // `agent-completed with no agentRunId payload entry leaves task-started's payload empty, not
+    // a fabricated value`, which together cover both the populated and the absent-value paths
+    // this old test's single, always-empty assertion no longer reflects. The old assertion is
+    // removed, not rewritten, for the same reason this file's own Unit B1-->B2 supersession note
+    // above gives: rewriting it in place would duplicate coverage those two tests already provide
+    // correctly.
 }

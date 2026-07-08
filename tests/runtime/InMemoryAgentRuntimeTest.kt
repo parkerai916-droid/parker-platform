@@ -13,6 +13,7 @@ import parker.core.interfaces.AgentRunStatus
 import parker.core.interfaces.AgentStepDecision
 import parker.core.interfaces.AgentStepSource
 import parker.core.interfaces.DecisionId
+import parker.core.interfaces.EventType
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
@@ -127,11 +128,29 @@ class InMemoryAgentRuntimeTest {
         }
     }
 
+    /**
+     * Agent Run Reference Exposure (`docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md`
+     * Section 5): now returns [RuntimeFixture], not `Triple`, so a test can
+     * also reach the [InMemoryEventBus] this helper already builds
+     * internally (previously discarded after being passed to the
+     * constructors below) -- needed to subscribe before triggering an
+     * Agent Run and assert on published event payloads. Every existing
+     * `val (runtime, identity, permissionEngine) = buildRuntime(...)` call
+     * site is unaffected: Kotlin destructuring is positional and does not
+     * require consuming every available `componentN()`.
+     */
+    private data class RuntimeFixture(
+        val runtime: InMemoryAgentRuntime,
+        val identity: InMemoryIdentityService,
+        val permissionEngine: FakePermissionEngine,
+        val eventBus: InMemoryEventBus,
+    )
+
     private suspend fun buildRuntime(
         agentStepSource: AgentStepSource = singleStepThenCompleteSource(),
         agentPolicy: AgentPolicy = AgentPolicy(maxAgentSteps = 10),
         decisionFor: (ExecutionRequest) -> PermissionDecision,
-    ): Triple<InMemoryAgentRuntime, InMemoryIdentityService, FakePermissionEngine> {
+    ): RuntimeFixture {
         val resources = InMemoryResourceRegistry()
         resources.register(
             Resource(
@@ -188,7 +207,7 @@ class InMemoryAgentRuntimeTest {
 
         val identity = InMemoryIdentityService()
         val runtime = InMemoryAgentRuntime(identity, pipeline, eventBus, agentStepSource, agentPolicy)
-        return Triple(runtime, identity, permissionEngine)
+        return RuntimeFixture(runtime, identity, permissionEngine, eventBus)
     }
 
     /** Fixture shared by the two concurrency tests: a slow (ControllableTool-backed) Agent Run path and a fast (MockTool-backed) one, in one runtime. */
@@ -412,6 +431,43 @@ class InMemoryAgentRuntimeTest {
         assertEquals(PrincipalId("agent-for-task-1"), run.agentIdentityPrincipalId)
         assertEquals(TaskId("task-1"), run.taskId)
         assertEquals(1, permissionEngine.evaluateCallCount)
+    }
+
+    // --- Agent Run Reference Exposure (docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md) ---
+
+    @Test
+    fun `agent-completed's published payload carries the real, returned AgentRunId`() = runTest {
+        val fixture = buildRuntime { approvedDecision() }
+        fixture.identity.register(owner())
+        fixture.identity.register(agentIdentity())
+        var completedPayload: Map<String, String>? = null
+        fixture.eventBus.subscribe(EventType("agent.completed"), PrincipalId("test-subscriber")) { event ->
+            completedPayload = event.payload
+        }
+
+        val result = fixture.runtime.submit(startCommand())
+        val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+
+        assertEquals(accepted.agentRunId.value, completedPayload?.get("agentRunId"))
+    }
+
+    @Test
+    fun `agent-created's published payload also carries agentRunId, proving exposure is uniform, not agent-completed alone`() = runTest {
+        val fixture = buildRuntime { approvedDecision() }
+        fixture.identity.register(owner())
+        fixture.identity.register(agentIdentity())
+        var createdPayload: Map<String, String>? = null
+        fixture.eventBus.subscribe(EventType("agent.created"), PrincipalId("test-subscriber")) { event ->
+            createdPayload = event.payload
+        }
+
+        val result = fixture.runtime.submit(startCommand())
+        val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+
+        // agent.created fires before the Agent Run reaches any terminal state -- proving
+        // agentRunId is exposed uniformly via the one shared publish(run, eventType) helper,
+        // not special-cased for agent.completed alone.
+        assertEquals(accepted.agentRunId.value, createdPayload?.get("agentRunId"))
     }
 
     @Test
