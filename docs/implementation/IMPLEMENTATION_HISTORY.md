@@ -867,6 +867,133 @@ Implementation Notes
 
 ---
 
+### Sprint 9 -- Model-Backed ReasoningProvider (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-10
+
+Android Studio Tests:
+Android Studio verified: **578/578 passing** (Human authority, PES-001),
+confirmed by Steven. **BUILD SUCCESSFUL.** Prior confirmed total (Sprint
+8, Local Text Channel Deliver Tool) was 541/541. This Unit adds 37 new
+test methods (`tests/runtime/ModelReasoningProviderTest.kt` (7),
+`ReasoningPromptBuilderTest.kt` (6), `ModelInferenceClientTest.kt` (12),
+`ReasoningResponseParserTest.kt` (12) -- `FakeModelInferenceClient.kt`,
+`FakeReasoningPromptBuilder.kt`, `FakeReasoningResponseParser.kt` are
+fixtures, no tests of their own), a net addition of +37, reconciling
+exactly with the confirmed 578/578 total above. This total has been run
+and confirmed in Android Studio; it is no longer a projection.
+
+The first run surfaced one failure, in `ModelReasoningProviderTest`'s own
+reflective constructor-shape test (`` `the constructor accepts exactly
+four parameters -- three collaborators and timeoutMs` ``):
+`java.lang.IllegalArgumentException: Array has more than one element`
+from `declaredConstructors.single()`. Root cause: `ModelReasoningProvider`'s
+constructor has a default value for `timeoutMs` (Plan Decision 4), so the
+Kotlin compiler emits a second, synthetic constructor (`ACC_SYNTHETIC`,
+carrying trailing `int` bitmask + `DefaultConstructorMarker` parameters)
+alongside the real, declared one, to support default-argument call
+sites -- a mechanical consequence of the already-Scope-Locked default
+value, not an unintended extra constructor in `ModelReasoningProvider`'s
+own design. The test's `declaredConstructors.single()` pattern, copied
+from `ConversationTurnReasoningCoordinatorTest` (whose own constructor
+has no default parameters and so never exercised this case), does not
+generalise to a constructor with a default value. Corrected in the test
+only -- `declaredConstructors.single { !it.isSynthetic }` -- no
+production file was modified. The second run confirmed 578/578, BUILD
+SUCCESSFUL.
+
+Summary
+- Implemented exactly the Stage 3/5 Scope-Locked unit
+  `docs/implementation/MODEL_REASONING_PROVIDER_IMPLEMENTATION_PLAN.md`
+  authorises, itself built on
+  `docs/implementation/reviews/ModelReasoningProvider_Implementation_Review.md`
+  (Accepted, no further architectural redesign required, per Steven's
+  own instruction opening this session).
+- Added `src/runtime/ModelReasoningProvider.kt`: a concrete `ReasoningProvider`
+  implementation and pure orchestrator over three constructor-injected
+  collaborators, with no `try`/`catch` anywhere in the class -- `reason`
+  builds a prompt, calls the model inference seam under `withTimeout`,
+  and parses the raw result, returning it unchanged.
+- Added `src/runtime/ReasoningPromptBuilder.kt`: the `ReasoningPromptBuilder`
+  `fun interface` and `DefaultReasoningPromptBuilder`, a deterministic
+  template (already-assembled context entries, one per line, then the
+  owner's message, then a fixed instruction naming the `GOAL:`/`REPLY:`/`NOACTION`
+  convention).
+- Added `src/runtime/ModelInferenceClient.kt`: the `ModelInferenceClient`
+  `fun interface`, `LocalHttpModelInferenceClient` (a JDK
+  `java.net.http.HttpClient`-based implementation, `endpointUrl`/`modelName`
+  required with no default, cancellation wired through
+  `suspendCancellableCoroutine`), and two named, overridable default
+  formatting functions, `defaultOllamaRequestBody`/`defaultOllamaResponseBody`,
+  using minimal, hand-rolled JSON string construction/extraction -- no
+  JSON library or other new Gradle dependency was added.
+- Added `src/runtime/ReasoningResponseParser.kt`: the `ReasoningResponseParser`
+  `fun interface` -- the frozen architectural component -- and
+  `TaggedReasoningResponseParser`, its first, explicitly-replaceable
+  default implementation, plus `UnclassifiableModelResponseException`.
+  Matching is case-sensitive against the raw string trimmed once:
+  `GOAL:`/`REPLY:` prefixes produce `Goal`/`Reply` with the trimmed
+  remainder as text (a blank remainder surfaces as the existing
+  `IllegalArgumentException` from `Goal`/`Reply`'s own constructor
+  validation, not caught here); exactly `NOACTION` with nothing else
+  present produces `NoAction`; anything else, including `NOACTION` with
+  trailing text, throws `UnclassifiableModelResponseException` carrying
+  the original raw text.
+- Added `tests/runtime/FakeModelInferenceClient.kt`, `FakeReasoningPromptBuilder.kt`,
+  `FakeReasoningResponseParser.kt` (lambda-based fakes mirroring
+  `FakeReasoningProvider`'s established precedent) and the four test
+  files named above, implementing the Plan's Section 8 Testing Strategy
+  in full: `ModelReasoningProvider`'s orchestration against fakes only
+  (prompt/infer/parse call sequencing, exception propagation, timeout
+  behaviour); `DefaultReasoningPromptBuilder`'s exact template;
+  `defaultOllamaRequestBody`/`defaultOllamaResponseBody`'s escaping,
+  extraction, and round-trip behaviour; and `TaggedReasoningResponseParser`'s
+  full classification convention, including case sensitivity and the
+  `NOACTION`-with-trailing-text edge case.
+
+Implementation Notes
+- **No existing `src/` or `tests/` file was modified.** All eleven new
+  files (four production, three fakes, four tests) are additions.
+- **No new Gradle dependency was added; `build.gradle.kts` is unmodified.**
+  `LocalHttpModelInferenceClient` uses only the JDK's own
+  `java.net.http.HttpClient` (available under this project's existing
+  `jvmToolchain(17)`) and the already-present `kotlinx-coroutines-core`.
+- **No new file exists under `src/interfaces/`.** This Unit introduces no
+  new public Parker contract type -- `ReasoningPromptBuilder`,
+  `ModelInferenceClient`, and `ReasoningResponseParser` are `src/runtime`-local
+  collaborator interfaces, not Parker contracts, matching the Review's
+  own Section 2/13 finding.
+- **No `IdentityService`, `PlannerRuntime`, `ExecutionPipeline`,
+  `PermissionEngine`, `ToolRegistry`, `ToolInvocationBinding`,
+  `MemoryStore`, `WorldModel`, `ModuleRegistry`, `ConversationEngine`,
+  `ResponseDelivery`, or `ModelManager` dependency exists anywhere in
+  this Unit's code.**
+- **`LocalHttpModelInferenceClient`'s own live HTTP path is not exercised
+  by the automated test suite** -- no real model server exists in this
+  sandbox, disclosed as such by the Review (Risk 1) before implementation
+  began, not discovered afterward.
+- **No production caller was wired.** `ConversationTurnReasoningCoordinator`
+  and `CommunicationConversationCoordinator` are both unmodified; nothing
+  in this repository yet constructs a real `ModelReasoningProvider` and
+  hands it to either coordinator. That remains a future, separately-scoped
+  unit's responsibility, per the Plan's own Excluded Work.
+- No architecture, Contract Design, or ADR document was modified.
+  `REASONING_PROVIDER_ARCHITECTURE.md`, `REASONING_PROVIDER_CONTRACT_DESIGN.md`,
+  and `docs/architecture/reasoning-context.md` all remain exactly as
+  previously accepted.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was clarified further,
+  not closed -- see that entry's own updated text. The "no concrete,
+  model-backed `ReasoningProvider` implementation exists" item is now
+  resolved (the implementation exists); every other item under #53
+  (Reply-to-`OutboundParkerResponse` construction, `Goal`/Planner Runtime
+  routing, `ReasoningContext` assembly ownership, and a production
+  composition root) remains open, unaffected by this Unit.
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

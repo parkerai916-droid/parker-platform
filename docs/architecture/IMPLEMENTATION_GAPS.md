@@ -1732,4 +1732,64 @@ still real:**
   real startup -- this Unit's own registration is test-level only, per
   its own Implementation Plan's explicit scope.
 
+**Update (Sprint 9 -- Model-Backed ReasoningProvider): the first item in
+the "What remains open" list directly above -- no concrete, model-backed
+`ReasoningProvider` implementation existing -- is now resolved. This gap
+remains Open -- not closed, not resolved in full.** `ModelReasoningProvider`
+(`src/runtime/ModelReasoningProvider.kt`) now exists: a concrete
+`ReasoningProvider` implementation, a pure orchestrator over three
+constructor-injected collaborators -- `ReasoningPromptBuilder`/
+`DefaultReasoningPromptBuilder` (`src/runtime/ReasoningPromptBuilder.kt`),
+`ModelInferenceClient`/`LocalHttpModelInferenceClient`
+(`src/runtime/ModelInferenceClient.kt`), and `ReasoningResponseParser`/
+`TaggedReasoningResponseParser` (`src/runtime/ReasoningResponseParser.kt`)
+-- per `docs/implementation/reviews/ModelReasoningProvider_Implementation_Review.md`
+and `docs/implementation/MODEL_REASONING_PROVIDER_IMPLEMENTATION_PLAN.md`.
+Concretely:
+
+- `ModelReasoningProvider.reason` builds a prompt, calls a configurable
+  model inference seam under a timeout, and parses the raw result into a
+  `ReasoningProviderResponse`, with no `try`/`catch` anywhere in the
+  class -- a genuine, non-fake implementation of `ReasoningProvider`
+  exists in this repository for the first time.
+- `LocalHttpModelInferenceClient` calls an owner-configured local HTTP
+  endpoint via the JDK's own `java.net.http.HttpClient` -- no new Gradle
+  dependency was added, and no hard-coded assumption about any specific
+  local model server exists in the class body itself (only in its two
+  named, overridable default formatting functions).
+- 37 new tests were added (`tests/runtime/ModelReasoningProviderTest.kt`,
+  `ReasoningPromptBuilderTest.kt`, `ModelInferenceClientTest.kt`,
+  `ReasoningResponseParserTest.kt`, plus three lambda-based fakes with no
+  tests of their own), exercising every collaborator's orchestration and
+  default implementation against fakes and pure-function inputs.
+
+**Verified.** Android Studio verified: 578/578 passing (Human authority,
+PES-001), confirmed by Steven. BUILD SUCCESSFUL. See
+`IMPLEMENTATION_HISTORY.md`'s own entry for this Unit for the full
+verification record.
+
+**What remains open, preventing closure, is narrower than before but
+still real:**
+
+- Constructing an `OutboundParkerResponse` from a
+  `ReasoningProviderResponse.Reply` -- the wiring that would actually
+  call `ResponseDelivery` in response to a real conversation turn --
+  remains unimplemented, unchanged from this gap's prior text.
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented, unchanged from this gap's prior text.
+- No production composition root exists to register the Local Text
+  Channel module, its deliver Tool, the `NOTIFY` vocabulary entry, or
+  now a real `ModelReasoningProvider` (with a real
+  `LocalHttpModelInferenceClient` endpoint) at real startup -- this
+  Unit introduces no composition root and wires
+  `ModelReasoningProvider` into no production caller
+  (`ConversationTurnReasoningCoordinator` and
+  `CommunicationConversationCoordinator` are both unmodified).
+- `ReasoningContext` assembly ownership remains unassigned
+  (`REASONING_PROVIDER_CONTRACT_DESIGN.md` Section 9's own disclosed
+  open item), unchanged from this gap's prior text.
+- `LocalHttpModelInferenceClient`'s own live HTTP path is not exercised
+  by the automated test suite -- no real model server exists in this
+  sandbox (Review Risk 1).
+
 **This gap remains Open.**
