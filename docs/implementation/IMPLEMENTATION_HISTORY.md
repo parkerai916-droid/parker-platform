@@ -1151,6 +1151,84 @@ Implementation Notes
 
 ---
 
+### Sprint 10 -- ConversationReplyCoordinator (Unit 3) (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-23
+
+Android Studio Tests:
+Android Studio verified: **612/612 passing** (Human authority, PES-001),
+confirmed by Steven. **BUILD SUCCESSFUL.** The prior confirmed total
+(Sprint 10, Unit 2 -- `ReplyDeliveryCoordinator`) was 599/599; this
+Unit's 13 new test methods
+(`tests/runtime/ConversationReplyCoordinatorTest.kt`) account for the
+difference.
+
+Summary
+- Implemented exactly the Stage 5 Scope-Locked unit
+  `docs/implementation/CONVERSATION_REPLY_COORDINATOR_SCOPE_LOCK.md`
+  authorises, itself freezing
+  `docs/implementation/CONVERSATION_REPLY_COORDINATOR_IMPLEMENTATION_PLAN.md`
+  (Sprint 10, Unit 3).
+- Added `src/runtime/ConversationReplyCoordinator.kt`: sequences
+  `CommunicationConversationCoordinator` and `ReplyDeliveryCoordinator`
+  -- exactly these two constructor dependencies, no other. **Orchestration
+  only:** calls `CommunicationConversationCoordinator.submitAndReason()`
+  exactly once; if the result is `NotAccepted`, returns it unchanged and
+  never calls `ReplyDeliveryCoordinator`; if the result is `Produced`,
+  forwards the original input message (unchanged) together with the
+  produced reasoning result into
+  `ReplyDeliveryCoordinator.composeAndDeliver()`, called exactly once,
+  and returns its result unchanged. No reasoning, no planning, no
+  formatting, no delivery logic, no authorisation, no production
+  composition-root wiring, no model provider selection, and no HTTP
+  behaviour was added by this class -- all of it remains exactly where
+  it already lived, inside the two dependencies this class sequences.
+- Added `tests/runtime/ConversationReplyCoordinatorTest.kt`: 13 tests
+  covering upstream rejection (downstream untouched), full successful
+  `Reply` delivery, `Goal`- and `NoAction`-originated downstream
+  rejection with zero downstream calls, delivery-level rejection with
+  partial call counts, sequential per-branch call-count evidence across
+  multiple calls, explicit "downstream not touched on upstream
+  rejection" and sequencing-evidence tests, exception propagation from
+  either dependency, a structural constructor test, a statelessness
+  test, and a real end-to-end test proving a `Reply` reaches the owner
+  through the full production stack (excluding `ModelReasoningProvider`,
+  per the Scope Lock) via a single coordinator call.
+- Implementation matched the Scope Lock without architectural deviation.
+
+Implementation Notes
+- **No existing `src/` or `tests/` file was modified.** Both new files
+  (one production, one test) are additions.
+- **Disclosed, pre-existing message-forwarding limitation, not a defect
+  fixed by this Unit.**
+  `CommunicationConversationCoordinator.submitAndReason`'s return type
+  (`GatedOutcome<ReasoningProviderResponse>`) does not expose the
+  `CommunicationIntake`-accepted message back to its caller, so this
+  class forwards its own original input message into
+  `ReplyDeliveryCoordinator.composeAndDeliver`'s `originalMessage`
+  argument rather than any message `CommunicationIntake` itself
+  accepted. The current, real `InMemoryCommunicationIntake` always
+  returns the identical message reference it was given, so this has no
+  observable effect against any concrete implementation in this
+  repository today. This limitation was disclosed in the Implementation
+  Plan and the Scope Lock before this Unit was implemented; it is
+  recorded here as an accurate description of existing, unchanged
+  behaviour, not as a defect this Unit resolved.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was narrowed further,
+  not closed -- see that entry's own updated text. This Unit completes
+  the previously-missing sequencing connection
+  `CommunicationConversationCoordinator -> ConversationReplyCoordinator
+  -> ReplyDeliveryCoordinator`. It does not close Gap #53: a production
+  composition root, `Goal`/Planner Runtime routing, `ReasoningContext`
+  assembly ownership, and `LocalHttpModelInferenceClient`'s live HTTP
+  path all remain open.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

@@ -1904,4 +1904,45 @@ gap's own prior text:
 - `LocalHttpModelInferenceClient`'s own live HTTP path is not exercised
   by the automated test suite, unchanged from this gap's prior text.
 
+**Update (Sprint 10, Unit 3 -- ConversationReplyCoordinator): the
+missing sequencing connection between `CommunicationConversationCoordinator`
+and `ReplyDeliveryCoordinator` -- identified during the post-Unit-2
+governance review as the correctly-scoped next step, distinct from and
+smaller than production composition-root wiring -- is now implemented
+and verified. This gap remains Open -- not closed, not resolved in
+full.** `ConversationReplyCoordinator`
+(`src/runtime/ConversationReplyCoordinator.kt`) now exists: a thin,
+two-dependency orchestrator sequencing
+`CommunicationConversationCoordinator.submitAndReason` and
+`ReplyDeliveryCoordinator.composeAndDeliver`, per
+`docs/implementation/CONVERSATION_REPLY_COORDINATOR_SCOPE_LOCK.md` and
+the Plan it freezes,
+`docs/implementation/CONVERSATION_REPLY_COORDINATOR_IMPLEMENTATION_PLAN.md`
+(Sprint 10, Unit 3) -- verified passing in Android Studio, 612/612. The
+full, now-connected chain is:
+
+```
+CommunicationConversationCoordinator -> ConversationReplyCoordinator -> ReplyDeliveryCoordinator
+```
+
+**This closes only that coordinator-to-coordinator sequencing gap.**
+What remains open, preventing closure, is unchanged in kind from this
+gap's own prior text:
+
+- No production composition root exists to register the Local Text
+  Channel module, its deliver Tool, the `NOTIFY` vocabulary entry, a
+  real `ModelReasoningProvider` endpoint, `ReplyDeliveryCoordinator`, or
+  now `ConversationReplyCoordinator`, at real startup. Nothing in this
+  repository calls `ConversationReplyCoordinator.submitAndDeliver` from
+  a real, running conversation flow, and no live entry point exists --
+  this Unit's own tests construct it directly, exactly as every prior
+  Sprint 7-10 coordinator's tests did.
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented, unchanged from this gap's prior text.
+- `ReasoningContext` assembly ownership remains unassigned
+  (`REASONING_PROVIDER_CONTRACT_DESIGN.md` Section 9's own disclosed
+  open item), unchanged from this gap's prior text.
+- `LocalHttpModelInferenceClient`'s own live HTTP path is not exercised
+  by the automated test suite, unchanged from this gap's prior text.
+
 **This gap remains Open.**
