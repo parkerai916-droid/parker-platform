@@ -1792,4 +1792,61 @@ still real:**
   by the automated test suite -- no real model server exists in this
   sandbox (Review Risk 1).
 
+**Update (Sprint 10, Unit 1 -- ResponseComposer): the first item in the
+"What remains open" list directly above -- constructing an
+`OutboundParkerResponse` from a `ReasoningProviderResponse.Reply` -- is
+now implemented and verified. This gap remains Open -- not closed, not
+resolved in full.** `ResponseComposer` (`src/runtime/ResponseComposer.kt`)
+now exists: given an `InboundOwnerMessage` and a `ReasoningProviderResponse`,
+it resolves this component's own operating identity
+(`system.response-composer`) and constructs one `OutboundParkerResponse`
+when the response is a `Reply`, per
+`docs/implementation/RESPONSE_COMPOSER_SCOPE_LOCK.md` and the Plan it
+freezes, `docs/implementation/REPLY_TO_OUTBOUND_RESPONSE_IMPLEMENTATION_PLAN.md`
+(Sprint 10, Unit 1) -- verified passing in Android Studio, 589/589.
+Concretely:
+
+- `ResponseComposer.compose` performs composition only: it converts a
+  `Reply` to an `OutboundParkerResponse`; it does not deliver; it does
+  not route `Goal`; it does not invoke Planner Runtime; it does not
+  create the complete owner-message-to-delivery path. It holds one
+  constructor dependency (`IdentityService`) and no dependency on
+  `ReasoningProvider`, `PlannerRuntime`, `PermissionEngine`,
+  `ExecutionPipeline`, `ResourceRegistry`, `ToolRegistry`, or
+  `ResponseDelivery`.
+- Identity resolution is scoped to the `Reply` branch only, exactly
+  once, immediately before construction; `Goal` and `NoAction` never
+  resolve identity and return `GatedOutcome.NotAccepted`
+  unconditionally, regardless of registration state -- confirmed
+  directly by this Unit's own tests, not only by inspection.
+- A real-stack compatibility test proves a `ResponseComposer`-composed
+  `OutboundParkerResponse` is accepted unchanged by the existing
+  `ResponseDelivery`/`LocalTextChannelDeliverTool` stack (Sprint 7 Unit
+  C4/Sprint 8), without `ResponseComposer` itself ever calling
+  `ResponseDelivery` -- the two remain wired only by a future caller,
+  not by this class.
+
+**What remains open, preventing closure, is narrower than before but
+still real:**
+
+- Nothing in this repository calls `ResponseComposer.compose` from a
+  real conversation turn -- the wiring that would connect
+  `CommunicationConversationCoordinator`'s reasoning output to
+  `ResponseComposer`, and `ResponseComposer`'s output onward to
+  `ResponseDelivery.deliver`, remains unimplemented. This is
+  `ReplyDeliveryCoordinator`, Unit 2
+  (`docs/implementation/REPLY_DELIVERY_COORDINATOR_IMPLEMENTATION_PLAN.md`,
+  drafted but not yet Scope Locked or implemented).
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented, unchanged from this gap's prior text.
+- No production composition root exists to register the Local Text
+  Channel module, its deliver Tool, the `NOTIFY` vocabulary entry, a
+  real `ModelReasoningProvider` endpoint, or now `ResponseComposer`, at
+  real startup, unchanged from this gap's prior text.
+- `ReasoningContext` assembly ownership remains unassigned
+  (`REASONING_PROVIDER_CONTRACT_DESIGN.md` Section 9's own disclosed
+  open item), unchanged from this gap's prior text.
+- `LocalHttpModelInferenceClient`'s own live HTTP path is not exercised
+  by the automated test suite, unchanged from this gap's prior text.
+
 **This gap remains Open.**

@@ -992,6 +992,101 @@ Implementation Notes
   (Reply-to-`OutboundParkerResponse` construction, `Goal`/Planner Runtime
   routing, `ReasoningContext` assembly ownership, and a production
   composition root) remains open, unaffected by this Unit.
+
+---
+
+### Sprint 10 -- ResponseComposer (Unit 1) (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-23
+
+Android Studio Tests:
+Android Studio verified: **589/589 passing** (Human authority, PES-001),
+confirmed by Steven. **BUILD SUCCESSFUL.** The prior confirmed total
+(Sprint 9, Model-Backed ReasoningProvider) was 578/578; this Unit's 11
+new test methods (`tests/runtime/ResponseComposerTest.kt`) account for
+the difference.
+
+The first verification run surfaced one failure, in
+`ResponseComposerTest`'s own reflective statelessness test. That test's
+original assertion compared `ResponseComposer::class.java.declaredFields`
+against the single expected name `"identityService"`, which did not
+account for the field the Kotlin compiler generates to back the private,
+class-scoped `RESPONSE_COMPOSER_PRINCIPAL_ID` companion-object constant --
+a compiler artefact of the already-Scope-Locked identity constant (Scope
+Lock Section 6/7), not an unintended additional field on
+`ResponseComposer` itself. Corrected in the test only, after this real
+JVM failure surfaced it: the assertion now filters to non-static fields
+(`!Modifier.isStatic(it.modifiers)`) before comparing against
+`{"identityService"}`, measuring the architectural property -- per-instance
+state -- rather than a specific generated field name, and remains correct
+regardless of which name a given Kotlin compiler version assigns to the
+companion's backing field. `ResponseComposer.kt` itself was not modified
+to fix this. The second run confirmed 589/589, BUILD SUCCESSFUL.
+
+Summary
+- Implemented exactly the Stage 5 Scope-Locked unit
+  `docs/implementation/RESPONSE_COMPOSER_SCOPE_LOCK.md` authorises, itself
+  freezing `docs/implementation/REPLY_TO_OUTBOUND_RESPONSE_IMPLEMENTATION_PLAN.md`
+  (Sprint 10, Unit 1).
+- Added `src/runtime/ResponseComposer.kt`. **Composition only:** it
+  converts a `ReasoningProviderResponse.Reply` to an
+  `OutboundParkerResponse`; it does not deliver; it does not route
+  `Goal`; it does not invoke Planner Runtime; it does not create the
+  complete owner-message-to-delivery path. One constructor dependency
+  (`IdentityService`), one public method (`compose`), returning
+  `GatedOutcome<OutboundParkerResponse>`. Identity resolution
+  (`system.response-composer`) happens only inside the `Reply` branch,
+  exactly once, immediately before construction; `Goal` and `NoAction`
+  never resolve identity and return `GatedOutcome.NotAccepted`
+  unconditionally, regardless of registration state.
+- Added `tests/runtime/FakeIdentityService.kt`: a lambda-based,
+  call-counting `IdentityService` fake, mirroring
+  `FakeExecutionPipeline`/`FakeResourceRegistry`'s established
+  precedent.
+- Added `tests/runtime/ResponseComposerTest.kt`: 11 tests covering the
+  Reply/Goal/NoAction branches, per-branch identity-resolution call
+  counts, the Goal/NoAction-never-throw-when-unregistered invariant,
+  field pass-through, the Reply-only unregistered-identity exception,
+  statelessness (see the incident above), constructor shape, and a
+  real-stack compatibility test proving a composed `OutboundParkerResponse`
+  is accepted unchanged by the existing `ResponseDelivery`/
+  `LocalTextChannelDeliverTool` stack, without `ResponseComposer` itself
+  ever calling `ResponseDelivery`.
+
+Implementation Notes
+- **No existing `src/` or `tests/` file was modified.** All three new
+  files (one production, two test) are additions.
+- No dependency on `ResponseDelivery`, `ExecutionPipeline`,
+  `ResourceRegistry`, `ToolRegistry`, `ToolInvocationBinding`,
+  `PermissionEngine`, `PlannerRuntime`, `ReasoningProvider`,
+  `MemoryStore`, or `WorldModel` exists anywhere in this Unit's
+  production code.
+- No new file exists under `src/interfaces/`. This Unit introduces no
+  new public Parker contract type -- its return type,
+  `GatedOutcome<OutboundParkerResponse>`, reuses two already-existing
+  types unchanged.
+- No architecture, Contract Design, or ADR document was modified.
+  `COMMUNICATION_CONTRACT_DESIGN.md`, `RESPONSE_DELIVERY_CONTRACT_DESIGN.md`,
+  and `REASONING_PROVIDER_CONTRACT_DESIGN.md` all remain exactly as
+  previously accepted.
+- **`ReplyDeliveryCoordinator` (Unit 2) was not implemented.** No
+  owner-message-to-delivery orchestrator, `Goal`/Planner Runtime
+  routing, `ResponseDelivery` wiring, or production composition root
+  was added by this Unit -- all remain a separate, future Unit's
+  responsibility, per
+  `docs/implementation/REPLY_DELIVERY_COORDINATOR_IMPLEMENTATION_PLAN.md`
+  (drafted, not yet Scope Locked).
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was clarified further,
+  not closed -- see that entry's own updated text. The
+  `Reply -> OutboundParkerResponse` construction half of item 1 is now
+  implemented and verified; delivery orchestration, `Goal`/Planner
+  Runtime routing, a production composition root, and `ReasoningContext`
+  assembly ownership all remain open.
+
 ---
 
 ## Implementation Principles
