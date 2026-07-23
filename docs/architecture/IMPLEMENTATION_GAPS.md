@@ -1849,4 +1849,59 @@ still real:**
 - `LocalHttpModelInferenceClient`'s own live HTTP path is not exercised
   by the automated test suite, unchanged from this gap's prior text.
 
+**Update (Sprint 10, Unit 2 -- ReplyDeliveryCoordinator): the first item
+in the "What remains open" list directly above -- nothing in this
+repository calling `ResponseComposer.compose` from a real conversation
+turn, the wiring that would connect `CommunicationConversationCoordinator`'s
+reasoning output through to `ResponseDelivery.deliver` -- is now
+implemented and verified. This gap remains Open -- not closed, not
+resolved in full.** `ReplyDeliveryCoordinator`
+(`src/runtime/ReplyDeliveryCoordinator.kt`) now exists: a thin,
+two-dependency orchestrator sequencing `ResponseComposer.compose` and
+`ResponseDelivery.deliver`, per
+`docs/implementation/REPLY_DELIVERY_COORDINATOR_SCOPE_LOCK.md` and the
+Plan it freezes,
+`docs/implementation/REPLY_DELIVERY_COORDINATOR_IMPLEMENTATION_PLAN.md`
+(Sprint 10, Unit 2) -- verified passing in Android Studio, 599/599.
+Concretely:
+
+- `ReplyDeliveryCoordinator.composeAndDeliver` completes the
+  previously-missing production-shaped wiring: `Reply -> ResponseComposer
+  -> OutboundParkerResponse -> ResponseDelivery`. It calls
+  `ResponseComposer.compose` exactly once; propagates a `NotAccepted`
+  result unchanged without ever calling `ResponseDelivery`; and on
+  `Produced`, calls `ResponseDelivery.deliver` exactly once and returns
+  its result unchanged.
+- The coordinator is orchestration only: no reasoning, no planning, no
+  formatting, no direct execution, no authorisation, no transport
+  implementation. Its constructor dependencies remain exactly
+  `ResponseComposer` and `ResponseDelivery` -- no dependency on
+  `IdentityService`, `ExecutionPipeline`, `PermissionEngine`,
+  `ReasoningProvider`, `ResourceRegistry`, `ToolRegistry`,
+  `PlannerRuntime`, `MemoryStore`, or `WorldModel` exists anywhere in its
+  production code.
+- A real-stack end-to-end test proves a `Reply` reaches the owner
+  through the real `ResponseComposer` + `ResponseDelivery` stack via a
+  single coordinator call -- confirmed directly by this Unit's own
+  tests, not only by inspection.
+
+**This closes only the coordinator-wiring portion of Gap #53's item 1.**
+What remains open, preventing closure, is unchanged in kind from this
+gap's own prior text:
+
+- No production composition root exists to register the Local Text
+  Channel module, its deliver Tool, the `NOTIFY` vocabulary entry, a
+  real `ModelReasoningProvider` endpoint, or now
+  `ReplyDeliveryCoordinator`, at real startup. Nothing in this
+  repository calls `ReplyDeliveryCoordinator.composeAndDeliver` from a
+  real, running conversation flow -- this Unit's own tests construct it
+  directly, exactly as every prior Sprint 7-10 coordinator's tests did.
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented, unchanged from this gap's prior text.
+- `ReasoningContext` assembly ownership remains unassigned
+  (`REASONING_PROVIDER_CONTRACT_DESIGN.md` Section 9's own disclosed
+  open item), unchanged from this gap's prior text.
+- `LocalHttpModelInferenceClient`'s own live HTTP path is not exercised
+  by the automated test suite, unchanged from this gap's prior text.
+
 **This gap remains Open.**

@@ -1089,6 +1089,68 @@ Implementation Notes
 
 ---
 
+### Sprint 10 -- ReplyDeliveryCoordinator (Unit 2) (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-23
+
+Android Studio Tests:
+Android Studio verified: **599/599 passing** (Human authority, PES-001),
+confirmed by Steven. **BUILD SUCCESSFUL.** The prior confirmed total
+(Sprint 10, Unit 1 -- `ResponseComposer`) was 589/589; this Unit's 10 new
+test methods (`tests/runtime/ReplyDeliveryCoordinatorTest.kt`) account
+for the difference.
+
+Summary
+- Implemented exactly the Stage 5 Scope-Locked unit
+  `docs/implementation/REPLY_DELIVERY_COORDINATOR_SCOPE_LOCK.md`
+  authorises, itself freezing
+  `docs/implementation/REPLY_DELIVERY_COORDINATOR_IMPLEMENTATION_PLAN.md`
+  (Sprint 10, Unit 2).
+- Added `src/runtime/ReplyDeliveryCoordinator.kt`: sequences
+  `ResponseComposer` and `ResponseDelivery`. **Orchestration only:**
+  calls `ResponseComposer.compose()`; propagates a `NotAccepted` result
+  unchanged, without ever calling `ResponseDelivery`; on `Produced`,
+  invokes `ResponseDelivery.deliver()` exactly once and returns its
+  result unchanged. No reasoning, no planning, no formatting, no direct
+  execution, no authorisation, no transport implementation. Constructor
+  dependencies remain exactly `ResponseComposer` and `ResponseDelivery`
+  -- no other dependency was introduced.
+- Added `tests/runtime/ReplyDeliveryCoordinatorTest.kt`: 10 tests
+  covering the Produced path, `NotAccepted`-from-`Goal`,
+  `NotAccepted`-from-`NoAction`, `NotAccepted`-from-delivery-level-
+  rejection, per-branch dependency call counts across sequential calls,
+  exception propagation from either dependency, a structural constructor
+  test, a statelessness test, and a real end-to-end test proving a
+  `Reply` reaches the owner through the real `ResponseComposer` +
+  `ResponseDelivery` stack via a single coordinator call.
+- One disclosed implementation note: the Scope Lock's own frozen code
+  block cited `parker.core.contracts.ExecutionResult` as the import; the
+  implementation instead used `parker.core.interfaces.ExecutionResult`,
+  because that is the package the repository's own `ExecutionResult.kt`
+  actually declares -- confirmed directly against the source, and
+  matching every existing import of it elsewhere in the codebase
+  (including `ResponseDelivery.kt`). This is a corrected import only;
+  the class name, constructor, method signature, and five-line body all
+  match the Scope Lock exactly.
+
+Implementation Notes
+- **No existing `src/` or `tests/` file was modified.** Both new files
+  (one production, one test) are additions.
+- **Scope Lock implemented without architectural deviation.**
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53 was narrowed further,
+  not closed -- see that entry's own updated text. This Unit completes
+  the previously-missing production-shaped wiring between `Reply ->
+  ResponseComposer -> OutboundParkerResponse -> ResponseDelivery`. It
+  does not close Gap #53: a production composition root, `Goal`/Planner
+  Runtime routing, `ReasoningContext` assembly ownership, and
+  `LocalHttpModelInferenceClient`'s live HTTP path all remain open.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
