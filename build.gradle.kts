@@ -44,10 +44,19 @@ kotlin {
 // from src/contracts (data types) and src/interfaces (Volume 3 interface
 // stubs) per the existing two-directory convention. See
 // docs/architecture/IMPLEMENTATION_GAPS.md.
+//
+// Sprint 10, Unit 4 (Production Composition Root) adds a fourth source
+// directory, src/composition (package parker.composition), deliberately
+// kept separate from src/runtime: the composition root constructs and
+// wires the runtime graph -- it is not itself a runtime component, holds
+// no domain responsibility, and per this Unit's own governing instruction
+// must not be mistaken for one of the frozen coordinators src/runtime
+// already contains. tests/composition mirrors it, matching the existing
+// tests/contracts + tests/runtime convention.
 sourceSets {
     main {
         kotlin {
-            srcDirs("src/contracts", "src/interfaces", "src/runtime")
+            srcDirs("src/contracts", "src/interfaces", "src/runtime", "src/composition")
             exclude(
                 "Agent.kt",
                 "AuditService.kt",
@@ -59,7 +68,7 @@ sourceSets {
     }
     test {
         kotlin {
-            srcDirs("tests/contracts", "tests/runtime")
+            srcDirs("tests/contracts", "tests/runtime", "tests/composition")
         }
     }
 }

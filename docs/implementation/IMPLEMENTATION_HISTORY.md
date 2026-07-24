@@ -1229,6 +1229,299 @@ Implementation Notes
 
 ---
 
+### Sprint 10 -- Production Composition Root (Unit 4) (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+**NOT YET VERIFIED.** This sandbox could not evaluate the Gradle project
+at all -- every project-evaluating `./gradlew`/`gradle` invocation
+(`tasks`, `compileKotlin`, `help`) hung past every available time budget,
+across offline/online, daemon/no-daemon, fresh `GRADLE_USER_HOME`,
+toolchain-auto-download-disabled, and file-system-watching-disabled
+combinations; `gradle --version` (skips project evaluation) returned
+normally in 6 seconds, and a plain directory copy to a native filesystem
+did not finish within the same budget, pointing to slow per-file I/O on
+the mounted project directory as the cause, not a Gradle/Kotlin defect.
+Full detail: `docs/implementation/PRODUCTION_COMPOSITION_ROOT_IMPLEMENTATION_PLAN.md`
+Section 10. **Static, honestly-disclosed projection: 646** (612 confirmed
+baseline after Unit 3 + 34 new test methods, net). This is a projection
+from rigorous manual review, not a verified result -- pending Steven's
+own Android Studio run, per PES-001 Stage 7.
+
+Summary
+- Implemented `docs/implementation/PRODUCTION_COMPOSITION_ROOT_IMPLEMENTATION_PLAN.md`
+  (Sprint 10, Unit 4), initiated directly by Steven. Added Parker's first
+  production composition root, `ParkerRuntime`
+  (`src/composition/ParkerRuntime.kt`), in a new `src/composition`
+  source directory (package `parker.composition`), deliberately separate
+  from `src/runtime` -- the composition root is not itself a runtime
+  component and holds no conversation-domain responsibility.
+- `ParkerRuntime` constructs a complete, real runtime graph from
+  already-existing, already-tested, unmodified production components
+  (`InMemoryResourceRegistry`, `InMemoryActionVocabulary`/`ActionMapper`,
+  `InMemoryToolRegistry`, `InMemoryModuleRegistry`,
+  `InMemoryToolInvocationBinding`, `InMemoryEventBus`,
+  `InMemoryIdentityService`, `DefaultPermissionPolicy`/`DefaultPermissionEngine`,
+  `DefaultExecutionPipeline`, `LocalTextChannelDeliverTool`,
+  `InMemoryCommunicationIntake`, `InMemoryConversationEngine`,
+  `ModelReasoningProvider`/`LocalHttpModelInferenceClient`,
+  `ConversationTurnReasoningCoordinator`,
+  `CommunicationConversationCoordinator`, `ResponseComposer`,
+  `ResponseDelivery`, `ReplyDeliveryCoordinator`,
+  `ConversationReplyCoordinator`), registers and activates this
+  runtime's system Principals and the configured owner, registers the
+  Local Text Channel module/Tool/action-vocabulary entry, and supplies
+  the one real Permission Policy rule (`NOTIFY` on `TOOL` ->
+  `APPROVED`/`AUTOMATIC`) required for that Tool to be reachable at all
+  -- `IMPLEMENTATION_GAPS.md` #25's own "policy content is a caller's
+  decision" now has its first real caller.
+- Exposes one production entry point, `submitOwnerMessage`, running a
+  real `InboundOwnerMessage` through the complete, unmodified pipeline
+  (`CommunicationIntake -> ConversationEngine -> ReasoningProvider ->
+  ResponseComposer -> ResponseDelivery -> ExecutionPipeline -> Tool
+  execution`), with Trust authorisation genuinely exercised, never
+  bypassed -- proven, not merely claimed, by a real-stack test asserting
+  the runtime's own log actually recorded "Execution authorised."
+- Added a composition-root-scoped typed failure model
+  (`ParkerRuntimeException`, 6 subtypes) and per-message outcome model
+  (`ParkerRuntimeOutcome`/`PipelineStage`) covering every production
+  failure category named for this Unit: missing/invalid configuration,
+  dependency construction failure, startup failure, model unavailability
+  (including the `TimeoutCancellationException`-vs-real-cancellation
+  distinction, handled explicitly), Tool failure, and graceful,
+  best-effort shutdown.
+- Added a minimal, dependency-free logging seam (`ParkerLogger`/
+  `ConsoleParkerLogger`) and three additive observability components
+  (`LoggingCommunicationIntake`, `LoggingReasoningProvider`,
+  `RuntimeEventLogger`) logging "Runtime starting/started/shutting
+  down/stopped," "Conversation accepted/rejected," "Reasoning completed,"
+  and "Execution authorised/denied"/"Reply delivered" -- each via
+  interface decoration or `EventBus` subscription, never by modifying a
+  frozen production file. "Reply composed" (one of the task's own
+  example log lines) is deliberately not independently logged --
+  `ResponseComposer` is non-interface-backed and non-`open`, by its own,
+  unmodified Contract Design; see the Implementation Plan's own Decision
+  3 for the full, disclosed reasoning.
+- Added `tests/composition/` (34 new test methods, net, across five test
+  files, plus one fixtures-only file): `ParkerRuntimeConfigLoaderTest.kt`
+  (9), `LoggingDecoratorsTest.kt` (9),
+  `ParkerRuntimeStartupAndShutdownTest.kt` (9),
+  `ParkerRuntimeConversationPipelineTest.kt` (4),
+  `ParkerRuntimeFailureHandlingTest.kt` (3); `CompositionTestFixtures.kt`
+  (`RecordingParkerLogger`, `RecordingOwnerNotificationSink`,
+  `StubModelServer` -- a local loopback HTTP server exercising
+  `LocalHttpModelInferenceClient`'s real, live HTTP path for the first
+  time in this repository's test suite, narrowing but not closing
+  `IMPLEMENTATION_GAPS.md` #53's own live-HTTP-path item).
+
+Implementation Notes
+- **No existing `src/contracts`, `src/interfaces`, `src/runtime`, or
+  `tests/` file was modified.** Every new file is an addition. The one
+  necessary exception is `build.gradle.kts`'s `sourceSets` block, changed
+  only to add `src/composition`/`tests/composition` -- no dependency,
+  plugin, or compiler-option change.
+- No new external Gradle dependency was added; `StubModelServer` uses
+  only `com.sun.net.httpserver`, part of the JDK standard library.
+- Every object `ParkerRuntime` constructs receives 100% of its own
+  dependencies via explicit constructor injection -- no service locator,
+  singleton, or global/static lookup exists anywhere in `src/composition`,
+  per this Unit's own explicit governing instruction. Verified by direct
+  code review, recorded in this Unit's own Post-Implementation Review,
+  Section 3.
+- No architecture, ADR, Constitution, or existing Scope Lock document was
+  modified.
+- This Unit's own verification could not be completed locally (see
+  "Android Studio Tests," above) -- this is disclosed prominently, not
+  minimised, and this Unit is not to be treated as accepted until
+  Steven's own Android Studio run confirms the projected count.
+- `docs/architecture/IMPLEMENTATION_GAPS.md` #53's "no production
+  composition root exists" item is now implemented (pending
+  verification) -- see that entry's own updated text for exactly what
+  this Unit closes and what remains open (`Goal`/Planner Runtime routing,
+  `ReasoningContext` assembly ownership, and the live-HTTP-path item,
+  narrowed but not closed).
+
+---
+
+### Sprint 10, Unit 4 -- Post-Verification Correction (diagnostic round)
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+**STILL NOT INDEPENDENTLY VERIFIED.** Steven's own first Android Studio
+run of Unit 4 reported 646 total, 641 passed, 5 failed, plus a compiler
+warning (relayed as "redundant `suspend` modifier,"
+`src/composition/ParkerRuntime.kt` ~line 340). The first correction
+attempt at that warning was itself wrong and **did not compile** --
+Steven's next Android Studio run caught this at compilation, before any
+test could run (see "Correction," below, for the exact two errors
+reported and the fix now applied). **Sprint 10 Unit 4 remains not
+accepted** pending Steven's own re-run confirming a clean, compiling,
+fully-passing result; nothing in this entry claims a passing verified
+result, static or otherwise, and this sandbox still cannot evaluate the
+Gradle project to check compilation independently.
+
+Root cause (all 5 failures, one shared cause):
+`kotlinx.coroutines.test.runTest`'s virtual-time scheduler auto-advances
+to the next scheduled delayed task (here, `ModelReasoningProvider.reason()`'s
+own, unmodified `withTimeout`) whenever it sees no other scheduler-tracked
+runnable work -- which is exactly the state a coroutine is in while
+genuinely suspended on a real, foreign-thread I/O callback (the JDK
+`java.net.http.HttpClient` call to `StubModelServer`, running on its own
+thread pool, outside `runTest`'s scheduler). The virtual scheduler fires
+the timeout before the real, fast loopback response or failure ever
+arrives, producing a spurious `TimeoutCancellationException` in place of
+the real outcome under test, uniformly across all five affected tests.
+This was a defect in the two affected test files' own use of `runTest`,
+not in any production file.
+
+Correction:
+- `tests/composition/ParkerRuntimeConversationPipelineTest.kt` and
+  `tests/composition/ParkerRuntimeFailureHandlingTest.kt`: replaced
+  `runTest` with `runBlocking` (real wall-clock time) for every test that
+  performs a real HTTP round-trip against `StubModelServer`, with KDoc
+  added to each file explaining why. No production file was changed to
+  make this correction -- the diagnosis found no defect in
+  `ModelReasoningProvider`, `LocalHttpModelInferenceClient`,
+  `TaggedReasoningResponseParser`, or `ConversationReplyCoordinator`.
+- One test name corrected to match its own (already-correct) assertion:
+  `ParkerRuntimeFailureHandlingTest`'s unreachable-model-endpoint test was
+  named "...with stage REASONING..." but its own assertion already
+  correctly checked `PipelineStage.UNKNOWN` (a connection refusal is an
+  `IOException`, not a `TimeoutCancellationException`) -- only the test's
+  own name was wrong; renamed to "...with stage UNKNOWN...".
+- Separately, addressing Android Studio's compiler warning (relayed as
+  "redundant `suspend` modifier," `ParkerRuntime.kt` ~line 340) went
+  through two attempts, the first of which was wrong and is recorded
+  here rather than silently replaced. **Attempt 1** extracted `stage` to
+  a top-level `internal inline fun` and dropped the outer `suspend`
+  keyword, on the reasoning that an `inline` function's only suspension
+  point (invoking its own `suspend`-typed `block` parameter) is spliced
+  into the caller's suspend context. **That reasoning was wrong and did
+  not compile**: Steven's next Android Studio run reported a hard error
+  -- `Suspend inline lambda parameters of non-suspend function type are
+  not supported`, plus `Suspended function 'invoke' should be called
+  only from a coroutine or another suspend function` -- because calling
+  a `suspend`-typed parameter is itself a suspending call requiring a
+  `Continuation`, which only a `suspend` function provides to its own
+  body; inlining does not remove that requirement. **Attempt 2** (current)
+  restores `stage` as `internal suspend inline fun`, with `block` marked
+  `crossinline` (Steven's own specified correction), preserving the
+  ability to inline `block` directly while keeping the enclosing function
+  correctly `suspend`. This project does not have the literal original
+  Android Studio warning text on file, only a paraphrase -- given that
+  removing the modifier produced a hard compile error rather than a
+  suppressible warning, the paraphrase most likely referred to something
+  other than `stage`'s own enclosing `suspend` keyword; this is not
+  re-diagnosed further without the literal compiler text.
+  Independently of both attempts, the same review surfaced a genuine
+  defect in `stage`'s exception handling: its `catch (e: Exception)`
+  clause caught `CancellationException` (a subtype of `Exception`) before
+  any more specific handler could, meaning a real coroutine cancellation
+  during `ParkerRuntime.start()` would have been incorrectly wrapped as
+  `ParkerRuntimeException.DependencyConstructionFailed` instead of
+  propagating. Fixed by adding `catch (e: CancellationException) { throw
+  e }` before the generic `Exception` clause, mirroring the ordering
+  `ParkerRuntime.start()`'s and `.shutdown()`'s own outer `try`/`catch`
+  blocks already used correctly -- unaffected by either attempt above. A
+  new, focused regression test file,
+  `tests/composition/StageCancellationTest.kt` (4 test methods), exercises
+  `stage()` directly: a `CancellationException` propagates unwrapped, an
+  ordinary exception is still wrapped as `DependencyConstructionFailed`
+  naming the stage, a `ParkerRuntimeException` is not double-wrapped, and
+  a successful block returns its value.
+- Net test count change: +4 (the new `StageCancellationTest.kt`), 0 tests
+  removed, 0 tests' expected outcomes changed -- every one of the 5
+  previously-failing tests keeps its own original expected outcome; only
+  the test harness's timing model (`runTest` -> `runBlocking`) changed.
+  **Updated static projection: 650** (646 previously projected + 4 new)
+  -- again a projection from manual review, not a verified result; this
+  sandbox still could not evaluate the Gradle project (re-confirmed
+  during this diagnostic round, same I/O-related limitation as before).
+
+This correction round is disclosed on the same terms as the original
+Unit 4 implementation: honestly, without claiming a verified result, and
+without beginning Sprint 11, committing, or pushing, pending Steven's own
+Android Studio re-run.
+
+---
+
+### Sprint 10, Unit 4 -- Third Correction Round (missing test discovery)
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+Steven's next Android Studio run reported compilation succeeding (the
+`stage()` correction above held) and **643 total, 643 passed, 0 failed**
+-- not the expected 650. **Sprint 10 Unit 4 remains not accepted.**
+
+Root cause (confirmed directly against the mounted build output, not
+just by arithmetic): the exact 7 tests converted from `runTest` to
+`runBlocking` in the prior correction round (4 in
+`ParkerRuntimeConversationPipelineTest.kt`, 3 in
+`ParkerRuntimeFailureHandlingTest.kt`) were **silently absent from
+discovery**, not failing -- confirmed by parsing the compiled
+`.class` files directly (`javap`/`kotlinc` unavailable in this sandbox;
+a minimal Python classfile parser was used instead): all 7 test methods
+had bytecode descriptor `()Ljava/lang/Void;` instead of the `()V` every
+other, correctly-discovered `@Test` method in this module has. Cause:
+every one of the 7 tests ends its `runBlocking { ... }` block with
+`runtime.shutdown()` as the last statement. `ParkerRuntime.shutdown()`'s
+own expression body (`= stateLock.withLock { ...
+firstFailure?.let { throw ... } }`) infers a return type of `Nothing?`,
+not `Unit` -- harmless in production, where the return value is never
+used, but since `runBlocking<T>` is generic (unlike `runTest`, whose
+`testBody` parameter type is fixed at `suspend TestScope.() -> Unit`,
+discarding the block's actual last-statement type regardless), each
+test function's own inferred return type followed `runBlocking`'s
+inferred `T = Nothing?`, compiling to `java.lang.Void` rather than
+`void`. JUnit Jupiter's own `@Test`-method discovery predicate
+(`IsTestableMethod`, backing `IsTestMethod`) requires a genuine
+`void`-returning method and silently excludes any method that isn't --
+not a failure, not an error, simply never discovered. `646 - 7 + 4 = 643`
+matches exactly because these were the only 7 tests with this shape.
+
+Correction: `tests/composition/ParkerRuntimeConversationPipelineTest.kt`
+and `tests/composition/ParkerRuntimeFailureHandlingTest.kt` -- each of
+the 7 `runBlocking { ... }` calls changed to `runBlocking<Unit> { ... }`,
+an explicit type argument. This forces `runBlocking`'s block parameter
+to a genuine `Unit`-returning function type, and Kotlin's "expected type
+Unit" convention (the same mechanism `runTest`'s own fixed-`Unit`
+`testBody` parameter already relied on) discards whatever value the
+block's last statement actually produces -- restoring `()V` regardless
+of `shutdown()`'s own inferred type. **No production file was changed**:
+`ParkerRuntime.shutdown()`'s `Nothing?` inference is not itself a
+demonstrated production defect (production callers never use its return
+value), so per Steven's own instruction the correction stayed entirely
+in the two test files. No assertion was removed or weakened; no test was
+combined; `runBlocking` (not `runTest`) is retained, as instructed.
+
+This sandbox has no `javap`/`kotlinc` and could not independently compile
+or run the corrected files (re-confirmed again this round, including an
+attempt to compile a minimal isolated reproduction of the same
+`Nothing?`-inference mechanism using the project's own bundled
+`kotlin-compiler-embeddable-1.9.24.jar`, blocked only by a missing
+transitive dependency this sandbox has no network access to fetch --
+not by any doubt about the mechanism itself, which was already confirmed
+directly from the compiled bytecode). **This Unit remains not accepted**,
+pending Steven's own Android Studio re-run confirming 650 total, 650
+passed, 0 failed, 0 skipped, BUILD SUCCESSFUL.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:
