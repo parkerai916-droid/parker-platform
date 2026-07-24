@@ -1,60 +1,90 @@
 package parker.core.interfaces
 
 /**
- * Reasoning Context Assembler contract (Sprint 11, Unit 3 -- Production
- * Reasoning Context Implementation), implementing exactly the shape
- * approved by `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
- * ("the Contract Design") Section 3, itself built on
- * `docs/implementation/PRODUCTION_REASONING_CONTEXT_SCOPE_LOCK.md`
- * ("the Scope Lock", frozen in Unit 1) and
- * `docs/implementation/PRODUCTION_REASONING_CONTEXT_IMPLEMENTATION_PLAN.md`.
- * No concept here is new: this file is the Contract Design's Section 3
- * illustrative signature promoted, unchanged, to real production code.
+ * The Resolved Inbound Envelope
+ * (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`, "the
+ * Continuity Contract Design", Sections 6 and 8; Sprint 11 Unit 5).
+ * Pairs an [InboundOwnerMessage] with the [ConversationId]
+ * [ConversationEngine.resolveConversationId] has already, authoritatively,
+ * decided for it -- before any [Turn] exists. Constructed exactly once per
+ * inbound message, by the Production Composition Root
+ * ([parker.composition.ParkerRuntime]), immediately after resolution and
+ * before [ReasoningContextAssembler.assemble] is invoked. No other
+ * component constructs or holds one.
+ *
+ * **Deliberately does not carry `isNewConversation` or any other
+ * disposition-shaped field** (Continuity Contract Design Section 6): this
+ * envelope commits to nothing about whether [conversationId] already had
+ * a Conversation recorded against it -- that remains
+ * [ConversationEngine.submitTurn]'s own, sole, later determination, from
+ * its own owned state. This envelope's only role is making the resolved
+ * identifier's *value* available before a Turn exists.
+ *
+ * @param message The original, unmutated inbound message.
+ * @param conversationId The identifier [ConversationEngine.resolveConversationId]
+ *   already produced for [message]'s own continuity key.
+ */
+data class ResolvedInboundMessage(
+    val message: InboundOwnerMessage,
+    val conversationId: ConversationId,
+)
+
+/**
+ * Reasoning Context Assembler contract, originally Sprint 11 Unit 3,
+ * revised by the Continuity Contract Design (Sprint 11 Unit 5) Sections
+ * 4.4, 5, 6, and 11 for the input-shape change described below. Built on
+ * `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+ * ("the Reasoning Context Contract Design").
  *
  * One operation, mirroring this codebase's own established convention --
  * [ConversationEngine], [ReasoningProvider], and [CommunicationIntake]
- * are each exactly one method (Contract Design Section 3).
+ * are each exactly one or two methods, never more (Reasoning Context
+ * Contract Design Section 3).
  *
- * **One input:** the raw [InboundOwnerMessage] -- and nothing else.
- * Contract Design Section 2 explains why: the Production Composition
- * Root invokes this Assembler *before*
- * `CommunicationConversationCoordinator.submitAndReason` runs, which is,
- * in turn, before [ConversationEngine.submitTurn] constructs a `Turn` --
- * no `Turn` exists yet at the point an implementation of this interface
- * runs.
+ * **One input, revised: [ResolvedInboundMessage], not a bare
+ * [InboundOwnerMessage].** This is an additive change to this interface's
+ * input shape only -- not a redesign of its responsibilities, ownership,
+ * determinism, statelessness, or side-effect-freedom, all of which are
+ * unchanged below. It exists because Question 2 of the Continuity
+ * Contract Design (making a `ConversationId` available before a Turn
+ * exists) requires this Assembler to be able to read the already-resolved
+ * identifier -- it still runs strictly before
+ * [ConversationEngine.submitTurn] constructs a `Turn`; no `Turn` exists
+ * yet at the point an implementation of this interface runs, exactly as
+ * before this revision.
  *
- * **One output:** a [ReasoningContext] -- the existing, frozen,
- * unmodified shape defined in `ReasoningProvider.kt`. This interface
- * introduces no new return type.
+ * **This interface never calls [ConversationEngine], directly or
+ * indirectly, in any implementation it authorises** (Continuity Contract
+ * Design Section 4.4, Frozen Fact 4): the [ConversationId] an
+ * implementation reads off [ResolvedInboundMessage] was resolved entirely
+ * by the Production Composition Root, before this interface's [assemble]
+ * was ever invoked. An implementation must perform no lookup, no
+ * resolution, and no mutation of that value -- it only reads it, exactly
+ * as it already reads other already-resolved inputs (an `IdentityService`
+ * resolution result, a `ToolRegistry` catalogue).
  *
- * **Ownership (Scope Lock Section 4, restated here as the contract's own
- * binding term).** An implementation of this interface is the sole
- * constructor of [ReasoningContext] in production. The Production
- * Composition Root ([parker.composition.ParkerRuntime]) is the sole
- * production invoker of [assemble]. No frozen coordinator between
- * `ParkerRuntime.submitOwnerMessage` and the Reasoning Provider
- * constructs one itself -- each already states, in its own governing
- * document, that it does not.
+ * **One output:** a [ReasoningContext] -- unchanged.
  *
- * **Contract principles (Contract Design Section 5), binding on every
- * implementation, not merely aspirational:** deterministic; stateless
- * (no mutable field retained between calls); side-effect free (never
- * writes to Memory, the World Model, `IdentityService`, `ToolRegistry`,
- * or anywhere else); assembles a projection only (Scope Lock Section 3)
- * -- it does not cache, persist, plan, invoke a Tool, invoke the
- * Permission Engine, or invoke the Execution Pipeline.
+ * **Ownership (Reasoning Context Scope Lock Section 4, restated here as
+ * the contract's own binding term).** An implementation of this interface
+ * is the sole constructor of [ReasoningContext] in production. The
+ * Production Composition Root ([parker.composition.ParkerRuntime]) is the
+ * sole production invoker of [assemble].
  *
- * **Failure behaviour (Contract Design Section 6).** An implementation
- * is not authorised to define its own error-handling mechanism. A
- * genuine failure during [assemble] is not caught here -- it propagates
- * unchanged to the Production Composition Root's own existing outer
- * `try`/`catch` (`ParkerRuntime.submitOwnerMessage`), exactly the same
- * "propagates unchanged to the caller" discipline every frozen
- * coordinator already holds itself to. An implementation must never
- * swallow such a failure to substitute a degraded-but-valid
- * [ReasoningContext] -- Contract Design Section 6 leaves that question
- * open for a future revision, not silently decided here.
+ * **Contract principles (Reasoning Context Contract Design Section 5),
+ * binding on every implementation, unchanged by this revision:**
+ * deterministic; stateless (no mutable field retained between calls);
+ * side-effect free (never writes to Memory, the World Model,
+ * `IdentityService`, `ToolRegistry`, `ConversationEngine`, or anywhere
+ * else); assembles a projection only -- it does not cache, persist, plan,
+ * invoke a Tool, invoke the Permission Engine, or invoke the Execution
+ * Pipeline.
+ *
+ * **Failure behaviour (Reasoning Context Contract Design Section 6),
+ * unchanged.** A genuine failure during [assemble] is not caught here --
+ * it propagates unchanged to the Production Composition Root's own
+ * existing outer `try`/`catch` (`ParkerRuntime.submitOwnerMessage`).
  */
 fun interface ReasoningContextAssembler {
-    suspend fun assemble(message: InboundOwnerMessage): ReasoningContext
+    suspend fun assemble(resolvedMessage: ResolvedInboundMessage): ReasoningContext
 }

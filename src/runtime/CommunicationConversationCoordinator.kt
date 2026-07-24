@@ -2,6 +2,7 @@ package parker.core.runtime
 
 import parker.core.interfaces.CommunicationIntake
 import parker.core.interfaces.CommunicationIntakeDisposition
+import parker.core.interfaces.ConversationId
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderResponse
@@ -42,6 +43,15 @@ import parker.core.interfaces.ReasoningProviderResponse
  * need must be met by a later Contract Design pass or an explicit,
  * disclosed additive-interface decision — not by silently promoting this
  * class into a public contract.
+ *
+ * **Revised Sprint 11 Unit 5 (Conversation Continuity Implementation):**
+ * [submitAndReason] gains one additive, pass-through [ConversationId]
+ * parameter, forwarded unchanged into
+ * [ConversationTurnReasoningCoordinator.submitTurnAndReason] --
+ * `docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` Section
+ * 5's own propagation path. This class does not inspect continuity
+ * policy, does not generate or resolve any identifier, and does not
+ * mutate the one it is given -- it only threads it through.
  *
  * **Decision 3 (whole reuse, not re-derivation).** This class depends on
  * [ConversationTurnReasoningCoordinator] as a single, opaque dependency,
@@ -98,12 +108,13 @@ class CommunicationConversationCoordinator(
     suspend fun submitAndReason(
         message: InboundOwnerMessage,
         reasoningContext: ReasoningContext,
+        conversationId: ConversationId,
     ): GatedOutcome<ReasoningProviderResponse> {
         val disposition = communicationIntake.submitInboundMessage(message)
 
         return when (disposition) {
             is CommunicationIntakeDisposition.Accepted -> GatedOutcome.Produced(
-                conversationTurnReasoningCoordinator.submitTurnAndReason(disposition.message, reasoningContext),
+                conversationTurnReasoningCoordinator.submitTurnAndReason(disposition.message, reasoningContext, conversationId),
             )
             is CommunicationIntakeDisposition.Rejected -> GatedOutcome.NotAccepted(disposition.reason)
         }

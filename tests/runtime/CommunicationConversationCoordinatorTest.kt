@@ -24,17 +24,20 @@ import kotlin.test.assertNotEquals
 
 /**
  * Sprint 7, Unit C2 (Communication-to-Conversation Wiring) acceptance
- * test, per
- * `docs/implementation/COMMUNICATION_TO_CONVERSATION_WIRING_IMPLEMENTATION_PLAN.md`
- * Section 6, covering [CommunicationConversationCoordinator] in
- * isolation. [CommunicationIntake] is reused through
- * [FakeCommunicationIntake]; [ConversationTurnReasoningCoordinator] is
- * real and unchanged, wired to a pass-through fake `ConversationEngine`
- * and [FakeReasoningProvider], so neither
- * [InMemoryCommunicationIntake]'s nor [InMemoryConversationEngine]'s own
- * internal logic is exercised here.
+ * test, revised Sprint 11 Unit 5 (Conversation Continuity Implementation):
+ * [CommunicationConversationCoordinator.submitAndReason] gains one
+ * additive, pass-through [ConversationId] parameter
+ * (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` Section
+ * 5). Covers [CommunicationConversationCoordinator] in isolation.
+ * [CommunicationIntake] is reused through [FakeCommunicationIntake];
+ * [ConversationTurnReasoningCoordinator] is real and unchanged, wired to a
+ * pass-through fake `ConversationEngine` and [FakeReasoningProvider], so
+ * neither [InMemoryCommunicationIntake]'s nor [InMemoryConversationEngine]'s
+ * own internal logic is exercised here.
  */
 class CommunicationConversationCoordinatorTest {
+
+    private val fixedConversationId = ConversationId("conv-1")
 
     private fun message(
         text: String = "hello",
@@ -50,14 +53,18 @@ class CommunicationConversationCoordinatorTest {
 
     /**
      * A `ConversationEngine` fake that wraps whatever [InboundOwnerMessage]
-     * it is given into a `Turn` unchanged -- mirrors
+     * and [ConversationId] it is given into a `Turn` unchanged -- mirrors
      * [InMemoryConversationEngine]'s own message pass-through behaviour,
-     * without exercising its identity-resolution logic, so tests here stay
-     * isolated to [CommunicationConversationCoordinator]'s own behaviour.
+     * without exercising its continuity-recognition logic, so tests here
+     * stay isolated to [CommunicationConversationCoordinator]'s own
+     * behaviour. `resolveConversationId` is never expected to be called by
+     * anything under test in this file.
      */
     private fun passThroughConversationEngine() = object : ConversationEngine {
-        override suspend fun submitTurn(message: InboundOwnerMessage): ConversationDisposition {
-            val conversationId = ConversationId("conv-1")
+        override suspend fun resolveConversationId(message: InboundOwnerMessage): ConversationId =
+            throw UnsupportedOperationException("not exercised by this coordinator's own tests")
+
+        override suspend fun submitTurn(message: InboundOwnerMessage, conversationId: ConversationId): ConversationDisposition {
             val turnId = TurnId("turn-1")
             return ConversationDisposition(
                 conversation = Conversation(
@@ -87,7 +94,7 @@ class CommunicationConversationCoordinatorTest {
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
         val context = ReasoningContext(listOf("prior context"))
 
-        val outcome = coordinator.submitAndReason(message(), context)
+        val outcome = coordinator.submitAndReason(message(), context, fixedConversationId)
 
         val produced = assertIs<GatedOutcome.Produced<ReasoningProviderResponse>>(outcome)
         val goal = assertIs<ReasoningProviderResponse.Goal>(produced.value)
@@ -95,6 +102,7 @@ class CommunicationConversationCoordinatorTest {
         assertEquals(1, communicationIntake.submitInboundMessageCallCount)
         assertEquals(1, reasoningProvider.reasonCallCount)
         assertEquals(context, reasoningProvider.lastRequest?.reasoningContext)
+        assertEquals(fixedConversationId, reasoningProvider.lastRequest?.turn?.conversationId)
     }
 
     @Test
@@ -104,7 +112,7 @@ class CommunicationConversationCoordinatorTest {
         val downstream = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
 
-        val outcome = coordinator.submitAndReason(message(), ReasoningContext(emptyList()))
+        val outcome = coordinator.submitAndReason(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         val produced = assertIs<GatedOutcome.Produced<ReasoningProviderResponse>>(outcome)
         val reply = assertIs<ReasoningProviderResponse.Reply>(produced.value)
@@ -119,7 +127,7 @@ class CommunicationConversationCoordinatorTest {
         val downstream = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
 
-        val outcome = coordinator.submitAndReason(message(), ReasoningContext(emptyList()))
+        val outcome = coordinator.submitAndReason(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         val produced = assertIs<GatedOutcome.Produced<ReasoningProviderResponse>>(outcome)
         assertIs<ReasoningProviderResponse.NoAction>(produced.value)
@@ -135,7 +143,7 @@ class CommunicationConversationCoordinatorTest {
         val downstream = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
 
-        val outcome = coordinator.submitAndReason(message(), ReasoningContext(emptyList()))
+        val outcome = coordinator.submitAndReason(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
         assertEquals("channel not enabled", notAccepted.reason)
@@ -154,7 +162,7 @@ class CommunicationConversationCoordinatorTest {
         val downstream = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
 
-        coordinator.submitAndReason(originalMessage, ReasoningContext(emptyList()))
+        coordinator.submitAndReason(originalMessage, ReasoningContext(emptyList()), fixedConversationId)
 
         val turnMessage = reasoningProvider.lastRequest?.turn?.message
         assertEquals(acceptedMessage, turnMessage)
@@ -170,7 +178,7 @@ class CommunicationConversationCoordinatorTest {
         val downstream = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
 
-        coordinator.submitAndReason(message(), ReasoningContext(emptyList()))
+        coordinator.submitAndReason(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         assertEquals(1, communicationIntake.submitInboundMessageCallCount)
         assertEquals(1, reasoningProvider.reasonCallCount)
@@ -186,7 +194,7 @@ class CommunicationConversationCoordinatorTest {
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
 
         assertFailsWith<IllegalStateException> {
-            coordinator.submitAndReason(message(), ReasoningContext(emptyList()))
+            coordinator.submitAndReason(message(), ReasoningContext(emptyList()), fixedConversationId)
         }
         assertEquals(0, reasoningProvider.reasonCallCount)
     }
@@ -199,7 +207,7 @@ class CommunicationConversationCoordinatorTest {
         val coordinator = CommunicationConversationCoordinator(communicationIntake, downstream)
 
         assertFailsWith<IllegalStateException> {
-            coordinator.submitAndReason(message(), ReasoningContext(emptyList()))
+            coordinator.submitAndReason(message(), ReasoningContext(emptyList()), fixedConversationId)
         }
     }
 
@@ -238,10 +246,12 @@ class CommunicationConversationCoordinatorTest {
         val firstOutcome = coordinator.submitAndReason(
             message(text = "first", correlationId = "corr-1", senderPrincipalId = "user-1"),
             ReasoningContext(emptyList()),
+            ConversationId("conv-user-1"),
         )
         val secondOutcome = coordinator.submitAndReason(
             message(text = "second", correlationId = "corr-2", senderPrincipalId = "user-2"),
             ReasoningContext(emptyList()),
+            ConversationId("conv-user-2"),
         )
 
         val firstReply = assertIs<ReasoningProviderResponse.Reply>(

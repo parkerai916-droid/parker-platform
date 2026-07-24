@@ -2207,3 +2207,46 @@ both bear directly on this gap's own open items:
   survive between tool calls in this sandbox, confirmed directly). **This
   Unit remains not accepted; this gap remains Open**, pending Steven's
   own Android Studio run.
+
+**Update (Sprint 11, Unit 5 -- Conversation Continuity Implementation):**
+implements the corrected, approved
+`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` --
+see `docs/implementation/IMPLEMENTATION_HISTORY.md`'s own "Unit 5 --
+Conversation Continuity Implementation" entry for the full change list.
+Restated here since it bears directly on this gap's own open items and on
+two earlier disclosed limitations:
+
+- **`ConversationEngine`'s own continuity recognition (Architecture
+  Section 13 Item 3, open since Sprint 7; Contract Design Section 3, open
+  since Sprint 7) is now closed for the base case.** Real, stateful
+  continuity recognition is implemented: one continuing Conversation per
+  `(channelId, senderPrincipalId)` pair. `InMemoryConversationEngine`'s own
+  prior "every Turn begins a new Conversation" scaffolding (Sprint 7's
+  "Required Implementation Decision 1") is retired.
+- **The "Current conversation" item this gap's own Sprint 11 Unit 3 entry
+  above records as unrendered is now partially rendered.**
+  `DefaultReasoningContextAssembler` now renders a resolved
+  `ConversationId` value (`"Current conversation: <id>"`) -- **prior Turns
+  / conversation history are still not rendered.** That remains
+  Conversation History Source's own, separately-scoped, still entirely
+  unimplemented future boundary -- this Unit provides the `ConversationId`
+  a future Conversation History Source read will need as its own key, and
+  does not itself read any history.
+- **Termination, expiry, and reopening (Architecture Section 13 Item 4)
+  remain open, and now matter more than before.** Absent a termination
+  rule, a continuity key's active Conversation, once opened, persists
+  indefinitely -- disclosed directly in the Contract Design's own Section
+  3 and Section 7, not discovered as a side effect here.
+- **Multi-channel Conversation span (Architecture Section 13 Item 5)
+  remains open**, and is now implicitly foreclosed by the continuity key's
+  own `channelId` component -- a future revision to the recognition rule
+  itself, not merely to `ConversationEngine`'s implementation, would be
+  required to change this.
+- **Verification remains unresolved, unchanged in kind from every prior
+  entry in this chain:** this sandbox still cannot complete a Gradle
+  build/test run (same diagnosed limitation as above). Per this Unit's
+  own task instructions, Steven will run the complete test suite and
+  report results; this Unit's own correctness claims rest on direct,
+  repeated re-reading of every changed file and a repository-wide search
+  confirming no remaining caller of any old signature, not on a passing
+  local build. **This Unit remains not accepted; this gap remains Open.**

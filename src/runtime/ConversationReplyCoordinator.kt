@@ -1,5 +1,6 @@
 package parker.core.runtime
 
+import parker.core.interfaces.ConversationId
 import parker.core.interfaces.ExecutionResult
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ReasoningContext
@@ -24,6 +25,15 @@ import parker.core.interfaces.ReasoningContext
  * [CommunicationConversationCoordinator] itself; reply composition and
  * delivery remain inside [ReplyDeliveryCoordinator] itself. This class
  * only sequences the two.
+ *
+ * **Revised Sprint 11 Unit 5 (Conversation Continuity Implementation):**
+ * [submitAndDeliver] gains one additive, pass-through [ConversationId]
+ * parameter, forwarded unchanged into
+ * [CommunicationConversationCoordinator.submitAndReason] --
+ * `docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` Section
+ * 5's own propagation path. This class does not inspect continuity
+ * policy, does not generate or resolve any identifier, and does not
+ * mutate the one it is given.
  *
  * **Sequencing (Scope Lock Section 10/Section 11).** [submitAndDeliver]
  * calls [CommunicationConversationCoordinator.submitAndReason] exactly
@@ -85,8 +95,9 @@ class ConversationReplyCoordinator(
     suspend fun submitAndDeliver(
         message: InboundOwnerMessage,
         reasoningContext: ReasoningContext,
+        conversationId: ConversationId,
     ): GatedOutcome<ExecutionResult> {
-        val reasoned = communicationConversationCoordinator.submitAndReason(message, reasoningContext)
+        val reasoned = communicationConversationCoordinator.submitAndReason(message, reasoningContext, conversationId)
         return when (reasoned) {
             is GatedOutcome.NotAccepted -> reasoned
             is GatedOutcome.Produced -> replyDeliveryCoordinator.composeAndDeliver(message, reasoned.value)

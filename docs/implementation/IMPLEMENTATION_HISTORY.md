@@ -1811,6 +1811,173 @@ Sections 5 and 9) rather than introducing new architectural decisions.
 
 ---
 
+### Unit 5 -- Conversation Continuity Implementation (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+**Governance chain.** Conversation Identity Architecture (governance) ->
+Conversation Continuity and Pre-Turn Identity Contract Design -> a
+Contract Authority and Propagation Correction pass (architectural review
+found the original Contract Design's derivation model and "unchanged
+`ConversationEngine` interface" claim jointly unsatisfiable) -> a second
+correction freezing four Binding Guarantees explicitly -> this
+Implementation Unit, which realises the corrected, approved Contract
+Design (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`)
+in real Kotlin.
+
+**Selected model, restated from the approved Contract Design.** Resolved
+identity, not derived identity: `(channelId, senderPrincipalId)` is a
+continuity key, looked up (or minted, if absent) against
+`ConversationEngine`'s own owned state -- never a pure function of the key
+alone, because that would foreclose termination/reopening permanently.
+`ConversationEngine` remains the sole authority for both continuity
+recognition and identifier minting; `ParkerRuntime` orchestrates the call
+but decides nothing.
+
+**Production changes.**
+
+- `src/interfaces/ConversationEngine.kt` -- `ConversationEngine` gains
+  `suspend fun resolveConversationId(message: InboundOwnerMessage): ConversationId`
+  (new); `submitTurn` gains a required `conversationId: ConversationId`
+  parameter and no longer decides identity itself.
+  `ConversationDisposition.isNewConversation`'s own KDoc updated to reflect
+  why it is still needed once the caller does supply a `ConversationId`.
+- `src/runtime/InMemoryConversationEngine.kt` -- no longer stateless (its
+  own prior KDoc's "Required Implementation Decision 1" is retired). Holds
+  two private, `kotlinx.coroutines.sync.Mutex`-guarded maps: continuity key
+  -> active `ConversationId`, and `ConversationId` -> `Conversation` record.
+  `resolveConversationId` is atomic and idempotent-while-active (Binding
+  Guarantees 1-2) -- the entire check-or-mint sequence runs inside one
+  `withLock` block. `submitTurn` validates the supplied `conversationId` is
+  the exact active identifier for the message's own continuity key,
+  throwing `IllegalArgumentException` (this repository's own established
+  convention for a caller-supplied precondition failure -- see "Exception
+  decision" below) if it is unknown or belongs to a different key --
+  Guarantee 3, never re-resolving, never substituting. No termination,
+  expiry, reopening, or cleanup policy is implemented (explicitly out of
+  scope, disclosed in the Contract Design's own Section 7); an opened
+  continuity key's mapping remains active indefinitely.
+- `src/interfaces/ReasoningContextAssembler.kt` -- new
+  `ResolvedInboundMessage(message, conversationId)` data class (the
+  Contract Design's own "Resolved Inbound Envelope"). `ReasoningContextAssembler.assemble`'s
+  input changes from a bare `InboundOwnerMessage` to this envelope --
+  additive, not a redesign of the interface's responsibilities,
+  determinism, statelessness, or side-effect-freedom.
+- `src/runtime/DefaultReasoningContextAssembler.kt` -- adapted to the new
+  input; additionally now renders a "Current conversation: <id>" entry,
+  reading `resolvedMessage.conversationId` directly, with no lookup, no
+  resolution, and no `ConversationEngine` dependency of any kind.
+- `src/runtime/ConversationTurnReasoningCoordinator.kt`,
+  `src/runtime/CommunicationConversationCoordinator.kt`,
+  `src/runtime/ConversationReplyCoordinator.kt` -- each gains one additive,
+  pass-through `conversationId: ConversationId` parameter on its one public
+  method, forwarded unchanged to the next component in the chain, exactly
+  mirroring the precedent already set when `reasoningContext` itself was
+  threaded through these same three coordinators in Sprint 11 Unit 3. None
+  of the three inspects continuity policy, generates or resolves any
+  identifier, or mutates the one it is given.
+- `src/composition/ParkerRuntime.kt` -- `submitOwnerMessage` now calls
+  `conversationEngine.resolveConversationId(message)` exactly once, as the
+  first action inside its `try` block, before constructing the
+  `ResolvedInboundMessage` envelope and invoking the Assembler; logs one
+  new `INFO` line, "Conversation continuity resolved (correlationId=...,
+  conversationId=...)", mirroring the existing "Reasoning Context
+  assembled" precedent, and giving `tests/composition` a direct way to
+  verify resolution happens exactly once, and before assembly, without a
+  test-only constructor parameter. `ConversationEngine` is now held as a
+  class field (previously a local value inside `buildAndRegisterRuntimeGraph`),
+  since `submitOwnerMessage` needs to call it directly. On a resolution
+  failure, no envelope is constructed and the fault falls straight through
+  to this method's own existing outer `try`/`catch`, unchanged --
+  Guarantee 4.
+
+**Exception decision (narrowest-existing-mechanism review, performed
+before implementing rejection behaviour, per this Unit's own task
+instructions).** Searched for existing Conversation Engine exceptions,
+domain error types, pipeline failure mappings, and failure-stage
+conventions. Found: this repository's own established convention (stated
+directly in `ParkerRuntimeException.kt`'s own KDoc) is that
+`IdentityService`, `ModuleRegistry`, and `ToolRegistry` all throw plain
+JVM exceptions directly for caller-misuse/precondition failures, rather
+than returning a sealed result or defining a bespoke exception hierarchy;
+`InMemoryModuleRegistry` throws `IllegalStateException` for an invalid
+state transition and `NoSuchElementException` for a registry-lookup miss;
+`GatedOutcome.NotAccepted`'s own `init` throws `IllegalArgumentException`
+for a blank, caller-supplied value; `InMemoryConversationEngine` itself
+already throws `IllegalStateException` for a different precondition
+failure (missing operating Principal). No sealed exception hierarchy
+exists for any in-`src/runtime` component -- `ParkerRuntimeException` is a
+deliberately different, outer, composition-root-only boundary
+(`ParkerRuntimeException.kt`'s own KDoc states this explicitly). Decision:
+`InMemoryConversationEngine.submitTurn` throws `IllegalArgumentException`
+(via `require`) for an unknown-or-mismatched supplied `conversationId` --
+the narrowest, most consistent choice, not a new exception type. This
+fault is never caught by any coordinator between it and
+`ParkerRuntime.submitOwnerMessage`'s own existing outer `catch (e:
+Exception)`, which classifies it `PipelineStage.UNKNOWN` -- the same,
+already-correct classification `ParkerRuntimeOutcome.kt`'s own KDoc
+documents for every non-`REASONING`-stage fault, requiring no change to
+`ParkerRuntimeOutcome.kt` or `PipelineStage` itself.
+
+**Concurrency.** One private `Mutex` in `InMemoryConversationEngine`,
+guarding only the continuity-key/Conversation-record map reads and writes
+inside `resolveConversationId` and `submitTurn` -- never held across
+`identityService.resolve` (a separate precondition check, not continuity
+state) and never held across anything downstream of this class (reasoning,
+model invocation, response composition/delivery all happen in later,
+unrelated calls this class has no reference to). No per-key lock, no lock
+registry -- per this Unit's own instruction, correctness is this
+revision's concern, not throughput, absent evidence of contention.
+
+**Tests.** Six files identified during the mandatory migration-impact
+review were updated for the new signatures: `InMemoryConversationEngineTest.kt`,
+`ConversationTurnReasoningCoordinatorTest.kt`,
+`CommunicationConversationCoordinatorTest.kt`,
+`ConversationReplyCoordinatorTest.kt`,
+`DefaultReasoningContextAssemblerTest.kt`,
+`ParkerRuntimeReasoningContextIntegrationTest.kt`. New coverage added:
+resolution semantics (fresh key, repeated resolution, different channel,
+different sender, `CorrelationId` and message-content independence);
+concurrency (50 concurrent resolutions for one key collapse to one
+identifier; multiple keys resolved concurrently remain independent, using
+`kotlinx.coroutines.test.runTest` with `async`/`awaitAll`, no
+timing-based sleeps); submission validation (accepted, unknown rejected,
+cross-key rejected, rejection creates no Turn, rejection does not
+substitute another identifier); a rejection propagation test at the
+`ConversationTurnReasoningCoordinator` layer (reasoning never reached when
+`submitTurn` rejects); and three `ParkerRuntime`-level integration tests
+(resolves exactly once and before assembly; the same resolved identifier
+reaches the Assembler's own rendered prompt and stays stable across
+repeated messages from the same owner/channel; the created Turn is bound
+to the exact identifier resolved upstream).
+
+**Disclosed test gap, not silently omitted.** "Resolution failure stops
+the pipeline" (Guarantee 4) is verified directly at the coordinator layer
+(a rejecting `ConversationEngine` fake), and is additionally guaranteed
+structurally by Kotlin's own exception semantics at the `ParkerRuntime`
+layer (`resolveConversationId` is the first statement inside
+`submitOwnerMessage`'s `try` block; any exception it throws necessarily
+skips every subsequent statement in that block, including envelope
+construction, Assembler invocation, and `submitAndDeliver`). It is **not**
+independently exercised by a forced-failure integration test against the
+real, running `ParkerRuntime`: `InMemoryConversationEngine.resolveConversationId`
+can only fail today via a missing operating-Principal registration, and
+`ParkerRuntime.start()` always registers that Principal itself -- there is
+no reachable path to a real resolution failure through the full,
+real-`ParkerRuntime` pipeline without an injectable `ConversationEngine`
+seam this Unit was not authorised to add. Recorded here rather than
+glossed over.
+
+**Build/test verification.** Not performed by this Unit -- consistent with
+this session's own repeatedly-diagnosed sandbox limitation (Gradle project
+evaluation cannot complete in this environment) and this Unit's own task
+instructions ("Steven will run the complete test suite in the available
+environment"). Every change above was verified by direct, repeated
+re-reading of the edited files and a repository-wide grep for every
+remaining call site of the four changed method signatures, confirming no
+`.kt` file under `src/` or `tests/` other than the ones named above
+references the old signatures.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

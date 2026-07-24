@@ -14,12 +14,15 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * Sprint 11, Unit 3 integration test: confirms
+ * Sprint 11, Unit 3 integration test, extended Sprint 11 Unit 5
+ * (Conversation Continuity Implementation): confirms
  * `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 9's three
- * numbered guarantees hold against the real, running
- * [ParkerRuntime] -- not merely against [DefaultReasoningContextAssembler]
+ * numbered guarantees, plus the Continuity Contract Design's own
+ * propagation path (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`
+ * Section 5), hold against the real, running [ParkerRuntime] -- not merely
+ * against [DefaultReasoningContextAssembler] or [InMemoryConversationEngine]
  * in isolation (see `tests/runtime/DefaultReasoningContextAssemblerTest.kt`
- * for that).
+ * and `tests/runtime/InMemoryConversationEngineTest.kt` for those).
  *
  * Uses `runBlocking<Unit>`, not `kotlinx.coroutines.test.runTest`, for the
  * identical, already-documented reason
@@ -123,6 +126,90 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         assertTrue(logger.hasMessageContaining("Execution authorised"))
         assertTrue(logger.hasMessageContaining("Reasoning completed"))
         assertTrue(logger.hasMessageContaining("Conversation accepted"))
+
+        runtime.shutdown()
+    }
+
+    // --- Sprint 11 Unit 5: Runtime integration for Conversation Continuity ---
+
+    @Test
+    fun `ParkerRuntime resolves conversation continuity exactly once per inbound message, before ReasoningContext assembly`() = runBlocking<Unit> {
+        val stub = startStub("REPLY: sure thing")
+        val logger = RecordingParkerLogger()
+        val runtime = ParkerRuntime(configFor(stub), logger)
+        runtime.start()
+
+        runtime.submitOwnerMessage(message(text = "first request", correlationId = "corr-continuity-first"))
+        runtime.submitOwnerMessage(message(text = "second request", correlationId = "corr-continuity-second"))
+
+        val resolvedLogs = logger.messages(LogLevel.INFO).filter { it.startsWith("Conversation continuity resolved") }
+        val assembledLogs = logger.messages(LogLevel.INFO).filter { it.startsWith("Reasoning Context assembled") }
+        assertEquals(2, resolvedLogs.size, "expected resolution exactly once per inbound message")
+        assertTrue(resolvedLogs.any { "corr-continuity-first" in it })
+        assertTrue(resolvedLogs.any { "corr-continuity-second" in it })
+
+        // Resolution before assembly: every INFO line up to and including the second
+        // "resolved" line must appear before the second "assembled" line in the same order.
+        val allInfo = logger.messages(LogLevel.INFO)
+        val secondResolvedIndex = allInfo.indexOfLast { it.startsWith("Conversation continuity resolved") }
+        val firstAssembledIndex = allInfo.indexOfFirst { it.startsWith("Reasoning Context assembled") }
+        assertTrue(
+            allInfo.indexOfFirst { it.startsWith("Conversation continuity resolved") } < firstAssembledIndex,
+            "resolution must occur before the first assembly",
+        )
+        assertTrue(secondResolvedIndex >= 0 && assembledLogs.size == 2)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `the same resolved ConversationId reaches the Assembler's own prompt and remains stable across repeated messages from the same owner and channel`() = runBlocking<Unit> {
+        val stub = startStub("REPLY: sure thing")
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        runtime.submitOwnerMessage(message(text = "first request", correlationId = "corr-stable-first"))
+        runtime.submitOwnerMessage(message(text = "second request", correlationId = "corr-stable-second"))
+
+        assertEquals(2, stub.receivedRequestBodies.size)
+        val firstPrompt = stub.receivedRequestBodies[0]
+        val secondPrompt = stub.receivedRequestBodies[1]
+
+        val conversationLinePattern = Regex("Current conversation: (\\S+)")
+        val firstConversationId = conversationLinePattern.find(firstPrompt)?.groupValues?.get(1)
+        val secondConversationId = conversationLinePattern.find(secondPrompt)?.groupValues?.get(1)
+
+        assertTrue(firstConversationId != null, "prompt did not carry a 'Current conversation' entry: $firstPrompt")
+        assertEquals(
+            firstConversationId,
+            secondConversationId,
+            "two messages from the same owner and channel must resolve to the same Conversation, and the " +
+                "Assembler's own rendered entry must reflect it -- proving the same identifier the composition " +
+                "root resolved reached the Assembler's own input unchanged",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `the created Turn is bound to the exact ConversationId the composition root resolved`() = runBlocking<Unit> {
+        val stub = startStub("REPLY: sure thing")
+        val logger = RecordingParkerLogger()
+        val runtime = ParkerRuntime(configFor(stub), logger)
+        runtime.start()
+
+        runtime.submitOwnerMessage(message(text = "what tools do you have?", correlationId = "corr-turn-binding"))
+
+        val resolvedLine = logger.messages(LogLevel.INFO).single { it.startsWith("Conversation continuity resolved") }
+        val resolvedConversationId = Regex("conversationId=(\\S+)\\)").find(resolvedLine)?.groupValues?.get(1)
+        val prompt = stub.receivedRequestBodies.single()
+
+        assertTrue(resolvedConversationId != null)
+        assertTrue(
+            "Current conversation: $resolvedConversationId" in prompt,
+            "the ConversationId resolved for this message ($resolvedConversationId) must be the exact one " +
+                "later used to construct the Turn and reach the Assembler's own rendered entry: $prompt",
+        )
 
         runtime.shutdown()
     }

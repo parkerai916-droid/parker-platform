@@ -7,6 +7,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
+import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
@@ -20,6 +21,7 @@ import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContextAssembler
+import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.ResourceType
 import parker.core.runtime.ActionMapper
 import parker.core.runtime.CommunicationConversationCoordinator
@@ -141,6 +143,7 @@ class ParkerRuntime(
         private set
 
     private lateinit var reasoningContextAssembler: ReasoningContextAssembler
+    private lateinit var conversationEngine: ConversationEngine
     private lateinit var conversationReplyCoordinator: ConversationReplyCoordinator
     private lateinit var runtimeEventLogger: RuntimeEventLogger
 
@@ -275,7 +278,7 @@ class ParkerRuntime(
             InMemoryCommunicationIntake(moduleRegistry, identityService),
             logger,
         )
-        val conversationEngine = InMemoryConversationEngine(identityService)
+        conversationEngine = InMemoryConversationEngine(identityService)
 
         val reasoningProvider = stage("Reasoning Provider construction") {
             LoggingReasoningProvider(
@@ -347,35 +350,54 @@ class ParkerRuntime(
      * unmodified terms.
      *
      * **Reasoning Context assembly (Sprint 11, Unit 3).** This method
-     * invokes [reasoningContextAssembler]`.assemble(message)` exactly
-     * once, as the first action it takes after confirming
+     * invokes [reasoningContextAssembler]`.assemble(...)` exactly once, as
+     * the first action it takes after confirming
      * [RuntimeLifecycleState.RUNNING] and before its one call to
-     * [ConversationReplyCoordinator.submitAndDeliver] --
-     * `PRODUCTION_REASONING_CONTEXT_SEQUENCE.md` Section 3's own
-     * production call site, now real. The resulting `ReasoningContext` is
-     * passed, unchanged, into `submitAndDeliver`. This retires the
-     * previous always-empty `reasoningContext: ReasoningContext =
-     * ReasoningContext(emptyList())` default parameter this method used
-     * to accept -- `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
-     * Section 9 explicitly left "whether the default is retired once the
-     * Assembler exists, or preserved for callers that supply their own
-     * context" to this implementation Unit's own decision. It is retired,
-     * not preserved: a caller-suppliable override would make "the
-     * Assembler is invoked exactly once per inbound message" a
-     * conditional guarantee (true only when a caller omits the argument)
-     * rather than the unconditional one this Unit's own required
-     * acceptance tests verify. No existing caller in this repository ever
-     * supplied an explicit `reasoningContext` argument (confirmed by
-     * direct search of every `submitOwnerMessage` call site under
-     * `tests/`), so this narrowing changes no existing call site's
-     * compilation. Logs one `INFO` line, "Reasoning Context assembled
+     * [ConversationReplyCoordinator.submitAndDeliver]. The resulting
+     * `ReasoningContext` is passed, unchanged, into `submitAndDeliver`.
+     * Logs one `INFO` line, "Reasoning Context assembled
      * (correlationId=...)", immediately after the call -- mirroring
      * `CommunicationConversationCoordinator`'s "Conversation accepted"
      * and `ModelReasoningProvider`'s "Reasoning completed" INFO logs this
      * method's own caller-facing pipeline already relies on for
-     * observability, and giving `tests/composition` a direct way to
-     * verify "invoked exactly once per inbound message" without adding a
-     * test-only constructor parameter to this class.
+     * observability.
+     *
+     * **Conversation continuity resolution (Sprint 11, Unit 5 --
+     * Conversation Continuity Implementation).** Before assembling
+     * `ReasoningContext` at all, this method now calls
+     * [conversationEngine]`.resolveConversationId(message)` exactly
+     * once -- the one authoritative continuity decision for this inbound
+     * message (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`
+     * ("the Continuity Contract Design") Section 5, propagation path,
+     * step 1). This method makes no decision of its own here: it only
+     * invokes the authority ([ConversationEngine] alone decides continuity
+     * and mints identifiers) and carries the result forward. Logs one
+     * `INFO` line, "Conversation continuity resolved (correlationId=...,
+     * conversationId=...)", immediately after the call -- mirroring the
+     * "Reasoning Context assembled" precedent above, and giving
+     * `tests/composition` a direct way to verify resolution happens
+     * exactly once, and before assembly, without a test-only constructor
+     * parameter. The resolved
+     * [parker.core.interfaces.ConversationId] is wrapped, together with
+     * the original, unmutated `message`, into a
+     * [ResolvedInboundMessage] (Continuity Contract Design Section 6) --
+     * constructed exactly once per inbound message, by this method alone
+     * -- which becomes the Assembler's own input. This same resolved
+     * identifier is then forwarded, unchanged, as an additional argument
+     * to [ConversationReplyCoordinator.submitAndDeliver], propagating
+     * through the unchanged coordinator chain to
+     * [ConversationEngine.submitTurn] (Continuity Contract Design Section
+     * 5, propagation path, steps 2-7) -- never recomputed, never
+     * re-resolved, anywhere downstream of this one call.
+     *
+     * **Resolution failure (Continuity Contract Design Section 5.1,
+     * Guarantee 4).** If `resolveConversationId` throws, this method
+     * constructs no [ResolvedInboundMessage], never invokes the
+     * Assembler, and the fault falls straight through to this method's
+     * own existing outer `try`/`catch` below, exactly as any other
+     * pipeline-stage fault already does -- reported as
+     * [ParkerRuntimeOutcome.Failed] with [PipelineStage.UNKNOWN], never
+     * silently converted into "begin a new Conversation instead."
      *
      * Throws [ParkerRuntimeException.NotRunning] if [state] is not
      * [RuntimeLifecycleState.RUNNING].
@@ -416,9 +438,12 @@ class ParkerRuntime(
         }
 
         return try {
-            val reasoningContext = reasoningContextAssembler.assemble(message)
+            val conversationId = conversationEngine.resolveConversationId(message)
+            logger.info("Conversation continuity resolved (correlationId=${message.correlationId.value}, conversationId=${conversationId.value})")
+            val resolvedMessage = ResolvedInboundMessage(message, conversationId)
+            val reasoningContext = reasoningContextAssembler.assemble(resolvedMessage)
             logger.info("Reasoning Context assembled (correlationId=${message.correlationId.value})")
-            when (val outcome = conversationReplyCoordinator.submitAndDeliver(message, reasoningContext)) {
+            when (val outcome = conversationReplyCoordinator.submitAndDeliver(message, reasoningContext, conversationId)) {
                 is GatedOutcome.NotAccepted -> {
                     logger.info("Conversation not accepted for delivery (correlationId=${message.correlationId.value}, reason=${outcome.reason})")
                     ParkerRuntimeOutcome.NotAccepted(outcome.reason)

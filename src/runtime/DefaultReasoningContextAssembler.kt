@@ -1,15 +1,17 @@
 package parker.core.runtime
 
 import parker.core.interfaces.IdentityService
-import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningContextAssembler
+import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.ToolRegistry
 
 /**
- * Default, production [ReasoningContextAssembler] implementation
- * (Sprint 11, Unit 3), implementing exactly what
- * `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+ * Default, production [ReasoningContextAssembler] implementation, Sprint
+ * 11 Unit 3, revised Sprint 11 Unit 5 (Conversation Continuity
+ * Implementation) for the [ResolvedInboundMessage] input-shape change
+ * described in [ReasoningContextAssembler]'s own KDoc. Implements exactly
+ * what `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
  * ("the Contract Design") Section 4.3 authorises -- constructor injection
  * of [identityService] and [toolRegistry] only. **No** Memory Source,
  * World Model Source, or Conversation History Source dependency exists
@@ -17,10 +19,10 @@ import parker.core.interfaces.ToolRegistry
  * named, future boundary this Unit is not authorised to design or work
  * around, and none is added here by injecting a broader existing
  * component (in particular, [parker.core.interfaces.ConversationEngine]
- * is deliberately never referenced by this class -- injecting it would
- * hand this Assembler the ability to call `submitTurn`, a mutating
- * operation flatly incompatible with Statelessness and Side-effect
- * freedom, Contract Design Section 5).
+ * is deliberately never referenced by this class, even after Unit 5's own
+ * revision -- the [parker.core.interfaces.ConversationId] this class reads
+ * off [ResolvedInboundMessage] was already resolved elsewhere; this class
+ * performs no lookup, no resolution, and no mutation of it).
  *
  * Holds only its two collaborators as fields -- no cache of any prior
  * resolution, no mutable state of any kind (Contract Design Section 5,
@@ -31,11 +33,11 @@ import parker.core.interfaces.ToolRegistry
  *
  * Per Contract Design Section 2, four of the seven Scope Lock Section 1
  * items require no dependency at all -- each is already a field on the
- * one input parameter:
+ * one input:
  *
- * - "Current request" -- [InboundOwnerMessage.text].
- * - "Active communication channel" -- [InboundOwnerMessage.channelId].
- * - "Current time" -- [InboundOwnerMessage.timestamp].
+ * - "Current request" -- `InboundOwnerMessage.text`.
+ * - "Active communication channel" -- `InboundOwnerMessage.channelId`.
+ * - "Current time" -- `InboundOwnerMessage.timestamp`.
  *
  * Two more collapse into a single rendered entry today:
  *
@@ -63,16 +65,20 @@ import parker.core.interfaces.ToolRegistry
  *   lookup ([ToolRegistry]'s own KDoc), out of bounds for this Assembler
  *   (Contract Design Section 4.1).
  *
- * One item is **not** rendered at all:
+ * One item, revised by Sprint 11 Unit 5, is now rendered from the
+ * envelope directly, with no dependency at all:
  *
- * - "Current conversation" (prior Turns) -- Contract Design Section 4.2
- *   names a Conversation History Source boundary but confirms no
- *   existing interface in this codebase can supply it without handing
- *   this Assembler a mutating `ConversationEngine` reference. This class
- *   does not work around that gap; the assembled [ReasoningContext]
- *   simply carries no "current conversation" entry until a future Unit
- *   defines that boundary. Documented in `IMPLEMENTATION_GAPS.md`, not
- *   silently omitted.
+ * - "Current conversation" -- rendered as the resolved
+ *   `ConversationId`'s own value only (`resolvedMessage.conversationId`),
+ *   never prior Turns, never conversation history. Continuity Contract
+ *   Design Section 4.4 authorises this class to *read* the already-resolved
+ *   identifier; it does not authorise a history read, which remains a
+ *   real, named, future Conversation History Source boundary this Unit
+ *   is not authorised to design or work around (`IMPLEMENTATION_GAPS.md`,
+ *   Gap #53 or successor). No lookup, no `ConversationEngine` call, and
+ *   no mutation occur to produce this entry -- it is a direct projection
+ *   of a value already present on this method's own input, exactly like
+ *   "Current time" or "Current request" above.
  *
  * ## Failure behaviour
  *
@@ -97,7 +103,8 @@ class DefaultReasoningContextAssembler(
     private val toolRegistry: ToolRegistry,
 ) : ReasoningContextAssembler {
 
-    override suspend fun assemble(message: InboundOwnerMessage): ReasoningContext {
+    override suspend fun assemble(resolvedMessage: ResolvedInboundMessage): ReasoningContext {
+        val message = resolvedMessage.message
         val entries = mutableListOf<String>()
 
         val requester = identityService.resolve(message.senderPrincipalId)
@@ -109,6 +116,11 @@ class DefaultReasoningContextAssembler(
 
         entries += "Communication channel: ${message.channelId.value}"
         entries += "Current time: ${message.timestamp}"
+        // Sprint 11 Unit 5: the already-resolved ConversationId, read only -- no lookup, no
+        // resolution, no mutation (Continuity Contract Design Section 4.4/11). This class never
+        // calls ConversationEngine; resolvedMessage.conversationId was decided entirely by the
+        // Production Composition Root before assemble() was invoked.
+        entries += "Current conversation: ${resolvedMessage.conversationId.value}"
 
         toolRegistry.listAll().forEach { tool ->
             entries += "Available tool: ${tool.displayName} -- ${tool.description}"
