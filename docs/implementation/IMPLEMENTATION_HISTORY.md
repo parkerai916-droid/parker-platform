@@ -1522,6 +1522,295 @@ passed, 0 failed, 0 skipped, BUILD SUCCESSFUL.
 
 ---
 
+## Sprint 11
+
+### Unit 1 -- Production Reasoning Context Governance (docs only)
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+Not applicable -- documentation-only Unit, no `.kt` file added or
+modified.
+
+Summary
+- Froze `PRODUCTION_REASONING_CONTEXT_IMPLEMENTATION_PLAN.md` and
+  `PRODUCTION_REASONING_CONTEXT_SCOPE_LOCK.md`, defining the Reasoning
+  Context Assembler's responsibilities, ownership, lifetime, and
+  constitutional boundary, ahead of any implementation.
+- A refinement round (still Unit 1) added the Scope Lock's own Section 3
+  ("Reasoning Context Is a Projection, Not a Source of Truth"),
+  reconsidered "runtime metadata" down to `Current time` alone, and
+  generalised "Owner identity" to "Requesting principal identity."
+
+Implementation Notes
+- No Kotlin file created or modified -- governance only, per this Unit's
+  own explicit stop condition.
+
+---
+
+### Unit 2 -- Production Reasoning Context Contract Design (docs only)
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+Not applicable -- contract-only Unit, no `.kt` file added or modified
+(`SPRINT_11_UNIT_2_ACCEPTANCE_CHECKLIST.md`'s own "No Kotlin written"
+criterion).
+
+Summary
+- `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`: the Assembler's
+  interface (`ReasoningContextAssembler`, one method, `InboundOwnerMessage`
+  in, `ReasoningContext` out), justified dependencies (`IdentityService.resolve`,
+  `ToolRegistry.listAll`/`findCandidates`, both read-only), named-not-designed
+  future boundaries (Memory Source, World Model Source, Conversation
+  History Source), failure behaviour (propagates to `ParkerRuntime`,
+  classified `PipelineStage.UNKNOWN`), and production lifecycle.
+- `PRODUCTION_REASONING_CONTEXT_SEQUENCE.md`: the real, frozen production
+  call chain from inbound message to Reasoning Provider, showing exactly
+  where a `ReasoningContext` is assembled, becomes immutable, and is
+  discarded.
+
+Implementation Notes
+- Confirmed directly against `ConversationEngine.kt`: no read-only query
+  method exists for prior Turns anywhere in this codebase -- `submitTurn`
+  is the only operation. "Conversation History Source" was named as an
+  undefined boundary on this basis, not assumed solvable by injecting
+  `ConversationEngine` as-is.
+
+---
+
+### Unit 3 -- Production Reasoning Context Implementation
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+**Not independently verified by this sandbox** -- the same Gradle-project-evaluation
+limitation disclosed in every prior Unit this Sprint applies unchanged
+(see this Unit's own Implementation Review / final report for the
+detailed, honest account). Manual review only: this Unit adds 15 new
+test methods (12 in `tests/runtime/DefaultReasoningContextAssemblerTest.kt`,
+3 in `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`),
+removes none, and changes the expected outcome of none of the
+Sprint 10 tests it touches indirectly (`ParkerRuntimeConversationPipelineTest.kt`'s
+and `ParkerRuntimeFailureHandlingTest.kt`'s own existing assertions are
+unaffected -- confirmed by direct reading: `StubModelServer` returns a
+fixed, canned response regardless of the real request body's content, so
+a real, non-empty `ReasoningContext` now reaching the prompt changes
+nothing about any existing test's observed outcome). Whatever total
+Steven's own next Android Studio run reports for the Sprint 10 baseline,
+this Unit's own honest claim is `+15`, not an absolute number this
+sandbox cannot itself confirm.
+
+Summary
+- Implemented `ReasoningContextAssembler` (`src/interfaces/ReasoningContextAssembler.kt`)
+  and `DefaultReasoningContextAssembler` (`src/runtime/DefaultReasoningContextAssembler.kt`),
+  conforming exactly to the frozen Unit 2 Contract Design's illustrative
+  shape: constructor-injected `IdentityService`/`ToolRegistry` only, no
+  Memory/World Model/Conversation History/`ConversationEngine` dependency.
+- Wired the Assembler into `ParkerRuntime.kt`: constructed once in
+  `buildAndRegisterRuntimeGraph` (after `identityService`/`toolRegistry`
+  exist), invoked exactly once in `submitOwnerMessage` before
+  `conversationReplyCoordinator.submitAndDeliver`. Retired
+  `submitOwnerMessage`'s previous `reasoningContext: ReasoningContext =
+  ReasoningContext(emptyList())` parameter -- an explicit implementation
+  decision this Unit was authorised to make (Contract Design Section 9
+  left it open), justified by making "the Assembler is invoked exactly
+  once per inbound message" an unconditional guarantee rather than one
+  only true when a caller omits an override. No existing call site
+  supplied that argument, confirmed by direct search.
+- Added one `INFO` log line, "Reasoning Context assembled
+  (correlationId=...)", immediately after the Assembler call, matching
+  this method's own existing per-stage observability convention and
+  giving `tests/composition` a way to verify "exactly once" without a
+  test-only constructor parameter.
+- Extended the test-only `StubModelServer` fixture
+  (`tests/composition/CompositionTestFixtures.kt`) to capture every
+  received request body, additively -- no existing caller of `start()`
+  is affected.
+
+Implementation Notes
+- **Stage 1 Code Readiness Review found no inconsistency.** Every frozen
+  component the Contract Design assumed (`ParkerRuntime`,
+  `ConversationReplyCoordinator`, `CommunicationConversationCoordinator`,
+  `ConversationTurnReasoningCoordinator`, `ModelReasoningProvider`,
+  `IdentityService`, `ToolRegistry`, `ReasoningProvider`/`ReasoningContext`,
+  `InboundOwnerMessage`, `Principal`, `PrincipalId`/`ModuleId`) was
+  re-read in full and confirmed byte-identical to what the Contract
+  Design assumed. Stage 2 proceeded without any architectural stop.
+- **"Participant identities" collapses to "Requesting principal
+  identity" today.** `InboundOwnerMessage` carries exactly one
+  `PrincipalId`; no other participant is resolvable without a
+  Conversation History Source. Disclosed in
+  `DefaultReasoningContextAssembler`'s own KDoc, not silently narrowed.
+- **"Current conversation" (prior Turns) is not rendered at all.** The
+  Conversation History Source gap Unit 2 named is not worked around --
+  no `ConversationEngine` dependency was added. See
+  `IMPLEMENTATION_GAPS.md` #53's own updated entry.
+- **The `submitOwnerMessage` parameter-retirement decision, above, is
+  this Unit's own -- not pre-decided by Unit 2.** Recorded here as a
+  genuine implementation-time architectural decision, per this Unit's
+  own task instructions, not a silent one.
+
+---
+
+### Unit 3 -- Pre-Acceptance Review, Correction and Verification
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+**Still not independently verified by this sandbox.** See "Verification"
+below for the specific, concrete diagnostic (not merely a repeat of the
+prior "hangs" disclosure).
+
+Summary -- this review resolved two open architectural questions Steven
+raised after the initial Unit 3 implementation, confirmed logging
+safety, re-confirmed every structural boundary, and confirmed the
+repository's own change footprint. No Scope Lock or Contract Design
+amendment was required.
+
+**1. `submitOwnerMessage` signature removal -- retained.** A
+repository-wide search (`grep` across `src/`, `tests/`, and `docs/` for
+every `submitOwnerMessage(` call site) found 11 real call sites, every
+one supplying exactly one argument (`message`); none ever supplied
+`reasoningContext`. `ParkerRuntime` has no interface, no adapter, and no
+other class wrapping or implementing it; `settings.gradle.kts` declares
+a single Gradle module with no `maven-publish`/library-publishing
+plugin; and a direct search confirmed no `fun main(` exists anywhere
+under `src/` -- there is no real host application yet, so
+`submitOwnerMessage` is reachable only from this repository's own test
+suite today, not from any external consumer. All four "Preferred
+outcome" conditions are satisfied: no caller supplied the parameter; the
+method is not an externally published compatibility contract; retaining
+the parameter would have made "the Assembler is invoked exactly once per
+inbound message" a conditional guarantee rather than an unconditional
+one (a caller-supplied override bypasses assembly entirely for that
+call); and the removal is the smallest coherent implementation of the
+approved architecture (Contract Design Section 9 explicitly left this
+choice to this Unit). One documentation reference to the old
+two-parameter signature remains, in
+`PRODUCTION_REASONING_CONTEXT_IMPLEMENTATION_PLAN.md` (Unit 1, frozen) --
+left unedited, since it accurately describes the runtime's state *before*
+this Unit's own implementation, not a live claim about current
+production code; rewriting it would falsify the historical record. No
+compatibility overload was created.
+
+**2. `InboundOwnerMessage.timestamp` as "current time" -- preserved,
+with a newly-disclosed limitation.** `LocalTextChannel.submitOwnerText`'s
+own KDoc (`src/interfaces/LocalTextChannel.kt`) defines `timestamp`
+explicitly: "When the owner sent \[text\], not when this operation
+happens to be called" -- a deliberate distinction between message
+origination time and processing time. A repository-wide search for
+`replay`/`queue`/`queued` confirmed no queueing, replay, import, or
+message-reconstruction mechanism exists anywhere for `InboundOwnerMessage`
+in this codebase; every instance is constructed fresh, in-process, and
+flows synchronously to the Assembler with nothing buffering or delaying
+it in between (confirmed further: no `fun main(` wires a real channel to
+`ParkerRuntime` yet at all, so today's only callers are tests
+constructing the message directly). Given no queueing/delay mechanism
+exists in any real code path, origination time and assembly time are
+operationally coincident today, satisfying Outcome A's "sufficiently
+close to assembly time for the present runtime" condition. Separately,
+and independently decisively: `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+Section 5 (Deterministic) states explicitly that the Assembler must
+introduce "no...clock beyond what `InboundOwnerMessage.timestamp`
+already carries" -- calling `Instant.now()` (directly or via an injected
+Clock) inside the Assembler would violate this frozen, approved contract
+term, not merely add to it. The implementation is preserved unchanged.
+**Limitation recorded for future work:** `LocalTextChannel`'s own
+explicit "not when this operation happens to be called" wording
+anticipates a future channel, import mechanism, or queueing layer under
+which origination time and assembly time could diverge; if one is ever
+introduced, a future Contract Design revision -- not a silent code
+change -- must decide whether a separate, explicitly-justified clock
+dependency is then warranted.
+
+**3. Logging safety -- confirmed safe, no correction required.** The one
+new `INFO` log line added in the initial Unit 3 implementation
+(`ParkerRuntime.submitOwnerMessage`) logs exactly one field:
+`message.correlationId.value` -- an opaque, per-message identifier
+(randomly minted per IDR-001 in production; a literal test fixture
+string in tests). It logs no message text, no `ReasoningContext` entries,
+no principal name or ID, no tool name or description, and no
+conversation content. This matches the existing, pre-Unit-3 logging
+discipline in the same method exactly (every other `INFO`/`ERROR` line in
+`submitOwnerMessage` logs only `correlationId.value` plus structural,
+non-content values such as an outcome's enum status). `DefaultReasoningContextAssembler`
+itself holds no logger dependency and logs nothing.
+
+**4. Structural re-review -- all boundaries confirmed, unchanged.**
+Re-confirmed by direct search, not by re-assertion: `DefaultReasoningContextAssembler`
+is constructed in exactly one place in `src/` (`ParkerRuntime.kt`);
+`.assemble(` is called in exactly one place in `src/` (`ParkerRuntime.submitOwnerMessage`,
+unconditionally, not inside any loop or retry); no coordinator file was
+touched by this Unit; `DefaultReasoningContextAssembler.kt` imports no
+`ConversationEngine`, `MemoryStore`, `WorldModel`, `PlannerRuntime`,
+`PermissionEngine`, `ToolInvocationBinding`, or `ExecutionPipeline` type;
+it holds only its two constructor-injected `val` fields, builds a fresh
+local list on every call, and returns an immutable `ReasoningContext` via
+`.toList()`; nothing is cached or persisted anywhere in the class.
+
+**Verification.** Four independent attempts were made to run a real
+Gradle test pass in this sandbox (`gradle test --offline --console=plain`,
+with and without `--no-daemon`, with `--info`, and via a backgrounded
+`nohup`/`disown` process). Every attempt reached the same concrete stall
+point: Gradle's own one-time `generated-gradle-jars/gradle-api-8.10.jar`
+generation step, which never completed within a single sandbox call
+(confirmed directly: the cache directory holds only a stale `.lock` file
+after every attempt, never the generated jar). Background processes do
+not persist between tool calls in this sandbox (confirmed directly via
+`ps aux` -- each call runs in its own torn-down, `--unshare-pid`
+namespace), so this cannot be worked around by backgrounding. **No test
+count, pass/fail result, or build result can be honestly reported by
+this sandbox for this Unit.** This is a sharper, more specific finding
+than the general "cannot evaluate the Gradle project" disclosure
+recorded for every prior Unit this Sprint -- the exact stall point is now
+identified -- but the practical conclusion is unchanged: Steven's own
+Android Studio run is required.
+
+**Repository checks.** `git status --short` shows exactly 13 new,
+untracked files (the Sprint 11 Unit 1/2/3 documentation and Kotlin files
+already recorded above) and a larger set of tracked files showing as
+modified. `git diff --stat -w` (ignoring whitespace/line-ending
+differences) isolates the real content changes to exactly four tracked
+files -- `docs/architecture/IMPLEMENTATION_GAPS.md` (+78 lines),
+`docs/implementation/IMPLEMENTATION_HISTORY.md` (+143 lines at the time
+of that check), `src/composition/ParkerRuntime.kt` (+57/-13 lines), and
+`tests/composition/CompositionTestFixtures.kt` (+21 lines) -- confirming
+every other file's own diff entry is pure pre-existing CRLF/LF
+line-ending noise, unrelated to and untouched in content by this Unit
+(consistent with this session's own repeatedly-disclosed, never-fixed,
+out-of-scope finding). `git -c core.whitespace=cr-at-eol diff --check`
+(the CRLF-safe form) returns clean (exit 0) both repository-wide and
+scoped to this Unit's own changed files; a direct `grep` for trailing
+space/tab found none in any of this Unit's five brand-new Kotlin files.
+No file under `build/` appears in `git status` (`.gitignore` excludes
+it) -- no generated file was added. Line endings were not normalised;
+no blanket formatting was run.
+
+**Governance.** No approved Scope Lock or Contract Design document
+required amendment. Both open questions were resolved within this Unit's
+own implementation authority, citing existing frozen text
+(`LocalTextChannel.kt`'s KDoc, `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+Sections 5 and 9) rather than introducing new architectural decisions.
+
+---
+
 ## Implementation Principles
 
 Sprint 1 follows a strict implementation discipline:

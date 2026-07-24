@@ -2091,3 +2091,119 @@ production defect. Compilation and test count after this third
 correction are not yet independently verified in this sandbox. **This
 Unit remains not accepted; this gap remains Open**, pending Steven's own
 Android Studio re-run confirming 650/650/0/0, BUILD SUCCESSFUL.
+
+**Update (Sprint 11, Unit 3 -- Production Reasoning Context Assembler):
+the recurring "`ReasoningContext` assembly ownership remains unassigned"
+item, restated unchanged in every prior update above since Sprint 7, is
+now resolved for production. This gap remains Open -- not closed, not
+resolved in full.** `ReasoningContextAssembler`
+(`src/interfaces/ReasoningContextAssembler.kt`) and
+`DefaultReasoningContextAssembler`
+(`src/runtime/DefaultReasoningContextAssembler.kt`) now exist, per
+`docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+(Sprint 11, Unit 2) and
+`docs/implementation/PRODUCTION_REASONING_CONTEXT_SCOPE_LOCK.md` (Sprint
+11, Unit 1). `ParkerRuntime.buildAndRegisterRuntimeGraph` constructs it
+once, injecting the already-constructed `identityService` and
+`toolRegistry`; `ParkerRuntime.submitOwnerMessage` invokes it exactly
+once per inbound message, before `conversationReplyCoordinator.submitAndDeliver`
+-- replacing the previous always-empty `ReasoningContext(emptyList())`
+default this gap's own prior text (Sprint 10, Unit 4 update, above) named
+as the concrete symptom of "unassigned." Concretely:
+
+- A real, non-empty `ReasoningContext` now reaches `ModelReasoningProvider`'s
+  own prompt for the first time in this repository's production code --
+  confirmed directly, not only by inspection, by
+  `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`,
+  which captures the real HTTP request body `LocalHttpModelInferenceClient`
+  sends to a real (loopback) server and asserts the resolved owner's
+  display name, PrincipalId, the registered deliver Tool's own
+  description, the message's own timestamp, and the message's own text
+  all appear in it.
+- The Assembler renders four of Scope Lock Section 1's seven items today:
+  "Current request," "Active communication channel," and "Current time"
+  (straight from `InboundOwnerMessage`, no dependency), and "Requesting
+  principal identity" (via `IdentityService.resolve`, read-only). One
+  more, "Available tool descriptions," is rendered via
+  `ToolRegistry.listAll` (read-only).
+
+**What remains open, preventing closure, is narrower than before but
+still real -- and one new item is disclosed, not silently absorbed:**
+
+- **"Participant identities" collapses to "Requesting principal
+  identity" today, rendered as a single entry, not two.**
+  `InboundOwnerMessage` carries exactly one `PrincipalId`
+  (`senderPrincipalId`); no other participant's identity is available
+  anywhere on the one input the Assembler receives
+  (`PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 2). This
+  will only genuinely separate once a Conversation History Source (next
+  item) can supply another participant's `PrincipalId`.
+- **"Current conversation" (prior Turns) is not rendered at all --
+  a Conversation History Source does not exist.** Confirmed directly
+  against `ConversationEngine.kt`: `submitTurn` remains its only
+  operation, a mutating one; no read-only query for prior Turns by
+  `ConversationId` exists anywhere in this codebase. This Unit does not
+  work around that absence by injecting `ConversationEngine` itself --
+  doing so would hand the Assembler the ability to call `submitTurn`,
+  violating Statelessness and Side-effect-freedom
+  (`PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 5). This
+  boundary remains exactly as undefined as it was when Unit 2 named it,
+  on the same footing as the next two items.
+- **Memory Source and World Model Source remain entirely undefined --
+  unchanged from this gap's own prior text and from
+  `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 4.2.** No
+  Kotlin shape exists for either; neither is a dependency of the
+  Assembler as this Unit implements it.
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented, unchanged from this gap's own prior text.
+- `LocalHttpModelInferenceClient`'s live HTTP path is exercised further
+  by this Unit's own new integration test (a second, independent
+  real-loopback round trip, prompt content now actually inspected, not
+  merely a successful call observed) but remains narrowed, not closed --
+  no real model server (Ollama or otherwise) has been exercised by this
+  repository's test suite, unchanged from this gap's own prior text.
+- **Compilation and test count are not yet independently verified in
+  this sandbox** -- the same Gradle-project-evaluation limitation
+  recorded in every prior update above applies unchanged; see
+  `docs/implementation/IMPLEMENTATION_HISTORY.md`'s own Sprint 11, Unit 3
+  entry for the full, honest disclosure. **This Unit remains not
+  accepted; this gap remains Open**, pending Steven's own Android Studio
+  run.
+
+**Update (Sprint 11, Unit 3 -- Pre-Acceptance Review):** two architectural
+questions raised during pre-acceptance review were resolved without any
+Scope Lock or Contract Design amendment; see
+`docs/implementation/IMPLEMENTATION_HISTORY.md`'s own "Unit 3 --
+Pre-Acceptance Review" entry for the full reasoning. Restated here since
+both bear directly on this gap's own open items:
+
+- **`ParkerRuntime.submitOwnerMessage`'s previous `reasoningContext`
+  override parameter is confirmed removed, not restored.** Repository-wide
+  search found no caller, production or test, ever supplied it, and
+  `ParkerRuntime` is confirmed not an externally published contract (no
+  `maven-publish` plugin, single Gradle module, no `fun main(` anywhere
+  under `src/`).
+- **A new, narrow limitation is disclosed on the "Current time" item,
+  additive to the Conversation History Source limitation already
+  recorded above.** `InboundOwnerMessage.timestamp` satisfies
+  `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`'s "Current time"
+  requirement only because no queueing, replay, or import mechanism
+  exists anywhere in this codebase today (confirmed by direct search).
+  `LocalTextChannel.submitOwnerText`'s own KDoc already anticipates this
+  potentially not holding in future ("when the owner sent \[text\], not
+  when this operation happens to be called") -- if a future channel,
+  import mechanism, or queueing layer is introduced, a future Contract
+  Design revision must decide whether a separate clock dependency is
+  then warranted. Not a defect in this Unit; a disclosed boundary
+  condition of today's synchronous, unbuffered runtime.
+- **The Conversation History Source gap, above, is unchanged and
+  restated, not newly discovered:** still no read-only interface exists
+  for prior Turns; this review did not attempt to close it.
+- **Verification remains unresolved, with a sharper diagnostic than
+  before:** four independent attempts in this sandbox all stalled at the
+  same concrete point, Gradle's own one-time `gradle-api-8.10.jar`
+  generation step, which never completed within a single sandboxed call
+  and cannot be resumed across calls (background processes do not
+  survive between tool calls in this sandbox, confirmed directly). **This
+  Unit remains not accepted; this gap remains Open**, pending Steven's
+  own Android Studio run.

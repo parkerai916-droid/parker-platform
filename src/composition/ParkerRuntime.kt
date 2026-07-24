@@ -19,7 +19,7 @@ import parker.core.interfaces.Principal
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
-import parker.core.interfaces.ReasoningContext
+import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ResourceType
 import parker.core.runtime.ActionMapper
 import parker.core.runtime.CommunicationConversationCoordinator
@@ -28,6 +28,7 @@ import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultExecutionPipeline
 import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
+import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.GatedOutcome
 import parker.core.runtime.InMemoryActionVocabulary
@@ -139,6 +140,7 @@ class ParkerRuntime(
     var state: RuntimeLifecycleState = RuntimeLifecycleState.NOT_STARTED
         private set
 
+    private lateinit var reasoningContextAssembler: ReasoningContextAssembler
     private lateinit var conversationReplyCoordinator: ConversationReplyCoordinator
     private lateinit var runtimeEventLogger: RuntimeEventLogger
 
@@ -152,7 +154,10 @@ class ParkerRuntime(
      * **Startup sequence**, in order: (1) transition to `STARTING`, log
      * "Runtime starting"; (2) construct every stateless collaborator
      * (registries, event bus, action mapper, permission policy/engine,
-     * execution pipeline); (3) register and activate this runtime's
+     * execution pipeline); (2a, Sprint 11 Unit 3) construct the
+     * [ReasoningContextAssembler] (`DefaultReasoningContextAssembler`),
+     * injecting the already-constructed `identityService` and
+     * `toolRegistry`; (3) register and activate this runtime's
      * system Principals (`system.parker`, `system.conversation-engine`,
      * `system.response-composer`) and the configured owner Principal; (4)
      * register the `notify owner` action-vocabulary entry; (5) construct
@@ -210,6 +215,10 @@ class ParkerRuntime(
         val toolInvocationBinding = InMemoryToolInvocationBinding()
         val eventBus = InMemoryEventBus()
         val identityService = InMemoryIdentityService()
+
+        reasoningContextAssembler = stage("Reasoning Context Assembler construction") {
+            DefaultReasoningContextAssembler(identityService, toolRegistry)
+        }
 
         registerSystemIdentities(identityService)
 
@@ -335,11 +344,38 @@ class ParkerRuntime(
      * (`PermissionEngine`, via `ExecutionPipeline`) mandatory on the
      * delivery path, exactly as [ConversationReplyCoordinator.submitAndDeliver]
      * (this method's own sole delegate) already guarantees on its own,
-     * unmodified terms. [reasoningContext] is accepted, not assembled --
-     * `ReasoningContext` assembly ownership remains unassigned
-     * (`REASONING_PROVIDER_CONTRACT_DESIGN.md` Section 9), unchanged by
-     * this Unit; a caller with no assembled context may pass
-     * `ReasoningContext(emptyList())`.
+     * unmodified terms.
+     *
+     * **Reasoning Context assembly (Sprint 11, Unit 3).** This method
+     * invokes [reasoningContextAssembler]`.assemble(message)` exactly
+     * once, as the first action it takes after confirming
+     * [RuntimeLifecycleState.RUNNING] and before its one call to
+     * [ConversationReplyCoordinator.submitAndDeliver] --
+     * `PRODUCTION_REASONING_CONTEXT_SEQUENCE.md` Section 3's own
+     * production call site, now real. The resulting `ReasoningContext` is
+     * passed, unchanged, into `submitAndDeliver`. This retires the
+     * previous always-empty `reasoningContext: ReasoningContext =
+     * ReasoningContext(emptyList())` default parameter this method used
+     * to accept -- `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+     * Section 9 explicitly left "whether the default is retired once the
+     * Assembler exists, or preserved for callers that supply their own
+     * context" to this implementation Unit's own decision. It is retired,
+     * not preserved: a caller-suppliable override would make "the
+     * Assembler is invoked exactly once per inbound message" a
+     * conditional guarantee (true only when a caller omits the argument)
+     * rather than the unconditional one this Unit's own required
+     * acceptance tests verify. No existing caller in this repository ever
+     * supplied an explicit `reasoningContext` argument (confirmed by
+     * direct search of every `submitOwnerMessage` call site under
+     * `tests/`), so this narrowing changes no existing call site's
+     * compilation. Logs one `INFO` line, "Reasoning Context assembled
+     * (correlationId=...)", immediately after the call -- mirroring
+     * `CommunicationConversationCoordinator`'s "Conversation accepted"
+     * and `ModelReasoningProvider`'s "Reasoning completed" INFO logs this
+     * method's own caller-facing pipeline already relies on for
+     * observability, and giving `tests/composition` a direct way to
+     * verify "invoked exactly once per inbound message" without adding a
+     * test-only constructor parameter to this class.
      *
      * Throws [ParkerRuntimeException.NotRunning] if [state] is not
      * [RuntimeLifecycleState.RUNNING].
@@ -374,15 +410,14 @@ class ParkerRuntime(
      * shutdown) is rethrown unchanged, never swallowed, never reported as
      * [ParkerRuntimeOutcome.Failed].
      */
-    suspend fun submitOwnerMessage(
-        message: InboundOwnerMessage,
-        reasoningContext: ReasoningContext = ReasoningContext(emptyList()),
-    ): ParkerRuntimeOutcome {
+    suspend fun submitOwnerMessage(message: InboundOwnerMessage): ParkerRuntimeOutcome {
         if (state != RuntimeLifecycleState.RUNNING) {
             throw ParkerRuntimeException.NotRunning(state)
         }
 
         return try {
+            val reasoningContext = reasoningContextAssembler.assemble(message)
+            logger.info("Reasoning Context assembled (correlationId=${message.correlationId.value})")
             when (val outcome = conversationReplyCoordinator.submitAndDeliver(message, reasoningContext)) {
                 is GatedOutcome.NotAccepted -> {
                     logger.info("Conversation not accepted for delivery (correlationId=${message.correlationId.value}, reason=${outcome.reason})")
