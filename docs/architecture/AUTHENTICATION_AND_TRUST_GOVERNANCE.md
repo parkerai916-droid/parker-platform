@@ -8,9 +8,16 @@ exist anywhere in this document or arise from it.** This document is
 mergeable immediately, without affecting the current runtime in any way
 -- it changes nothing under `src/` or `tests/`, and nothing about
 `ConversationEngine`, Conversation History, or any other existing
-component. Conversation History remains the next implementation
-milestone; this document does not move it, precede it in implementation
-order, or compete with it for engineering attention.
+component. **Status update, documentation reconciliation pass following
+Sprint 11 Unit 6's acceptance:** at the time this document was originally
+written, Conversation History was the next implementation milestone; it
+has since been implemented and accepted as Conversation History Source
+(Sprint 11 Unit 6, commit `ad21659`, verified BUILD SUCCESSFUL). This
+document did not move it, precede it in implementation order, or compete
+with it for engineering attention then, and makes no claim about
+implementation sequencing now -- what (if anything) follows Conversation
+History Source is a separate project decision, not settled by this
+document.
 
 **Success criterion.** This document's success is measured by clarity of
 responsibility, not completeness of functionality. It reserves
@@ -329,11 +336,13 @@ sequence:
 - Risk Engine
 - Audit Log
 
-**Conversation History remains the next implementation milestone.** This
-document does not change that. Nothing above schedules Authentication &
-Trust ahead of it, and nothing above requires Conversation History's own
-future Contract Design to account for Authentication & Trust before it
-exists.
+**Conversation History was the next implementation milestone at the time
+this document was written; it has since been implemented and accepted as
+Conversation History Source (Sprint 11 Unit 6).** This document did not
+change that sequencing then, and does not assert any sequencing now --
+nothing above schedules Authentication & Trust ahead of, or in
+competition with, whatever project decision determines what follows
+Conversation History Source.
 
 ---
 
@@ -344,8 +353,10 @@ future Contract Design says otherwise:
 
 - Does **not** modify any existing architecture.
 - Does **not** require changes to current components.
-- Does **not** alter Conversation History (a still-future boundary of its
-  own, per `docs/implementation/CONVERSATION_HISTORY_SOURCE_SCOPE_LOCK.md`).
+- Does **not** alter Conversation History (implemented and accepted as
+  Conversation History Source, Sprint 11 Unit 6, per
+  `docs/implementation/CONVERSATION_HISTORY_SOURCE_SCOPE_LOCK.md`; this
+  document still does not touch it).
 - Does **not** alter `ConversationEngine`.
 - Does **not** introduce implementation dependencies.
 - Does **not** introduce breaking changes.
@@ -378,4 +389,5 @@ documents -- the constitution
 and `PROJECT_GOVERNANCE.md` -- at
 `docs/architecture/AUTHENTICATION_AND_TRUST_GOVERNANCE.md`. No code, no
 interfaces, no implementation, no tests, no roadmap changes. Conversation
-History remains the next implementation milestone.
+History Source (Sprint 11 Unit 6) has since been implemented and
+accepted; this document does not assert what, if anything, follows it.
