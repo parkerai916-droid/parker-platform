@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.Conversation
 import parker.core.interfaces.ConversationDisposition
 import parker.core.interfaces.ConversationEngine
+import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.ConversationId
 import parker.core.interfaces.IdentityService
 import parker.core.interfaces.InboundOwnerMessage
@@ -20,7 +21,12 @@ import java.util.UUID
  * Stage 3, revised for Sprint 11 Unit 5 (Conversation Continuity
  * Implementation) per
  * `docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` ("the
- * Continuity Contract Design").
+ * Continuity Contract Design"), and further revised for Sprint 11 Unit 6
+ * (Conversation History Source) per
+ * `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md` --
+ * this class now additionally implements [ConversationHistorySource], a
+ * second, narrower, read-only interface over the same owned state, never
+ * a second store (see [turnsById] and [history], below).
  *
  * **No longer stateless.** Sprint 7's own "Required Implementation
  * Decision 1" (every inbound Turn begins a new Conversation, because
@@ -72,7 +78,7 @@ import java.util.UUID
  */
 class InMemoryConversationEngine(
     private val identityService: IdentityService,
-) : ConversationEngine {
+) : ConversationEngine, ConversationHistorySource {
 
     /** Continuity Contract Design Section 3: `(channelId, senderPrincipalId)`, and nothing else. */
     private data class ContinuityKey(val channelId: ModuleId, val senderPrincipalId: PrincipalId)
@@ -84,6 +90,19 @@ class InMemoryConversationEngine(
 
     /** [ConversationId] -> its [Conversation] record, so far. Grows a Turn at a time via [submitTurn]. */
     private val conversationsById = mutableMapOf<ConversationId, Conversation>()
+
+    /**
+     * [TurnId] -> its [Turn] value, Sprint 11 Unit 6
+     * (`CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md` Section 4.2). Prior
+     * to this Unit, `submitTurn` constructed a [Turn] and returned it once,
+     * without retaining it -- [conversationsById]'s own [Conversation.turnIds]
+     * recorded only Turn *order*, never Turn *content*. This map retains
+     * exactly what `submitTurn` already, momentarily, held -- not new
+     * authority, only retention of an existing one. Populated inside the
+     * same [stateLock]-guarded section [submitTurn] already uses; read by
+     * [history] under the same lock.
+     */
+    private val turnsById = mutableMapOf<TurnId, Turn>()
 
     private companion object {
         val CONVERSATION_ENGINE_PRINCIPAL_ID = PrincipalId("system.conversation-engine")
@@ -176,12 +195,34 @@ class InMemoryConversationEngine(
                 )
             }
             conversationsById[conversationId] = conversation
+            turnsById[turnId] = turn
 
             ConversationDisposition(
                 conversation = conversation,
                 turn = turn,
                 isNewConversation = isNewConversation,
             )
+        }
+    }
+
+    /**
+     * Conversation History Source's sole operation
+     * (`ConversationHistorySource.kt`'s own KDoc). A pure read: returns the
+     * [Turn]s recorded for [conversationId], oldest first, matching
+     * [Conversation.turnIds]'s own append-only order -- or an empty list,
+     * never a thrown exception, if [conversationId] has no Turns recorded
+     * (including one this engine has never seen via
+     * [resolveConversationId]). Guarded by the same [stateLock] [submitTurn]
+     * uses, so a concurrent, in-flight [submitTurn] for the same
+     * [conversationId] can never be observed half-applied (a [Turn]
+     * recorded in [conversationsById] but not yet in [turnsById], or vice
+     * versa).
+     */
+    override suspend fun history(conversationId: ConversationId): List<Turn> {
+        requireOperatingPrincipalRegistered()
+
+        return stateLock.withLock {
+            conversationsById[conversationId]?.turnIds.orEmpty().mapNotNull { turnId -> turnsById[turnId] }
         }
     }
 }

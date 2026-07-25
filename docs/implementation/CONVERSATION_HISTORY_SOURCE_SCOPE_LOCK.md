@@ -2,12 +2,30 @@
 
 ## Status
 
-**Sprint 11, Unit 4. This is the governing document for Conversation
-History Source.** Once frozen, a future Contract Design must implement
-what this document defines, not redesign it. Companion to
-`CONVERSATION_HISTORY_SOURCE_IMPLEMENTATION_PLAN.md`, which supplies the
-architectural reasoning this document's decisions rest on. Governance
-only — no Kotlin is created or modified by this document.
+**Sprint 11, Unit 4, revised in place for Sprint 11, Unit 6
+(Implementation).** Originally the governance-only naming document for
+Conversation History Source (no Kotlin). This document is now the
+**binding, frozen Scope Lock for the Unit 6 implementation** — Included
+and Excluded lists (Section 1a/2 below) are binding contract terms an
+implementation must satisfy exactly, not redesign. Companion to
+`CONVERSATION_HISTORY_SOURCE_IMPLEMENTATION_PLAN.md` (architectural
+reasoning) and `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
+(Sprint 11, Unit 6 — the interface design and integration point this Scope
+Lock now freezes).
+
+**Correction to Section 1's original text (Unit 6):** the original
+sentence below claimed Conversation History Source could return prior
+Turns "as `ConversationEngine`'s own owned state ... already records
+them." Direct re-reading of `InMemoryConversationEngine` during Unit 6's
+own Phase 0 review found this was not, in fact, true: `ConversationEngine`'s
+owned state recorded Turn *order* (`Conversation.turnIds: List<TurnId>`)
+but not Turn *content* — each `Turn` value was constructed and returned
+once, then discarded. Unit 6 additively extends `InMemoryConversationEngine`'s
+own owned state to also retain Turn content (Contract Design Section 4.2)
+so that this Section 1 responsibility becomes true rather than merely
+assumed. This is the one substantive correction this revision makes;
+every other responsibility, exclusion, and principle below is carried
+forward unchanged.
 
 ---
 
@@ -20,22 +38,55 @@ history.**
 That single responsibility decomposes into what it must be able to
 answer, in prose, without presupposing a Kotlin shape:
 
-- **Prior Turns.** Given some means of identifying a conversation
-  (Section on Ownership/Lifetime below; not resolved by this document —
-  see `CONVERSATION_HISTORY_SOURCE_ENGINEERING_CHECKPOINT`-equivalent,
-  i.e. `SPRINT_11_UNIT_4_ENGINEERING_CHECKPOINT.md`), Conversation
-  History Source can return the prior Turns already belonging to it, as
-  `ConversationEngine`'s own owned state (`Conversation.turnIds`,
-  Architecture Section 4) already records them.
+- **Prior Turns.** Given a `ConversationId` (resolved beforehand by
+  `ConversationEngine.resolveConversationId`, per the Continuity Contract
+  Design — no longer an open question, see correction above), Conversation
+  History Source returns the prior Turns already belonging to it, in the
+  order they were recorded, as `ConversationEngine`'s own owned state
+  (additively extended by Unit 6 to retain Turn content, not merely Turn
+  order) records them.
 - **Nothing beyond retrieval.** It does not decide how many Turns are
   relevant, does not rank them, does not summarise them, and does not
   reshape them into prose — any such transformation belongs, at most, to
   whichever future component consumes what Conversation History Source
-  returns (a future Reasoning Context Assembler revision), never to
-  Conversation History Source itself.
+  returns (the Reasoning Context Assembler, Unit 6), never to Conversation
+  History Source itself.
 
 Conversation History Source retrieves conversation history. Nothing
 more.
+
+---
+
+## 1a. Sprint 11 Unit 6 — Included / Excluded (binding)
+
+**Included** (this Unit implements exactly this, no more):
+
+- A new, single-method, `suspend`-declared interface,
+  `ConversationHistorySource` (`src/interfaces/ConversationHistorySource.kt`),
+  returning `List<Turn>` for a `ConversationId`, ordered oldest-first,
+  empty (never throwing) for no recorded history.
+- `InMemoryConversationEngine` implementing `ConversationHistorySource`
+  directly, as a second interface over its own existing owned state,
+  additively extended with one private `turnsById` map populated inside
+  the existing `submitTurn` critical section.
+- One additional constructor dependency on `DefaultReasoningContextAssembler`
+  (`conversationHistorySource: ConversationHistorySource`), and rendering
+  of zero or more additional `ReasoningContext` entries, one per returned
+  `Turn`, immediately after the existing "Current conversation" entry.
+- The one production wiring change this requires in `ParkerRuntime`:
+  constructing `InMemoryConversationEngine` before
+  `DefaultReasoningContextAssembler` (today's order is reversed) and
+  passing the same instance to the Assembler under both interface types.
+
+**Excluded** (unchanged from Unit 4, restated as binding, not merely
+descriptive): Memory, World Model, Planner, Tool execution/`ToolRegistry.resolve`,
+Turn creation, Conversation mutation, persistence policy, summarisation,
+embeddings, semantic retrieval or relevance ranking, authentication,
+permissions, any future AI capability, any bound on history volume or
+age (Contract Design Section 5 — deliberately undecided, not silently
+defaulted), and capturing Parker's own outbound replies as history
+(Contract Design Section 4.3 — a disclosed, one-sided limitation, not a
+defect this Unit is responsible for closing).
 
 ---
 
@@ -118,10 +169,12 @@ boundary.
   History Source, exactly once, at startup — mirroring
   `PRODUCTION_REASONING_CONTEXT_SCOPE_LOCK.md` Section 4's identical
   ownership shape for the Reasoning Context Assembler.
-- **Exactly one production caller.** A future Reasoning Context
-  Assembler revision, or the composition root on its behalf — not
-  decided further here (an open question this Scope Lock records rather
-  than resolves; see `SPRINT_11_UNIT_4_ENGINEERING_CHECKPOINT.md`). No
+- **Exactly one production caller (resolved, Unit 6).** `DefaultReasoningContextAssembler`
+  — specifically, the previously-open question of "a future Reasoning
+  Context Assembler revision, or the composition root on its behalf" is
+  resolved in favour of the Assembler itself calling `history` directly,
+  inside `assemble`, mirroring how it already reads `identityService` and
+  `toolRegistry` directly rather than through the composition root. No
   coordinator, no Reasoning Provider, and no other runtime component may
   become a second caller without a future Scope Lock revision.
 

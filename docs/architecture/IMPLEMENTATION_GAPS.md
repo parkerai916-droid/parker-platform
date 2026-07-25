@@ -2250,3 +2250,42 @@ two earlier disclosed limitations:
   repeated re-reading of every changed file and a repository-wide search
   confirming no remaining caller of any old signature, not on a passing
   local build. **This Unit remains not accepted; this gap remains Open.**
+
+**Update (Sprint 11, Unit 6 -- Conversation History Source Implementation):
+this closes the item directly above** ("Conversation history is still not
+rendered") **for the owner's own prior messages only.** `ConversationHistorySource`
+(`src/interfaces/ConversationHistorySource.kt`) now exists, backed by
+`InMemoryConversationEngine` implementing it directly as a second,
+narrower view over the same owned state -- additively extended with a
+`turnsById` map so Turn *content*, not merely Turn *order*, is retained.
+`DefaultReasoningContextAssembler` now renders zero or more "Prior
+message" entries per Conversation, oldest first. What remains open,
+disclosed rather than silently narrowed:
+
+- **History is one-sided.** No `Turn` record anywhere in this runtime
+  captures Parker's own outbound replies -- only the owner's own prior
+  inbound messages are ever available through `ConversationHistorySource`.
+  A future, separately-scoped and separately-justified Unit would be
+  required to extend `Turn`/`ConversationEngine`'s own owned state to
+  also retain outbound replies.
+- **No bound on history volume, age, or relevance exists anywhere.**
+  Every Turn recorded for a Conversation is rendered into every
+  subsequent prompt for that Conversation, unconditionally. This is a
+  deliberate, disclosed scope boundary
+  (`CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md` Section 5) --
+  Conversation History Source's own Scope Lock explicitly excludes
+  relevance ranking and volume limits from this boundary -- not an
+  oversight, and not yet a problem this Unit has evidence justifies
+  solving.
+- **Termination, expiry, reopening, and multi-channel span** (both named
+  directly above) **remain exactly as open as before** -- this Unit
+  neither worsens nor resolves either; a Conversation's history simply
+  grows for as long as its continuity key remains active.
+- **Verification remains unresolved, unchanged in kind from every prior
+  entry in this chain:** this sandbox still cannot complete a Gradle
+  build/test run. Steven will run the complete test suite and report
+  results; this Unit's own correctness claims rest on direct, repeated
+  re-reading of every changed file and a repository-wide search
+  confirming no remaining caller of any old constructor signature, not on
+  a passing local build. **This Unit remains not accepted; this gap
+  remains Open.**

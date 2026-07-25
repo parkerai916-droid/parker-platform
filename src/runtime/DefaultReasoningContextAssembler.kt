@@ -1,5 +1,6 @@
 package parker.core.runtime
 
+import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.IdentityService
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningContextAssembler
@@ -10,18 +11,26 @@ import parker.core.interfaces.ToolRegistry
  * Default, production [ReasoningContextAssembler] implementation, Sprint
  * 11 Unit 3, revised Sprint 11 Unit 5 (Conversation Continuity
  * Implementation) for the [ResolvedInboundMessage] input-shape change
- * described in [ReasoningContextAssembler]'s own KDoc. Implements exactly
- * what `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+ * described in [ReasoningContextAssembler]'s own KDoc, and revised again
+ * Sprint 11 Unit 6 (Conversation History Source) to add
+ * [conversationHistorySource]. Implements exactly what
+ * `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
  * ("the Contract Design") Section 4.3 authorises -- constructor injection
- * of [identityService] and [toolRegistry] only. **No** Memory Source,
- * World Model Source, or Conversation History Source dependency exists
- * anywhere in this class (Contract Design Section 4.2): each is a real,
- * named, future boundary this Unit is not authorised to design or work
- * around, and none is added here by injecting a broader existing
- * component (in particular, [parker.core.interfaces.ConversationEngine]
- * is deliberately never referenced by this class, even after Unit 5's own
- * revision -- the [parker.core.interfaces.ConversationId] this class reads
- * off [ResolvedInboundMessage] was already resolved elsewhere; this class
+ * of [identityService] and [toolRegistry] -- plus the one additional,
+ * narrow, read-only collaborator
+ * `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
+ * Section 5 now authorises. **Still no** Memory Source or World Model
+ * Source dependency anywhere in this class (Contract Design Section 4.2):
+ * each remains a real, named, future boundary this Unit is not authorised
+ * to design or work around. [conversationHistorySource]'s own declared
+ * type is deliberately not [parker.core.interfaces.ConversationEngine] --
+ * it is the separate, narrower [ConversationHistorySource] interface,
+ * structurally incapable of resolving continuity or submitting a Turn,
+ * even though the same production instance happens to implement both
+ * (in particular, [parker.core.interfaces.ConversationEngine] itself is
+ * still never referenced by this class -- the
+ * [parker.core.interfaces.ConversationId] this class reads off
+ * [ResolvedInboundMessage] was already resolved elsewhere; this class
  * performs no lookup, no resolution, and no mutation of it).
  *
  * Holds only its two collaborators as fields -- no cache of any prior
@@ -93,14 +102,40 @@ import parker.core.interfaces.ToolRegistry
  * "identity not resolved" fallback entry in that case rather than
  * fabricating a `displayName` or omitting the entry.
  *
+ * ## Conversation History (Sprint 11 Unit 6)
+ *
+ * One further item is rendered from [conversationHistorySource]:
+ *
+ * - "Prior messages" -- [ConversationHistorySource.history], called once
+ *   with `resolvedMessage.conversationId`
+ *   (`docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
+ *   Section 5). Zero or more entries are rendered, one per returned
+ *   `Turn`, oldest first, immediately after "Current conversation." An
+ *   empty result renders no entries at all -- not an empty placeholder
+ *   entry -- exactly as "no tools" would render nothing from
+ *   [toolRegistry] today.
+ *
+ * No truncation, ranking, or volume limit is applied here -- every `Turn`
+ * [ConversationHistorySource.history] returns is rendered (Contract Design
+ * Section 5, a disclosed, deliberate scope boundary, not an oversight).
+ * This class performs no lookup beyond the one [ConversationHistorySource.history]
+ * call -- no second call, no caching across invocations (Statelessness,
+ * Contract Design Section 5 restated).
+ *
  * @param identityService Read use only (`resolve`) -- Contract Design
  *   Section 4.1.
  * @param toolRegistry Read use only (`listAll`) -- Contract Design
  *   Section 4.1.
+ * @param conversationHistorySource Read use only (`history`) -- Sprint 11
+ *   Unit 6 Contract Design Section 5. This class never calls
+ *   `ConversationEngine`; [conversationHistorySource] is a separate,
+ *   narrower type that cannot reach `resolveConversationId` or
+ *   `submitTurn` even if this class wished to.
  */
 class DefaultReasoningContextAssembler(
     private val identityService: IdentityService,
     private val toolRegistry: ToolRegistry,
+    private val conversationHistorySource: ConversationHistorySource,
 ) : ReasoningContextAssembler {
 
     override suspend fun assemble(resolvedMessage: ResolvedInboundMessage): ReasoningContext {
@@ -121,6 +156,14 @@ class DefaultReasoningContextAssembler(
         // calls ConversationEngine; resolvedMessage.conversationId was decided entirely by the
         // Production Composition Root before assemble() was invoked.
         entries += "Current conversation: ${resolvedMessage.conversationId.value}"
+
+        // Sprint 11 Unit 6: prior Turns for this conversation, oldest first, rendered as-is --
+        // no ranking, no truncation, no summarisation (Conversation History Source Contract
+        // Design Section 5). One-sided: only the owner's own prior messages are ever available
+        // (Contract Design Section 4.3) -- no Turn record anywhere captures Parker's own replies.
+        conversationHistorySource.history(resolvedMessage.conversationId).forEach { turn ->
+            entries += "Prior message: ${turn.message.text} (from ${turn.message.senderPrincipalId.value}, at ${turn.receivedAt})"
+        }
 
         toolRegistry.listAll().forEach { tool ->
             entries += "Available tool: ${tool.displayName} -- ${tool.description}"

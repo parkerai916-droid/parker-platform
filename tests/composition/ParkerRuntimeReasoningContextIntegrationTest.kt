@@ -15,13 +15,18 @@ import kotlin.test.assertTrue
 
 /**
  * Sprint 11, Unit 3 integration test, extended Sprint 11 Unit 5
- * (Conversation Continuity Implementation): confirms
+ * (Conversation Continuity Implementation) and Sprint 11 Unit 6
+ * (Conversation History Source): confirms
  * `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 9's three
- * numbered guarantees, plus the Continuity Contract Design's own
- * propagation path (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`
- * Section 5), hold against the real, running [ParkerRuntime] -- not merely
- * against [DefaultReasoningContextAssembler] or [InMemoryConversationEngine]
- * in isolation (see `tests/runtime/DefaultReasoningContextAssemblerTest.kt`
+ * numbered guarantees, the Continuity Contract Design's own propagation
+ * path (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`
+ * Section 5), and Conversation History Source's own integration
+ * (`docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
+ * Section 5 -- a second message in the same Conversation carries the
+ * first message's text as history; the first message carries none) all
+ * hold against the real, running [ParkerRuntime] -- not merely against
+ * [DefaultReasoningContextAssembler] or [InMemoryConversationEngine] in
+ * isolation (see `tests/runtime/DefaultReasoningContextAssemblerTest.kt`
  * and `tests/runtime/InMemoryConversationEngineTest.kt` for those).
  *
  * Uses `runBlocking<Unit>`, not `kotlinx.coroutines.test.runTest`, for the
@@ -175,7 +180,16 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         val firstPrompt = stub.receivedRequestBodies[0]
         val secondPrompt = stub.receivedRequestBodies[1]
 
-        val conversationLinePattern = Regex("Current conversation: (\\S+)")
+        // Sprint 11 Unit 6 correction: matches only ConversationId's own character set (the hex/hyphen
+        // shape InMemoryConversationEngine.resolveConversationId actually mints, via UUID.randomUUID()),
+        // not `\S+`. `stub.receivedRequestBodies` holds the raw JSON request body, where the prompt's
+        // real newlines are JSON-escaped as the two literal characters `\` + `n` -- both non-whitespace,
+        // so a `\S+` capture does not stop there and instead runs on into the next rendered entry's own
+        // first word (e.g. "Available" before this Unit, now "Prior" once a Conversation has prior
+        // history) -- a pre-existing extraction fragility this Unit's own legitimate new "Prior message"
+        // entry exposes, not a ConversationId instability: both captured values still share the exact
+        // same identifier prefix once correctly bounded, below.
+        val conversationLinePattern = Regex("Current conversation: ([0-9a-fA-F-]+)")
         val firstConversationId = conversationLinePattern.find(firstPrompt)?.groupValues?.get(1)
         val secondConversationId = conversationLinePattern.find(secondPrompt)?.groupValues?.get(1)
 
@@ -209,6 +223,37 @@ class ParkerRuntimeReasoningContextIntegrationTest {
             "Current conversation: $resolvedConversationId" in prompt,
             "the ConversationId resolved for this message ($resolvedConversationId) must be the exact one " +
                 "later used to construct the Turn and reach the Assembler's own rendered entry: $prompt",
+        )
+
+        runtime.shutdown()
+    }
+
+    // --- Sprint 11 Unit 6: Runtime integration for Conversation History Source ---
+
+    @Test
+    fun `a second message from the same owner and channel carries the first message's text as Prior message history, and the first message carries none`() = runBlocking<Unit> {
+        val stub = startStub("REPLY: sure thing")
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        runtime.submitOwnerMessage(message(text = "what's the weather like today", correlationId = "corr-history-first"))
+        runtime.submitOwnerMessage(message(text = "and tomorrow", correlationId = "corr-history-second"))
+
+        assertEquals(2, stub.receivedRequestBodies.size)
+        val firstPrompt = stub.receivedRequestBodies[0]
+        val secondPrompt = stub.receivedRequestBodies[1]
+
+        assertTrue(
+            !firstPrompt.contains("Prior message:"),
+            "the first message in a Conversation must carry no prior history: $firstPrompt",
+        )
+        assertTrue(
+            "Prior message: what's the weather like today" in secondPrompt,
+            "the second message must carry the first message's own text as prior history: $secondPrompt",
+        )
+        assertTrue(
+            !secondPrompt.contains("Prior message: and tomorrow"),
+            "the current request must never appear as its own prior history: $secondPrompt",
         )
 
         runtime.shutdown()

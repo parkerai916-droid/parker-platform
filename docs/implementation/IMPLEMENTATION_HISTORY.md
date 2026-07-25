@@ -1978,7 +1978,116 @@ references the old signatures.
 
 ---
 
-## Implementation Principles
+### Unit 6 -- Conversation History Source Implementation (updates `IMPLEMENTATION_GAPS.md` #53, in part; closes the open question `CONVERSATION_HISTORY_SOURCE_IMPLEMENTATION_PLAN.md` Section 6 deferred)
+
+**Governance chain.** `CONVERSATION_HISTORY_SOURCE_IMPLEMENTATION_PLAN.md`
+and `CONVERSATION_HISTORY_SOURCE_SCOPE_LOCK.md` (Sprint 11, Unit 4) named
+Conversation History Source as a real, deferred boundary and recorded two
+open findings, without designing an interface. `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
+(this Unit) performed the required fresh Phase 0/Phase 1 governance
+review, found no architectural conflict, resolved both Unit 4 findings
+(Finding 2 was already closed by Unit 5's Continuity work; Finding 1 --
+`ConversationEngine` exposes no read operation -- is resolved here), and
+designed the interface. The Scope Lock was revised in place (Section 1's
+correction, new Section 1a Included/Excluded, Section 4's ownership
+resolution) rather than replaced.
+
+**Production changes:**
+
+- `src/interfaces/ConversationHistorySource.kt` (new): one-method,
+  `suspend`-declared interface, `history(conversationId): List<Turn>`,
+  empty (never throwing) for no recorded history.
+- `src/runtime/InMemoryConversationEngine.kt`: now implements
+  `ConversationEngine` **and** `ConversationHistorySource` on the same
+  instance -- a second, narrower view over the same owned state, not a
+  second store. Adds one private `turnsById: MutableMap<TurnId, Turn>`,
+  populated inside `submitTurn`'s existing `stateLock`-guarded section
+  (retaining a value that was already, momentarily, constructed there --
+  not new authority). `history` is guarded by the same single `Mutex`,
+  independently precondition-checked (`requireOperatingPrincipalRegistered`)
+  exactly as `resolveConversationId` and `submitTurn` already are.
+- `src/runtime/DefaultReasoningContextAssembler.kt`: gains one
+  constructor dependency, `conversationHistorySource: ConversationHistorySource`.
+  `assemble` calls `history(resolvedMessage.conversationId)` once and
+  renders zero or more "Prior message: ..." entries, oldest first,
+  immediately after "Current conversation" -- no ranking, no truncation,
+  no summarisation, exactly what Contract Design Section 5 authorises and
+  nothing more.
+- `src/composition/ParkerRuntime.kt`: `InMemoryConversationEngine`'s
+  construction is moved ahead of `DefaultReasoningContextAssembler`'s own
+  (a pure ordering change -- its constructor depends only on
+  `identityService`, already available at that point) so the same
+  instance can be injected into the Assembler under both its
+  `ConversationEngine` and `ConversationHistorySource` types.
+
+**Two disclosed, deliberate limitations (not defects), per Contract Design
+Sections 4.3 and 5:**
+
+1. History is one-sided: only the owner's own prior inbound messages are
+   ever available. No `Turn` record anywhere in this runtime captures
+   Parker's own outbound replies -- `ResponseComposer` constructs an
+   `OutboundParkerResponse` downstream of `ConversationEngine.submitTurn`,
+   correlated only by `CorrelationId`, and nothing writes it back.
+2. No bound on history volume, age, or relevance is applied anywhere --
+   every `Turn` `history` returns is rendered. Bounding this is a
+   relevance/volume decision this Unit's own Scope Lock explicitly
+   excludes from Conversation History Source's boundary, and the
+   Assembler has never owned that decision either.
+
+**Test summary.** `InMemoryConversationEngineTest.kt`: nine new `history`
+tests -- unknown/never-resolved `ConversationId` returns empty; resolved
+but not yet submitted returns empty; single Turn; multiple Turns in
+submission order; isolation across two distinct continuity
+keys/Conversations; sender identity propagation (never the operating
+Principal); a rejected `submitTurn` never appears in history; missing
+operating Principal fails fast, mirroring `resolveConversationId`/`submitTurn`.
+`DefaultReasoningContextAssemblerTest.kt`: five new tests (empty history
+renders nothing but still calls `history` exactly once with the resolved
+`ConversationId`; single prior Turn renders one entry; multiple Turns
+render oldest-first in exact order; a `history` failure propagates
+unchanged; the structural constructor-dependency test is updated for
+three dependencies). `ParkerRuntimeReasoningContextIntegrationTest.kt`:
+one new end-to-end test confirming a second message in the same
+Conversation carries the first message's own text as a rendered "Prior
+message" entry, and the first message carries none.
+
+**Build/test verification.** Not performed by this Unit -- consistent
+with this session's own repeatedly-diagnosed sandbox limitation and this
+Unit's own convention of relying on Steven's own Android Studio run.
+Every change above was verified by direct, repeated re-reading of the
+edited files and a repository-wide grep confirming no other `.kt` file
+under `src/` or `tests/` references `DefaultReasoningContextAssembler`'s
+or `InMemoryConversationEngine`'s constructors in a way this Unit's
+changes would break.
+
+**Post-verification correction (Steven's own `.\gradlew.bat test` run,
+696 tests, 1 failure).** `ParkerRuntimeReasoningContextIntegrationTest.kt`'s
+own "the same resolved ConversationId reaches the Assembler's own prompt
+and remains stable across repeated messages" test failed with `expected:
+<0b793b74-...-a37e6c\nAvailable> but was: <0b793b74-...-a37e6c\nPrior>` --
+**the same identifier in both** (confirmed correct `ConversationId`
+stability), differing only in a suffix neither value was supposed to
+carry. Root cause: the test's own extraction regex,
+`Regex("Current conversation: (\\S+)")`, applied to
+`stub.receivedRequestBodies` (the raw JSON HTTP request body, where the
+prompt's real newlines are JSON-escaped as literal `\`+`n` -- both
+non-whitespace) -- ran past the intended token boundary into the next
+rendered entry's own first word. Before this Unit, that next word was
+always "Available" (the tool-catalogue entries); this Unit's own,
+approved "Prior message" entry now legitimately appears there instead,
+for the second of two messages in one Conversation -- exposing a
+pre-existing test fragility that happened to be masked until an entry
+other than "Available tool" could ever follow "Current conversation."
+**Test defect, not an implementation defect** -- `ConversationId`
+propagation is correct; only the test's own extraction was insufficiently
+bounded. **Correction:** narrowed the capture group to
+`([0-9a-fA-F-]+)` -- exactly `ConversationId`'s own minted shape
+(`UUID.randomUUID().toString()`) -- in
+`tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` only.
+No production file changed; the equality assertion itself is unchanged
+and unweakened; no coverage removed. Remains within this Unit's own
+Scope Lock -- no architectural conflict was found, so neither the
+Contract Design nor the Scope Lock required any revision.
 
 Sprint 1 follows a strict implementation discipline:
 

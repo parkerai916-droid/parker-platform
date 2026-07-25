@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
 import parker.core.interfaces.ConversationEngine
+import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
@@ -157,10 +158,14 @@ class ParkerRuntime(
      * **Startup sequence**, in order: (1) transition to `STARTING`, log
      * "Runtime starting"; (2) construct every stateless collaborator
      * (registries, event bus, action mapper, permission policy/engine,
-     * execution pipeline); (2a, Sprint 11 Unit 3) construct the
-     * [ReasoningContextAssembler] (`DefaultReasoningContextAssembler`),
-     * injecting the already-constructed `identityService` and
-     * `toolRegistry`; (3) register and activate this runtime's
+     * execution pipeline); (2a, Sprint 11 Unit 6) construct
+     * [ConversationEngine] (`InMemoryConversationEngine`) -- moved ahead of
+     * the Assembler's own construction, since the Assembler now also
+     * depends on this same instance under its narrower
+     * `ConversationHistorySource` type; (2b, Sprint 11 Unit 3/6) construct
+     * the [ReasoningContextAssembler] (`DefaultReasoningContextAssembler`),
+     * injecting the already-constructed `identityService`, `toolRegistry`,
+     * and `conversationHistorySource`; (3) register and activate this runtime's
      * system Principals (`system.parker`, `system.conversation-engine`,
      * `system.response-composer`) and the configured owner Principal; (4)
      * register the `notify owner` action-vocabulary entry; (5) construct
@@ -219,8 +224,18 @@ class ParkerRuntime(
         val eventBus = InMemoryEventBus()
         val identityService = InMemoryIdentityService()
 
+        // Sprint 11 Unit 6: InMemoryConversationEngine must now be constructed before the
+        // Reasoning Context Assembler (reversing Unit 3's original order), since the Assembler
+        // now also depends on this same instance under its narrower ConversationHistorySource
+        // type (CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md Section 5). A pure ordering
+        // change -- InMemoryConversationEngine's own constructor takes only identityService,
+        // already available here.
+        val inMemoryConversationEngine = InMemoryConversationEngine(identityService)
+        conversationEngine = inMemoryConversationEngine
+        val conversationHistorySource: ConversationHistorySource = inMemoryConversationEngine
+
         reasoningContextAssembler = stage("Reasoning Context Assembler construction") {
-            DefaultReasoningContextAssembler(identityService, toolRegistry)
+            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource)
         }
 
         registerSystemIdentities(identityService)
@@ -278,7 +293,6 @@ class ParkerRuntime(
             InMemoryCommunicationIntake(moduleRegistry, identityService),
             logger,
         )
-        conversationEngine = InMemoryConversationEngine(identityService)
 
         val reasoningProvider = stage("Reasoning Provider construction") {
             LoggingReasoningProvider(

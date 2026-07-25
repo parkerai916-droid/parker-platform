@@ -11,6 +11,8 @@ import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.ToolDescriptor
+import parker.core.interfaces.Turn
+import parker.core.interfaces.TurnId
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -31,15 +33,20 @@ import kotlin.test.assertTrue
  * descriptions, current time handling, dependency failures, assembler
  * failure behaviour, repeated calls producing independent
  * [parker.core.interfaces.ReasoningContext] instances -- plus one
- * structural dependency test, plus one new item added by Unit 5: the
+ * structural dependency test, plus one item added by Unit 5: the
  * resolved `ConversationId` is read and rendered, with no lookup, no
- * resolution, and no mutation.
+ * resolution, and no mutation -- plus items added by Sprint 11 Unit 6
+ * (Conversation History Source): empty history renders no entries but
+ * still calls `history` exactly once with the resolved `ConversationId`;
+ * a single prior Turn renders one entry; multiple prior Turns render in
+ * the exact order returned; a `history` failure propagates unchanged.
  *
- * [FakeIdentityService] and [FakeToolRegistry] are used throughout, never
- * a real [InMemoryIdentityService]/[InMemoryToolRegistry] -- this file
- * exercises [DefaultReasoningContextAssembler] in isolation, exactly as
- * [ConversationTurnReasoningCoordinatorTest] and [ResponseComposerTest]
- * already do for their own subjects.
+ * [FakeIdentityService], [FakeToolRegistry], and
+ * [FakeConversationHistorySource] are used throughout, never a real
+ * [InMemoryIdentityService]/[InMemoryToolRegistry]/[InMemoryConversationEngine]
+ * -- this file exercises [DefaultReasoningContextAssembler] in isolation,
+ * exactly as [ConversationTurnReasoningCoordinatorTest] and
+ * [ResponseComposerTest] already do for their own subjects.
  */
 class DefaultReasoningContextAssemblerTest {
 
@@ -94,7 +101,7 @@ class DefaultReasoningContextAssemblerTest {
         val message = message(text = "what's on my calendar today?")
         val identityService = FakeIdentityService { principalFor -> if (principalFor == ownerPrincipalId) principal(ownerPrincipalId) else null }
         val toolRegistry = FakeToolRegistry { listOf(descriptor("tool.notify", "Notify Owner", "Delivers a text reply to the owner")) }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         val context = assembler.assemble(resolved(message))
 
@@ -113,7 +120,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `the returned ReasoningContext's entries are not affected by a later, separate assemble call`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
         val message = message()
 
         val first = assembler.assemble(resolved(message))
@@ -130,7 +137,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `an empty tool catalogue produces no Available tool entries but a still-valid, non-empty ReasoningContext`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -144,7 +151,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `a resolved requesting principal is rendered with its display name and PrincipalId`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId, displayName = "Steven") }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -158,7 +165,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `an unresolvable requesting principal is rendered with an explicit not-resolved fallback, not an exception`() = runTest {
         val identityService = FakeIdentityService { null }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -177,7 +184,7 @@ class DefaultReasoningContextAssemblerTest {
             descriptor("tool.calendar", "Calendar Lookup", "Reads the owner's calendar"),
         )
         val toolRegistry = FakeToolRegistry { tools }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -193,7 +200,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `the message's own timestamp, not wall-clock time, is rendered`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
         val fixedTimestamp = Instant.parse("2026-07-24T14:00:00Z")
 
         val context = assembler.assemble(resolved(message(timestamp = fixedTimestamp)))
@@ -209,7 +216,7 @@ class DefaultReasoningContextAssemblerTest {
         val failure = IllegalStateException("simulated identity resolution failure")
         val identityService = FakeIdentityService { throw failure }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         assertSame(failure, thrown)
@@ -220,7 +227,7 @@ class DefaultReasoningContextAssemblerTest {
         val failure = IllegalStateException("simulated tool registry failure")
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { throw failure }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         assertSame(failure, thrown)
@@ -232,7 +239,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `a dependency failure never produces a degraded ReasoningContext -- assemble either returns a complete one or throws`() = runTest {
         val identityService = FakeIdentityService { throw IllegalStateException("unreachable") }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
 
         assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         // No partial ReasoningContext is observable anywhere -- assemble threw before constructing one.
@@ -244,7 +251,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `two calls with equal-content messages produce equal but reference-distinct ReasoningContext instances`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
         val fixedTimestamp = Instant.parse("2026-01-01T00:00:00Z")
         val first = assembler.assemble(resolved(message(timestamp = fixedTimestamp, correlationId = "corr-fixed")))
         val second = assembler.assemble(resolved(message(timestamp = fixedTimestamp, correlationId = "corr-fixed")))
@@ -261,7 +268,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `the resolved ConversationId is rendered as its own entry, with no dependency call of any kind`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
         val conversationId = ConversationId("conv-rendered-test")
 
         val context = assembler.assemble(resolved(message(), conversationId))
@@ -278,7 +285,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `two different resolved ConversationIds for equal-content messages render different entries`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource())
         val message = message()
 
         val first = assembler.assemble(resolved(message, ConversationId("conv-1")))
@@ -289,13 +296,82 @@ class DefaultReasoningContextAssemblerTest {
         assertTrue(second.entries.any { "conv-2" in it })
     }
 
+    // --- 11. Sprint 11 Unit 6: Conversation History rendering ---
+
+    private fun turn(text: String, senderPrincipalId: PrincipalId = ownerPrincipalId, receivedAt: Instant = Instant.parse("2026-01-01T09:00:00Z"), conversationId: ConversationId = ConversationId("conv-history-test")) =
+        Turn(
+            turnId = TurnId("turn-${System.nanoTime()}"),
+            conversationId = conversationId,
+            message = message(senderPrincipalId = senderPrincipalId, text = text),
+            receivedAt = receivedAt,
+        )
+
+    @Test
+    fun `an empty history produces no Prior message entries but calls history exactly once with the resolved ConversationId`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val historySource = FakeConversationHistorySource { emptyList() }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource)
+        val conversationId = ConversationId("conv-empty-history")
+
+        val context = assembler.assemble(resolved(message(), conversationId))
+
+        assertFalse(context.entries.any { it.startsWith("Prior message:") })
+        assertEquals(1, historySource.historyCallCount)
+        assertEquals(listOf(conversationId), historySource.historyCallArguments)
+    }
+
+    @Test
+    fun `a single prior Turn is rendered as one Prior message entry`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val historySource = FakeConversationHistorySource { listOf(turn("what's the weather like?")) }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource)
+
+        val context = assembler.assemble(resolved(message()))
+
+        val priorEntries = context.entries.filter { it.startsWith("Prior message:") }
+        assertEquals(1, priorEntries.size)
+        assertTrue("what's the weather like?" in priorEntries.single())
+    }
+
+    @Test
+    fun `multiple prior Turns are rendered oldest first, in the exact order history returns them`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val historySource = FakeConversationHistorySource {
+            listOf(turn("first message"), turn("second message"), turn("third message"))
+        }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource)
+
+        val context = assembler.assemble(resolved(message()))
+
+        val priorEntries = context.entries.filter { it.startsWith("Prior message:") }
+        assertEquals(3, priorEntries.size)
+        assertTrue("first message" in priorEntries[0])
+        assertTrue("second message" in priorEntries[1])
+        assertTrue("third message" in priorEntries[2])
+    }
+
+    @Test
+    fun `a ConversationHistorySource_history failure propagates unchanged, not caught or wrapped`() = runTest {
+        val failure = IllegalStateException("simulated history retrieval failure")
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val historySource = FakeConversationHistorySource { throw failure }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource)
+
+        val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
+        assertSame(failure, thrown)
+    }
+
     // --- structural: no prohibited dependency slot exists ---
 
     @Test
-    fun `the assembler's constructor accepts exactly two dependencies -- IdentityService and ToolRegistry`() {
+    fun `the assembler's constructor accepts exactly three dependencies -- IdentityService, ToolRegistry, and ConversationHistorySource`() {
         val constructor = DefaultReasoningContextAssembler::class.java.declaredConstructors.single()
         val parameterTypes = constructor.parameterTypes.map { it.simpleName }.toSet()
 
-        assertEquals(setOf("IdentityService", "ToolRegistry"), parameterTypes)
+        assertEquals(setOf("IdentityService", "ToolRegistry", "ConversationHistorySource"), parameterTypes)
     }
 }

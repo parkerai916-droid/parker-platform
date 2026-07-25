@@ -23,11 +23,14 @@ import kotlin.test.assertTrue
  * Sprint 7, Stage 3 acceptance test, revised Sprint 11 Unit 5
  * (Conversation Continuity Implementation) per
  * `docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` ("the
- * Continuity Contract Design"). Covers [InMemoryConversationEngine] alone
- * -- not the coordinator, not any reasoning provider -- including its
- * revised two-operation contract ([resolveConversationId], [submitTurn])
- * and the four Binding Guarantees (Continuity Contract Design Section
- * 5.1).
+ * Continuity Contract Design"), and Sprint 11 Unit 6 (Conversation History
+ * Source) per
+ * `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`.
+ * Covers [InMemoryConversationEngine] alone -- not the coordinator, not
+ * any reasoning provider -- including its three-operation contract
+ * ([resolveConversationId], [submitTurn], [history]), the four Binding
+ * Guarantees (Continuity Contract Design Section 5.1), and `history`'s own
+ * ordering, isolation, empty-result, and failure-fast behaviour.
  */
 class InMemoryConversationEngineTest {
 
@@ -287,6 +290,115 @@ class InMemoryConversationEngineTest {
         val disposition = engine.submitTurn(msg, conversationId)
         assertTrue(disposition.isNewConversation, "a rejected submission must not have created a Conversation record")
         assertEquals(listOf(disposition.turn.turnId), disposition.conversation.turnIds)
+    }
+
+    // ================= Conversation History Source (Sprint 11 Unit 6) =================
+
+    @Test
+    fun `history returns an empty list, not an exception, for a ConversationId this engine has never seen`() = runTest {
+        val engine = InMemoryConversationEngine(readyIdentityService(principal()))
+
+        val result = engine.history(ConversationId("never-seen-by-this-engine"))
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun `history returns an empty list for a resolved ConversationId with no Turn submitted yet`() = runTest {
+        val engine = InMemoryConversationEngine(readyIdentityService(principal()))
+        val conversationId = engine.resolveConversationId(message())
+
+        val result = engine.history(conversationId)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun `history returns exactly the one Turn recorded, after a single submitTurn`() = runTest {
+        val engine = InMemoryConversationEngine(readyIdentityService(principal()))
+        val msg = message(text = "what's the weather like?")
+
+        val conversationId = engine.resolveConversationId(msg)
+        val disposition = engine.submitTurn(msg, conversationId)
+
+        val result = engine.history(conversationId)
+
+        assertEquals(listOf(disposition.turn), result)
+    }
+
+    @Test
+    fun `history returns multiple Turns for the same Conversation in the exact order they were submitted`() = runTest {
+        val engine = InMemoryConversationEngine(readyIdentityService(principal()))
+        val first = message(text = "first request", correlationId = "corr-1")
+        val second = message(text = "second request", correlationId = "corr-2")
+        val third = message(text = "third request", correlationId = "corr-3")
+
+        val firstDisposition = engine.submitTurn(first, engine.resolveConversationId(first))
+        val secondDisposition = engine.submitTurn(second, engine.resolveConversationId(second))
+        val thirdDisposition = engine.submitTurn(third, engine.resolveConversationId(third))
+
+        val result = engine.history(firstDisposition.conversation.conversationId)
+
+        assertEquals(listOf(firstDisposition.turn, secondDisposition.turn, thirdDisposition.turn), result)
+        assertEquals(listOf("first request", "second request", "third request"), result.map { it.message.text })
+    }
+
+    @Test
+    fun `history is isolated per Conversation -- Turns from a different continuity key never appear`() = runTest {
+        val identity = readyIdentityService(principal("user-1"), principal("user-2"))
+        val engine = InMemoryConversationEngine(identity)
+        val messageForKeyA = message(senderPrincipalId = "user-1", channelId = "channel.a", text = "keyA message")
+        val messageForKeyB = message(senderPrincipalId = "user-2", channelId = "channel.a", text = "keyB message")
+
+        val dispositionA = engine.submitTurn(messageForKeyA, engine.resolveConversationId(messageForKeyA))
+        val dispositionB = engine.submitTurn(messageForKeyB, engine.resolveConversationId(messageForKeyB))
+
+        val historyA = engine.history(dispositionA.conversation.conversationId)
+        val historyB = engine.history(dispositionB.conversation.conversationId)
+
+        assertEquals(listOf(dispositionA.turn), historyA)
+        assertEquals(listOf(dispositionB.turn), historyB)
+        assertTrue(historyA.none { it in historyB })
+    }
+
+    @Test
+    fun `history reflects the original sender's identity on every returned Turn -- never the operating Principal`() = runTest {
+        val engine = InMemoryConversationEngine(readyIdentityService(principal("user-1")))
+        val msg = message(senderPrincipalId = "user-1", text = "identity propagation check")
+
+        val conversationId = engine.resolveConversationId(msg)
+        engine.submitTurn(msg, conversationId)
+
+        val result = engine.history(conversationId)
+
+        assertEquals(PrincipalId("user-1"), result.single().message.senderPrincipalId)
+        assertNotEquals(PrincipalId("system.conversation-engine"), result.single().message.senderPrincipalId)
+    }
+
+    @Test
+    fun `a rejected submitTurn call never appears in history`() = runTest {
+        val engine = InMemoryConversationEngine(readyIdentityService(principal()))
+        val msg = message()
+
+        assertFailsWith<IllegalArgumentException> {
+            engine.submitTurn(msg, ConversationId("bogus-id"))
+        }
+
+        val conversationId = engine.resolveConversationId(msg)
+        val disposition = engine.submitTurn(msg, conversationId)
+
+        assertEquals(listOf(disposition.turn), engine.history(conversationId))
+    }
+
+    @Test
+    fun `a missing operating Principal causes history to fail fast, mirroring resolveConversationId and submitTurn`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal()) // "system.conversation-engine" deliberately not registered
+        val engine = InMemoryConversationEngine(identity)
+
+        assertFailsWith<IllegalStateException> {
+            engine.history(ConversationId("irrelevant-since-identity-check-runs-first"))
+        }
     }
 
     // ================= Operating Principal resolution (unchanged) =================
