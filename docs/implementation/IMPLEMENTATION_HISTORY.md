@@ -2302,6 +2302,135 @@ tested, identical-shape branch. Per PES-001 Stage 7, Steven's own
 `.\gradlew.bat test` run remains the authoritative verification; this
 revision is **not yet accepted** pending that run's own reported result.
 
+### Unit 8 -- World Model Source Integration Implementation
+
+**Governance sequence.** `docs/architecture/WORLD_MODEL_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`, and
+`docs/implementation/WORLD_MODEL_SOURCE_INTEGRATION_SCOPE_LOCK.md` were
+produced, found blocked on `WorldQuery.subjectMatch`'s then-mandatory
+field (`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md`),
+unblocked by the separately governed and implemented
+`WorldQuery` Optional Subject contract revision (commit `eb25d64`, entry
+above), reconciled to remove their own now-stale "blocked" wording, and
+explicitly re-approved as a reconciled set before this implementation
+began -- Steven's own instruction: "The Scope Lock is frozen. Proceed
+with implementation only within the approved scope."
+
+**Pre-implementation conflict check.** Re-read the Parker Constitution,
+`PARKER_ENGINEERING_STANDARD.md`, `reasoning-context.md`,
+`docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md`,
+`src/interfaces/WorldModel.kt`, `src/runtime/InMemoryWorldModel.kt`,
+`src/runtime/DefaultReasoningContextAssembler.kt`,
+`src/composition/ParkerRuntime.kt`, `tests/runtime/InMemoryWorldModelTest.kt`,
+`tests/runtime/DefaultReasoningContextAssemblerTest.kt`,
+`tests/runtime/FakeConversationHistorySource.kt`/`FakeMemorySource.kt`,
+and `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`
+fresh, immediately before implementation began. **No conflict found**
+between the approved design and current source -- `WorldQuery.subjectMatch`
+was confirmed already nullable (the approved prerequisite), and
+`ParkerRuntime.kt` was confirmed to construct no `WorldModel` anywhere,
+exactly as the Governance Review's own Finding 1 stated.
+
+**Implementation, exactly within the approved scope:**
+
+- `src/interfaces/WorldModelSource.kt` (new file) -- a single-method,
+  `suspend`-declared, read-only interface, `recall(query: WorldQuery): List<WorldBelief>`,
+  reusing `WorldQuery`/`WorldBelief` unchanged.
+- `src/runtime/InMemoryWorldModel.kt` -- now
+  `class InMemoryWorldModel(...) : WorldModel, WorldModelSource`; `recall`
+  is a one-line, zero-logic delegate to the already-implemented, already-
+  tested `query`. No new map, no new lock, no new field.
+- `src/runtime/DefaultReasoningContextAssembler.kt` -- gains a fifth
+  constructor dependency, `worldModelSource: WorldModelSource`. `assemble`
+  now constructs a `WorldQuery` with `subjectMatch = null` (no subject
+  filter -- a literal absence, never an inferred, classified, or parsed
+  value), `maximumResults` = a new private companion constant
+  (`WORLD_QUERY_MAXIMUM_RESULTS = 5`, implementation policy, not
+  architecture, mirroring `MEMORY_QUERY_MAXIMUM_RESULTS`'s identical
+  treatment), and `minimumConfidence = null` (no confidence floor is
+  required by the approved design). Calls `worldModelSource.recall` once,
+  and renders zero or more "World belief" entries in the exact order
+  returned -- no ranking, scoring, reordering, reconciliation, or
+  interpretation. `confidence` is a required field on `WorldBelief`
+  (unlike `MemoryRecord`'s optional one), so it is always rendered, never
+  fabricated.
+- `src/composition/ParkerRuntime.kt` -- `buildAndRegisterRuntimeGraph()`
+  now constructs `InMemoryWorldModel()` (defaulted
+  `DefaultWorldModelUpdatePolicy`) and injects it into
+  `DefaultReasoningContextAssembler`'s constructor under the
+  `WorldModelSource` type. **This is the first production construction of
+  the World Model anywhere in this repository's real, running composition
+  root** -- confirmed by grep against the pre-implementation state of
+  `ParkerRuntime.kt` (no `WorldModel` match) -- a new construction step,
+  not a reordering, mirroring exactly how Unit 7 added the first
+  production construction of Memory.
+
+**Tests added:**
+
+- `tests/runtime/FakeWorldModelSource.kt` (new) -- lambda-based fake,
+  mirroring `FakeMemorySource`.
+- `tests/runtime/InMemoryWorldModelTest.kt` -- three new structural tests
+  (`InMemoryWorldModel` also satisfies `WorldModelSource`; `recall`
+  returns exactly what `query` would for an identical `WorldQuery`;
+  `WorldModelSource` exposes no `observe`/`current`, only `recall`).
+- `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- all existing
+  constructor call sites updated for the new fifth parameter; the
+  structural dependency test updated to
+  `setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "MemorySource", "WorldModelSource")`;
+  nine new tests (empty World Model result; single belief rendered;
+  multiple beliefs rendered in exact returned order; each belief's own
+  confidence rendered exactly, never fabricated or shared; the
+  constructed `WorldQuery`'s `subjectMatch`/`maximumResults`/`minimumConfidence`
+  each asserted directly; a `recall` failure propagates unchanged; one
+  real-`InMemoryWorldModel`, not-a-fake, end-to-end test). Multiple-belief
+  ordering is asserted only against the fake's own fixed-order return
+  value, never against the real `InMemoryWorldModel`'s own unordered
+  `query` -- consistent with `WorldModel.query`'s own disclosed absence of
+  an ordering guarantee.
+- `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` --
+  one new test confirming `WorldModelSource` is wired into the real
+  `ParkerRuntime` without fault and renders no "World belief" entries,
+  since nothing in this Unit's own scope creates world state in
+  production.
+
+**Disclosed, deliberate exclusions (per the frozen Scope Lock), none
+implemented:** world-state creation/modification/merging/reconciliation,
+inference, prediction, planning, ranking, scoring, semantic search,
+embeddings, topic extraction, confidence invention, provenance invention,
+changes to `WorldModel.current`, changes to `WorldQuery` beyond the
+already-separately-approved optional-subject revision, Memory Source
+changes, Conversation History changes, Authentication implementation,
+Planner work, tool execution, unrelated refactoring.
+
+**Disclosed limitation, carried forward unchanged from Memory Source's own
+precedent: no `ParkerRuntime`-level integration test for a populated
+belief rendering end-to-end.** No in-scope seeding hook exists for the
+`InMemoryWorldModel` `ParkerRuntime` constructs privately -- adding one
+would itself be "creating world state," excluded by the Scope Lock. The
+real-`InMemoryWorldModel` Assembler-level test above is this Unit's best
+available substitute, disclosed as such in
+`WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` Section 9.
+
+**Ordering -- no guarantee added, none assumed.** `WorldModel.query`'s own
+absence of an ordering guarantee is unchanged and is not fixed by this
+Unit. The Assembler preserves whatever order `WorldModelSource.recall`
+returns; every test above either supplies a fixed-order fake or seeds
+exactly one real belief, never asserting an order the real, map-backed
+`InMemoryWorldModel` does not itself guarantee.
+
+**Performance -- no optimisation attempted.** `WorldQuery.maximumResults`
+bounds the returned result count only; the internal scan cost of
+`InMemoryWorldModel.query`'s own filter pass over every currently-held
+belief remains unbounded relative to stored belief count, exactly as
+disclosed in `WORLD_QUERY_OPTIONAL_SUBJECT_GOVERNANCE_REVIEW.md`'s own
+Risks section. This Unit does not attempt to bound or optimise it.
+
+**Build/test verification.** Attempted in this session's own sandbox; see
+this Unit's own final report for the honest account. Per PES-001 Stage 7,
+Steven's own `.\gradlew.bat test` run remains the authoritative
+verification; this Unit is **not yet accepted** pending that run's own
+reported result.
+
 Sprint 1 follows a strict implementation discipline:
 
 - One architectural unit per commit.

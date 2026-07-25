@@ -8,6 +8,8 @@ import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.ToolRegistry
+import parker.core.interfaces.WorldModelSource
+import parker.core.interfaces.WorldQuery
 
 /**
  * Default, production [ReasoningContextAssembler] implementation, Sprint
@@ -15,18 +17,18 @@ import parker.core.interfaces.ToolRegistry
  * Implementation) for the [ResolvedInboundMessage] input-shape change
  * described in [ReasoningContextAssembler]'s own KDoc, revised again
  * Sprint 11 Unit 6 (Conversation History Source) to add
- * [conversationHistorySource], and revised again Sprint 11 Unit 7 (Memory
- * Source Integration) to add [memorySource]. Implements exactly what
+ * [conversationHistorySource], revised again Sprint 11 Unit 7 (Memory
+ * Source Integration) to add [memorySource], and revised again Sprint 11
+ * Unit 8 (World Model Source Integration) to add [worldModelSource].
+ * Implements exactly what
  * `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
  * ("the Contract Design") Section 4.3 authorises -- constructor injection
- * of [identityService] and [toolRegistry] -- plus the two additional,
+ * of [identityService] and [toolRegistry] -- plus the three additional,
  * narrow, read-only collaborators
  * `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
- * Section 5 and `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`
- * Section 4 now authorise. **Still no** World Model Source dependency
- * anywhere in this class (Contract Design Section 4.2): it remains a
- * real, named, future boundary this Unit is not authorised to design or
- * work around. [conversationHistorySource]'s own declared
+ * Section 5, `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`
+ * Section 4, and `docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`
+ * Section 2 now authorise. [conversationHistorySource]'s own declared
  * type is deliberately not [parker.core.interfaces.ConversationEngine] --
  * it is the separate, narrower [ConversationHistorySource] interface,
  * structurally incapable of resolving continuity or submitting a Turn,
@@ -37,7 +39,7 @@ import parker.core.interfaces.ToolRegistry
  * [ResolvedInboundMessage] was already resolved elsewhere; this class
  * performs no lookup, no resolution, and no mutation of it).
  *
- * Holds only its four collaborators as fields -- no cache of any prior
+ * Holds only its five collaborators as fields -- no cache of any prior
  * resolution, no mutable state of any kind (Contract Design Section 5,
  * Statelessness). [assemble] reads each collaborator fresh, once, every
  * call.
@@ -164,6 +166,50 @@ import parker.core.interfaces.ToolRegistry
  *   present) -- no confidence is computed, estimated, or defaulted where
  *   absent, and no provenance is fabricated.
  *
+ * ## World Model (Sprint 11 Unit 8)
+ *
+ * One further item is rendered from [worldModelSource]. Unlike
+ * [conversationHistorySource], `WorldModelSource.recall` requires a full
+ * [WorldQuery] -- there is no already-resolved key to read the way
+ * `resolvedMessage.conversationId` already is, and unlike [memorySource],
+ * no field on this method's own input represents a world-model subject:
+ * `WorldQuery.subjectMatch` matches a structured topic key, not free-text
+ * request content, so reusing the request's own text the way `MemoryQuery.relevance`
+ * does would require inventing a classification step this Unit's own
+ * Scope Lock excludes
+ * (`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md`).
+ * This class therefore constructs a [WorldQuery] with:
+ *
+ * - `subjectMatch = null` -- no subject filter, per
+ *   `docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`.
+ *   This is a literal absence of a filter, not an inferred, classified, or
+ *   parsed value -- this class does not examine `message.text` (or any
+ *   other field) to decide a subject.
+ * - `maximumResults` = [WORLD_QUERY_MAXIMUM_RESULTS] -- an
+ *   implementation-defined bound, mirroring [MEMORY_QUERY_MAXIMUM_RESULTS]'s
+ *   identical treatment; not architecturally significant.
+ * - `minimumConfidence` = `null` -- no confidence floor. Nothing in the
+ *   approved design requires this class to supply one, and inventing a
+ *   threshold here would be exactly the kind of unrequested filtering
+ *   policy `WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` reserves entirely for
+ *   the World Model implementation, never the Assembler.
+ *
+ * - "World beliefs" -- [WorldModelSource.recall], called once with the
+ *   constructed `WorldQuery`. Zero or more entries are rendered, one per
+ *   returned `WorldBelief`, **in the order [WorldModelSource.recall]
+ *   returns them** -- this class does not rank, score, reorder,
+ *   summarise, reconcile, or interpret what it receives, and the World
+ *   Model's own `query` makes no ordering guarantee at all (unlike
+ *   Memory's deterministic ordering), so no particular order is ever
+ *   assumed here beyond "whatever `recall` returned." An empty result
+ *   renders no entries at all, exactly as "no tools," "no prior Turns,"
+ *   and "no memories" already render nothing. Each rendered entry
+ *   surfaces only fields [parker.core.interfaces.WorldBelief] already
+ *   carries (`subject`, `value`, `confidence`, `source`) -- `confidence`
+ *   is a required field on `WorldBelief` (unlike `MemoryRecord`'s optional
+ *   one), so it is always rendered, never fabricated or computed; no
+ *   provenance beyond `source` is invented.
+ *
  * @param identityService Read use only (`resolve`) -- Contract Design
  *   Section 4.1.
  * @param toolRegistry Read use only (`listAll`) -- Contract Design
@@ -178,12 +224,18 @@ import parker.core.interfaces.ToolRegistry
  *   class never calls `MemoryStore.remember` or `MemoryStore.forget`;
  *   [memorySource] is a separate, narrower type that cannot reach either
  *   even if this class wished to.
+ * @param worldModelSource Read use only (`recall`) -- Sprint 11 Unit 8
+ *   `docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` Section 2.
+ *   This class never calls `WorldModel.observe`; [worldModelSource] is a
+ *   separate, narrower type that cannot reach it even if this class
+ *   wished to.
  */
 class DefaultReasoningContextAssembler(
     private val identityService: IdentityService,
     private val toolRegistry: ToolRegistry,
     private val conversationHistorySource: ConversationHistorySource,
     private val memorySource: MemorySource,
+    private val worldModelSource: WorldModelSource,
 ) : ReasoningContextAssembler {
 
     private companion object {
@@ -201,6 +253,17 @@ class DefaultReasoningContextAssembler(
          * one.
          */
         const val MEMORY_QUERY_MAXIMUM_RESULTS = 5
+
+        /**
+         * The `maximumResults` bound this Assembler supplies on every
+         * [WorldQuery] it constructs. **Implementation policy, not
+         * architecture**, mirroring [MEMORY_QUERY_MAXIMUM_RESULTS]'s
+         * identical treatment -- `docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`
+         * does not fix this figure either. May be changed freely by a
+         * future implementation unit without requiring an architecture or
+         * Contract Design revision.
+         */
+        const val WORLD_QUERY_MAXIMUM_RESULTS = 5
     }
 
     override suspend fun assemble(resolvedMessage: ResolvedInboundMessage): ReasoningContext {
@@ -246,6 +309,20 @@ class DefaultReasoningContextAssembler(
         memorySource.recall(memoryQuery).forEach { record ->
             val confidencePart = record.confidence?.let { ", confidence: $it" }.orEmpty()
             entries += "Memory: ${record.knowledgePayload} (source: ${record.sourceSubsystem}$confidencePart)"
+        }
+
+        // Sprint 11 Unit 8: current world-model beliefs, rendered in the exact order
+        // WorldModelSource.recall returns them -- no ranking, no scoring, no reordering, no
+        // reconciliation, no interpretation (World Model Source Contract Design Section 3/6).
+        // subjectMatch is null (no subject filter, per the Optional Subject contract revision) --
+        // a literal absence of a filter, never an inferred, classified, or parsed subject.
+        val worldQuery = WorldQuery(
+            subjectMatch = null,
+            maximumResults = WORLD_QUERY_MAXIMUM_RESULTS,
+            minimumConfidence = null,
+        )
+        worldModelSource.recall(worldQuery).forEach { belief ->
+            entries += "World belief: ${belief.subject} = ${belief.value} (confidence: ${belief.confidence}, source: ${belief.source})"
         }
 
         toolRegistry.listAll().forEach { tool ->

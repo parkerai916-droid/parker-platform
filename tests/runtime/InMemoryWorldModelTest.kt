@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.ObservationResult
 import parker.core.interfaces.WorldBelief
 import parker.core.interfaces.WorldModel
+import parker.core.interfaces.WorldModelSource
 import parker.core.interfaces.WorldObservation
 import parker.core.interfaces.WorldQuery
 import kotlin.reflect.full.functions
@@ -324,6 +325,38 @@ class InMemoryWorldModelTest {
         )
         assertFalse("evaluate" in functionNames, "WorldModel must not expose WorldModelUpdatePolicy.evaluate")
         assertFalse("isStillCurrent" in functionNames, "WorldModel must not expose WorldModelUpdatePolicy.isStillCurrent")
+    }
+
+    // --- World Model Source (Sprint 11 Unit 8) ---
+
+    @Test
+    fun `InMemoryWorldModel also satisfies WorldModelSource`() {
+        val model: WorldModelSource = InMemoryWorldModel()
+        assertTrue(model is WorldModelSource)
+    }
+
+    @Test
+    fun `recall returns exactly what query would for an identical WorldQuery`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-front-door", value = "locked"))
+        model.observe(observation(subject = "device-back-door", value = "locked"))
+        model.observe(observation(subject = "environment-porch-light", value = "on"))
+        val worldModelSource: WorldModelSource = model
+        val theQuery = query(subjectMatch = "device")
+
+        val viaQuery = model.query(theQuery)
+        val viaRecall = worldModelSource.recall(theQuery)
+
+        assertEquals(viaQuery, viaRecall)
+    }
+
+    @Test
+    fun `WorldModelSource exposes exactly recall -- no path to observe`() {
+        val functionNames = WorldModelSource::class.functions.map { it.name }.toSet()
+
+        assertTrue("recall" in functionNames, "WorldModelSource must expose recall")
+        assertFalse("observe" in functionNames, "WorldModelSource must not expose observe")
+        assertFalse("current" in functionNames, "WorldModelSource must not expose current")
     }
 
     // --- concurrency ---

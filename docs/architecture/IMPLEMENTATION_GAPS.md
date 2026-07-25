@@ -2367,3 +2367,55 @@ remains open, disclosed rather than silently narrowed:
   memory creation path, no `MemoryRetrievalPolicy`, no
   `ParkerRuntime`-level populated-memory test, World Model Source still
   undefined), none of which this Unit resolves.
+
+**Update (Sprint 11, Unit 8 -- World Model Source Integration
+Implementation): this closes the second, and final, of the two items
+named in this gap's Unit 3 update.** `WorldModelSource` (`src/interfaces/WorldModelSource.kt`)
+now exists, backed by `InMemoryWorldModel` implementing it directly as a
+second, narrower, read-only view over the same owned state `WorldModel`
+already had sole authority over -- no new map, no new lock, `recall` is a
+zero-logic delegate to the already-implemented, already-tested `query`.
+`DefaultReasoningContextAssembler` now renders zero or more "World belief"
+entries per request, constructing a `WorldQuery` with `subjectMatch = null`
+(no subject filter, per the separately governed and implemented
+`WorldQuery` Optional Subject contract revision, commit `eb25d64`),
+`maximumResults` implementation-defined, and `minimumConfidence = null`.
+Governed by `docs/architecture/WORLD_MODEL_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`,
+`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md`, and
+`docs/implementation/WORLD_MODEL_SOURCE_INTEGRATION_SCOPE_LOCK.md` (all
+four re-approved as a reconciled set before this Unit's implementation
+began). What remains open, disclosed rather than silently narrowed:
+
+- **`WorldModel`/`InMemoryWorldModel` had no production wiring at all
+  before this Unit** -- confirmed directly by grep against
+  `ParkerRuntime.kt` before this Unit's own changes, no matches. This Unit
+  adds the first production construction of the World Model anywhere in
+  this repository's real, running composition root.
+- **The constructed `InMemoryWorldModel` starts, and in production
+  remains, empty.** Nothing in this Unit's own scope calls `observe` --
+  "creating world state" is explicitly excluded
+  (`WORLD_MODEL_SOURCE_INTEGRATION_SCOPE_LOCK.md`). `WorldModelSource.recall`
+  therefore returns an empty list on every real production request today,
+  rendering no "World belief" entries, until a separate, future,
+  out-of-scope mechanism populates the World Model via `observe`.
+- **No ordering guarantee.** `WorldModel.query`'s own absence of a
+  deterministic order (weaker than Memory's own explicit, deterministic
+  ordering) is inherited unchanged -- this Unit does not add one.
+- **Scan cost remains unbounded relative to stored belief count.**
+  `maximumResults` bounds the returned result count only, not the
+  internal filter pass's own cost -- disclosed, not addressed, per
+  `WORLD_QUERY_OPTIONAL_SUBJECT_GOVERNANCE_REVIEW.md`'s own Risks section.
+- **No `ParkerRuntime`-level integration test exists for a populated
+  belief rendering end-to-end**, for the identical reason Memory Source's
+  own equivalent gap exists -- no in-scope seeding hook.
+- **Verification.** See `docs/implementation/IMPLEMENTATION_HISTORY.md`'s
+  own Sprint 11, Unit 8 entry for this Unit's own honest, sandbox-limited
+  verification account. **This Unit's acceptance status is recorded
+  there, not here** -- pending Steven's own Android Studio run. The
+  underlying gap (this entry as a whole, Gap #53) remains Open -- this
+  Unit closes the "World Model Source... remain entirely undefined" item,
+  per the disclosed, still-open limitations immediately above (no
+  production world-state creation path, no retrieval-ranking seam, no
+  `ParkerRuntime`-level populated-belief test, no ordering guarantee),
+  none of which this Unit resolves.

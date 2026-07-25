@@ -289,4 +289,33 @@ class ParkerRuntimeReasoningContextIntegrationTest {
 
         runtime.shutdown()
     }
+
+    // --- Sprint 11 Unit 8: Runtime wiring for World Model Source Integration ---
+
+    @Test
+    fun `WorldModelSource is wired into the real ParkerRuntime and renders no World belief entries, since nothing in this Unit's own scope creates world state`() = runBlocking<Unit> {
+        // World Model Source Contract Design Section 8/10: nothing in this Unit's own scope calls
+        // WorldModel.observe (Scope Lock's own exclusion, "creating world state"), so the
+        // InMemoryWorldModel ParkerRuntime constructs is always empty in production -- this test
+        // confirms the real wiring reaches this new dependency without fault and correctly
+        // renders nothing, exactly as "no tools," "no prior Turns," and "no memories" already
+        // render nothing elsewhere in this same prompt. A full end-to-end test of a populated
+        // belief rendering through the real ParkerRuntime is not achievable within this Unit's own
+        // scope (no seeding hook exists, and adding one would itself be out-of-scope "creating
+        // world state") -- see `tests/runtime/DefaultReasoningContextAssemblerTest.kt`'s own
+        // real-InMemoryWorldModel test (Assembler-level, not ParkerRuntime-level) for this Unit's
+        // best available substitute, disclosed in
+        // `docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` Section 9.
+        val stub = startStub("REPLY: sure thing")
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        runtime.submitOwnerMessage(message(text = "what's the weather like today"))
+
+        assertEquals(1, stub.receivedRequestBodies.size)
+        val prompt = stub.receivedRequestBodies.single()
+        assertTrue(!prompt.contains("World belief:"), "no belief exists yet in production, so no World belief entry should render: $prompt")
+
+        runtime.shutdown()
+    }
 }

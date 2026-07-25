@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ObservationResult
 import parker.core.interfaces.WorldBelief
 import parker.core.interfaces.WorldModel
+import parker.core.interfaces.WorldModelSource
 import parker.core.interfaces.WorldModelUpdatePolicy
 import parker.core.interfaces.WorldObservation
 import parker.core.interfaces.WorldQuery
@@ -56,10 +57,23 @@ import parker.core.interfaces.WorldQuery
  * (`WORLD_MODEL_CONTRACT_DESIGN.md` §1), so a stale entry sitting
  * unread is harmless, and it is replaced the moment a fresh Observation
  * for the same subject is accepted.
+ *
+ * ## World Model Source (Sprint 11 Unit 8)
+ *
+ * Also implements [WorldModelSource] directly -- a second, narrower
+ * interface over this exact same instance and the exact same owned state,
+ * not a second store (`docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`
+ * Section 2.3), mirroring precisely how this class's own sibling
+ * `InMemoryMemoryStore` implements `MemoryStore` and `MemorySource`
+ * together. [recall] is a direct, zero-logic delegate to [query] -- no new
+ * map, no new lock, no new field, and no duplicated filtering logic: the
+ * one authoritative subject-matching, confidence-filtering, and
+ * staleness-exclusion behaviour [query] already implements is the only
+ * such behaviour this class has, and [recall] simply calls it.
  */
 class InMemoryWorldModel(
     private val updatePolicy: WorldModelUpdatePolicy = DefaultWorldModelUpdatePolicy(),
-) : WorldModel {
+) : WorldModel, WorldModelSource {
 
     private val mutex = Mutex()
     private val beliefs = mutableMapOf<String, WorldBelief>()
@@ -117,4 +131,14 @@ class InMemoryWorldModel(
             }
             .take(query.maximumResults)
     }
+
+    /**
+     * [WorldModelSource]'s own single operation -- a direct, zero-logic
+     * delegate to [query]. Named `recall`, not `query`, so a caller
+     * holding only a [WorldModelSource] reference is never confused for
+     * one holding a full [WorldModel] reference, even though the
+     * underlying behaviour is identical
+     * (`WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` Section 2.1).
+     */
+    override suspend fun recall(query: WorldQuery): List<WorldBelief> = query(query)
 }

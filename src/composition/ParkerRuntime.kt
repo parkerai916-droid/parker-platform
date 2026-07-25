@@ -25,6 +25,7 @@ import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.ResourceType
+import parker.core.interfaces.WorldModelSource
 import parker.core.runtime.ActionMapper
 import parker.core.runtime.CommunicationConversationCoordinator
 import parker.core.runtime.ConversationReplyCoordinator
@@ -45,6 +46,7 @@ import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryResourceRegistry
 import parker.core.runtime.InMemoryToolInvocationBinding
 import parker.core.runtime.InMemoryToolRegistry
+import parker.core.runtime.InMemoryWorldModel
 import parker.core.runtime.LocalHttpModelInferenceClient
 import parker.core.runtime.LocalTextChannelDeliverTool
 import parker.core.runtime.ModelReasoningProvider
@@ -168,10 +170,15 @@ class ParkerRuntime(
      * `InMemoryMemoryStore` -- the first production construction of Memory
      * anywhere in this repository's real, running composition root
      * (`docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md` Finding 1);
-     * (2b, Sprint 11 Unit 3/6/7) construct
+     * (2a-iii, Sprint 11 Unit 8) construct `InMemoryWorldModel` -- the
+     * first production construction of the World Model anywhere in this
+     * repository's real, running composition root
+     * (`docs/architecture/WORLD_MODEL_SOURCE_GOVERNANCE_REVIEW.md` Finding
+     * 1); (2b, Sprint 11 Unit 3/6/7/8) construct
      * the [ReasoningContextAssembler] (`DefaultReasoningContextAssembler`),
      * injecting the already-constructed `identityService`, `toolRegistry`,
-     * `conversationHistorySource`, and `memorySource`; (3) register and activate this runtime's
+     * `conversationHistorySource`, `memorySource`, and `worldModelSource`;
+     * (3) register and activate this runtime's
      * system Principals (`system.parker`, `system.conversation-engine`,
      * `system.response-composer`) and the configured owner Principal; (4)
      * register the `notify owner` action-vocabulary entry; (5) construct
@@ -249,8 +256,22 @@ class ParkerRuntime(
         val inMemoryMemoryStore = InMemoryMemoryStore()
         val memorySource: MemorySource = inMemoryMemoryStore
 
+        // Sprint 11 Unit 8: InMemoryWorldModel is constructed here for the first time in this
+        // repository's production composition root -- nowhere before this Unit did anything
+        // construct WorldModel/InMemoryWorldModel in the real, running system (Governance Review
+        // Finding 1), the identical situation Memory Source Integration (Unit 7) faced. This is a
+        // new construction step, not a reordering: InMemoryWorldModel takes only its defaulted
+        // DefaultWorldModelUpdatePolicy, so no new ParkerRuntimeConfig field or ordering
+        // constraint is introduced beyond existing before the Assembler. Exactly one instance is
+        // constructed and exposed to the Assembler only through the narrower WorldModelSource
+        // type -- no duplicate ownership, no duplicate state, mirroring precisely how
+        // InMemoryMemoryStore/InMemoryConversationEngine are each constructed once and exposed
+        // through two interfaces on the same instance.
+        val inMemoryWorldModel = InMemoryWorldModel()
+        val worldModelSource: WorldModelSource = inMemoryWorldModel
+
         reasoningContextAssembler = stage("Reasoning Context Assembler construction") {
-            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource, memorySource)
+            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource, memorySource, worldModelSource)
         }
 
         registerSystemIdentities(identityService)
