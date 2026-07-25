@@ -7,6 +7,7 @@ import parker.core.interfaces.MemoryId
 import parker.core.interfaces.MemoryPromotionDecision
 import parker.core.interfaces.MemoryPromotionPolicy
 import parker.core.interfaces.MemoryQuery
+import parker.core.interfaces.MemorySource
 import parker.core.interfaces.MemoryStore
 import parker.core.interfaces.PrincipalId
 import kotlin.reflect.full.functions
@@ -24,6 +25,16 @@ import kotlin.test.assertTrue
  * id), the `MemoryStore` public-surface boundary (no caller-facing
  * `promote`), and this Unit's scope discipline (no Planner/Agent
  * Runtime/Permission Engine dependency or behaviour).
+ *
+ * Extended Sprint 11 Unit 7 (Memory Source Integration): structural tests
+ * confirming [InMemoryMemoryStore] also satisfies [MemorySource], that
+ * `recall` returns exactly what `retrieve` would (a zero-logic delegate,
+ * not a second implementation), and that [MemorySource] itself exposes no
+ * mutation operation. `retrieve`'s own substantive behaviour -- identity
+ * scoping, category narrowing, `maximumResults` capping, deterministic
+ * ordering -- is exhaustively covered by the tests above already; these
+ * new tests do not re-prove that behaviour, only that `recall` inherits
+ * it unchanged.
  */
 class InMemoryMemoryStoreTest {
 
@@ -250,5 +261,35 @@ class InMemoryMemoryStoreTest {
         // constructor signature itself is the guarantee, not this assertion.
         val store: MemoryStore = InMemoryMemoryStore()
         assertTrue(store is MemoryStore)
+    }
+
+    // --- Sprint 11 Unit 7: MemorySource ---
+
+    @Test
+    fun `InMemoryMemoryStore also implements MemorySource`() {
+        val store = InMemoryMemoryStore()
+
+        assertTrue(store is MemorySource)
+    }
+
+    @Test
+    fun `recall returns exactly what retrieve would for the identical MemoryQuery -- a zero-logic delegate, not a second implementation`() = runTest {
+        val store = InMemoryMemoryStore()
+        store.remember(candidate(payload = "window seat memory via recall"))
+        val memorySource: MemorySource = store
+
+        val viaRetrieve = store.retrieve(query(relevance = "window"))
+        val viaRecall = memorySource.recall(query(relevance = "window"))
+
+        assertEquals(viaRetrieve, viaRecall)
+    }
+
+    @Test
+    fun `MemorySource exposes no external remember or forget operation`() {
+        val functionNames = MemorySource::class.functions.map { it.name }.toSet()
+
+        assertTrue("recall" in functionNames, "MemorySource must expose recall")
+        assertFalse("remember" in functionNames, "MemorySource must not expose remember")
+        assertFalse("forget" in functionNames, "MemorySource must not expose forget")
     }
 }

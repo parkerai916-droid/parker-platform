@@ -10,6 +10,7 @@ import parker.core.interfaces.ActionVocabularyEntry
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.InboundOwnerMessage
+import parker.core.interfaces.MemorySource
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
@@ -39,6 +40,7 @@ import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
+import parker.core.runtime.InMemoryMemoryStore
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryResourceRegistry
 import parker.core.runtime.InMemoryToolInvocationBinding
@@ -162,10 +164,14 @@ class ParkerRuntime(
      * [ConversationEngine] (`InMemoryConversationEngine`) -- moved ahead of
      * the Assembler's own construction, since the Assembler now also
      * depends on this same instance under its narrower
-     * `ConversationHistorySource` type; (2b, Sprint 11 Unit 3/6) construct
+     * `ConversationHistorySource` type; (2a-ii, Sprint 11 Unit 7) construct
+     * `InMemoryMemoryStore` -- the first production construction of Memory
+     * anywhere in this repository's real, running composition root
+     * (`docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md` Finding 1);
+     * (2b, Sprint 11 Unit 3/6/7) construct
      * the [ReasoningContextAssembler] (`DefaultReasoningContextAssembler`),
      * injecting the already-constructed `identityService`, `toolRegistry`,
-     * and `conversationHistorySource`; (3) register and activate this runtime's
+     * `conversationHistorySource`, and `memorySource`; (3) register and activate this runtime's
      * system Principals (`system.parker`, `system.conversation-engine`,
      * `system.response-composer`) and the configured owner Principal; (4)
      * register the `notify owner` action-vocabulary entry; (5) construct
@@ -234,8 +240,17 @@ class ParkerRuntime(
         conversationEngine = inMemoryConversationEngine
         val conversationHistorySource: ConversationHistorySource = inMemoryConversationEngine
 
+        // Sprint 11 Unit 7: InMemoryMemoryStore is constructed here for the first time in this
+        // repository's production composition root -- nowhere before this Unit did anything
+        // construct MemoryStore/InMemoryMemoryStore in the real, running system (Governance
+        // Review Finding 1). This is a new construction step, not a reordering: InMemoryMemoryStore
+        // takes only its defaulted DefaultMemoryPromotionPolicy, so no new ParkerRuntimeConfig
+        // field or ordering constraint is introduced beyond existing before the Assembler.
+        val inMemoryMemoryStore = InMemoryMemoryStore()
+        val memorySource: MemorySource = inMemoryMemoryStore
+
         reasoningContextAssembler = stage("Reasoning Context Assembler construction") {
-            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource)
+            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource, memorySource)
         }
 
         registerSystemIdentities(identityService)

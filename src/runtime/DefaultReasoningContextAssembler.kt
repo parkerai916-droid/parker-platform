@@ -2,6 +2,8 @@ package parker.core.runtime
 
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.IdentityService
+import parker.core.interfaces.MemoryQuery
+import parker.core.interfaces.MemorySource
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ResolvedInboundMessage
@@ -11,18 +13,20 @@ import parker.core.interfaces.ToolRegistry
  * Default, production [ReasoningContextAssembler] implementation, Sprint
  * 11 Unit 3, revised Sprint 11 Unit 5 (Conversation Continuity
  * Implementation) for the [ResolvedInboundMessage] input-shape change
- * described in [ReasoningContextAssembler]'s own KDoc, and revised again
+ * described in [ReasoningContextAssembler]'s own KDoc, revised again
  * Sprint 11 Unit 6 (Conversation History Source) to add
- * [conversationHistorySource]. Implements exactly what
+ * [conversationHistorySource], and revised again Sprint 11 Unit 7 (Memory
+ * Source Integration) to add [memorySource]. Implements exactly what
  * `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
  * ("the Contract Design") Section 4.3 authorises -- constructor injection
- * of [identityService] and [toolRegistry] -- plus the one additional,
- * narrow, read-only collaborator
+ * of [identityService] and [toolRegistry] -- plus the two additional,
+ * narrow, read-only collaborators
  * `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
- * Section 5 now authorises. **Still no** Memory Source or World Model
- * Source dependency anywhere in this class (Contract Design Section 4.2):
- * each remains a real, named, future boundary this Unit is not authorised
- * to design or work around. [conversationHistorySource]'s own declared
+ * Section 5 and `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`
+ * Section 4 now authorise. **Still no** World Model Source dependency
+ * anywhere in this class (Contract Design Section 4.2): it remains a
+ * real, named, future boundary this Unit is not authorised to design or
+ * work around. [conversationHistorySource]'s own declared
  * type is deliberately not [parker.core.interfaces.ConversationEngine] --
  * it is the separate, narrower [ConversationHistorySource] interface,
  * structurally incapable of resolving continuity or submitting a Turn,
@@ -33,7 +37,7 @@ import parker.core.interfaces.ToolRegistry
  * [ResolvedInboundMessage] was already resolved elsewhere; this class
  * performs no lookup, no resolution, and no mutation of it).
  *
- * Holds only its two collaborators as fields -- no cache of any prior
+ * Holds only its four collaborators as fields -- no cache of any prior
  * resolution, no mutable state of any kind (Contract Design Section 5,
  * Statelessness). [assemble] reads each collaborator fresh, once, every
  * call.
@@ -122,6 +126,44 @@ import parker.core.interfaces.ToolRegistry
  * call -- no second call, no caching across invocations (Statelessness,
  * Contract Design Section 5 restated).
  *
+ * ## Memory (Sprint 11 Unit 7)
+ *
+ * One further item is rendered from [memorySource]. Unlike
+ * [conversationHistorySource], `MemorySource.recall` requires a full
+ * [MemoryQuery] -- there is no already-resolved key to read the way
+ * `resolvedMessage.conversationId` already is. This class therefore
+ * constructs the [MemoryQuery] itself, using no new derived concept, only
+ * fields already present on its own input
+ * (`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5):
+ *
+ * - `requestingPrincipalId` = `message.senderPrincipalId` -- the same
+ *   `PrincipalId` already used to render "Requesting principal."
+ * - `relevance` = `message.text` -- the current request's own text,
+ *   reusing [MemoryStore][parker.core.interfaces.MemoryStore]'s existing,
+ *   already-implemented, already-tested case-insensitive substring match.
+ *   This is not semantic search and invents no ranking algorithm; it
+ *   supplies the one value [MemoryQuery.relevance] already, contractually,
+ *   requires every caller to provide.
+ * - `correlationId` = `message.correlationId.value`.
+ * - `maximumResults` = [MEMORY_QUERY_MAXIMUM_RESULTS] -- an
+ *   implementation-defined bound (Contract Design Section 5); not
+ *   architecturally significant, and may change without a Contract Design
+ *   revision.
+ * - `category` = `null` -- no category narrowing (Contract Design
+ *   Section 5).
+ *
+ * - "Memories" -- [MemorySource.recall], called once with the constructed
+ *   `MemoryQuery`. Zero or more entries are rendered, one per returned
+ *   `MemoryRecord`, **in the order [MemorySource.recall] returns them** --
+ *   this class does not rank, score, reorder, summarise, or interpret
+ *   what it receives (Contract Design Section 6, Section 8). An empty
+ *   result renders no entries at all, exactly as "no tools" and "no prior
+ *   Turns" already render nothing. Each rendered entry surfaces only
+ *   fields [parker.core.interfaces.MemoryRecord] already carries
+ *   (`knowledgePayload`, `sourceSubsystem`, and `confidence` where
+ *   present) -- no confidence is computed, estimated, or defaulted where
+ *   absent, and no provenance is fabricated.
+ *
  * @param identityService Read use only (`resolve`) -- Contract Design
  *   Section 4.1.
  * @param toolRegistry Read use only (`listAll`) -- Contract Design
@@ -131,12 +173,35 @@ import parker.core.interfaces.ToolRegistry
  *   `ConversationEngine`; [conversationHistorySource] is a separate,
  *   narrower type that cannot reach `resolveConversationId` or
  *   `submitTurn` even if this class wished to.
+ * @param memorySource Read use only (`recall`) -- Sprint 11 Unit 7
+ *   `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5. This
+ *   class never calls `MemoryStore.remember` or `MemoryStore.forget`;
+ *   [memorySource] is a separate, narrower type that cannot reach either
+ *   even if this class wished to.
  */
 class DefaultReasoningContextAssembler(
     private val identityService: IdentityService,
     private val toolRegistry: ToolRegistry,
     private val conversationHistorySource: ConversationHistorySource,
+    private val memorySource: MemorySource,
 ) : ReasoningContextAssembler {
+
+    private companion object {
+        /**
+         * The `maximumResults` bound this Assembler supplies on every
+         * [MemoryQuery] it constructs. **Implementation policy, not
+         * architecture** -- `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`
+         * Section 5 deliberately does not fix this figure, so that the
+         * architecture remains neutral to whatever bounding policy a future
+         * revision chooses (a fixed limit, a dynamic token budget, a
+         * model-specific limit, a configurable policy value). This
+         * constant may be changed freely by a future implementation unit
+         * without requiring an architecture or Contract Design revision --
+         * changing it is an implementation change, not an architectural
+         * one.
+         */
+        const val MEMORY_QUERY_MAXIMUM_RESULTS = 5
+    }
 
     override suspend fun assemble(resolvedMessage: ResolvedInboundMessage): ReasoningContext {
         val message = resolvedMessage.message
@@ -163,6 +228,24 @@ class DefaultReasoningContextAssembler(
         // (Contract Design Section 4.3) -- no Turn record anywhere captures Parker's own replies.
         conversationHistorySource.history(resolvedMessage.conversationId).forEach { turn ->
             entries += "Prior message: ${turn.message.text} (from ${turn.message.senderPrincipalId.value}, at ${turn.receivedAt})"
+        }
+
+        // Sprint 11 Unit 7: memories relevant to the current request, rendered in the exact
+        // order MemorySource.recall returns them -- no ranking, no scoring, no reordering, no
+        // summarisation, no interpretation (Memory Source Contract Design Section 6/8). The
+        // MemoryQuery below is constructed entirely from fields already present on this
+        // method's own input; maximumResults is implementation-defined, never architecturally
+        // significant (Contract Design Section 5).
+        val memoryQuery = MemoryQuery(
+            requestingPrincipalId = message.senderPrincipalId,
+            relevance = message.text,
+            correlationId = message.correlationId.value,
+            maximumResults = MEMORY_QUERY_MAXIMUM_RESULTS,
+            category = null,
+        )
+        memorySource.recall(memoryQuery).forEach { record ->
+            val confidencePart = record.confidence?.let { ", confidence: $it" }.orEmpty()
+            entries += "Memory: ${record.knowledgePayload} (source: ${record.sourceSubsystem}$confidencePart)"
         }
 
         toolRegistry.listAll().forEach { tool ->

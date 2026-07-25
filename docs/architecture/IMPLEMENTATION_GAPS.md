@@ -2281,11 +2281,89 @@ disclosed rather than silently narrowed:
   directly above) **remain exactly as open as before** -- this Unit
   neither worsens nor resolves either; a Conversation's history simply
   grows for as long as its continuity key remains active.
-- **Verification remains unresolved, unchanged in kind from every prior
-  entry in this chain:** this sandbox still cannot complete a Gradle
-  build/test run. Steven will run the complete test suite and report
-  results; this Unit's own correctness claims rest on direct, repeated
-  re-reading of every changed file and a repository-wide search
-  confirming no remaining caller of any old constructor signature, not on
-  a passing local build. **This Unit remains not accepted; this gap
-  remains Open.**
+- **Verification: complete.** Steven's own local Gradle test run
+  (`.\gradlew.bat test`) reported **BUILD SUCCESSFUL**. One failure was
+  found and corrected (a pre-existing test-extraction regex fragility in
+  `ParkerRuntimeReasoningContextIntegrationTest.kt`, exposed rather than
+  caused by this Unit's own new "Prior message" entry -- see this Unit's
+  own `IMPLEMENTATION_HISTORY.md` entry for the root-cause analysis); the
+  full suite passed on the subsequent run. Committed as `ad21659`
+  ("feat: add conversation history source") on `sprint-11-reasoning-context`,
+  pushed, local and remote aligned, working tree clean. **This Unit is
+  now accepted.** The underlying gap (this entry as a whole, Gap #53)
+  remains Open -- this Unit closes only the "Conversation history is
+  still not rendered" item for owner-side messages, per the disclosed,
+  still-open limitations immediately above (one-sided history, no volume
+  bound) and the still-open Continuity items (termination/expiry/
+  reopening, cross-channel span) restated above, none of which this
+  acceptance resolves.
+
+**Update (Sprint 11, Unit 7 -- Memory Source Integration Implementation):
+this closes one of the two remaining items named in this gap's Unit 3
+update** ("Memory Source and World Model Source remain entirely
+undefined") **-- Memory Source only. World Model Source remains exactly
+as undefined as before.** `MemorySource` (`src/interfaces/MemorySource.kt`)
+now exists, backed by `InMemoryMemoryStore` implementing it directly as a
+second, narrower, read-only view over the same owned state `MemoryStore`
+already had sole authority over -- no new map, no new lock, `recall` is a
+zero-logic delegate to the already-implemented, already-tested `retrieve`.
+`DefaultReasoningContextAssembler` now renders zero or more "Memory"
+entries per request, constructing a `MemoryQuery` from fields already
+present on its own input (sender `PrincipalId`, request text as
+`relevance`, the message's own `correlationId`, `category = null`).
+Governed by `docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`, and
+`docs/implementation/MEMORY_SOURCE_INTEGRATION_SCOPE_LOCK.md` (all three
+architecturally approved before this Unit's implementation began). What
+remains open, disclosed rather than silently narrowed:
+
+- **`MemoryStore`/`InMemoryMemoryStore` had no production wiring at all
+  before this Unit** -- confirmed directly by grep against
+  `ParkerRuntime.kt` before this Unit's own changes, no matches. This
+  Unit adds the first production construction of Memory anywhere in this
+  repository's real, running composition root (`InMemoryMemoryStore()`,
+  defaulted `DefaultMemoryPromotionPolicy`), not merely a reordering, as
+  Unit 6 required for `ConversationEngine`.
+- **The constructed `InMemoryMemoryStore` starts, and in production
+  remains, empty.** Nothing in this Unit's own scope calls `remember` --
+  "changing how memories are created" is explicitly excluded
+  (`MEMORY_SOURCE_INTEGRATION_SCOPE_LOCK.md`). `MemorySource.recall`
+  therefore returns an empty list on every real production request today,
+  rendering no "Memory" entries, until a separate, future, out-of-scope
+  mechanism populates Memory via `remember`. This is the correct, honest
+  consequence of wiring a read boundary before any write path exists, not
+  a defect of this Unit.
+- **`maximumResults` is implementation-defined, not architecturally
+  significant.** `MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5 deliberately
+  does not fix a figure; `DefaultReasoningContextAssembler`'s own private
+  `MEMORY_QUERY_MAXIMUM_RESULTS` constant may be changed by a future Unit
+  without any architecture or Contract Design revision.
+- **No `MemoryRetrievalPolicy`.** Ranking remains
+  `InMemoryMemoryStore.retrieve`'s existing, already-implemented,
+  already-tested fixed strategy (case-insensitive substring match,
+  most-recently-promoted-first) -- `MemorySource` defines no retrieval
+  algorithm of its own (`MEMORY_CONTRACT_DESIGN.md` Section 8's deferred
+  seam remains deferred, unchanged by this Unit).
+- **No `ParkerRuntime`-level integration test exists for a populated
+  memory rendering end-to-end.** No in-scope seeding hook exists (adding
+  one would itself be "changing how memories are created," excluded).
+  `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`
+  confirms the real wiring reaches `MemorySource` without fault and
+  correctly renders nothing (since no memory exists in production yet);
+  `tests/runtime/DefaultReasoningContextAssemblerTest.kt`'s own
+  real-`InMemoryMemoryStore` test (Assembler-level, not
+  `ParkerRuntime`-level) is this Unit's best available substitute,
+  disclosed as such in `MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 10.
+- **World Model Source remains entirely undefined**, on the same footing
+  named in this gap's Unit 3 update -- unchanged by this Unit.
+- **Verification.** See `docs/implementation/IMPLEMENTATION_HISTORY.md`'s
+  own Sprint 11, Unit 7 entry for this Unit's own honest, sandbox-limited
+  verification account. **This Unit's acceptance status is recorded there,
+  not here** -- pending Steven's own Android Studio run, per this
+  repository's own established convention. The underlying gap (this entry
+  as a whole, Gap #53) remains Open -- this Unit closes only the "Memory
+  Source... remain entirely undefined" item's Memory Source half, per the
+  disclosed, still-open limitations immediately above (no production
+  memory creation path, no `MemoryRetrievalPolicy`, no
+  `ParkerRuntime`-level populated-memory test, World Model Source still
+  undefined), none of which this Unit resolves.

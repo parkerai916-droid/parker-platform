@@ -2051,14 +2051,16 @@ one new end-to-end test confirming a second message in the same
 Conversation carries the first message's own text as a rendered "Prior
 message" entry, and the first message carries none.
 
-**Build/test verification.** Not performed by this Unit -- consistent
-with this session's own repeatedly-diagnosed sandbox limitation and this
-Unit's own convention of relying on Steven's own Android Studio run.
-Every change above was verified by direct, repeated re-reading of the
-edited files and a repository-wide grep confirming no other `.kt` file
-under `src/` or `tests/` references `DefaultReasoningContextAssembler`'s
-or `InMemoryConversationEngine`'s constructors in a way this Unit's
-changes would break.
+**Build/test verification.** Not independently performed inside this
+session's own sandbox -- consistent with this session's own
+repeatedly-diagnosed limitation. Every change above was first verified
+by direct, repeated re-reading of the edited files and a repository-wide
+grep confirming no other `.kt` file under `src/` or `tests/` references
+`DefaultReasoningContextAssembler`'s or `InMemoryConversationEngine`'s
+constructors in a way this Unit's changes would break. Steven's own
+`.\gradlew.bat test` run subsequently reported **BUILD SUCCESSFUL** (see
+the post-verification correction immediately below for the one failure
+found and fixed en route).
 
 **Post-verification correction (Steven's own `.\gradlew.bat test` run,
 696 tests, 1 failure).** `ParkerRuntimeReasoningContextIntegrationTest.kt`'s
@@ -2088,6 +2090,133 @@ No production file changed; the equality assertion itself is unchanged
 and unweakened; no coverage removed. Remains within this Unit's own
 Scope Lock -- no architectural conflict was found, so neither the
 Contract Design nor the Scope Lock required any revision.
+
+**Final acceptance.** Following the correction above, Steven's complete
+local Gradle test run reported **BUILD SUCCESSFUL**. Committed as
+`ad21659` ("feat: add conversation history source") on branch
+`sprint-11-reasoning-context`; local and remote branches aligned;
+working tree clean. **Sprint 11 Unit 6 (Conversation History Source) is
+accepted.**
+
+### Unit 7 -- Memory Source Integration Implementation (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+**Governance sequence.** `docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`, and
+`docs/implementation/MEMORY_SOURCE_INTEGRATION_SCOPE_LOCK.md` were each
+produced, then revised in a pre-approval architectural refinement pass
+(removing a fixed `maximumResults` value from the architecture,
+clarifying that the retrieval algorithm is owned entirely by the Memory
+implementation, and adding an explicit Constitutional Boundary section),
+then explicitly architecturally approved before any Kotlin was written --
+Steven's own instruction: "The Scope Lock is now frozen. Proceed with
+implementation only within the approved scope."
+
+**Pre-implementation conflict check.** Re-read the Parker Constitution,
+`PARKER_ENGINEERING_STANDARD.md`, `reasoning-context.md`,
+`src/interfaces/MemoryStore.kt`, `src/runtime/InMemoryMemoryStore.kt`,
+`tests/runtime/InMemoryMemoryStoreTest.kt`,
+`src/runtime/DefaultReasoningContextAssembler.kt`,
+`src/composition/ParkerRuntime.kt`,
+`src/interfaces/ConversationHistorySource.kt`, and
+`src/runtime/InMemoryConversationEngine.kt` fresh, immediately before
+implementation began. **No conflict found** between the approved design
+and current source -- confirmed directly: `MemoryQuery`'s mandatory
+`relevance`/`maximumResults` fields, `InMemoryMemoryStore.retrieve`'s
+existing deterministic ordering, and the complete absence of any
+`MemoryStore` reference in `ParkerRuntime.kt` all matched exactly what
+the Governance Review and Contract Design had already found and
+documented.
+
+**Implementation, exactly within the approved scope:**
+
+- `src/interfaces/MemorySource.kt` (new file) -- a single-method,
+  `suspend`-declared, read-only interface, `recall(query: MemoryQuery): List<MemoryRecord>`,
+  reusing `MemoryQuery`/`MemoryRecord` unchanged.
+- `src/runtime/InMemoryMemoryStore.kt` -- now
+  `class InMemoryMemoryStore(...) : MemoryStore, MemorySource`; `recall`
+  is a one-line, zero-logic delegate to the already-implemented, already-
+  tested `retrieve`. No new map, no new lock, no new field.
+- `src/runtime/DefaultReasoningContextAssembler.kt` -- gains a fourth
+  constructor dependency, `memorySource: MemorySource`. `assemble` now
+  constructs a `MemoryQuery` from fields already on its own input
+  (`requestingPrincipalId` = sender `PrincipalId`, `relevance` = request
+  text, `correlationId` = the message's own correlation id, `category` =
+  `null`, `maximumResults` = a new private companion constant,
+  `MEMORY_QUERY_MAXIMUM_RESULTS = 5` -- explicitly documented in its own
+  KDoc as implementation policy, not architecture, changeable without a
+  Contract Design revision), calls `memorySource.recall` once, and
+  renders zero or more "Memory" entries in the exact order returned -- no
+  ranking, scoring, reordering, summarisation, or interpretation.
+  Confidence is rendered when present, omitted (not fabricated) when
+  absent.
+- `src/composition/ParkerRuntime.kt` -- `buildAndRegisterRuntimeGraph()`
+  now constructs `InMemoryMemoryStore()` (defaulted
+  `DefaultMemoryPromotionPolicy`) and injects it into
+  `DefaultReasoningContextAssembler`'s constructor under the
+  `MemorySource` type. **This is the first production construction of
+  Memory anywhere in this repository's real, running composition root**
+  -- confirmed by grep against the pre-implementation state of
+  `ParkerRuntime.kt` (no `MemoryStore`/`WorldModel` match) -- a new
+  construction step, not a reordering, unlike Unit 6's
+  `InMemoryConversationEngine` change.
+
+**Tests added:**
+
+- `tests/runtime/FakeMemorySource.kt` (new) -- lambda-based fake,
+  mirroring `FakeConversationHistorySource`.
+- `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- all existing
+  constructor call sites updated for the new fourth parameter; the
+  structural dependency test updated to
+  `setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "MemorySource")`;
+  nine new tests (empty memory result; single memory rendered; multiple
+  memories rendered in exact returned order; confidence rendered when
+  present/omitted when absent; the constructed `MemoryQuery`'s four
+  fields asserted directly; `maximumResults` asserted positive without
+  asserting a specific architecturally-significant value; a `recall`
+  failure propagates unchanged; `MemorySource` exposes no `remember`/
+  `forget`; one real-`InMemoryMemoryStore`, not-a-fake, end-to-end test).
+- `tests/runtime/InMemoryMemoryStoreTest.kt` -- three new structural
+  tests (`InMemoryMemoryStore` also satisfies `MemorySource`; `recall`
+  returns exactly what `retrieve` would for an identical query; `MemorySource`
+  exposes no `remember`/`forget`). `retrieve`'s own substantive behaviour
+  is not re-tested -- the 14 existing tests already cover it exhaustively.
+- `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` --
+  one new test confirming `MemorySource` is wired into the real
+  `ParkerRuntime` without fault and renders no "Memory" entries, since
+  nothing in this Unit's own scope creates memories in production.
+
+**Disclosed, deliberate exclusions (per the frozen Scope Lock), none
+implemented:** memory creation/promotion/forgetting changes, memory
+extraction from conversation, summarisation, embeddings, semantic search
+beyond the existing substring match, ranking/scoring, confidence
+invention, provenance invention, contradiction resolution, World Model
+integration, Authentication implementation, Planner work, tool execution,
+Conversation History changes, unrelated refactoring.
+
+**Disclosed limitation: no `ParkerRuntime`-level integration test for a
+populated memory rendering end-to-end.** No in-scope seeding hook exists
+for the `InMemoryMemoryStore` `ParkerRuntime` constructs privately --
+adding one would itself be "changing how memories are created," excluded
+by the Scope Lock. The real-`InMemoryMemoryStore` Assembler-level test
+above is this Unit's best available substitute, disclosed as such in
+`MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 10 before implementation began.
+
+**Build/test verification.** Attempted in this session's own sandbox:
+`./gradlew --version`, `./gradlew compileKotlin`, and
+`./gradlew compileKotlin --offline` were each run; all returned exit code
+0 with **no captured output whatsoever**, including no Gradle banner from
+`--version` -- consistent with, and not contradicting, this session's own
+repeatedly-diagnosed sandbox limitation (the bash tool's per-call fresh
+PID namespace does not allow a Gradle daemon or long-running build to
+report output back across calls). **No build or test result is claimed
+from this sandbox.** Every change above was instead verified by direct,
+repeated re-reading of the final state of each edited file, structural
+review against the approved Contract Design and Scope Lock, and manual
+tracing of every new call path (query construction, delegation, rendering,
+composition-root wiring) against `MemoryQuery`/`MemoryRecord`'s own
+existing, already-tested contracts. Per PES-001 Stage 7, Steven's own
+`.\gradlew.bat test` run remains the authoritative verification; this
+Unit is **not yet accepted** pending that run's own reported result.
 
 Sprint 1 follows a strict implementation discipline:
 

@@ -23,8 +23,10 @@ import kotlin.test.assertTrue
  * Section 5), and Conversation History Source's own integration
  * (`docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
  * Section 5 -- a second message in the same Conversation carries the
- * first message's text as history; the first message carries none) all
- * hold against the real, running [ParkerRuntime] -- not merely against
+ * first message's text as history; the first message carries none) and,
+ * Sprint 11 Unit 7 (Memory Source Integration), that `MemorySource` is
+ * wired into the real composition root without fault -- all hold against
+ * the real, running [ParkerRuntime] -- not merely against
  * [DefaultReasoningContextAssembler] or [InMemoryConversationEngine] in
  * isolation (see `tests/runtime/DefaultReasoningContextAssemblerTest.kt`
  * and `tests/runtime/InMemoryConversationEngineTest.kt` for those).
@@ -255,6 +257,35 @@ class ParkerRuntimeReasoningContextIntegrationTest {
             !secondPrompt.contains("Prior message: and tomorrow"),
             "the current request must never appear as its own prior history: $secondPrompt",
         )
+
+        runtime.shutdown()
+    }
+
+    // --- Sprint 11 Unit 7: Runtime wiring for Memory Source Integration ---
+
+    @Test
+    fun `MemorySource is wired into the real ParkerRuntime and renders no Memory entries, since nothing in this Unit's own scope creates memories`() = runBlocking<Unit> {
+        // MemorySource Contract Design Section 9: nothing in this Unit's own scope calls
+        // MemoryStore.remember (Scope Lock's own exclusion, "changing how memories are
+        // created"), so the InMemoryMemoryStore ParkerRuntime constructs is always empty in
+        // production -- this test confirms the real wiring reaches this new dependency without
+        // fault and correctly renders nothing, exactly as "no tools" and "no prior Turns"
+        // already render nothing elsewhere in this same prompt. A full end-to-end test of a
+        // populated memory rendering through the real ParkerRuntime is not achievable within
+        // this Unit's own scope (no seeding hook exists, and adding one would itself be
+        // out-of-scope "changing how memories are created") -- see
+        // `tests/runtime/DefaultReasoningContextAssemblerTest.kt`'s own real-InMemoryMemoryStore
+        // test (Assembler-level, not ParkerRuntime-level) for this Unit's best available
+        // substitute, disclosed in `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 10.
+        val stub = startStub("REPLY: sure thing")
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        runtime.submitOwnerMessage(message(text = "what's the weather like today"))
+
+        assertEquals(1, stub.receivedRequestBodies.size)
+        val prompt = stub.receivedRequestBodies.single()
+        assertTrue(!prompt.contains("Memory:"), "no memory exists yet in production, so no Memory entry should render: $prompt")
 
         runtime.shutdown()
     }
