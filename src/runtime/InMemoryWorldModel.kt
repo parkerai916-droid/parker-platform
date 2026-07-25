@@ -92,19 +92,26 @@ class InMemoryWorldModel(
     /**
      * The minimal, deterministic matching this Unit is scoped to
      * implement: a case-insensitive substring match of
-     * [WorldQuery.subjectMatch] against [WorldBelief.subject], narrowed
-     * by [WorldQuery.minimumConfidence] if supplied, excluding any
-     * belief [WorldModelUpdatePolicy.isStillCurrent] judges stale, and
-     * truncated to [WorldQuery.maximumResults]. No ranking or scoring
-     * formula is applied -- results are returned in whatever order the
-     * underlying map iterates, per `WORLD_MODEL_CONTRACT_DESIGN.md` §4's
-     * own "what it must not carry" rule; a caller must not depend on any
-     * particular ordering beyond the filters and bound stated here.
+     * [WorldQuery.subjectMatch] against [WorldBelief.subject] --
+     * skipped entirely when [WorldQuery.subjectMatch] is `null`, per
+     * `docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`
+     * -- narrowed by [WorldQuery.minimumConfidence] if supplied,
+     * excluding any belief [WorldModelUpdatePolicy.isStillCurrent]
+     * judges stale, and truncated to [WorldQuery.maximumResults]. No
+     * ranking or scoring formula is applied -- results are returned in
+     * whatever order the underlying map iterates, per
+     * `WORLD_MODEL_CONTRACT_DESIGN.md` §4's own "what it must not carry"
+     * rule; a caller must not depend on any particular ordering beyond
+     * the filters and bound stated here. A `null` `subjectMatch` does
+     * not introduce ranking, scoring, inference, or topic extraction --
+     * it removes one filter condition, exactly as a `null`
+     * [WorldQuery.minimumConfidence] already does for the confidence
+     * condition.
      */
     override suspend fun query(query: WorldQuery): List<WorldBelief> = mutex.withLock {
         beliefs.values
             .filter { belief ->
-                belief.subject.contains(query.subjectMatch, ignoreCase = true) &&
+                (query.subjectMatch == null || belief.subject.contains(query.subjectMatch, ignoreCase = true)) &&
                     (query.minimumConfidence == null || belief.confidence >= query.minimumConfidence) &&
                     updatePolicy.isStillCurrent(belief)
             }

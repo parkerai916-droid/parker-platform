@@ -174,14 +174,24 @@ interface WorldModelUpdatePolicy {
  * requesting-Principal field and no correlation identifier -- neither
  * has an identified concrete need for the World Model, unlike Memory's
  * own `MemoryQuery` (see that section for the reasoning).
+ *
+ * [subjectMatch] is optional (`docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`,
+ * a narrowly-scoped Sprint 11 revision to this originally Sprint 4,
+ * Track B contract): `null` means "no subject filter -- match every
+ * belief regardless of subject," mirroring the identical
+ * null-means-skip-this-filter shape [minimumConfidence] already uses. A
+ * supplied, non-null value is matched exactly as before this revision
+ * and must still be non-blank.
  */
 data class WorldQuery(
-    val subjectMatch: String,
+    val subjectMatch: String? = null,
     val maximumResults: Int,
     val minimumConfidence: Double? = null,
 ) {
     init {
-        require(subjectMatch.isNotBlank()) { "WorldQuery.subjectMatch must not be blank" }
+        require(subjectMatch == null || subjectMatch.isNotBlank()) {
+            "WorldQuery.subjectMatch must not be blank if present"
+        }
         require(maximumResults >= 1) {
             "WorldQuery.maximumResults must be at least 1, was $maximumResults"
         }

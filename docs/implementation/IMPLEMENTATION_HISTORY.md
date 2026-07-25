@@ -2218,6 +2218,90 @@ existing, already-tested contracts. Per PES-001 Stage 7, Steven's own
 `.\gradlew.bat test` run remains the authoritative verification; this
 Unit is **not yet accepted** pending that run's own reported result.
 
+### WorldQuery Optional Subject -- Contract Revision Implementation
+
+**Governance sequence.** `docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_GOVERNANCE_REVIEW.md`,
+`docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`, and
+`docs/implementation/WORLD_QUERY_OPTIONAL_SUBJECT_SCOPE_LOCK.md` were each
+produced as a narrowly-scoped architecture/compatibility/scope review of
+the specific contract revision identified by
+`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md` as
+the smallest fix for Sprint 11 Unit 8's blocking incompatibility, then
+explicitly approved before any Kotlin was written -- Steven's own
+instruction: "The Scope Lock is frozen. Proceed with implementation only
+within the approved scope."
+
+**Pre-implementation conflict check.** Re-read `src/interfaces/WorldModel.kt`,
+`src/runtime/InMemoryWorldModel.kt`,
+`docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md`,
+`tests/contracts/WorldModelContractsTest.kt`,
+`tests/runtime/InMemoryWorldModelTest.kt`, the Parker Constitution, and
+`PARKER_ENGINEERING_STANDARD.md` fresh, immediately before implementation
+began. **No conflict found** -- current source matched every assumption
+the Governance Review and Contract Revision had already documented,
+verbatim.
+
+**Implementation, exactly within the approved scope:**
+
+- `src/interfaces/WorldModel.kt` -- `WorldQuery.subjectMatch` widened from
+  `String` to `String? = null`; `init` block's `require` relaxed to
+  `require(subjectMatch == null || subjectMatch.isNotBlank())`. `null`
+  means "no subject filter." `maximumResults` and `minimumConfidence`
+  unchanged.
+- `src/runtime/InMemoryWorldModel.kt` -- `query`'s filter predicate's
+  subject condition becomes
+  `(query.subjectMatch == null || belief.subject.contains(query.subjectMatch, ignoreCase = true))`,
+  the identical `== null || ...` short-circuit shape already used one
+  line below it for `minimumConfidence`. No other line changed; no
+  ranking, scoring, ordering guarantee, or classification introduced.
+
+**Tests added/updated:**
+
+- `tests/contracts/WorldModelContractsTest.kt` -- `worldQuery(...)`
+  helper's `subjectMatch` parameter widened to `String?`; existing blank-
+  rejection test renamed for clarity
+  (`` `a WorldQuery with a blank, non-null subjectMatch is rejected` ``,
+  behaviour unchanged); one new test confirming a `null` `subjectMatch`
+  constructs successfully.
+- `tests/runtime/InMemoryWorldModelTest.kt` -- `query(...)` helper's
+  `subjectMatch` parameter widened to `String?`; four new tests (a `null`
+  `subjectMatch` returns every currently-non-stale belief across multiple
+  subjects; `maximumResults` still bounds a null-subject query;
+  `minimumConfidence` still filters a null-subject query; a non-null
+  `subjectMatch` continues to filter exactly as before this revision).
+  All fourteen pre-existing tests in this file are unmodified in
+  behaviour -- only the helper's parameter type widened, which does not
+  change any existing call site's supplied value.
+
+**Disclosed, deliberate exclusions (per the frozen Scope Lock), none
+implemented:** `WorldModelSource` (still unwritten), Assembler
+integration (`DefaultReasoningContextAssembler` unchanged),
+`ParkerRuntime` wiring (`InMemoryWorldModel` still unconstructed in the
+composition root), any change to `maximumResults`, any ordering
+guarantee, ranking, scoring, semantic search, embeddings, classification,
+topic inference, contradiction resolution, `minimumConfidence` changes,
+`WorldModel.current(subject)` changes, and any unrelated refactoring.
+
+**Build/test verification -- sandbox could not execute Gradle at all in
+this session, not merely time out.** `./gradlew --offline tasks`,
+`./gradlew --offline compileTestKotlin`, and, as a diagnostic control,
+`./gradlew --offline thisTaskDoesNotExist` (an intentionally invalid task
+name) were each run. Every invocation returned exit code 0 with zero
+lines of captured output -- including the deliberately-invalid task
+name, which a working Gradle invocation must reject with a non-zero exit
+code and an error message. This is stronger evidence than the "no output
+within the call window" limitation disclosed in Unit 7 above: it shows
+Gradle is not executing meaningfully in this sandbox this session at all,
+rather than merely running too slowly to report back. **No build or test
+result of any kind is claimed from this sandbox.** Every change above was
+instead verified by direct, repeated re-reading of the final state of
+each edited file, structural review against the approved Contract
+Revision and Scope Lock, and manual tracing of the one changed line in
+`InMemoryWorldModel.query` against `minimumConfidence`'s own, already-
+tested, identical-shape branch. Per PES-001 Stage 7, Steven's own
+`.\gradlew.bat test` run remains the authoritative verification; this
+revision is **not yet accepted** pending that run's own reported result.
+
 Sprint 1 follows a strict implementation discipline:
 
 - One architectural unit per commit.

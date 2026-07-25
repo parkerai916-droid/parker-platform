@@ -53,7 +53,7 @@ class InMemoryWorldModelTest {
     )
 
     private fun query(
-        subjectMatch: String = "device",
+        subjectMatch: String? = "device",
         maximumResults: Int = 10,
         minimumConfidence: Double? = null,
     ) = WorldQuery(
@@ -204,6 +204,59 @@ class InMemoryWorldModelTest {
 
         assertEquals(1, results.size)
         assertEquals("device-high-confidence", results.single().subject)
+    }
+
+    // --- query: null subjectMatch (docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md) ---
+
+    @Test
+    fun `a null subjectMatch returns every currently-non-stale belief, unfiltered by subject`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-front-door", value = "locked"))
+        model.observe(observation(subject = "environment-porch-light", value = "on"))
+        model.observe(observation(subject = "user-activity-away", value = "true"))
+
+        val results = model.query(query(subjectMatch = null, maximumResults = 10))
+
+        assertEquals(3, results.size)
+        assertEquals(
+            setOf("device-front-door", "environment-porch-light", "user-activity-away"),
+            results.map { it.subject }.toSet(),
+        )
+    }
+
+    @Test
+    fun `maximumResults still bounds a null-subjectMatch query`() = runTest {
+        val model = InMemoryWorldModel()
+        repeat(5) { i -> model.observe(observation(subject = "subject-$i")) }
+
+        val results = model.query(query(subjectMatch = null, maximumResults = 2))
+
+        assertEquals(2, results.size)
+    }
+
+    @Test
+    fun `minimumConfidence still filters a null-subjectMatch query`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-high-confidence", confidence = 0.9))
+        model.observe(observation(subject = "environment-low-confidence", confidence = 0.2))
+
+        val results = model.query(query(subjectMatch = null, minimumConfidence = 0.5))
+
+        assertEquals(1, results.size)
+        assertEquals("device-high-confidence", results.single().subject)
+    }
+
+    @Test
+    fun `a non-null subjectMatch continues to filter exactly as before this revision`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-front-door", value = "locked"))
+        model.observe(observation(subject = "device-back-door", value = "locked"))
+        model.observe(observation(subject = "environment-porch-light", value = "on"))
+
+        val results = model.query(query(subjectMatch = "device"))
+
+        assertEquals(2, results.size)
+        assertTrue(results.all { it.subject.contains("device") })
     }
 
     // --- lazy expiry ---

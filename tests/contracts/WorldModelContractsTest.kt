@@ -141,7 +141,7 @@ class WorldModelContractsTest {
     // --- WorldQuery ---
 
     private fun worldQuery(
-        subjectMatch: String = "device",
+        subjectMatch: String? = "device",
         maximumResults: Int = 10,
         minimumConfidence: Double? = null,
     ) = WorldQuery(
@@ -151,8 +151,16 @@ class WorldModelContractsTest {
     )
 
     @Test
-    fun `a WorldQuery with a blank subjectMatch is rejected`() {
+    fun `a WorldQuery with a blank, non-null subjectMatch is rejected`() {
         assertFailsWith<IllegalArgumentException> { worldQuery(subjectMatch = "") }
+    }
+
+    @Test
+    fun `a WorldQuery with a null subjectMatch is accepted`() {
+        // docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md:
+        // null means "no subject filter," and is a valid, non-rejected construction.
+        val query = worldQuery(subjectMatch = null)
+        assertEquals(null, query.subjectMatch)
     }
 
     @Test
