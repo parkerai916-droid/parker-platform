@@ -2498,3 +2498,22 @@ is still never called anywhere in production" bullet, above, at all: a
 real candidate now *could* be constructed, but nothing in production
 constructs one or supplies it to `plan()`. The underlying gap (Gap #53 as
 a whole) remains Open.
+
+**Update (Plan Candidate to PlannerRuntime Integration,
+`docs/implementation/PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_SCOPE_LOCK.md`).**
+This Unit closes two of Gap #53's named items, and only these two:
+`PlannerRuntime.plan()` is no longer absent from production --
+`GoalPlanningHandoffCoordinator` now genuinely calls it, via a real
+`DefaultPlanCandidateGenerator`; and the Planner and Task Manager runtimes
+are no longer absent from `ParkerRuntime.kt`'s production composition
+root -- `InMemoryPlannerRuntime` and `InMemoryTaskManagerRuntime` are both
+constructed there now (the latter solely to satisfy the former's mandatory
+`TaskProposalIntake` dependency, not as an independent Task Manager
+wiring decision). **Gap #53 as a whole is not closed by this update.**
+Left open, unchanged: execution (no `AgentRunCommandChannel`
+implementation exists anywhere in this repository, so
+`InMemoryTaskManagerRuntime`'s constructed `AgentRunCommand` is never
+submitted or consumed); task lifecycle completion beyond `CREATED ->
+QUEUED`; tool use; the Goal-naming-collision item tied to Goal
+Manager/Chapter 23 (not touched by this Unit); and every other item this
+gap's own prior updates already left open.

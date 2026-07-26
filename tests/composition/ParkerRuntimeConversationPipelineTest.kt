@@ -6,9 +6,9 @@ import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleId
+import parker.core.interfaces.PlanningSessionResult
 import parker.core.interfaces.PrincipalId
 import parker.core.runtime.GoalPlanningHandoffOutcome
-import parker.core.runtime.PlanningDeferralReason
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -136,17 +136,34 @@ class ParkerRuntimeConversationPipelineTest {
     }
 
     @Test
-    fun `a Goal response from the model results in PlanningDeferred, with PlannerRuntime never invoked (Reasoning-to-Planning Handoff)`() = runBlocking<Unit> {
+    fun `a Goal response from the model reaches PlannerRuntime through the real production runtime, resulting in ParkerRuntimeOutcome Planned (Plan Candidate to PlannerRuntime Integration)`() = runBlocking<Unit> {
         val stub = startStub("GOAL: book a dentist appointment")
-        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        val logger = RecordingParkerLogger()
+        val runtime = ParkerRuntime(configFor(stub), logger)
         runtime.start()
 
         val outcome = runtime.submitOwnerMessage(message())
 
-        val planningDeferred = assertIs<ParkerRuntimeOutcome.PlanningDeferred>(outcome)
-        val deferred = assertIs<GoalPlanningHandoffOutcome.Deferred>(planningDeferred.outcome)
-        assertEquals(PlanningDeferralReason.CANDIDATE_GENERATION_UNAVAILABLE, deferred.reason)
-        assertEquals("book a dentist appointment", deferred.planningRequest.goal)
+        val planned = assertIs<ParkerRuntimeOutcome.Planned>(outcome)
+        val handoffOutcome = assertIs<GoalPlanningHandoffOutcome.Planned>(planned.outcome)
+        val sessionResult = handoffOutcome.planningSessionResult
+
+        // Predicted outcome, traced by hand from the real production wiring this Unit adds:
+        // DefaultPlanCandidateGenerator produces exactly one verbatim candidate whose goal matches
+        // the PlanningRequest's own goal; DefaultPlanDecision therefore selects it (no goal
+        // mismatch, no duplicate ID); InMemoryTaskManagerRuntime accepts the resulting TaskProposal,
+        // since its proposedOwnerPrincipalId is the message's sender, the registered owner
+        // Principal ("accept-only, for a resolvable owner"). This has not been run in this sandbox
+        // (no completable Gradle build/test run here, per every prior Unit's own entry in
+        // IMPLEMENTATION_HISTORY.md) -- per this Unit's own Scope Lock Section 13 item 19, if
+        // Steven's own native `.\gradlew.bat test` run observes a different PlanningSessionResult
+        // variant, this assertion must be corrected to match the real, observed behaviour, not left
+        // as a stale, unverified prediction.
+        assertIs<PlanningSessionResult.Completed>(sessionResult)
+
+        // System planner and task-manager identities resolved successfully -- if either had not,
+        // InMemoryPlannerRuntime would have returned Failed with a "does not resolve" reason instead.
+        assertTrue(logger.hasMessageContaining("Planning attempted"))
 
         runtime.shutdown()
     }

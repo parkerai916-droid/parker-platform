@@ -19,6 +19,7 @@ import parker.core.interfaces.ModulePermissionRequirement
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionLevel
+import parker.core.interfaces.PlanningSessionResult
 import parker.core.interfaces.Principal
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
@@ -35,6 +36,7 @@ import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultExecutionPipeline
 import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
+import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.GoalPlanningHandoffCoordinator
@@ -46,7 +48,9 @@ import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
 import parker.core.runtime.InMemoryMemoryStore
 import parker.core.runtime.InMemoryModuleRegistry
+import parker.core.runtime.InMemoryPlannerRuntime
 import parker.core.runtime.InMemoryResourceRegistry
+import parker.core.runtime.InMemoryTaskManagerRuntime
 import parker.core.runtime.InMemoryToolInvocationBinding
 import parker.core.runtime.InMemoryToolRegistry
 import parker.core.runtime.InMemoryWorldModel
@@ -192,8 +196,10 @@ class ParkerRuntime(
      * full coordinator chain
      * (`CommunicationConversationCoordinator -> ConversationTurnReasoningCoordinator`,
      * `ReplyDeliveryCoordinator -> ResponseComposer`/`ResponseDelivery`,
-     * `GoalPlanningHandoffCoordinator` (Reasoning-to-Planning Handoff --
-     * holds no `PlannerRuntime`/`TaskManagerRuntime` reference),
+     * `GoalPlanningHandoffCoordinator` (Plan Candidate to PlannerRuntime
+     * Integration -- now holds `PlanCandidateGenerator`/`PlannerRuntime`
+     * references, backed by `DefaultPlanCandidateGenerator`/
+     * `InMemoryPlannerRuntime`),
      * `ConversationReplyCoordinator`); (8) start [RuntimeEventLogger]'s
      * own EventBus subscriptions; (9) transition to `RUNNING`, log
      * "Runtime started".
@@ -354,14 +360,24 @@ class ParkerRuntime(
         val responseDelivery = ResponseDelivery(resourceRegistry, executionPipeline)
         val replyDeliveryCoordinator = ReplyDeliveryCoordinator(responseComposer, responseDelivery)
 
-        // Reasoning-to-Planning Handoff: GoalPlanningHandoffCoordinator is constructed here for
-        // the first time in this repository's production composition root. This is not
-        // PlannerRuntime/TaskManagerRuntime production wiring (docs/implementation/
-        // REASONING_TO_PLANNING_HANDOFF_SCOPE_LOCK.md Section 2.2, explicitly excluded) -- this
-        // coordinator holds no reference to either. planningSessionIdFactory is supplied
-        // explicitly here, not defaulted inside the coordinator itself (Scope Lock Section 2.1).
+        // Plan Candidate to PlannerRuntime Integration: InMemoryTaskManagerRuntime is
+        // constructed here solely to satisfy InMemoryPlannerRuntime's mandatory
+        // TaskProposalIntake constructor parameter (docs/implementation/
+        // PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_SCOPE_LOCK.md Section 9) -- this is not a
+        // separately-designed Task Manager production-wiring decision, and no code anywhere in
+        // this repository ever submits the AgentRunCommand InMemoryTaskManagerRuntime
+        // constructs, so no Agent Run or tool invocation can result from this wiring.
+        val taskManagerRuntime = InMemoryTaskManagerRuntime(identityService, eventBus)
+        val plannerRuntime = InMemoryPlannerRuntime(identityService, eventBus, taskManagerRuntime)
+        val planCandidateGenerator = DefaultPlanCandidateGenerator()
+
+        // GoalPlanningHandoffCoordinator's constructor now also takes planCandidateGenerator
+        // and plannerRuntime (Scope Lock Section 1) -- planningSessionIdFactory continues to be
+        // supplied explicitly here, not defaulted inside the coordinator itself.
         val goalPlanningHandoffCoordinator = GoalPlanningHandoffCoordinator(
             planningSessionIdFactory = { UUID.randomUUID().toString() },
+            planCandidateGenerator = planCandidateGenerator,
+            plannerRuntime = plannerRuntime,
         )
 
         conversationReplyCoordinator = ConversationReplyCoordinator(
@@ -377,6 +393,8 @@ class ParkerRuntime(
             registerActive(identityService, SYSTEM_PARKER_PRINCIPAL_ID, PrincipalType.SYSTEM, "Parker System")
             registerActive(identityService, CONVERSATION_ENGINE_PRINCIPAL_ID, PrincipalType.SYSTEM, "Conversation Engine")
             registerActive(identityService, RESPONSE_COMPOSER_PRINCIPAL_ID, PrincipalType.SYSTEM, "Response Composer")
+            registerActive(identityService, PLANNER_RUNTIME_PRINCIPAL_ID, PrincipalType.SYSTEM, "Planner Runtime")
+            registerActive(identityService, TASK_MANAGER_RUNTIME_PRINCIPAL_ID, PrincipalType.SYSTEM, "Task Manager Runtime")
             registerActive(
                 identityService,
                 PrincipalId(config.ownerPrincipalId),
@@ -416,10 +434,11 @@ class ParkerRuntime(
      * through `ResponseComposer -> ResponseDelivery -> ExecutionPipeline
      * -> Tool execution`, with Trust authorisation (`PermissionEngine`,
      * via `ExecutionPipeline`) mandatory on that delivery path; `Goal` is
-     * routed instead to `GoalPlanningHandoffCoordinator`
-     * (Reasoning-to-Planning Handoff), which never reaches
-     * `ResponseComposer`, `ExecutionPipeline`, or `PermissionEngine`, and
-     * never invokes `PlannerRuntime.plan()`. Both branches are exactly as
+     * routed instead to `GoalPlanningHandoffCoordinator`, which never
+     * reaches `ResponseComposer`, `ExecutionPipeline`, or
+     * `PermissionEngine`, but which does now genuinely invoke
+     * `PlannerRuntime.plan()` (Plan Candidate to PlannerRuntime
+     * Integration). Both branches are exactly as
      * [ConversationReplyCoordinator.submitAndDeliver] (this method's own
      * sole delegate) already guarantees on its own, unmodified terms.
      *
@@ -526,13 +545,26 @@ class ParkerRuntime(
                     logger.info("Conversation pipeline completed (correlationId=${message.correlationId.value}, status=${outcome.executionResult.status})")
                     ParkerRuntimeOutcome.Delivered(outcome.executionResult)
                 }
-                is ConversationOutcome.PlanningDeferred -> when (val handoffOutcome = outcome.outcome) {
-                    is GoalPlanningHandoffOutcome.Deferred -> {
+                is ConversationOutcome.Planned -> when (val handoffOutcome = outcome.outcome) {
+                    is GoalPlanningHandoffOutcome.Planned -> {
+                        val sessionResult = handoffOutcome.planningSessionResult
+                        // PlanningSessionResult itself declares no common planningSessionId member --
+                        // each variant (Completed/Rejected/Failed) independently declares its own,
+                        // identically-named field, not an `override` of anything on the sealed
+                        // supertype (src/contracts/PlanDecision.kt). This `when` exists solely to
+                        // extract that shared logging identifier; outcome mapping below is untouched
+                        // and remains uniform across all three variants.
+                        val planningSessionId = when (sessionResult) {
+                            is PlanningSessionResult.Completed -> sessionResult.planningSessionId
+                            is PlanningSessionResult.Rejected -> sessionResult.planningSessionId
+                            is PlanningSessionResult.Failed -> sessionResult.planningSessionId
+                        }
                         logger.info(
-                            "Planning initiation deferred (correlationId=${message.correlationId.value}, " +
-                                "reason=${handoffOutcome.reason})",
+                            "Planning attempted (correlationId=${message.correlationId.value}, " +
+                                "planningSessionId=${planningSessionId.value}, " +
+                                "result=${sessionResult::class.simpleName})",
                         )
-                        ParkerRuntimeOutcome.PlanningDeferred(handoffOutcome)
+                        ParkerRuntimeOutcome.Planned(handoffOutcome)
                     }
                 }
             }
@@ -595,6 +627,15 @@ class ParkerRuntime(
         val SYSTEM_PARKER_PRINCIPAL_ID = PrincipalId("system.parker")
         val CONVERSATION_ENGINE_PRINCIPAL_ID = PrincipalId("system.conversation-engine")
         val RESPONSE_COMPOSER_PRINCIPAL_ID = PrincipalId("system.response-composer")
+
+        // Plan Candidate to PlannerRuntime Integration: these two literal string values must
+        // exactly match InMemoryPlannerRuntime's and InMemoryTaskManagerRuntime's own private
+        // companion-object constants of the same name (PrincipalId is a value class, so identity
+        // resolution is by string-value equality) -- duplicated here, not imported, following the
+        // same composition-root-owns-its-own-copy convention already established by the three
+        // constants above.
+        val PLANNER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.planner-runtime")
+        val TASK_MANAGER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.task-manager-runtime")
     }
 }
 

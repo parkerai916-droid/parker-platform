@@ -35,13 +35,15 @@ sealed class ConversationOutcome {
      * A `Goal` Turn was intercepted before `ResponseComposer`
      * (Governance Review Section 5.5) and handed to
      * [GoalPlanningHandoffCoordinator.initiatePlanning]; [outcome] is its
-     * own, unchanged result. **Never converted into a rejection, a
-     * delivery success, an ordinary planning failure, or a silent
+     * own, unchanged result -- as of the Plan Candidate to PlannerRuntime
+     * Integration, always a [GoalPlanningHandoffOutcome.Planned]
+     * genuinely carrying a `PlannerRuntime.plan()` result. **Never
+     * converted into a rejection, a delivery success, or a silent
      * discard** -- it remains observable, unchanged, all the way to
      * `parker.composition.ParkerRuntime.submitOwnerMessage`'s own caller
-     * via `parker.composition.ParkerRuntimeOutcome.PlanningDeferred`.
+     * via `parker.composition.ParkerRuntimeOutcome.Planned`.
      */
-    data class PlanningDeferred(val outcome: GoalPlanningHandoffOutcome) : ConversationOutcome()
+    data class Planned(val outcome: GoalPlanningHandoffOutcome) : ConversationOutcome()
 
     /** An upstream admission gate rejected the message, or a downstream `Reply`/`NoAction` step declined -- [reason] is the rejecting component's own, unchanged. */
     data class NotAccepted(val reason: String) : ConversationOutcome()

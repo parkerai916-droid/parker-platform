@@ -115,7 +115,7 @@ class ConversationReplyCoordinator(
      *   [goalPlanningHandoffCoordinator] both never called.
      * - [ReasoningProviderResponse.Goal]: routed to
      *   [goalPlanningHandoffCoordinator]`.initiatePlanning`, wrapped in
-     *   [ConversationOutcome.PlanningDeferred]. [replyDeliveryCoordinator]
+     *   [ConversationOutcome.Planned]. [replyDeliveryCoordinator]
      *   is never called on this branch.
      * - `Reply`/`NoAction`: routed to [replyDeliveryCoordinator]`.composeAndDeliver`,
      *   exactly as before this revision, unwrapped into
@@ -138,7 +138,7 @@ class ConversationReplyCoordinator(
             is GatedOutcome.NotAccepted -> ConversationOutcome.NotAccepted(reasoned.reason)
             is GatedOutcome.Produced -> when (val response = reasoned.value) {
                 is ReasoningProviderResponse.Goal ->
-                    ConversationOutcome.PlanningDeferred(goalPlanningHandoffCoordinator.initiatePlanning(message, response))
+                    ConversationOutcome.Planned(goalPlanningHandoffCoordinator.initiatePlanning(message, response))
                 is ReasoningProviderResponse.Reply -> deliverReply(message, response)
                 ReasoningProviderResponse.NoAction -> deliverReply(message, response)
             }

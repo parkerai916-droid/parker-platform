@@ -2668,6 +2668,121 @@ native `.\gradlew.bat test` run is the authoritative verification.**
 
 ---
 
+## Plan Candidate to PlannerRuntime Integration
+
+Implements
+`docs/architecture/PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_GOVERNANCE_REVIEW.md`,
+`docs/architecture/PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_CONTRACT_DESIGN.md`,
+and
+`docs/implementation/PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_SCOPE_LOCK.md`
+exactly, performed after the Plan Candidate Generation Unit above. The
+Candidate Generator built there is now wired into the Goal planning path:
+`GoalPlanningHandoffCoordinator` genuinely calls `PlannerRuntime.plan()`
+for the first time in this repository's production conversational path,
+and planning results now propagate unchanged through
+`GoalPlanningHandoffOutcome`, `ConversationOutcome`, and
+`ParkerRuntimeOutcome` -- all three renamed from a `PlanningDeferred`-style
+wrapper to `Planned`.
+
+### What changed
+
+- **`src/runtime/GoalPlanningHandoffCoordinator.kt`.** Constructor revised
+  to take `planCandidateGenerator: PlanCandidateGenerator` and
+  `plannerRuntime: PlannerRuntime` in addition to the existing
+  `planningSessionIdFactory`. `initiatePlanning` now generates candidates,
+  passes them (unchanged, same order, including when empty) to
+  `plannerRuntime.plan()`, and wraps the returned `PlanningSessionResult`
+  in `GoalPlanningHandoffOutcome.Planned` -- the sole surviving variant;
+  `Deferred` and `PlanningDeferralReason` are removed. No `try`/`catch` is
+  added: generator and planner exceptions propagate unchanged.
+- **`src/runtime/ConversationOutcome.kt`.** `PlanningDeferred` renamed to
+  `Planned`, same field (`outcome: GoalPlanningHandoffOutcome`).
+- **`src/runtime/ConversationReplyCoordinator.kt`.** The `Goal` branch now
+  constructs `ConversationOutcome.Planned` instead of `PlanningDeferred`;
+  no other routing behaviour changes.
+- **`src/composition/ParkerRuntimeOutcome.kt`.** `PlanningDeferred` renamed
+  to `Planned`, same field. `PlanningSessionResult.Completed`, `.Rejected`,
+  and `.Failed` all map to `Planned` -- only a genuine uncaught exception
+  still produces `ParkerRuntimeOutcome.Failed(PipelineStage.UNKNOWN, e)`.
+- **`src/composition/ParkerRuntime.kt`.** In the existing composition
+  method, `InMemoryTaskManagerRuntime(identityService, eventBus)` is
+  constructed, then `InMemoryPlannerRuntime(identityService, eventBus,
+  taskManagerRuntime)`, then `DefaultPlanCandidateGenerator()` -- all local
+  `val`s, using only already-available composition-root values.
+  `InMemoryTaskManagerRuntime` is assembled here **only** because
+  `InMemoryPlannerRuntime`'s constructor requires a `TaskProposalIntake`
+  value with no default -- not as a separately-designed Task Manager
+  production-wiring decision. Two new system identities are registered in
+  the existing `registerSystemIdentities` method:
+  `PrincipalId("system.planner-runtime")` and
+  `PrincipalId("system.task-manager-runtime")` (both `PrincipalType.SYSTEM`),
+  added as two new literal constants in `ParkerRuntime.kt`'s own `private
+  companion object`, matching `InMemoryPlannerRuntime`'s and
+  `InMemoryTaskManagerRuntime`'s own private constants of the same string
+  value exactly. `submitOwnerMessage`'s result mapping and log line are
+  revised to match (`"Planning attempted (correlationId=..., planningSessionId=...,
+  result=...)"`, logging only the correlation ID, planning session ID, and
+  result type name -- never failure reason text, rejection detail, Goal
+  text, conversation content, task payload, memory, or tool arguments).
+- **Real Task records may now reach `QUEUED`.** Because
+  `InMemoryTaskManagerRuntime` is now reachable from the live
+  conversational path, a selected Plan Candidate can result in a real
+  `Task` record. **No Agent Run, tool invocation, execution, or scheduling
+  occurs as a result**: `InMemoryTaskManagerRuntime` constructs, but never
+  submits, an `AgentRunCommand` -- no `AgentRunCommandChannel`
+  implementation exists anywhere in this repository, so there is no code
+  path capable of consuming it.
+
+### Tests
+
+- **`tests/runtime/GoalPlanningHandoffCoordinatorTest.kt`** (rewritten in
+  full, 20 tests): generator/planner call counts and argument identity;
+  candidate list and ordering passed unchanged, including empty;
+  generator/planner exception propagation; all three `PlanningSessionResult`
+  variants wrapped unchanged; structural proof of exactly three declared
+  fields and no Task Manager/execution/permission/tool/scheduling-typed
+  field; constructor shape; blank-ID and throwing-factory propagation
+  (unchanged from the prior revision).
+- **`tests/runtime/ConversationReplyCoordinatorTest.kt`** (updated): two
+  new hand-written fakes local to the file
+  (`fakePlanCandidateGenerator`/`fakePlannerRuntime`); the Goal-routing
+  test now asserts `ConversationOutcome.Planned` wrapping a real
+  `GoalPlanningHandoffOutcome.Planned`/`PlanningSessionResult.Failed`
+  (empty-candidate path); the end-to-end Reply-only test's
+  `GoalPlanningHandoffCoordinator` construction supplies both new
+  dependencies as assertion-throwing fakes, since that test's own Reply
+  path never reaches them.
+- **`tests/composition/ParkerRuntimeConversationPipelineTest.kt`**
+  (updated): the Goal-response test now runs the real, unmodified
+  production `ParkerRuntime` (real `DefaultPlanCandidateGenerator`, real
+  `InMemoryPlannerRuntime`, real `InMemoryTaskManagerRuntime`) and asserts
+  `ParkerRuntimeOutcome.Planned` wrapping a real `PlanningSessionResult`.
+  **The exact terminal variant asserted (`Completed`) is a hand-traced
+  prediction from the real wiring, not yet confirmed by a native run in
+  this sandbox** -- if Steven's own `.\gradlew.bat test` run observes a
+  different variant, this assertion must be corrected to match the real,
+  observed behaviour.
+
+### Verification
+
+**Not run in this sandbox**, for the same, already-documented reason as
+every prior Unit's own entry in this file (no completable Gradle
+build/test run in this environment). This Unit's own correctness claims
+rest on direct, repeated re-reading of every modified file (confirmed via
+diff review, not from memory), confirmation via grep/read that none of the
+eight explicitly-excluded files
+(`PlanningRequest`/`PlanCandidate`/`PlanDecision`/`PlannerRuntime`
+in `src/contracts/PlanDecision.kt`, `PlanCandidateGenerator`,
+`DefaultPlanCandidateGenerator`, `InMemoryPlannerRuntime`,
+`InMemoryTaskManagerRuntime`) was touched, and by hand-tracing the real
+production call sequence against each dependency's own already-verified
+behaviour. **This Unit is not yet accepted; per PES-001, Steven's own
+native `.\gradlew.bat test` run is the authoritative verification**, and
+in particular the one hand-traced (not yet run) assertion named above must
+be reconciled against its real, observed result.
+
+---
+
 ## Current Vertical Slice
 
 ```

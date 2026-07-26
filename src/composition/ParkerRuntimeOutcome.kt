@@ -21,13 +21,14 @@ import parker.core.runtime.GoalPlanningHandoffOutcome
  * exactly which exceptions this maps to [Failed] versus lets propagate
  * (`kotlinx.coroutines.CancellationException`, deliberately, always).
  *
- * **[PlanningDeferred], added by the Reasoning-to-Planning Handoff**
- * (`docs/implementation/REASONING_TO_PLANNING_HANDOFF_SCOPE_LOCK.md`
- * Section 2.1): maps one-to-one from
- * `parker.core.runtime.ConversationOutcome.PlanningDeferred`, unchanged.
- * Planning deferral must remain observable to this class's own caller and
- * must never be converted into [NotAccepted], [Delivered], a fabricated
- * `PlanningSessionResult`-shaped [Failed], or silently dropped.
+ * **[Planned], revised by the Plan Candidate to PlannerRuntime
+ * Integration** (`docs/implementation/PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_SCOPE_LOCK.md`):
+ * maps one-to-one from `parker.core.runtime.ConversationOutcome.Planned`,
+ * unchanged. `PlanningSessionResult.Completed`, `.Rejected`, and `.Failed`
+ * all route here -- a planner-returned failure is the result of an
+ * attempted Planning Session, not an uncaught runtime failure, and must
+ * never be converted into [NotAccepted], [Delivered], or
+ * [Failed]. Only a genuine thrown exception produces [Failed].
  */
 sealed class ParkerRuntimeOutcome {
 
@@ -50,14 +51,16 @@ sealed class ParkerRuntimeOutcome {
 
     /**
      * A [parker.core.interfaces.ReasoningProviderResponse.Goal] was
-     * received and a `PlanningRequest` was constructed for it, but
-     * `PlannerRuntime.plan()` was not invoked, because no legitimate
-     * `PlanCandidate` source exists yet. [outcome] is
+     * received, a `PlanningRequest` was constructed for it, Plan
+     * Candidates were generated, and `PlannerRuntime.plan()` was
+     * genuinely invoked. [outcome] is
      * `GoalPlanningHandoffCoordinator.initiatePlanning`'s own result,
-     * unchanged. Not a fault -- no exception occurred -- and not a
+     * unchanged -- always a `GoalPlanningHandoffOutcome.Planned` carrying
+     * a real `PlanningSessionResult` (`Completed`, `Rejected`, or
+     * `Failed`). Not a fault -- no exception occurred -- and not a
      * rejection or a delivery.
      */
-    data class PlanningDeferred(val outcome: GoalPlanningHandoffOutcome) : ParkerRuntimeOutcome()
+    data class Planned(val outcome: GoalPlanningHandoffOutcome) : ParkerRuntimeOutcome()
 }
 
 /**

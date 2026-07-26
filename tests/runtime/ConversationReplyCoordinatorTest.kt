@@ -20,6 +20,12 @@ import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionLevel
+import parker.core.interfaces.PlanCandidate
+import parker.core.interfaces.PlanCandidateGenerator
+import parker.core.interfaces.PlannerRuntime
+import parker.core.interfaces.PlanningRequest
+import parker.core.interfaces.PlanningSessionId
+import parker.core.interfaces.PlanningSessionResult
 import parker.core.interfaces.Principal
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
@@ -54,9 +60,12 @@ import kotlin.test.assertTrue
  * [FakeReasoningProvider]), a real [ReplyDeliveryCoordinator] built from a
  * real [ResponseComposer] (via [FakeIdentityService]) and a real
  * [ResponseDelivery] (via [FakeResourceRegistry]/[FakeExecutionPipeline]),
- * and a real [GoalPlanningHandoffCoordinator] (it has exactly one
- * dependency, a `() -> String`, requiring no fake). No new fake is
- * introduced anywhere in this file.
+ * and a real [GoalPlanningHandoffCoordinator] built from a `() -> String`
+ * plus two small, hand-written fakes local to this file
+ * ([fakePlanCandidateGenerator], [fakePlannerRuntime]) -- as of the Plan
+ * Candidate to PlannerRuntime Integration, this coordinator genuinely
+ * calls `PlannerRuntime.plan()`, so it can no longer be exercised without
+ * supplying both.
  *
  * **No-construction/no-mutation invariant (Scope Lock Section 14) is
  * verified by direct code review of
@@ -106,6 +115,26 @@ class ConversationReplyCoordinatorTest {
     private fun throwingIdentityService() = FakeIdentityService {
         throw IllegalStateException("identity service boom")
     }
+
+    /** A hand-written [PlanCandidateGenerator] fake, local to this file -- always returns [onGenerate]'s result, default an empty list. */
+    private fun fakePlanCandidateGenerator(onGenerate: (PlanningRequest) -> List<PlanCandidate> = { emptyList() }) =
+        object : PlanCandidateGenerator {
+            override suspend fun generate(request: PlanningRequest): List<PlanCandidate> = onGenerate(request)
+        }
+
+    /** A hand-written [PlannerRuntime] fake, local to this file -- always returns [onPlan]'s result. */
+    private fun fakePlannerRuntime(onPlan: (PlanningRequest, List<PlanCandidate>) -> PlanningSessionResult) =
+        object : PlannerRuntime {
+            override suspend fun plan(request: PlanningRequest, candidates: List<PlanCandidate>): PlanningSessionResult =
+                onPlan(request, candidates)
+        }
+
+    /** A deterministic [PlanningSessionResult.Failed], matching [InMemoryPlannerRuntime]'s own no-candidates wording. */
+    private fun failedResult(planningSessionId: PlanningSessionId) = PlanningSessionResult.Failed(
+        planningSessionId = planningSessionId,
+        reason = "no Plan Candidates were supplied for this Planning Session",
+        rejections = emptyList(),
+    )
 
     private fun toolResource(
         resourceId: ResourceId = toolResourceId,
@@ -183,6 +212,8 @@ class ConversationReplyCoordinatorTest {
         resources: FakeResourceRegistry = FakeResourceRegistry { listOf(toolResource()) },
         pipeline: FakeExecutionPipeline = FakeExecutionPipeline { executionResult(it.requestId) },
         planningSessionIdFactory: () -> String = { "fixed-planning-session-id" },
+        planCandidateGenerator: PlanCandidateGenerator = fakePlanCandidateGenerator(),
+        plannerRuntime: PlannerRuntime = fakePlannerRuntime { request, _ -> failedResult(request.planningSessionId) },
     ): Fixture {
         val conversationTurnReasoningCoordinator = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val communicationConversationCoordinator = CommunicationConversationCoordinator(communicationIntake, conversationTurnReasoningCoordinator)
@@ -195,6 +226,8 @@ class ConversationReplyCoordinatorTest {
                 factoryCallCount++
                 planningSessionIdFactory()
             },
+            planCandidateGenerator = planCandidateGenerator,
+            plannerRuntime = plannerRuntime,
         )
         return Fixture(
             communicationIntake,
@@ -253,20 +286,26 @@ class ConversationReplyCoordinatorTest {
 
     @Test
     fun `a Goal is routed to GoalPlanningHandoffCoordinator, bypassing ResponseComposer and ResponseDelivery entirely`() = runTest {
+        var capturedRequest: PlanningRequest? = null
         val f = fixture(
             reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Goal("book a flight") },
             planningSessionIdFactory = { "planning-session-1" },
+            planCandidateGenerator = fakePlanCandidateGenerator { request ->
+                capturedRequest = request
+                emptyList()
+            },
+            plannerRuntime = fakePlannerRuntime { request, _ -> failedResult(request.planningSessionId) },
         )
         val originalMessage = message(correlationId = "corr-goal-1", senderPrincipalId = "user-9")
 
         val outcome = f.coordinator.submitAndDeliver(originalMessage, ReasoningContext(emptyList()), fixedConversationId)
 
-        val planningDeferred = assertIs<ConversationOutcome.PlanningDeferred>(outcome)
-        val deferred = assertIs<GoalPlanningHandoffOutcome.Deferred>(planningDeferred.outcome)
-        assertEquals(PlanningDeferralReason.CANDIDATE_GENERATION_UNAVAILABLE, deferred.reason)
-        assertEquals("book a flight", deferred.planningRequest.goal)
-        assertEquals(PrincipalId("user-9"), deferred.planningRequest.initiatingPrincipalId)
-        assertEquals("corr-goal-1", deferred.planningRequest.correlationId)
+        val planned = assertIs<ConversationOutcome.Planned>(outcome)
+        val handoffOutcome = assertIs<GoalPlanningHandoffOutcome.Planned>(planned.outcome)
+        assertIs<PlanningSessionResult.Failed>(handoffOutcome.planningSessionResult)
+        assertEquals("book a flight", capturedRequest?.goal)
+        assertEquals(PrincipalId("user-9"), capturedRequest?.initiatingPrincipalId)
+        assertEquals("corr-goal-1", capturedRequest?.correlationId)
         assertEquals(1, f.planningSessionIdFactoryCallCount())
         // Goal routing bypasses reply delivery entirely -- ResponseComposer/ResponseDelivery
         // are never reached.
@@ -563,7 +602,13 @@ class ConversationReplyCoordinatorTest {
 
         val composer = ResponseComposer(identityService)
         val replyDeliveryCoordinator = ReplyDeliveryCoordinator(composer, delivery)
-        val goalPlanningHandoffCoordinator = GoalPlanningHandoffCoordinator(planningSessionIdFactory = { "planning-session-e2e-1" })
+        // This test's own Reply-only path never reaches GoalPlanningHandoffCoordinator's
+        // dependencies -- both fakes below assert that by throwing if ever invoked.
+        val goalPlanningHandoffCoordinator = GoalPlanningHandoffCoordinator(
+            planningSessionIdFactory = { "planning-session-e2e-1" },
+            planCandidateGenerator = fakePlanCandidateGenerator { throw AssertionError("must not be called for a Reply") },
+            plannerRuntime = fakePlannerRuntime { _, _ -> throw AssertionError("must not be called for a Reply") },
+        )
 
         val coordinator = ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator, goalPlanningHandoffCoordinator)
 
