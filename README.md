@@ -18,16 +18,16 @@ Everything else follows from that.
 
 ## Why Parker Exists
 
-Today's AI assistants are powerful, but they all share the same assumptions:
+Today's AI assistants are powerful, but they commonly assume that:
 
-- Your conversations belong in someone else's cloud.
-- Your memories belong in someone else's database.
-- Your automation depends on someone else's service.
-- Your intelligence is tied to someone else's model.
+- conversations belong in someone else's cloud;
+- memories belong in someone else's database;
+- automation depends on someone else's service;
+- intelligence is tied to someone else's model.
 
 Parker was created to reverse those assumptions.
 
-Instead of asking users to trust a company, Parker is designed so trust is enforced by architecture.
+Instead of asking owners to trust a company, Parker is designed so that trust is enforced by architecture.
 
 ---
 
@@ -35,23 +35,23 @@ Instead of asking users to trust a company, Parker is designed so trust is enfor
 
 ### Trust-First Architecture
 
-Every action is evaluated through a dedicated Trust and Permission system.
+Reasoning models do not execute actions directly.
 
-Reasoning models never execute actions directly.
+> **Cognition proposes. Trust authorises. Runtime executes.**
 
-> **AI can propose. Parker must authorise. Runtime executes.**
+Every executable action remains subject to Parker's identity, permission, and runtime controls.
 
 ### Owner Authority
 
 Parker treats the owner as the constitutional authority.
 
-No plugin, agent, language model, or external service can bypass that authority.
+No plugin, agent, language model, or external service may grant itself authority or bypass the Trust Framework.
 
 ### Model Independent
 
 Parker is not built around any single AI model.
 
-Reasoning engines are replaceable components. Today that might be:
+Reasoning engines are replaceable components. They may include local or remote models such as:
 
 - Qwen
 - Gemma
@@ -59,29 +59,21 @@ Reasoning engines are replaceable components. Today that might be:
 - GPT
 - Llama
 
-Tomorrow it may be something that does not exist yet.
-
-Parker remains the platform.
+Parker remains the governing platform regardless of which model provides reasoning.
 
 ### Local-First
 
-Parker is designed to operate locally whenever possible.
+Parker is designed to operate locally wherever practical.
 
-Privacy is the default.
-
-Cloud services are treated as optional capabilities, not mandatory infrastructure.
+Privacy is the default. Cloud services are optional capabilities rather than mandatory infrastructure.
 
 ### Plugin-Based
 
-Capabilities are added through plugins rather than hardcoded into the core platform.
-
-This allows Parker to evolve without compromising its architectural guarantees.
+Capabilities are added through contracts, tools, and plugins rather than being hardcoded into the core platform.
 
 ### Constitutional Architecture
 
 Parker is governed by published architectural principles.
-
-Core guarantees cannot be casually bypassed by implementation shortcuts.
 
 > **Architecture drives implementation, not the other way around.**
 
@@ -89,81 +81,242 @@ Core guarantees cannot be casually bypassed by implementation shortcuts.
 
 # What Works Today
 
-Parker has completed its constitutional foundation and has substantially progressed through the core runtime, implemented through disciplined engineering sprints governed by the Parker Engineering Standard (**PES-001**). Implementation is now well into **Sprint 10**.
+Parker's constitutional foundation is complete and frozen. The project has moved well beyond isolated runtime components and now includes a production-composed conversational pipeline covering intake, context assembly, reasoning, reply delivery, Goal handoff, Plan Candidate generation, and Planner Runtime invocation.
 
-Completed runtime work includes:
+This represents a meaningful architectural transition, not merely an additive one. Parker now has a production composition root: a single, real assembly point where the runtime components built and verified across previous units are wired together into the platform's canonical runtime, rather than remaining a set of independently verified, isolated pieces. The conversation, reasoning, reply, and planning pipeline described below exists today as a production-composed system — constructed once, in one place, and exercised by real production code — not merely as a design proven correct only inside isolated tests.
+
+The current implementation has been developed through governance-first units under the Parker Engineering Standard (**PES-001**).
+
+## Engineering Workflow
+
+The lifecycle below has become one of Parker's defining engineering characteristics. Every implementation unit progresses through this governed sequence:
+
+```text
+Governance Review
+        ↓
+Contract Design
+        ↓
+Scope Lock
+        ↓
+Implementation
+        ↓
+Native Verification
+        ↓
+Commit
+        ↓
+Push
+```
+
+Architecture is reviewed and locked before code is written, and native verification is completed before a unit is accepted into the canonical repository. No unit skips a stage.
+
+## Current Platform Capabilities
 
 Trust and execution substrate:
+
+- Identity Service
 - Identity-aware Permission Engine
 - Permission Policy model
 - Execution Pipeline
 - Tool Registry
 - Tool Invocation Binding
 - Resource Registry
-- Task Runtime (Task Manager Runtime)
+- Event Bus and runtime event coordination
+- Task Manager Runtime
 - Multi-step Agent Runtime
-- Event-driven runtime coordination
+- suspend, resume, and cancel semantics
+- auditable runtime outcomes
 
-Communication and conversation orchestration (Sprints 7-10):
-- Local Text Channel (deliver Tool, registered and end-to-end verified)
+Communication, conversation, and reasoning:
+
+- Local Text Channel
 - Communication Intake
+- CommunicationConversationCoordinator
 - Conversation Engine
-- CommunicationConversationCoordinator (Communication → Conversation)
-- ConversationTurnReasoningCoordinator (Turn → Reasoning)
-- Model-backed Reasoning Provider
-- ResponseComposer
-- ReplyDeliveryCoordinator
+- ConversationTurnReasoningCoordinator
+- production `ReasoningContext` assembly
+- Conversation History source
+- Memory source
+- World Model source
+- model-backed Reasoning Provider
 - ConversationReplyCoordinator
 
-Together, these implement a tested, orchestration-only path from an accepted inbound message, through conversational reasoning, to a composed and delivered reply -- each unit verified individually and through real-stack, end-to-end tests. This is not yet a live, production entry point -- see Not Yet, below.
+Reply delivery:
 
-## Milestone: Conversation-to-Reply Orchestration
+- ResponseComposer
+- ReplyDeliveryCoordinator
+- ResponseDelivery
+- permission-gated delivery through the existing runtime path
 
-The Parker runtime now supports, building on the identity-aware, permission-gated Runtime Foundation established earlier:
+Goal and planning path:
 
-- Identity-aware, permission-gated execution
-- Multi-step agent runs, with suspend / resume / cancel semantics
-- Event-driven runtime coordination
-- An accepted inbound message carried, through a chain of thin, Scope-Locked coordinators, to a reasoned, composed, and delivered reply
+- Reasoning-to-Planning handoff
+- `PlanningRequest`
+- `PlanCandidateGenerator`
+- deterministic `DefaultPlanCandidateGenerator`
+- production `PlannerRuntime` invocation
+- `PlanningSessionResult` propagation through conversation and Parker runtime outcomes
+- production composition of the concrete Planner and Task Manager runtimes
+- system identity registration for Planner Runtime and Task Manager Runtime
 
-This does not mean the runtime is production complete. No composition root, Goal/Planner routing, or production `ReasoningContext` assembly exists yet.
+## Implementation Maturity
 
-Current verified baseline:
-
-- **Implementation Phase:** Sprint 10
-- **Latest Completed Unit:** ConversationReplyCoordinator
-- **Latest verification:** Android Studio — **612 / 612 tests passing**, BUILD SUCCESSFUL
+| Area | Status |
+|---|---|
+| Constitutional Architecture | Complete |
+| Runtime Foundation | Complete |
+| Conversation Pipeline | Complete |
+| Reasoning Context | Complete |
+| Reply Delivery | Complete |
+| Goal Routing | Complete |
+| Planner Integration | Complete |
+| Agent Execution | In Progress |
+| Workflow Engine | Planned |
+| Android Product | Planned |
 
 ---
 
-## Not Yet
+Parker's runtime is assembled by a single production composition root, with each stage of the pipeline implemented as a thin, single-responsibility coordinator rather than a monolithic handler. Reasoning, planning, trust, and execution remain architecturally separated components — each independently testable and replaceable — while working together as one governed runtime.
 
-Parker is not yet a finished consumer assistant, and its runtime orchestration is not yet wired into anything that runs in production.
+## Current Production Conversation Path
 
-The following areas are still under development:
+```text
+Owner Message
+      │
+      ▼
+Communication Intake
+      │
+      ▼
+Conversation Engine
+      │
+      ▼
+Reasoning Context
+      │
+      ├── Conversation History
+      ├── Memory
+      └── World Model
+      │
+      ▼
+Reasoning Provider
+      │
+      ├── Reply
+      ├── Goal
+      └── NoAction
+      │
+      ▼
+ConversationReplyCoordinator
+      │
+      ├── Reply → ResponseComposer → ResponseDelivery
+      │
+      ├── Goal → GoalPlanningHandoffCoordinator
+      │              │
+      │              ▼
+      │       PlanCandidateGenerator
+      │              │
+      │              ▼
+      │         PlannerRuntime
+      │              │
+      │              ▼
+      │       PlanningSessionResult
+      │
+      └── NoAction → NotAccepted
+      │
+      ▼
+ConversationOutcome
+      │
+      ▼
+ParkerRuntimeOutcome
+```
 
-- Production composition root (nothing in this repository instantiates or wires the runtime chain at real startup)
-- Goal routing from reasoning output to Planner Runtime
-- Production `ReasoningContext` ownership and assembly
-- Live validation of `LocalHttpModelInferenceClient` against a real model server
-- Long-term Memory integration into reasoning (an isolated in-memory store exists; not yet connected to Conversation Engine or Reasoning Provider)
-- World Model integration into reasoning (an isolated in-memory store exists; not yet connected to Conversation Engine or Reasoning Provider)
-- Planner Runtime integration into the conversation path (an isolated in-memory decision mechanism exists; nothing routes a `Goal` to it)
+This path is now assembled in the production composition root rather than existing only in isolated tests.
+
+---
+
+## Milestone: Production Planning Integration
+
+Parker can now carry an accepted owner message through:
+
+```text
+Message
+  ↓
+Reasoning Context
+  ↓
+Reasoning
+  ↓
+Goal
+  ↓
+PlanningRequest
+  ↓
+Plan Candidate generation
+  ↓
+Planner Runtime
+  ↓
+PlanningSessionResult
+```
+
+The planning result is preserved through:
+
+```text
+GoalPlanningHandoffOutcome.Planned
+        ↓
+ConversationOutcome.Planned
+        ↓
+ParkerRuntimeOutcome.Planned
+```
+
+`PlanningSessionResult.Completed`, `Rejected`, and `Failed` are all treated as completed planning attempts and are carried through the `Planned` outcome path. A genuine thrown exception remains a top-level runtime failure.
+
+---
+
+## Current Verified Baseline
+
+- **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
+- **Implementation status:** Sprint 11 complete, followed by the Reasoning-to-Planning Handoff, Plan Candidate Generation, and Plan Candidate to PlannerRuntime Integration units, all complete
+- **Latest completed unit:** Plan Candidate to PlannerRuntime production integration
+- **Latest commit:** `8f6c3d1` — `feat: wire plan candidate generation into production planning pipeline`
+- **Verification:** full native Gradle test suite passed
+- **Build result:** `BUILD SUCCESSFUL`
+- **Repository state:** `main` synchronized with `origin/main`; working tree clean
+
+---
+
+# What Is Not Yet Complete
+
+Parker is not yet a finished consumer assistant.
+
+The most important remaining boundary is no longer basic reasoning or planning. It is the controlled transition from an authorised Task Proposal into Agent Run submission and execution — the point where a plan Trust has not yet examined would otherwise become autonomous action. That transition must preserve Parker's constitutional separation between cognition, trust, and execution: a Planner Runtime may propose a Task Proposal, but nothing may submit or execute an Agent Run except through the same Trust Framework that already governs every other executable action in this platform.
+
+Still under development:
+
+- Agent Run submission from the Task Manager Runtime
+- execution of constructed `AgentRunCommand` values
+- production task lifecycle completion beyond the currently implemented proposal and queueing path
+- tool execution initiated from planned Goals
+- scheduling and workflow orchestration
 - Workflow Engine
-- Complete Android runtime
-- Production-ready plugin ecosystem
-- Multi-device deployment
-- Public developer SDK
-- Production security hardening
-- End-user release builds
+- live validation of `LocalHttpModelInferenceClient` against the intended local model server
+- production-ready plugin ecosystem
+- complete Android application runtime and user experience
+- multi-device deployment
+- public developer SDK
+- production security hardening
+- end-user release packaging
 
-The platform is being built deliberately from the constitutional foundation upward.
+A real Task record may now be created and reach `QUEUED`, but the current `InMemoryTaskManagerRuntime` constructs and does not submit an `AgentRunCommand`. No production `AgentRunCommandChannel` implementation currently consumes that command.
+
+Therefore:
+
+- planning is live;
+- task proposal and queueing infrastructure exists;
+- autonomous execution is not live;
+- tool invocation from the Goal-planning path is not live.
+
+This boundary is intentional and remains subject to future governance.
 
 ---
 
 # Architecture Overview
 
-Parker separates intelligence into three distinct responsibilities:
+Parker separates intelligence into three responsibilities:
 
 ```text
                 +----------------------+
@@ -187,17 +340,45 @@ Parker separates intelligence into three distinct responsibilities:
              Tools • Plugins • Devices • Services
 ```
 
-The core execution principle is:
+The core principle remains:
 
 > **Cognition proposes. Trust authorises. Runtime executes.**
 
 ---
 
+## Architecture at a Glance
+
+Before the detailed runtime and conversation diagrams below, here is Parker's architecture at its simplest — the conceptual path every owner interaction follows:
+
+```text
+Owner
+    │
+    ▼
+Communication
+    │
+    ▼
+Reasoning
+    │
+    ▼
+Planning
+    │
+    ▼
+Trust
+    │
+    ▼
+Execution
+    │
+    ▼
+Tools • Devices • Plugins
+```
+
+Each of these stages is a real, separate component in the production runtime described in the sections that follow — this diagram is a conceptual orientation, not a replacement for them.
+
+---
+
 ## Runtime Architecture
 
-The runtime now provides a trust-governed execution substrate, and a separately-verified, tested chain of orchestration coordinators carrying an inbound message through to a delivered reply. The two are architecturally connected but not yet wired together at a real, running entry point.
-
-**Trust-governed execution substrate:**
+### Trust-governed execution substrate
 
 ```text
                  Owner
@@ -221,48 +402,61 @@ The runtime now provides a trust-governed execution substrate, and a separately-
      Tool Registry / Resources
 ```
 
-**Conversation-to-reply orchestration (implemented and tested; not yet production-wired):**
+### Production-composed conversation, reasoning, reply, and planning path
 
 ```text
-   CommunicationIntake
-           │  accept / reject
-           ▼
-   CommunicationConversationCoordinator ──► ConversationTurnReasoningCoordinator
-           │  submitAndReason               ──► ConversationEngine
-           │                                ──► Reasoning Provider (model-backed)
-           ▼
-   ConversationReplyCoordinator
-           │  submitAndDeliver
-           ▼
-   ReplyDeliveryCoordinator
-           │  composeAndDeliver
-           ▼
-   ResponseComposer ──► ResponseDelivery ──► Execution Pipeline ──► Tools (Local Text Channel)
+CommunicationIntake
+        │
+        ▼
+CommunicationConversationCoordinator
+        │
+        ▼
+ConversationTurnReasoningCoordinator
+        │
+        ▼
+ConversationEngine
+        │
+        ▼
+ReasoningContext
+        │
+        ▼
+ReasoningProvider
+        │
+        ▼
+ConversationReplyCoordinator
+        │
+        ├── Reply → ReplyDeliveryCoordinator
+        │             ├── ResponseComposer
+        │             └── ResponseDelivery
+        │
+        ├── Goal → GoalPlanningHandoffCoordinator
+        │            ├── PlanCandidateGenerator
+        │            └── PlannerRuntime
+        │
+        └── NoAction → NotAccepted
+        │
+        ▼
+ConversationOutcome
+        │
+        ▼
+ParkerRuntimeOutcome
 ```
 
-No production composition root yet constructs this chain or calls it from a real, running conversation flow -- every coordinator above is exercised only by its own tests today, including full real-stack, end-to-end tests. Every call this chain reaches still passes through the Execution Pipeline and Permission Engine shown above; nothing in the conversation path bypasses trust authorisation.
-
-Every execution path remains subject to constitutional authority.
-
-Reasoning proposes.
-
-Trust authorises.
-
-Runtime executes.
+The conversation path is now constructed by the production composition root. Reply delivery remains permission-gated. Goal planning reaches the real Planner Runtime. Every branch converges on `ConversationOutcome`, then `ParkerRuntimeOutcome`. The next unresolved boundary is controlled Agent Run submission and execution.
 
 ---
 
 ## Knowledge Architecture
 
-Parker organises knowledge into three distinct layers:
+Parker organises knowledge into three layers:
 
 | Layer | Purpose |
-|-------|---------|
+|---|---|
 | **Memory** | What Parker has learned |
 | **World Model** | What Parker currently believes to be true |
-| **Reasoning Context** | What matters for the current task |
+| **Reasoning Context** | What matters for the current turn or task |
 
-Each layer has a distinct lifecycle and architectural responsibility.
+Production Reasoning Context assembly now draws from Conversation History, Memory, and World Model sources while preserving their distinct ownership and lifecycle boundaries.
 
 ---
 
@@ -270,16 +464,16 @@ Each layer has a distinct lifecycle and architectural responsibility.
 
 Parker aims to become a complete personal intelligence platform capable of:
 
-- Personal assistance
-- Home automation
-- Workflow automation
-- Knowledge management
-- Long-term memory
-- Local AI reasoning
-- Secure tool execution
-- Multi-device operation
-- Plugin extensibility
-- Local and hybrid deployment
+- personal assistance;
+- home automation;
+- workflow automation;
+- knowledge management;
+- long-term memory;
+- local AI reasoning;
+- secure tool execution;
+- multi-device operation;
+- plugin extensibility;
+- local and hybrid deployment.
 
 ---
 
@@ -302,28 +496,27 @@ Parker is built around non-negotiable principles:
 
 ## Current Architecture Status
 
-**Current Architecture Milestone:** **Architecture v1.0 – Constitutional Foundation**
+**Current Architecture Milestone:** **Architecture v1.0 — Constitutional Foundation**
 
-Parker's constitutional architecture is complete and frozen.
+The constitutional architecture is complete and frozen.
 
-The platform is well into **Implementation Phase – Sprint 10**.
+The implementation has progressed through Sprint 11 and subsequent planning integration units. The runtime now contains both:
 
-Runtime orchestration has substantially progressed. The trust-governed execution substrate (Permission Engine, Execution Pipeline, Tool Registry, Resource Registry, Task and Agent Runtimes) established through Sprint 3, and a tested, coordinator-chained path carrying an accepted inbound message through conversational reasoning to a composed and delivered reply, established across Sprints 7-10, both now exist and are verified. Production composition-root wiring, Goal/Planner Runtime routing, and production `ReasoningContext` ownership remain open.
+1. a trust-governed execution substrate; and
+2. a production-composed conversational pipeline reaching real reasoning, reply delivery, and planning.
 
-Future implementation extends platform capability -- production wiring, Planner and Goal-routing integration, Memory and World Model integration, workflows, and additional agent capabilities -- rather than redesigning the architecture.
+Production Reasoning Context ownership, Memory integration, World Model integration, Goal routing, Plan Candidate generation, and Planner Runtime invocation are no longer open architectural placeholders.
 
-The constitutional architecture is no longer evolving during normal implementation.
-
-New runtime components are expected to conform to the Constitution, Architecture Decisions, and the Parker Engineering Standard rather than redefining them.
+Future implementation should extend the existing platform through controlled execution, workflow, plugin, device, and user-facing capabilities rather than redesigning the constitutional foundation.
 
 ---
 
 ## Project Governance
 
-Parker is governed by four complementary constitutional documents:
+Parker is governed by four complementary documents:
 
 | Document | Purpose |
-|----------|---------|
+|---|---|
 | **Parker Constitution** | Defines what Parker is. |
 | **Architecture Decisions** | Define how Parker is architected and why major decisions were made. |
 | **Parker Engineering Standard (PES-001)** | Defines how Parker is engineered, verified, reviewed, and evolved. |
@@ -343,10 +536,10 @@ The standard establishes:
 - Evidence before opinion
 - Verification before acceptance
 - Documentation as a first-class engineering artefact
-- Explicit implementation gap management
+- Explicit implementation-gap management
 - Engineering reviews and retrospectives as part of development
 
-Implementation is performed as incremental, independently verified engineering units.
+Implementation is performed as incremental, independently verified engineering units, each progressing through the Engineering Workflow described above.
 
 Every completed unit must satisfy the Definition of Complete defined by PES-001 before acceptance.
 
@@ -360,9 +553,9 @@ The Constitutional Foundation establishes that:
 - **Cognition proposes. Trust authorises. Runtime executes.**
 - **The owner remains in control.**
 - **Trust is earned through architecture, not marketing.**
-- **Local-first and trust-first operation are the default.**
+- **Local-first and trust-first operation are the defaults.**
 - **User rights are protected as constitutional principles.**
-- **Knowledge is organised into three layers:** Memory, World Model, and Reasoning Context.
+- **Knowledge is organised into Memory, World Model, and Reasoning Context.**
 - **Reasoning providers are model-agnostic and interchangeable.**
 - **No module may grant itself authority or bypass the Trust Framework.**
 
@@ -387,10 +580,12 @@ The constitutional foundation is defined by:
 
 ## Current Status
 
-- **Implementation Phase:** Sprint 10
+- **Architecture:** Constitutional Foundation complete and frozen
 - **Runtime Foundation:** Complete
-- **Latest Completed Unit:** ConversationReplyCoordinator
-- **Next Focus:** Remaining `IMPLEMENTATION_GAPS.md` #53 items -- production composition-root wiring, Goal/Planner Runtime routing, production `ReasoningContext` ownership, and live `LocalHttpModelInferenceClient` validation
+- **Sprint status:** Sprint 11 complete
+- **Latest completed unit:** Plan Candidate to PlannerRuntime production integration
+- **Latest production commit:** `8f6c3d1`
+- **Current focus:** governance for the transition from an authorised Task Proposal to Agent Run submission and controlled execution
 
 ---
 
@@ -399,16 +594,29 @@ The constitutional foundation is defined by:
 Current verified baseline:
 
 ```text
-Android Studio verification: 612 / 612 tests passing, BUILD SUCCESSFUL
+Native Gradle verification: BUILD SUCCESSFUL
 ```
+
+The complete test suite must pass before an implementation unit is accepted, committed, and pushed.
 
 ---
 
 ## Test Verification
 
-The current verified baseline is produced using Android Studio.
+The current verified baseline is produced through the native Gradle wrapper:
 
-Until command-line verification becomes part of the documented engineering workflow, all implementation units must be verified by running the complete Android Studio test suite before acceptance.
+```powershell
+.\gradlew.bat test
+```
+
+Implementation units are accepted only after:
+
+1. targeted implementation review;
+2. full native Gradle verification;
+3. clean scope inspection;
+4. commit;
+5. push;
+6. clean working-tree confirmation.
 
 ---
 
@@ -421,7 +629,10 @@ Until command-line verification becomes part of the documented engineering workf
 5. Trust Framework
 6. Reasoning Context
 7. Runtime specifications
-8. Implementation plans, reviews, checkpoints, retrospectives, history, and implementation gaps
+8. Governance Reviews
+9. Contract Designs
+10. Scope Locks
+11. Implementation history and implementation gaps
 
 ---
 
@@ -429,19 +640,53 @@ Until command-line verification becomes part of the documented engineering workf
 
 ```text
 docs/
-    architecture/
-    specifications/
-    decisions/
+    adr/              Architecture Decision Records
+    architecture/      Governance Reviews, Contract Designs, architecture decisions
+    development/
+    diagrams/
+    engineering/
+    glossary/
+    governance/
+    implementation/    Scope Locks, implementation history, implementation gaps
+    interfaces/
+    process/
+    reference/
+    release/
     reviews/
+    roadmap/
+    schemas/
+    security/
+    specifications/
 
-runtime/
-
-plugins/
-
-tools/
+src/
+    composition/       Production composition root
+    contracts/         Frozen, governed data and interface contracts
+    interfaces/
+    runtime/           Concrete runtime implementations and coordinators
 
 tests/
+    composition/
+    contracts/
+    runtime/
+
+agents/
+examples/
+plugins/
+tools/
 ```
+
+---
+
+## Current Repository Snapshot
+
+| Item | Status |
+|---|---|
+| Architecture | Constitutional Foundation (Frozen) |
+| Implementation | Sprint 11+ |
+| Latest Commit | `8f6c3d1` |
+| Build Status | `BUILD SUCCESSFUL` |
+| Branch | `main` |
+| Repository | Clean • Synced with origin |
 
 ---
 
@@ -449,43 +694,55 @@ tests/
 
 Parker is being developed in deliberate stages:
 
-1. Constitutional Architecture
+1. Constitutional Architecture ✅
 2. Runtime Foundation ✅
-3. Planner
-4. World Model
-5. Memory
-6. Workflow Engine
-7. Plugins
-8. Agents
-9. Android Integration
-10. Production Platform
+3. Reasoning Context integration ✅
+4. Production conversation composition ✅
+5. Reply composition and delivery ✅
+6. Goal handoff and Plan Candidate generation ✅
+7. Planner Runtime production integration ✅
+8. Controlled Agent Run submission
+9. Workflow Engine
+10. Plugins and richer tools
+11. Android product integration
+12. Multi-device production platform
 
-Each stage builds upon guarantees established by the previous stage.
+The next major trust boundary is:
 
-Within Runtime Foundation, both the trust-governed execution substrate (Permission Engine, Execution Pipeline, Tool Registry, Resource Registry, Task and Agent Runtimes) and a tested conversation-to-reply orchestration chain (Communication Intake through Conversation Engine, a model-backed Reasoning Provider, Response Composition, and Response Delivery) are implemented and verified as of Sprint 10. Isolated, not-yet-integrated primitives also exist ahead of schedule for Planner, World Model, and Memory (stages 3-5). Production composition-root wiring -- connecting this orchestration to a real, running entry point -- remains open.
+```text
+PlanningSessionResult
+        ↓
+TaskProposal
+        ↓
+AgentRunCommand
+        ↓
+Authorised execution
+```
+
+That transition must preserve the constitutional separation between cognition, trust, and execution.
 
 ---
 
 ## Contributing
 
-Parker remains in its foundational engineering phase.
+Parker remains in active foundational development.
 
 Contributors interested in:
 
-- Runtime systems
-- Android
-- AI
-- Security
-- Distributed systems
-- Local-first computing
-- Developer tooling
-- Personal intelligence platforms
+- runtime systems;
+- Android;
+- AI;
+- security;
+- distributed systems;
+- local-first computing;
+- developer tooling;
+- personal intelligence platforms
 
 are welcome.
 
 Before submitting significant changes, read the constitutional documents and Parker Engineering Standard.
 
-Contributions should preserve Parker's core guarantees:
+Contributions must preserve Parker's core guarantees:
 
 - Owner authority
 - Trust-first execution
@@ -498,13 +755,15 @@ Contributions should preserve Parker's core guarantees:
 
 # Vision
 
-Parker is not another chatbot.
+Parker is not another chatbot. It is a governed runtime platform for trustworthy personal intelligence.
 
-It is an attempt to build a trustworthy personal intelligence platform where the owner remains in control, AI remains replaceable, and trust is enforced by architecture rather than promised through policy.
+It is an attempt to build one where the owner remains in control, AI remains replaceable, and trust is enforced by architecture rather than promised through policy.
 
-The completion of the **Runtime Foundation** marks the transition from architectural vision to a functioning execution platform.
+The Runtime Foundation, production conversation path, Reasoning Context integration, reply delivery, Goal handoff, Plan Candidate generation, and Planner Runtime integration now exist as working, verified parts of the platform.
 
-Future work builds on this foundation to add planning, memory, world understanding, workflows, and richer personal intelligence while preserving the constitutional principles established at the beginning of the project.
+The next phase is not to loosen Parker's safeguards in the name of capability. It is to extend capability while preserving them.
+
+Parker is no longer solely an architectural vision. It is a functioning, governed runtime platform — constitutional principles enforced by real, verified code, extended one governed engineering unit at a time. Future work will extend what Parker can do without loosening the constitutional guarantees that already govern what it does today.
 
 The future of personal AI should not belong only to the companies that build the models.
 
