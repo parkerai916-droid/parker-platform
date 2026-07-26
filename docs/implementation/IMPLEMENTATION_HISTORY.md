@@ -2580,6 +2580,94 @@ verification.**
 
 ---
 
+## Plan Candidate Generation -- Contract and Reference Implementation
+
+Implements
+`docs/architecture/PLAN_CANDIDATE_GENERATION_GOVERNANCE_REVIEW.md`,
+`docs/architecture/CANDIDATE_GENERATION_CONTRACT_DESIGN.md`, and
+`docs/implementation/CANDIDATE_GENERATION_SCOPE_LOCK.md` exactly,
+performed after the Reasoning-to-Planning Handoff. Introduces the
+`PlanCandidateGenerator` contract this repository previously had no
+interface for at all, plus one deterministic, non-decomposing reference
+implementation.
+
+**This Unit is not wired into production. `ParkerRuntime.kt` is
+unmodified; nothing constructs or calls `PlanCandidateGenerator` or
+`DefaultPlanCandidateGenerator` from any production code path.
+`PlannerRuntime` remains unreachable from the production conversational
+path** -- unchanged by this Unit, exactly as the Reasoning-to-Planning
+Handoff left it.
+
+### What changed
+
+- **New: `src/contracts/PlanCandidateGenerator.kt`.** Defines
+  `PlanCandidateGenerator`, one `suspend` method,
+  `generate(request: PlanningRequest): List<PlanCandidate>`. Its sole
+  legitimate input is the complete `PlanningRequest` -- no `Turn`, no
+  `InboundOwnerMessage`, no `ReasoningContext`, no Conversation History,
+  Memory Source, World Model Source, `IdentityService`, Permission Engine
+  state, or Tool Registry state may be received by an implementation, per
+  the Contract Design's own information-boundary determination. An empty
+  result list is a valid, non-exceptional outcome; exceptions represent
+  genuine generator faults only.
+- **New: `src/runtime/DefaultPlanCandidateGenerator.kt`.** A concrete,
+  zero-argument-constructor `PlanCandidateGenerator` implementation. For
+  any well-formed `PlanningRequest`, always produces exactly one
+  `PlanCandidate`: `planCandidateId` is
+  `"${request.planningSessionId.value}-candidate-1"` (deterministic,
+  parent-derived, mirroring `TaskProposalId`'s and
+  `DeterministicPlannerHarness`'s own existing minting shape); `goal` is
+  `request.goal`, copied verbatim; every optional `PlanCandidate` field is
+  left at its own existing default; `rationale` is one fixed, literal
+  disclosure string (below). No trimming, normalisation, reinterpretation,
+  decomposition, enrichment, ranking, alternative generation, or Assumption
+  recording occurs. `source`/`priority` are never inspected. No
+  constructor dependency exists -- unlike `GoalPlanningHandoffCoordinator`'s
+  injected `planningSessionIdFactory`, no randomness is needed here, since
+  a `PlanCandidateId` always has an existing parent (`planningSessionId`)
+  to derive from deterministically.
+- **The fixed rationale string, verbatim:** "This is a direct,
+  undecomposed Plan Candidate derived verbatim from PlanningRequest.goal.
+  No decomposition, no alternative generation, and no deliberation were
+  performed."
+
+### Tests
+
+- **New: `tests/runtime/DefaultPlanCandidateGeneratorTest.kt`** (11
+  tests): implements the `PlanCandidateGenerator` contract; returns
+  exactly one candidate; copies Goal text verbatim, including internal
+  whitespace; produces the exact `<planningSessionId>-candidate-1` ID
+  form; identical output for identical input; distinct candidate IDs for
+  distinct `planningSessionId` values; stable output-list order across
+  repeated calls; every optional `PlanCandidate` field at its existing
+  default; the fixed rationale string truthfully disclosing direct Goal
+  derivation, no decomposition, no alternative generation, and no
+  deliberation; structural proof of a zero-argument constructor and zero
+  declared fields; structural proof (via the same zero-field fact) that
+  the class cannot reference `PlannerRuntime`, `TaskManagerRuntime`, the
+  Permission Engine, the Tool Registry, `ReasoningContext`, Conversation,
+  Memory, or the World Model. Zero-candidate and multiple-candidate tests
+  are deliberately absent -- this concrete policy always returns exactly
+  one, disclosed explicitly in the test file's own header KDoc, not a
+  coverage gap. No exception-propagation test exists either -- this
+  implementation cannot throw for any well-formed `PlanningRequest`,
+  provable by construction (`planningSessionId.value` is already
+  guaranteed non-blank before `generate` is ever called).
+
+### Verification
+
+**Not run in this sandbox**, for the same, already-documented reason as
+every prior Unit's own entry in this file (no completable Gradle
+build/test run in this environment). This Unit's own correctness claims
+rest on direct, repeated re-reading of every new file, confirmation via
+grep that no existing production file was touched, and consistency checks
+against `DefaultPlanDecision.kt`/`GoalPlanningHandoffCoordinatorTest.kt`'s
+own established style and structural-test conventions -- not on a passing
+local build. **This Unit is not yet accepted; per PES-001, Steven's own
+native `.\gradlew.bat test` run is the authoritative verification.**
+
+---
+
 ## Current Vertical Slice
 
 ```

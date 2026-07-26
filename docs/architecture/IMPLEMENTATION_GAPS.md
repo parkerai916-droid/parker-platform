@@ -2473,3 +2473,28 @@ open, disclosed rather than silently narrowed:
   is no longer silently discarded) without closing the larger,
   still-entirely-open question of how a `Goal` ever becomes a real,
   executed plan.
+
+**Update (Plan Candidate Generation, performed after the
+Reasoning-to-Planning Handoff): narrows, does not close, the "No
+production `PlanCandidate` generation exists" bullet immediately above.**
+A production-capable `PlanCandidateGenerator` contract
+(`src/contracts/PlanCandidateGenerator.kt`) and one concrete,
+deterministic implementation, `DefaultPlanCandidateGenerator`
+(`src/runtime/DefaultPlanCandidateGenerator.kt`), now exist. A
+repository-wide grep of `src/` no longer returns zero production
+constructors of `PlanCandidate` -- `DefaultPlanCandidateGenerator.generate`
+is one, per
+`docs/implementation/CANDIDATE_GENERATION_SCOPE_LOCK.md`'s own frozen,
+deliberately non-decomposing policy (always exactly one candidate, the
+Goal copied verbatim, no interpretation).
+
+**It is still unwired.** No production file constructs or calls
+`PlanCandidateGenerator` or `DefaultPlanCandidateGenerator` --
+`ParkerRuntime.kt` is unmodified by this Unit. No live planning path
+invokes it, and none invokes `PlannerRuntime.plan()` either --
+`GoalPlanningHandoffCoordinator` still holds no `PlannerRuntime`
+reference, unchanged. This Unit does not close Gap #53's "`PlannerRuntime.plan()`
+is still never called anywhere in production" bullet, above, at all: a
+real candidate now *could* be constructed, but nothing in production
+constructs one or supplies it to `plan()`. The underlying gap (Gap #53 as
+a whole) remains Open.
