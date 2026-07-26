@@ -45,24 +45,27 @@ import kotlin.test.assertTrue
 /**
  * `ConversationReplyCoordinator` acceptance test, per
  * `docs/implementation/CONVERSATION_REPLY_COORDINATOR_SCOPE_LOCK.md`
- * Section 16 (Scope Locked). [ConversationReplyCoordinator] is exercised
- * in isolation via a real [CommunicationConversationCoordinator] built
- * from [FakeCommunicationIntake] and a real
- * [ConversationTurnReasoningCoordinator] (itself built from a
- * pass-through [ConversationEngine] fake and [FakeReasoningProvider] --
- * the exact fixture combination [CommunicationConversationCoordinatorTest]
- * already uses), and a real [ReplyDeliveryCoordinator] built from a real
- * [ResponseComposer] (via [FakeIdentityService]) and a real
- * [ResponseDelivery] (via [FakeResourceRegistry]/[FakeExecutionPipeline]
- * -- the exact fixture combination [ReplyDeliveryCoordinatorTest]
- * already uses). No new fake is introduced anywhere in this file.
+ * Section 16 (Scope Locked) and, as of the Reasoning-to-Planning
+ * Handoff, `docs/implementation/REASONING_TO_PLANNING_HANDOFF_SCOPE_LOCK.md`
+ * Section 4. [ConversationReplyCoordinator] is exercised in isolation via
+ * a real [CommunicationConversationCoordinator] built from
+ * [FakeCommunicationIntake] and a real [ConversationTurnReasoningCoordinator]
+ * (itself built from a pass-through [ConversationEngine] fake and
+ * [FakeReasoningProvider]), a real [ReplyDeliveryCoordinator] built from a
+ * real [ResponseComposer] (via [FakeIdentityService]) and a real
+ * [ResponseDelivery] (via [FakeResourceRegistry]/[FakeExecutionPipeline]),
+ * and a real [GoalPlanningHandoffCoordinator] (it has exactly one
+ * dependency, a `() -> String`, requiring no fake). No new fake is
+ * introduced anywhere in this file.
  *
  * **No-construction/no-mutation invariant (Scope Lock Section 14) is
  * verified by direct code review of
- * [ConversationReplyCoordinator.submitAndDeliver]'s own five-line body,
- * not by a runtime test in this file** -- no data-carrying type is
- * constructed by that method, and neither
- * [CommunicationConversationCoordinator] nor [ReplyDeliveryCoordinator]
+ * [ConversationReplyCoordinator.submitAndDeliver]'s own body, not by a
+ * runtime test in this file** -- no data-carrying type this class does
+ * not already forward unchanged is constructed by that method beyond
+ * delegating to [GoalPlanningHandoffCoordinator] for `PlanningRequest`
+ * construction, and neither [CommunicationConversationCoordinator],
+ * [ReplyDeliveryCoordinator], nor [GoalPlanningHandoffCoordinator]
  * exposes anything through which this class could intercept or alter a
  * value passing between them.
  */
@@ -169,6 +172,7 @@ class ConversationReplyCoordinatorTest {
         val identityService: FakeIdentityService,
         val resources: FakeResourceRegistry,
         val pipeline: FakeExecutionPipeline,
+        val planningSessionIdFactoryCallCount: () -> Int,
         val coordinator: ConversationReplyCoordinator,
     )
 
@@ -178,19 +182,28 @@ class ConversationReplyCoordinatorTest {
         identityService: FakeIdentityService = registeredIdentityService(),
         resources: FakeResourceRegistry = FakeResourceRegistry { listOf(toolResource()) },
         pipeline: FakeExecutionPipeline = FakeExecutionPipeline { executionResult(it.requestId) },
+        planningSessionIdFactory: () -> String = { "fixed-planning-session-id" },
     ): Fixture {
         val conversationTurnReasoningCoordinator = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val communicationConversationCoordinator = CommunicationConversationCoordinator(communicationIntake, conversationTurnReasoningCoordinator)
         val composer = ResponseComposer(identityService)
         val delivery = ResponseDelivery(resources, pipeline)
         val replyDeliveryCoordinator = ReplyDeliveryCoordinator(composer, delivery)
+        var factoryCallCount = 0
+        val goalPlanningHandoffCoordinator = GoalPlanningHandoffCoordinator(
+            planningSessionIdFactory = {
+                factoryCallCount++
+                planningSessionIdFactory()
+            },
+        )
         return Fixture(
             communicationIntake,
             reasoningProvider,
             identityService,
             resources,
             pipeline,
-            ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator),
+            { factoryCallCount },
+            ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator, goalPlanningHandoffCoordinator),
         )
     }
 
@@ -204,24 +217,26 @@ class ConversationReplyCoordinatorTest {
 
         val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
-        val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
+        val notAccepted = assertIs<ConversationOutcome.NotAccepted>(outcome)
         assertEquals("channel not enabled", notAccepted.reason)
         assertEquals(0, f.reasoningProvider.reasonCallCount)
         assertEquals(0, f.identityService.resolveCallCount)
         assertEquals(0, f.resources.listByOwnerCallCount)
         assertEquals(0, f.pipeline.submitCallCount)
+        assertEquals(0, f.planningSessionIdFactoryCallCount())
     }
 
     // ================= 2. Upstream Produced -- successful end-to-end composition and delivery =================
 
     @Test
-    fun `an accepted Reply composes and delivers successfully, returning Produced carrying ResponseDelivery's own ExecutionResult`() = runTest {
+    fun `an accepted Reply composes and delivers successfully, returning ReplyDelivered carrying ResponseDelivery's own ExecutionResult`() = runTest {
         val f = fixture()
         val originalMessage = message(correlationId = "corr-1")
 
         val outcome = f.coordinator.submitAndDeliver(originalMessage, ReasoningContext(listOf("prior context")), fixedConversationId)
 
-        assertIs<GatedOutcome.Produced<ExecutionResult>>(outcome)
+        val delivered = assertIs<ConversationOutcome.ReplyDelivered>(outcome)
+        assertEquals(ExecutionResultStatus.SUCCESS, delivered.executionResult.status)
         val request = f.pipeline.lastSubmittedRequest
         assertEquals(PrincipalId("system.response-composer"), request?.principalId)
         assertEquals(originalMessage.correlationId.value, request?.correlationId)
@@ -231,22 +246,59 @@ class ConversationReplyCoordinatorTest {
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(1, f.pipeline.submitCallCount)
+        assertEquals(0, f.planningSessionIdFactoryCallCount())
     }
 
-    // ================= 3. Downstream NotAccepted (Goal / NoAction) =================
+    // ================= 3. Goal routing (Reasoning-to-Planning Handoff) =================
 
     @Test
-    fun `a Goal returns ResponseComposer's own NotAccepted unchanged, and ResponseDelivery is never entered`() = runTest {
-        val f = fixture(reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Goal("book a flight") })
+    fun `a Goal is routed to GoalPlanningHandoffCoordinator, bypassing ResponseComposer and ResponseDelivery entirely`() = runTest {
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Goal("book a flight") },
+            planningSessionIdFactory = { "planning-session-1" },
+        )
+        val originalMessage = message(correlationId = "corr-goal-1", senderPrincipalId = "user-9")
 
-        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+        val outcome = f.coordinator.submitAndDeliver(originalMessage, ReasoningContext(emptyList()), fixedConversationId)
 
-        val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
-        assertTrue("Goal" in notAccepted.reason)
+        val planningDeferred = assertIs<ConversationOutcome.PlanningDeferred>(outcome)
+        val deferred = assertIs<GoalPlanningHandoffOutcome.Deferred>(planningDeferred.outcome)
+        assertEquals(PlanningDeferralReason.CANDIDATE_GENERATION_UNAVAILABLE, deferred.reason)
+        assertEquals("book a flight", deferred.planningRequest.goal)
+        assertEquals(PrincipalId("user-9"), deferred.planningRequest.initiatingPrincipalId)
+        assertEquals("corr-goal-1", deferred.planningRequest.correlationId)
+        assertEquals(1, f.planningSessionIdFactoryCallCount())
+        // Goal routing bypasses reply delivery entirely -- ResponseComposer/ResponseDelivery
+        // are never reached.
         assertEquals(0, f.identityService.resolveCallCount)
         assertEquals(0, f.resources.listByOwnerCallCount)
         assertEquals(0, f.pipeline.submitCallCount)
     }
+
+    @Test
+    fun `a Reply never reaches GoalPlanningHandoffCoordinator`() = runTest {
+        val f = fixture(
+            planningSessionIdFactory = { throw AssertionError("GoalPlanningHandoffCoordinator must not be called for a Reply") },
+        )
+
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+
+        assertIs<ConversationOutcome.ReplyDelivered>(outcome)
+    }
+
+    @Test
+    fun `a NoAction never reaches GoalPlanningHandoffCoordinator`() = runTest {
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.NoAction },
+            planningSessionIdFactory = { throw AssertionError("GoalPlanningHandoffCoordinator must not be called for NoAction") },
+        )
+
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+
+        assertIs<ConversationOutcome.NotAccepted>(outcome)
+    }
+
+    // ================= 4. Downstream NotAccepted (NoAction) =================
 
     @Test
     fun `a NoAction returns ResponseComposer's own NotAccepted unchanged, and ResponseDelivery is never entered`() = runTest {
@@ -254,14 +306,14 @@ class ConversationReplyCoordinatorTest {
 
         val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
-        val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
+        val notAccepted = assertIs<ConversationOutcome.NotAccepted>(outcome)
         assertTrue("NoAction" in notAccepted.reason)
         assertEquals(0, f.identityService.resolveCallCount)
         assertEquals(0, f.resources.listByOwnerCallCount)
         assertEquals(0, f.pipeline.submitCallCount)
     }
 
-    // ================= 4. Downstream NotAccepted (delivery-level rejection) =================
+    // ================= 5. Downstream NotAccepted (delivery-level rejection) =================
 
     @Test
     fun `a Reply that composes successfully but finds no channel Resource returns ResponseDelivery's own NotAccepted unchanged`() = runTest {
@@ -269,14 +321,14 @@ class ConversationReplyCoordinatorTest {
 
         val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
-        val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
+        val notAccepted = assertIs<ConversationOutcome.NotAccepted>(outcome)
         assertTrue("no channel Resource found" in notAccepted.reason)
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(0, f.pipeline.submitCallCount)
     }
 
-    // ================= 5. Exact upstream and downstream call counts across sequential calls =================
+    // ================= 6. Exact upstream and downstream call counts across sequential calls =================
 
     @Test
     fun `call counts across sequential calls increment only on their own applicable branch`() = runTest {
@@ -296,6 +348,7 @@ class ConversationReplyCoordinatorTest {
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(1, f.pipeline.submitCallCount)
+        assertEquals(0, f.planningSessionIdFactoryCallCount())
 
         f.coordinator.submitAndDeliver(message(text = "goal", correlationId = "corr-2"), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(2, f.communicationIntake.submitInboundMessageCallCount)
@@ -303,6 +356,7 @@ class ConversationReplyCoordinatorTest {
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(1, f.pipeline.submitCallCount)
+        assertEquals(1, f.planningSessionIdFactoryCallCount())
 
         f.coordinator.submitAndDeliver(message(text = "noaction", correlationId = "corr-3"), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(3, f.communicationIntake.submitInboundMessageCallCount)
@@ -310,6 +364,7 @@ class ConversationReplyCoordinatorTest {
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(1, f.pipeline.submitCallCount)
+        assertEquals(1, f.planningSessionIdFactoryCallCount())
 
         f.coordinator.submitAndDeliver(message(text = "reply-2", correlationId = "corr-4"), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(4, f.communicationIntake.submitInboundMessageCallCount)
@@ -317,12 +372,13 @@ class ConversationReplyCoordinatorTest {
         assertEquals(2, f.identityService.resolveCallCount)
         assertEquals(2, f.resources.listByOwnerCallCount)
         assertEquals(2, f.pipeline.submitCallCount)
+        assertEquals(1, f.planningSessionIdFactoryCallCount())
     }
 
-    // ================= 6. Downstream not called on upstream rejection (explicit) =================
+    // ================= 7. Downstream not called on upstream rejection (explicit) =================
 
     @Test
-    fun `ReplyDeliveryCoordinator's own dependencies are never touched when CommunicationConversationCoordinator itself rejects`() = runTest {
+    fun `ReplyDeliveryCoordinator's and GoalPlanningHandoffCoordinator's own dependencies are never touched when CommunicationConversationCoordinator itself rejects`() = runTest {
         val f = fixture(
             communicationIntake = FakeCommunicationIntake { msg -> CommunicationIntakeDisposition.Rejected(msg.correlationId, "sender not resolved") },
         )
@@ -332,9 +388,10 @@ class ConversationReplyCoordinatorTest {
         assertEquals(0, f.identityService.resolveCallCount)
         assertEquals(0, f.resources.listByOwnerCallCount)
         assertEquals(0, f.pipeline.submitCallCount)
+        assertEquals(0, f.planningSessionIdFactoryCallCount())
     }
 
-    // ================= 7. Sequencing evidence =================
+    // ================= 8. Sequencing evidence =================
 
     @Test
     fun `reasoning is never reached when the message is rejected, and is reached exactly once when accepted`() = runTest {
@@ -349,7 +406,7 @@ class ConversationReplyCoordinatorTest {
         assertEquals(1, acceptingFixture.reasoningProvider.reasonCallCount)
     }
 
-    // ================= 8. Exception propagation from upstream =================
+    // ================= 9. Exception propagation from upstream =================
 
     @Test
     fun `an exception thrown by CommunicationConversationCoordinator's own first dependency propagates unchanged, and ReplyDeliveryCoordinator is never reached`() = runTest {
@@ -364,7 +421,7 @@ class ConversationReplyCoordinatorTest {
         assertEquals(0, f.pipeline.submitCallCount)
     }
 
-    // ================= 9. Exception propagation from downstream =================
+    // ================= 10. Exception propagation from downstream =================
 
     @Test
     fun `an exception thrown by ReplyDeliveryCoordinator's own dependencies propagates unchanged`() = runTest {
@@ -377,26 +434,49 @@ class ConversationReplyCoordinatorTest {
         assertEquals(0, f.pipeline.submitCallCount)
     }
 
-    // ================= 10. Structural: constructor accepts exactly two dependencies =================
+    // ================= 11. Exception propagation from GoalPlanningHandoffCoordinator =================
 
     @Test
-    fun `the coordinator's constructor accepts exactly two dependencies -- CommunicationConversationCoordinator and ReplyDeliveryCoordinator`() {
+    fun `an exception thrown by GoalPlanningHandoffCoordinator's own planningSessionIdFactory propagates unchanged, and ReplyDeliveryCoordinator is never reached`() = runTest {
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Goal("some goal") },
+            planningSessionIdFactory = { throw IllegalStateException("factory boom") },
+        )
+
+        assertFailsWith<IllegalStateException> {
+            f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+        }
+        assertEquals(0, f.identityService.resolveCallCount)
+        assertEquals(0, f.resources.listByOwnerCallCount)
+        assertEquals(0, f.pipeline.submitCallCount)
+    }
+
+    // ================= 12. Structural: constructor accepts exactly three dependencies =================
+
+    @Test
+    fun `the coordinator's constructor accepts exactly three dependencies -- CommunicationConversationCoordinator, ReplyDeliveryCoordinator, and GoalPlanningHandoffCoordinator`() {
         val constructor = ConversationReplyCoordinator::class.java.declaredConstructors.single()
         val parameterTypes = constructor.parameterTypes.map { it.simpleName }.toSet()
 
-        assertEquals(setOf("CommunicationConversationCoordinator", "ReplyDeliveryCoordinator"), parameterTypes)
+        assertEquals(
+            setOf("CommunicationConversationCoordinator", "ReplyDeliveryCoordinator", "GoalPlanningHandoffCoordinator"),
+            parameterTypes,
+        )
     }
 
-    // ================= 11. Statelessness =================
+    // ================= 13. Statelessness =================
 
     @Test
-    fun `the coordinator declares no field beyond its two constructor-injected dependencies`() {
+    fun `the coordinator declares no field beyond its three constructor-injected dependencies`() {
         val fieldNames = ConversationReplyCoordinator::class.java.declaredFields.map { it.name }.toSet()
 
-        assertEquals(setOf("communicationConversationCoordinator", "replyDeliveryCoordinator"), fieldNames)
+        assertEquals(
+            setOf("communicationConversationCoordinator", "replyDeliveryCoordinator", "goalPlanningHandoffCoordinator"),
+            fieldNames,
+        )
     }
 
-    // ================= 12. Real end-to-end test, narrower scope (FakeReasoningProvider, not ModelReasoningProvider) =================
+    // ================= 14. Real end-to-end test, narrower scope (FakeReasoningProvider, not ModelReasoningProvider) =================
 
     @Test
     fun `end-to-end -- a Reply reaches the owner through the real intake, conversation, composition and delivery stack, via one coordinator call`() = runTest {
@@ -475,26 +555,27 @@ class ConversationReplyCoordinatorTest {
         val communicationIntake = InMemoryCommunicationIntake(moduleRegistry, identityService)
         val conversationEngine = InMemoryConversationEngine(identityService)
         // FakeReasoningProvider, not ModelReasoningProvider -- this Unit's own scope excludes
-        // selecting or configuring a model provider and validating live HTTP behaviour
-        // (Scope Lock Section 3/Section 15); no live model server is required anywhere here.
+        // selecting or configuring a model provider and validating live HTTP behaviour;
+        // no live model server is required anywhere here.
         val reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Reply("hello, owner") }
         val conversationTurnReasoningCoordinator = ConversationTurnReasoningCoordinator(conversationEngine, reasoningProvider)
         val communicationConversationCoordinator = CommunicationConversationCoordinator(communicationIntake, conversationTurnReasoningCoordinator)
 
         val composer = ResponseComposer(identityService)
         val replyDeliveryCoordinator = ReplyDeliveryCoordinator(composer, delivery)
+        val goalPlanningHandoffCoordinator = GoalPlanningHandoffCoordinator(planningSessionIdFactory = { "planning-session-e2e-1" })
 
-        val coordinator = ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator)
+        val coordinator = ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator, goalPlanningHandoffCoordinator)
 
         val originalMessage = message(correlationId = "corr-e2e-1")
-        // Sprint 11 Unit 5: resolution is a real, separate, upstream call in production
-        // (ParkerRuntime.submitOwnerMessage) -- mirrored here explicitly rather than via a fake,
-        // since this test's own purpose is real, end-to-end production wiring (item 12 above).
+        // Resolution is a real, separate, upstream call in production (ParkerRuntime.submitOwnerMessage)
+        // -- mirrored here explicitly rather than via a fake, since this test's own purpose is
+        // real, end-to-end production wiring (item 12 above).
         val conversationId = conversationEngine.resolveConversationId(originalMessage)
         val outcome = coordinator.submitAndDeliver(originalMessage, ReasoningContext(emptyList()), conversationId)
 
-        val produced = assertIs<GatedOutcome.Produced<ExecutionResult>>(outcome)
-        assertEquals(ExecutionResultStatus.SUCCESS, produced.value.status)
+        val replyDelivered = assertIs<ConversationOutcome.ReplyDelivered>(outcome)
+        assertEquals(ExecutionResultStatus.SUCCESS, replyDelivered.executionResult.status)
         assertEquals(listOf("hello, owner"), delivered)
     }
 }

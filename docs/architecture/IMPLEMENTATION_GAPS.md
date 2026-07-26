@@ -2419,3 +2419,57 @@ began). What remains open, disclosed rather than silently narrowed:
   production world-state creation path, no retrieval-ranking seam, no
   `ParkerRuntime`-level populated-belief test, no ordering guarantee),
   none of which this Unit resolves.
+
+**Update (Reasoning-to-Planning Handoff, performed on `main` after Sprint
+11's merge, commit `9ed1570`): narrows, does not close, one further named
+dead end this gap's own history left open.** Sprint 10, Unit 1's
+`ResponseComposer` (this gap's own earlier text, not restated fully here)
+receives a `Goal` and returns `GatedOutcome.NotAccepted("not a Reply;
+reasoningResponse was Goal")` -- correct, disclosed behaviour at the time,
+but a silent discard from the production caller's own point of view:
+nothing anywhere converted a `Goal` into a `PlanningRequest`, and no
+component invoked, or was positioned to invoke, `PlannerRuntime`.
+`docs/architecture/REASONING_TO_PLANNING_HANDOFF_GOVERNANCE_REVIEW.md`
+names this precisely; `docs/architecture/REASONING_TO_PLANNING_HANDOFF_CONTRACT_DESIGN.md`
+and `docs/implementation/REASONING_TO_PLANNING_HANDOFF_SCOPE_LOCK.md`
+design and freeze its closure.
+
+`GoalPlanningHandoffCoordinator` (`src/runtime/GoalPlanningHandoffCoordinator.kt`)
+now intercepts a `Goal` at `ConversationReplyCoordinator.submitAndDeliver`
+-- before `ResponseComposer` is ever reached -- constructs a
+`PlanningRequest` from fields already present on the inbound message and
+the `Goal` itself, and returns `GoalPlanningHandoffOutcome.Deferred`,
+surfaced unchanged all the way to `ParkerRuntimeOutcome.PlanningDeferred`.
+A `Goal` is no longer silently discarded; it is now truthfully reported as
+deferred, with a machine-readable reason
+(`PlanningDeferralReason.CANDIDATE_GENERATION_UNAVAILABLE`). What remains
+open, disclosed rather than silently narrowed:
+
+- **`PlannerRuntime.plan()` is still never called anywhere in production.**
+  `GoalPlanningHandoffCoordinator` holds no `PlannerRuntime` reference by
+  design (Contract Design Section 1) -- this Unit closes the reporting
+  half of the dead end, not the execution half.
+- **No production `PlanCandidate` generation exists.** Confirmed,
+  unchanged from every prior entry in this file that has noted it: a
+  repository-wide grep of `src/` still returns zero production
+  constructors of `PlanCandidate`. This is the actual reason
+  `PlannerRuntime.plan()` is not called -- not merely deferred by choice,
+  but genuinely unsafe to call with no legitimate candidates to supply.
+- **`PlannerRuntime`/`TaskManagerRuntime` remain absent from `ParkerRuntime.kt`'s
+  production composition root.** This Unit adds `GoalPlanningHandoffCoordinator`
+  to that composition root -- the first Reasoning-to-Planning-boundary
+  component ever constructed there -- but deliberately does not add
+  either of these, per the Scope Lock's own explicit exclusion.
+- **The transient/persistent Goal naming collision (Governance Review
+  Section 4) is disclosed, not resolved.** `docs/architecture/23-goal-manager.md`
+  remains an untouched, unimplemented three-line stub; this Unit's own
+  `PlanningRequest.goal` addresses the transient, per-Turn concept only.
+- **Verification.** See `docs/implementation/IMPLEMENTATION_HISTORY.md`'s
+  own "Reasoning-to-Planning Handoff" entry for this Unit's own honest,
+  sandbox-limited verification account. **This Unit's acceptance status is
+  recorded there, not here** -- pending Steven's own native
+  `.\gradlew.bat test` run. The underlying gap (Gap #53 as a whole)
+  remains Open -- this Unit narrows one of its named dead ends (a `Goal`
+  is no longer silently discarded) without closing the larger,
+  still-entirely-open question of how a `Goal` ever becomes a real,
+  executed plan.

@@ -1,14 +1,16 @@
 package parker.composition
 
 import parker.core.interfaces.ExecutionResult
+import parker.core.runtime.GoalPlanningHandoffOutcome
 
 /**
  * Sprint 10, Unit 4 (Production Composition Root). The result of one
  * [ParkerRuntime.submitOwnerMessage] call -- a composition-root-level
  * outcome, deliberately **not** a reuse of `GatedOutcome<ExecutionResult>`
- * (`ConversationReplyCoordinator.submitAndDeliver`'s own return type),
+ * (`ConversationReplyCoordinator.submitAndDeliver`'s own former return
+ * type; as of the Reasoning-to-Planning Handoff, `parker.core.runtime.ConversationOutcome`),
  * because this type additionally has to represent a genuine fault
- * ([Failed]) that no frozen coordinator's own `GatedOutcome` shape has any
+ * ([Failed]) that no frozen coordinator's own outcome shape has any
  * variant for -- every one of those coordinators' own Scope Locks states
  * plainly that such an exception "propagates unchanged to the caller"
  * rather than being represented as a value. This composition root is that
@@ -18,6 +20,14 @@ import parker.core.interfaces.ExecutionResult
  * failure") -- see [ParkerRuntime.submitOwnerMessage]'s own KDoc for
  * exactly which exceptions this maps to [Failed] versus lets propagate
  * (`kotlinx.coroutines.CancellationException`, deliberately, always).
+ *
+ * **[PlanningDeferred], added by the Reasoning-to-Planning Handoff**
+ * (`docs/implementation/REASONING_TO_PLANNING_HANDOFF_SCOPE_LOCK.md`
+ * Section 2.1): maps one-to-one from
+ * `parker.core.runtime.ConversationOutcome.PlanningDeferred`, unchanged.
+ * Planning deferral must remain observable to this class's own caller and
+ * must never be converted into [NotAccepted], [Delivered], a fabricated
+ * `PlanningSessionResult`-shaped [Failed], or silently dropped.
  */
 sealed class ParkerRuntimeOutcome {
 
@@ -37,6 +47,17 @@ sealed class ParkerRuntimeOutcome {
      * about where a given exception originated.
      */
     data class Failed(val stage: PipelineStage, val cause: Throwable) : ParkerRuntimeOutcome()
+
+    /**
+     * A [parker.core.interfaces.ReasoningProviderResponse.Goal] was
+     * received and a `PlanningRequest` was constructed for it, but
+     * `PlannerRuntime.plan()` was not invoked, because no legitimate
+     * `PlanCandidate` source exists yet. [outcome] is
+     * `GoalPlanningHandoffCoordinator.initiatePlanning`'s own result,
+     * unchanged. Not a fault -- no exception occurred -- and not a
+     * rejection or a delivery.
+     */
+    data class PlanningDeferred(val outcome: GoalPlanningHandoffOutcome) : ParkerRuntimeOutcome()
 }
 
 /**

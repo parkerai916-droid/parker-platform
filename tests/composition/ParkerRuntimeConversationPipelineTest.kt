@@ -7,6 +7,8 @@ import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
+import parker.core.runtime.GoalPlanningHandoffOutcome
+import parker.core.runtime.PlanningDeferralReason
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -134,14 +136,17 @@ class ParkerRuntimeConversationPipelineTest {
     }
 
     @Test
-    fun `a Goal response is returned as NotAccepted -- Goal-Planner routing remains out of this Unit's scope`() = runBlocking<Unit> {
+    fun `a Goal response from the model results in PlanningDeferred, with PlannerRuntime never invoked (Reasoning-to-Planning Handoff)`() = runBlocking<Unit> {
         val stub = startStub("GOAL: book a dentist appointment")
         val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
         runtime.start()
 
         val outcome = runtime.submitOwnerMessage(message())
 
-        assertIs<ParkerRuntimeOutcome.NotAccepted>(outcome)
+        val planningDeferred = assertIs<ParkerRuntimeOutcome.PlanningDeferred>(outcome)
+        val deferred = assertIs<GoalPlanningHandoffOutcome.Deferred>(planningDeferred.outcome)
+        assertEquals(PlanningDeferralReason.CANDIDATE_GENERATION_UNAVAILABLE, deferred.reason)
+        assertEquals("book a dentist appointment", deferred.planningRequest.goal)
 
         runtime.shutdown()
     }

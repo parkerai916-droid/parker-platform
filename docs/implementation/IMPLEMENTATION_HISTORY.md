@@ -2442,6 +2442,144 @@ Sprint 1 follows a strict implementation discipline:
 
 ---
 
+## Reasoning-to-Planning Handoff -- Goal Planning Handoff Coordinator Implementation
+
+Implements
+`docs/architecture/REASONING_TO_PLANNING_HANDOFF_GOVERNANCE_REVIEW.md`
+(commit `4490e36`),
+`docs/architecture/REASONING_TO_PLANNING_HANDOFF_CONTRACT_DESIGN.md`
+(Revision 2), and
+`docs/implementation/REASONING_TO_PLANNING_HANDOFF_SCOPE_LOCK.md` exactly,
+performed after Sprint 11 was fully merged to `main` (merge commit
+`9ed1570`). Closes the production dead end those three documents
+identified: `ResponseComposer.compose` receiving a
+`ReasoningProviderResponse.Goal` returned `GatedOutcome.NotAccepted("not
+a Reply; reasoningResponse was Goal")`, silently discarding it, with no
+component anywhere converting a `Goal` into a `PlanningRequest`.
+
+**This Unit does not implement `PlanCandidate` generation, does not wire
+`PlannerRuntime`/`TaskManagerRuntime` into production, and never calls
+`PlannerRuntime.plan()` under any input.** Those remain separate, future,
+governed units, per the Scope Lock's own Excluded list.
+
+### What changed
+
+- **New: `src/runtime/GoalPlanningHandoffCoordinator.kt`.** Defines
+  `PlanningDeferralReason` (one member,
+  `CANDIDATE_GENERATION_UNAVAILABLE`), `GoalPlanningHandoffOutcome`
+  (sealed, one variant, `Deferred(planningRequest, reason, detail)`), and
+  `GoalPlanningHandoffCoordinator` itself -- a concrete, non-interface-backed
+  class with exactly one constructor dependency,
+  `planningSessionIdFactory: () -> String` (no default). Its one method,
+  `suspend fun initiatePlanning(originalMessage: InboundOwnerMessage, goal:
+  ReasoningProviderResponse.Goal): GoalPlanningHandoffOutcome`, constructs
+  a `PlanningRequest` (`planningSessionId` from the injected factory;
+  `initiatingPrincipalId` from `originalMessage.senderPrincipalId`;
+  `correlationId` from `originalMessage.correlationId.value`; `goal` from
+  `goal.text`, unchanged; `source`/`priority` left at their own existing
+  defaults, `RequestOrigin.TEXT`/`RequestPriority.NORMAL`) and returns
+  `GoalPlanningHandoffOutcome.Deferred` -- `PlannerRuntime.plan()` is
+  never called.
+- **New: `src/runtime/ConversationOutcome.kt`.** Defines
+  `ConversationOutcome` (sealed, three variants: `ReplyDelivered(executionResult:
+  ExecutionResult)`, `PlanningDeferred(outcome: GoalPlanningHandoffOutcome)`,
+  `NotAccepted(reason: String)`), replacing `GatedOutcome<ExecutionResult>`
+  as `ConversationReplyCoordinator.submitAndDeliver`'s return type. No
+  nested `GatedOutcome` wrapping -- a downstream rejection on the
+  `Reply`/`NoAction` path collapses into `NotAccepted` exactly as it did
+  under the prior return type.
+- **Modified: `src/runtime/ConversationReplyCoordinator.kt`.** Gains one
+  new constructor dependency, `goalPlanningHandoffCoordinator:
+  GoalPlanningHandoffCoordinator`. `submitAndDeliver` now inspects the
+  `ReasoningProviderResponse` `communicationConversationCoordinator.submitAndReason`
+  produces before ever calling `replyDeliveryCoordinator` -- the
+  interception point the Governance Review's Section 5.5 identified. A
+  `Goal` routes to `goalPlanningHandoffCoordinator.initiatePlanning` and
+  never reaches `replyDeliveryCoordinator` or `ResponseComposer`. `Reply`
+  and `NoAction` follow the exact prior path, unchanged.
+  `ResponseComposer` and `ReplyDeliveryCoordinator` are **not modified in
+  any way**.
+- **Modified: `src/composition/ParkerRuntimeOutcome.kt`.** Gains one new
+  variant, `PlanningDeferred(val outcome: GoalPlanningHandoffOutcome)`.
+  `Delivered`, `NotAccepted`, and `Failed` are unchanged.
+- **Modified: `src/composition/ParkerRuntime.kt`.** Constructs
+  `GoalPlanningHandoffCoordinator(planningSessionIdFactory = {
+  java.util.UUID.randomUUID().toString() })` in
+  `buildAndRegisterRuntimeGraph()` and passes it into
+  `ConversationReplyCoordinator`'s existing construction call --
+  **not** `PlannerRuntime`/`TaskManagerRuntime` production wiring; neither
+  is constructed anywhere by this Unit.
+  `submitOwnerMessage`'s own `when` block over
+  `conversationReplyCoordinator.submitAndDeliver`'s result is rewritten
+  for the three `ConversationOutcome` variants, mapping one-to-one to
+  `ParkerRuntimeOutcome` (`NotAccepted -> NotAccepted`,
+  `ReplyDelivered -> Delivered`, `PlanningDeferred -> PlanningDeferred`,
+  each unchanged).
+
+### Failure behaviour (no new machinery)
+
+If `planningSessionIdFactory` returns blank, `PlanningSessionId`'s own
+existing `init` check throws `IllegalArgumentException` -- not a new
+check this Unit adds. If it throws, that exception propagates unchanged.
+Neither `GoalPlanningHandoffCoordinator` nor `ConversationReplyCoordinator`
+has a `try`/`catch`; the exception reaches `ParkerRuntime.submitOwnerMessage`'s
+existing outer boundary and surfaces as
+`ParkerRuntimeOutcome.Failed(PipelineStage.UNKNOWN, e)` -- the same,
+already-governed machinery reused unchanged. No new `PipelineStage`,
+exception type, or `ParkerRuntimeOutcome` variant was introduced for this
+path, per the Scope Lock's own explicit prohibition.
+
+### Tests
+
+- **New: `tests/runtime/GoalPlanningHandoffCoordinatorTest.kt`** (8
+  tests): field-by-field `PlanningRequest` construction; authoritative
+  `reason`/non-blank `detail`; exactly-one-invocation of the ID factory;
+  distinct `planningSessionId` values across two calls; blank-factory
+  `IllegalArgumentException`; throwing-factory propagation; structural
+  single-parameter-constructor proof; structural single-field statelessness
+  proof.
+- **Modified: `tests/runtime/ConversationReplyCoordinatorTest.kt`.** Every
+  existing `GatedOutcome`-typed assertion updated to `ConversationOutcome`.
+  New tests: a `Goal` routes to `GoalPlanningHandoffCoordinator` and
+  bypasses `ResponseComposer`/`ResponseDelivery` entirely (zero
+  `identityService`/`resources`/`pipeline` calls); a `Reply` and a
+  `NoAction` each never reach `GoalPlanningHandoffCoordinator` (proved via
+  a poisoned `planningSessionIdFactory` that throws if called, asserting
+  the call still completes normally); exception propagation from
+  `GoalPlanningHandoffCoordinator`'s own factory; the structural
+  constructor/field tests extended to the new, third dependency.
+- **Modified: `tests/composition/ParkerRuntimeConversationPipelineTest.kt`.**
+  The existing Goal-response test previously asserted
+  `ParkerRuntimeOutcome.NotAccepted` ("Goal-Planner routing remains out of
+  this Unit's scope") -- accurate under the prior behaviour, now corrected
+  to assert `ParkerRuntimeOutcome.PlanningDeferred` with
+  `reason == PlanningDeferralReason.CANDIDATE_GENERATION_UNAVAILABLE` and
+  the expected `planningRequest.goal`, exercised through the real,
+  unmodified `ModelReasoningProvider`/`StubModelServer` stack, not a fake.
+- **Inspected, not modified: `tests/composition/ParkerRuntimeFailureHandlingTest.kt`,
+  `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`.**
+  Neither references `GatedOutcome`, `ConversationOutcome`, `Goal`,
+  `NoAction`, nor contains an exhaustive `when` over either changed type
+  -- both compile and pass unchanged, confirmed by direct inspection, not
+  assumed.
+
+### Verification
+
+**Not run in this sandbox.** Per this repository's own established,
+repeatedly-documented limitation (e.g. this file's own Sprint 11 Unit 5
+and Unit 8 entries), this sandbox cannot complete a Gradle build/test run
+against this project. This Unit's own correctness claims rest on direct,
+repeated re-reading of every changed file, a repository-wide grep
+confirming no remaining caller of any old signature
+(`ConversationReplyCoordinator`'s prior two-argument constructor,
+`GatedOutcome<ExecutionResult>` as its return type), and import-order/package
+consistency checks against this repository's own existing files -- not on
+a passing local build. **This Unit is not yet accepted; per PES-001,
+Steven's own native `.\gradlew.bat test` run is the authoritative
+verification.**
+
+---
+
 ## Current Vertical Slice
 
 ```

@@ -1,6 +1,7 @@
 package parker.composition
 
 import java.time.Instant
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -28,6 +29,7 @@ import parker.core.interfaces.ResourceType
 import parker.core.interfaces.WorldModelSource
 import parker.core.runtime.ActionMapper
 import parker.core.runtime.CommunicationConversationCoordinator
+import parker.core.runtime.ConversationOutcome
 import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultExecutionPipeline
@@ -35,7 +37,8 @@ import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
-import parker.core.runtime.GatedOutcome
+import parker.core.runtime.GoalPlanningHandoffCoordinator
+import parker.core.runtime.GoalPlanningHandoffOutcome
 import parker.core.runtime.InMemoryActionVocabulary
 import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
@@ -189,6 +192,8 @@ class ParkerRuntime(
      * full coordinator chain
      * (`CommunicationConversationCoordinator -> ConversationTurnReasoningCoordinator`,
      * `ReplyDeliveryCoordinator -> ResponseComposer`/`ResponseDelivery`,
+     * `GoalPlanningHandoffCoordinator` (Reasoning-to-Planning Handoff --
+     * holds no `PlannerRuntime`/`TaskManagerRuntime` reference),
      * `ConversationReplyCoordinator`); (8) start [RuntimeEventLogger]'s
      * own EventBus subscriptions; (9) transition to `RUNNING`, log
      * "Runtime started".
@@ -349,7 +354,21 @@ class ParkerRuntime(
         val responseDelivery = ResponseDelivery(resourceRegistry, executionPipeline)
         val replyDeliveryCoordinator = ReplyDeliveryCoordinator(responseComposer, responseDelivery)
 
-        conversationReplyCoordinator = ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator)
+        // Reasoning-to-Planning Handoff: GoalPlanningHandoffCoordinator is constructed here for
+        // the first time in this repository's production composition root. This is not
+        // PlannerRuntime/TaskManagerRuntime production wiring (docs/implementation/
+        // REASONING_TO_PLANNING_HANDOFF_SCOPE_LOCK.md Section 2.2, explicitly excluded) -- this
+        // coordinator holds no reference to either. planningSessionIdFactory is supplied
+        // explicitly here, not defaulted inside the coordinator itself (Scope Lock Section 2.1).
+        val goalPlanningHandoffCoordinator = GoalPlanningHandoffCoordinator(
+            planningSessionIdFactory = { UUID.randomUUID().toString() },
+        )
+
+        conversationReplyCoordinator = ConversationReplyCoordinator(
+            communicationConversationCoordinator,
+            replyDeliveryCoordinator,
+            goalPlanningHandoffCoordinator,
+        )
         runtimeEventLogger = RuntimeEventLogger(eventBus, logger, SYSTEM_PARKER_PRINCIPAL_ID)
     }
 
@@ -392,12 +411,17 @@ class ParkerRuntime(
      * The runtime's one production entry point: accepts an inbound
      * communication and executes the complete, existing conversation
      * pipeline -- `CommunicationIntake -> ConversationEngine ->
-     * ReasoningProvider -> ResponseComposer -> ResponseDelivery ->
-     * ExecutionPipeline -> Tool execution`, with Trust authorisation
-     * (`PermissionEngine`, via `ExecutionPipeline`) mandatory on the
-     * delivery path, exactly as [ConversationReplyCoordinator.submitAndDeliver]
-     * (this method's own sole delegate) already guarantees on its own,
-     * unmodified terms.
+     * ReasoningProvider`, then one of two branches depending on the
+     * resulting `ReasoningProviderResponse`: `Reply`/`NoAction` continue
+     * through `ResponseComposer -> ResponseDelivery -> ExecutionPipeline
+     * -> Tool execution`, with Trust authorisation (`PermissionEngine`,
+     * via `ExecutionPipeline`) mandatory on that delivery path; `Goal` is
+     * routed instead to `GoalPlanningHandoffCoordinator`
+     * (Reasoning-to-Planning Handoff), which never reaches
+     * `ResponseComposer`, `ExecutionPipeline`, or `PermissionEngine`, and
+     * never invokes `PlannerRuntime.plan()`. Both branches are exactly as
+     * [ConversationReplyCoordinator.submitAndDeliver] (this method's own
+     * sole delegate) already guarantees on its own, unmodified terms.
      *
      * **Reasoning Context assembly (Sprint 11, Unit 3).** This method
      * invokes [reasoningContextAssembler]`.assemble(...)` exactly once, as
@@ -494,13 +518,22 @@ class ParkerRuntime(
             val reasoningContext = reasoningContextAssembler.assemble(resolvedMessage)
             logger.info("Reasoning Context assembled (correlationId=${message.correlationId.value})")
             when (val outcome = conversationReplyCoordinator.submitAndDeliver(message, reasoningContext, conversationId)) {
-                is GatedOutcome.NotAccepted -> {
+                is ConversationOutcome.NotAccepted -> {
                     logger.info("Conversation not accepted for delivery (correlationId=${message.correlationId.value}, reason=${outcome.reason})")
                     ParkerRuntimeOutcome.NotAccepted(outcome.reason)
                 }
-                is GatedOutcome.Produced -> {
-                    logger.info("Conversation pipeline completed (correlationId=${message.correlationId.value}, status=${outcome.value.status})")
-                    ParkerRuntimeOutcome.Delivered(outcome.value)
+                is ConversationOutcome.ReplyDelivered -> {
+                    logger.info("Conversation pipeline completed (correlationId=${message.correlationId.value}, status=${outcome.executionResult.status})")
+                    ParkerRuntimeOutcome.Delivered(outcome.executionResult)
+                }
+                is ConversationOutcome.PlanningDeferred -> when (val handoffOutcome = outcome.outcome) {
+                    is GoalPlanningHandoffOutcome.Deferred -> {
+                        logger.info(
+                            "Planning initiation deferred (correlationId=${message.correlationId.value}, " +
+                                "reason=${handoffOutcome.reason})",
+                        )
+                        ParkerRuntimeOutcome.PlanningDeferred(handoffOutcome)
+                    }
                 }
             }
         } catch (e: TimeoutCancellationException) {
