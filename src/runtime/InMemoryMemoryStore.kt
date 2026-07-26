@@ -9,6 +9,7 @@ import parker.core.interfaces.MemoryPromotionDecision
 import parker.core.interfaces.MemoryPromotionPolicy
 import parker.core.interfaces.MemoryQuery
 import parker.core.interfaces.MemoryRecord
+import parker.core.interfaces.MemorySource
 import parker.core.interfaces.MemoryStore
 
 /**
@@ -45,10 +46,24 @@ import parker.core.interfaces.MemoryStore
  * `IdentityService`, or `PermissionEngine` dependency exists, since
  * nothing in the approved architecture requires one and Memory never
  * reacts to, or triggers, any of those systems.
+ *
+ * ## Memory Source (Sprint 11 Unit 7)
+ *
+ * Also implements [MemorySource] directly -- a second, narrower interface
+ * over this same instance and the same owned state
+ * (`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 4.2), not
+ * a second store and not a new method added to [MemoryStore] itself.
+ * [recall] is a zero-logic delegate to [retrieve]: no new map, no new
+ * lock, no new field is added by this Unit. A caller holding only a
+ * [MemorySource]-typed reference is structurally unable to reach
+ * [remember] or [forget] -- capability narrowing enforced by the Kotlin
+ * type system, mirroring exactly why [InMemoryConversationEngine]
+ * declares [parker.core.interfaces.ConversationHistorySource] separately
+ * from [parker.core.interfaces.ConversationEngine].
  */
 class InMemoryMemoryStore(
     private val promotionPolicy: MemoryPromotionPolicy = DefaultMemoryPromotionPolicy(),
-) : MemoryStore {
+) : MemoryStore, MemorySource {
 
     private val mutex = Mutex()
     private val records = mutableMapOf<MemoryId, MemoryRecord>()
@@ -122,6 +137,18 @@ class InMemoryMemoryStore(
         }
         matches.asReversed().take(query.maximumResults)
     }
+
+    /**
+     * [MemorySource]'s sole operation ([MemorySource]'s own KDoc). A
+     * direct, zero-logic delegate to [retrieve] -- this class exposes no
+     * retrieval behaviour under [MemorySource] that [MemoryStore.retrieve]
+     * does not already, identically, provide. No new state, no new
+     * ordering, no new absence semantic -- everything [retrieve]'s own
+     * KDoc already documents (identity scoping, category narrowing,
+     * `maximumResults` capping, most-recently-promoted-first ordering,
+     * empty-never-throws absence) is inherited unchanged.
+     */
+    override suspend fun recall(query: MemoryQuery): List<MemoryRecord> = retrieve(query)
 
     override suspend fun forget(memoryId: MemoryId): Boolean = mutex.withLock {
         val removed = records.remove(memoryId)

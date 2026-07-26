@@ -1522,7 +1522,914 @@ passed, 0 failed, 0 skipped, BUILD SUCCESSFUL.
 
 ---
 
-## Implementation Principles
+## Sprint 11
+
+### Unit 1 -- Production Reasoning Context Governance (docs only)
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+Not applicable -- documentation-only Unit, no `.kt` file added or
+modified.
+
+Summary
+- Froze `PRODUCTION_REASONING_CONTEXT_IMPLEMENTATION_PLAN.md` and
+  `PRODUCTION_REASONING_CONTEXT_SCOPE_LOCK.md`, defining the Reasoning
+  Context Assembler's responsibilities, ownership, lifetime, and
+  constitutional boundary, ahead of any implementation.
+- A refinement round (still Unit 1) added the Scope Lock's own Section 3
+  ("Reasoning Context Is a Projection, Not a Source of Truth"),
+  reconsidered "runtime metadata" down to `Current time` alone, and
+  generalised "Owner identity" to "Requesting principal identity."
+
+Implementation Notes
+- No Kotlin file created or modified -- governance only, per this Unit's
+  own explicit stop condition.
+
+---
+
+### Unit 2 -- Production Reasoning Context Contract Design (docs only)
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+Not applicable -- contract-only Unit, no `.kt` file added or modified
+(`SPRINT_11_UNIT_2_ACCEPTANCE_CHECKLIST.md`'s own "No Kotlin written"
+criterion).
+
+Summary
+- `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`: the Assembler's
+  interface (`ReasoningContextAssembler`, one method, `InboundOwnerMessage`
+  in, `ReasoningContext` out), justified dependencies (`IdentityService.resolve`,
+  `ToolRegistry.listAll`/`findCandidates`, both read-only), named-not-designed
+  future boundaries (Memory Source, World Model Source, Conversation
+  History Source), failure behaviour (propagates to `ParkerRuntime`,
+  classified `PipelineStage.UNKNOWN`), and production lifecycle.
+- `PRODUCTION_REASONING_CONTEXT_SEQUENCE.md`: the real, frozen production
+  call chain from inbound message to Reasoning Provider, showing exactly
+  where a `ReasoningContext` is assembled, becomes immutable, and is
+  discarded.
+
+Implementation Notes
+- Confirmed directly against `ConversationEngine.kt`: no read-only query
+  method exists for prior Turns anywhere in this codebase -- `submitTurn`
+  is the only operation. "Conversation History Source" was named as an
+  undefined boundary on this basis, not assumed solvable by injecting
+  `ConversationEngine` as-is.
+
+---
+
+### Unit 3 -- Production Reasoning Context Implementation
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+**Not independently verified by this sandbox** -- the same Gradle-project-evaluation
+limitation disclosed in every prior Unit this Sprint applies unchanged
+(see this Unit's own Implementation Review / final report for the
+detailed, honest account). Manual review only: this Unit adds 15 new
+test methods (12 in `tests/runtime/DefaultReasoningContextAssemblerTest.kt`,
+3 in `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`),
+removes none, and changes the expected outcome of none of the
+Sprint 10 tests it touches indirectly (`ParkerRuntimeConversationPipelineTest.kt`'s
+and `ParkerRuntimeFailureHandlingTest.kt`'s own existing assertions are
+unaffected -- confirmed by direct reading: `StubModelServer` returns a
+fixed, canned response regardless of the real request body's content, so
+a real, non-empty `ReasoningContext` now reaching the prompt changes
+nothing about any existing test's observed outcome). Whatever total
+Steven's own next Android Studio run reports for the Sprint 10 baseline,
+this Unit's own honest claim is `+15`, not an absolute number this
+sandbox cannot itself confirm.
+
+Summary
+- Implemented `ReasoningContextAssembler` (`src/interfaces/ReasoningContextAssembler.kt`)
+  and `DefaultReasoningContextAssembler` (`src/runtime/DefaultReasoningContextAssembler.kt`),
+  conforming exactly to the frozen Unit 2 Contract Design's illustrative
+  shape: constructor-injected `IdentityService`/`ToolRegistry` only, no
+  Memory/World Model/Conversation History/`ConversationEngine` dependency.
+- Wired the Assembler into `ParkerRuntime.kt`: constructed once in
+  `buildAndRegisterRuntimeGraph` (after `identityService`/`toolRegistry`
+  exist), invoked exactly once in `submitOwnerMessage` before
+  `conversationReplyCoordinator.submitAndDeliver`. Retired
+  `submitOwnerMessage`'s previous `reasoningContext: ReasoningContext =
+  ReasoningContext(emptyList())` parameter -- an explicit implementation
+  decision this Unit was authorised to make (Contract Design Section 9
+  left it open), justified by making "the Assembler is invoked exactly
+  once per inbound message" an unconditional guarantee rather than one
+  only true when a caller omits an override. No existing call site
+  supplied that argument, confirmed by direct search.
+- Added one `INFO` log line, "Reasoning Context assembled
+  (correlationId=...)", immediately after the Assembler call, matching
+  this method's own existing per-stage observability convention and
+  giving `tests/composition` a way to verify "exactly once" without a
+  test-only constructor parameter.
+- Extended the test-only `StubModelServer` fixture
+  (`tests/composition/CompositionTestFixtures.kt`) to capture every
+  received request body, additively -- no existing caller of `start()`
+  is affected.
+
+Implementation Notes
+- **Stage 1 Code Readiness Review found no inconsistency.** Every frozen
+  component the Contract Design assumed (`ParkerRuntime`,
+  `ConversationReplyCoordinator`, `CommunicationConversationCoordinator`,
+  `ConversationTurnReasoningCoordinator`, `ModelReasoningProvider`,
+  `IdentityService`, `ToolRegistry`, `ReasoningProvider`/`ReasoningContext`,
+  `InboundOwnerMessage`, `Principal`, `PrincipalId`/`ModuleId`) was
+  re-read in full and confirmed byte-identical to what the Contract
+  Design assumed. Stage 2 proceeded without any architectural stop.
+- **"Participant identities" collapses to "Requesting principal
+  identity" today.** `InboundOwnerMessage` carries exactly one
+  `PrincipalId`; no other participant is resolvable without a
+  Conversation History Source. Disclosed in
+  `DefaultReasoningContextAssembler`'s own KDoc, not silently narrowed.
+- **"Current conversation" (prior Turns) is not rendered at all.** The
+  Conversation History Source gap Unit 2 named is not worked around --
+  no `ConversationEngine` dependency was added. See
+  `IMPLEMENTATION_GAPS.md` #53's own updated entry.
+- **The `submitOwnerMessage` parameter-retirement decision, above, is
+  this Unit's own -- not pre-decided by Unit 2.** Recorded here as a
+  genuine implementation-time architectural decision, per this Unit's
+  own task instructions, not a silent one.
+
+---
+
+### Unit 3 -- Pre-Acceptance Review, Correction and Verification
+
+Commit:
+pending
+
+Completed:
+2026-07-24
+
+Android Studio Tests:
+**Still not independently verified by this sandbox.** See "Verification"
+below for the specific, concrete diagnostic (not merely a repeat of the
+prior "hangs" disclosure).
+
+Summary -- this review resolved two open architectural questions Steven
+raised after the initial Unit 3 implementation, confirmed logging
+safety, re-confirmed every structural boundary, and confirmed the
+repository's own change footprint. No Scope Lock or Contract Design
+amendment was required.
+
+**1. `submitOwnerMessage` signature removal -- retained.** A
+repository-wide search (`grep` across `src/`, `tests/`, and `docs/` for
+every `submitOwnerMessage(` call site) found 11 real call sites, every
+one supplying exactly one argument (`message`); none ever supplied
+`reasoningContext`. `ParkerRuntime` has no interface, no adapter, and no
+other class wrapping or implementing it; `settings.gradle.kts` declares
+a single Gradle module with no `maven-publish`/library-publishing
+plugin; and a direct search confirmed no `fun main(` exists anywhere
+under `src/` -- there is no real host application yet, so
+`submitOwnerMessage` is reachable only from this repository's own test
+suite today, not from any external consumer. All four "Preferred
+outcome" conditions are satisfied: no caller supplied the parameter; the
+method is not an externally published compatibility contract; retaining
+the parameter would have made "the Assembler is invoked exactly once per
+inbound message" a conditional guarantee rather than an unconditional
+one (a caller-supplied override bypasses assembly entirely for that
+call); and the removal is the smallest coherent implementation of the
+approved architecture (Contract Design Section 9 explicitly left this
+choice to this Unit). One documentation reference to the old
+two-parameter signature remains, in
+`PRODUCTION_REASONING_CONTEXT_IMPLEMENTATION_PLAN.md` (Unit 1, frozen) --
+left unedited, since it accurately describes the runtime's state *before*
+this Unit's own implementation, not a live claim about current
+production code; rewriting it would falsify the historical record. No
+compatibility overload was created.
+
+**2. `InboundOwnerMessage.timestamp` as "current time" -- preserved,
+with a newly-disclosed limitation.** `LocalTextChannel.submitOwnerText`'s
+own KDoc (`src/interfaces/LocalTextChannel.kt`) defines `timestamp`
+explicitly: "When the owner sent \[text\], not when this operation
+happens to be called" -- a deliberate distinction between message
+origination time and processing time. A repository-wide search for
+`replay`/`queue`/`queued` confirmed no queueing, replay, import, or
+message-reconstruction mechanism exists anywhere for `InboundOwnerMessage`
+in this codebase; every instance is constructed fresh, in-process, and
+flows synchronously to the Assembler with nothing buffering or delaying
+it in between (confirmed further: no `fun main(` wires a real channel to
+`ParkerRuntime` yet at all, so today's only callers are tests
+constructing the message directly). Given no queueing/delay mechanism
+exists in any real code path, origination time and assembly time are
+operationally coincident today, satisfying Outcome A's "sufficiently
+close to assembly time for the present runtime" condition. Separately,
+and independently decisively: `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+Section 5 (Deterministic) states explicitly that the Assembler must
+introduce "no...clock beyond what `InboundOwnerMessage.timestamp`
+already carries" -- calling `Instant.now()` (directly or via an injected
+Clock) inside the Assembler would violate this frozen, approved contract
+term, not merely add to it. The implementation is preserved unchanged.
+**Limitation recorded for future work:** `LocalTextChannel`'s own
+explicit "not when this operation happens to be called" wording
+anticipates a future channel, import mechanism, or queueing layer under
+which origination time and assembly time could diverge; if one is ever
+introduced, a future Contract Design revision -- not a silent code
+change -- must decide whether a separate, explicitly-justified clock
+dependency is then warranted.
+
+**3. Logging safety -- confirmed safe, no correction required.** The one
+new `INFO` log line added in the initial Unit 3 implementation
+(`ParkerRuntime.submitOwnerMessage`) logs exactly one field:
+`message.correlationId.value` -- an opaque, per-message identifier
+(randomly minted per IDR-001 in production; a literal test fixture
+string in tests). It logs no message text, no `ReasoningContext` entries,
+no principal name or ID, no tool name or description, and no
+conversation content. This matches the existing, pre-Unit-3 logging
+discipline in the same method exactly (every other `INFO`/`ERROR` line in
+`submitOwnerMessage` logs only `correlationId.value` plus structural,
+non-content values such as an outcome's enum status). `DefaultReasoningContextAssembler`
+itself holds no logger dependency and logs nothing.
+
+**4. Structural re-review -- all boundaries confirmed, unchanged.**
+Re-confirmed by direct search, not by re-assertion: `DefaultReasoningContextAssembler`
+is constructed in exactly one place in `src/` (`ParkerRuntime.kt`);
+`.assemble(` is called in exactly one place in `src/` (`ParkerRuntime.submitOwnerMessage`,
+unconditionally, not inside any loop or retry); no coordinator file was
+touched by this Unit; `DefaultReasoningContextAssembler.kt` imports no
+`ConversationEngine`, `MemoryStore`, `WorldModel`, `PlannerRuntime`,
+`PermissionEngine`, `ToolInvocationBinding`, or `ExecutionPipeline` type;
+it holds only its two constructor-injected `val` fields, builds a fresh
+local list on every call, and returns an immutable `ReasoningContext` via
+`.toList()`; nothing is cached or persisted anywhere in the class.
+
+**Verification.** Four independent attempts were made to run a real
+Gradle test pass in this sandbox (`gradle test --offline --console=plain`,
+with and without `--no-daemon`, with `--info`, and via a backgrounded
+`nohup`/`disown` process). Every attempt reached the same concrete stall
+point: Gradle's own one-time `generated-gradle-jars/gradle-api-8.10.jar`
+generation step, which never completed within a single sandbox call
+(confirmed directly: the cache directory holds only a stale `.lock` file
+after every attempt, never the generated jar). Background processes do
+not persist between tool calls in this sandbox (confirmed directly via
+`ps aux` -- each call runs in its own torn-down, `--unshare-pid`
+namespace), so this cannot be worked around by backgrounding. **No test
+count, pass/fail result, or build result can be honestly reported by
+this sandbox for this Unit.** This is a sharper, more specific finding
+than the general "cannot evaluate the Gradle project" disclosure
+recorded for every prior Unit this Sprint -- the exact stall point is now
+identified -- but the practical conclusion is unchanged: Steven's own
+Android Studio run is required.
+
+**Repository checks.** `git status --short` shows exactly 13 new,
+untracked files (the Sprint 11 Unit 1/2/3 documentation and Kotlin files
+already recorded above) and a larger set of tracked files showing as
+modified. `git diff --stat -w` (ignoring whitespace/line-ending
+differences) isolates the real content changes to exactly four tracked
+files -- `docs/architecture/IMPLEMENTATION_GAPS.md` (+78 lines),
+`docs/implementation/IMPLEMENTATION_HISTORY.md` (+143 lines at the time
+of that check), `src/composition/ParkerRuntime.kt` (+57/-13 lines), and
+`tests/composition/CompositionTestFixtures.kt` (+21 lines) -- confirming
+every other file's own diff entry is pure pre-existing CRLF/LF
+line-ending noise, unrelated to and untouched in content by this Unit
+(consistent with this session's own repeatedly-disclosed, never-fixed,
+out-of-scope finding). `git -c core.whitespace=cr-at-eol diff --check`
+(the CRLF-safe form) returns clean (exit 0) both repository-wide and
+scoped to this Unit's own changed files; a direct `grep` for trailing
+space/tab found none in any of this Unit's five brand-new Kotlin files.
+No file under `build/` appears in `git status` (`.gitignore` excludes
+it) -- no generated file was added. Line endings were not normalised;
+no blanket formatting was run.
+
+**Governance.** No approved Scope Lock or Contract Design document
+required amendment. Both open questions were resolved within this Unit's
+own implementation authority, citing existing frozen text
+(`LocalTextChannel.kt`'s KDoc, `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+Sections 5 and 9) rather than introducing new architectural decisions.
+
+---
+
+### Unit 5 -- Conversation Continuity Implementation (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+**Governance chain.** Conversation Identity Architecture (governance) ->
+Conversation Continuity and Pre-Turn Identity Contract Design -> a
+Contract Authority and Propagation Correction pass (architectural review
+found the original Contract Design's derivation model and "unchanged
+`ConversationEngine` interface" claim jointly unsatisfiable) -> a second
+correction freezing four Binding Guarantees explicitly -> this
+Implementation Unit, which realises the corrected, approved Contract
+Design (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`)
+in real Kotlin.
+
+**Selected model, restated from the approved Contract Design.** Resolved
+identity, not derived identity: `(channelId, senderPrincipalId)` is a
+continuity key, looked up (or minted, if absent) against
+`ConversationEngine`'s own owned state -- never a pure function of the key
+alone, because that would foreclose termination/reopening permanently.
+`ConversationEngine` remains the sole authority for both continuity
+recognition and identifier minting; `ParkerRuntime` orchestrates the call
+but decides nothing.
+
+**Production changes.**
+
+- `src/interfaces/ConversationEngine.kt` -- `ConversationEngine` gains
+  `suspend fun resolveConversationId(message: InboundOwnerMessage): ConversationId`
+  (new); `submitTurn` gains a required `conversationId: ConversationId`
+  parameter and no longer decides identity itself.
+  `ConversationDisposition.isNewConversation`'s own KDoc updated to reflect
+  why it is still needed once the caller does supply a `ConversationId`.
+- `src/runtime/InMemoryConversationEngine.kt` -- no longer stateless (its
+  own prior KDoc's "Required Implementation Decision 1" is retired). Holds
+  two private, `kotlinx.coroutines.sync.Mutex`-guarded maps: continuity key
+  -> active `ConversationId`, and `ConversationId` -> `Conversation` record.
+  `resolveConversationId` is atomic and idempotent-while-active (Binding
+  Guarantees 1-2) -- the entire check-or-mint sequence runs inside one
+  `withLock` block. `submitTurn` validates the supplied `conversationId` is
+  the exact active identifier for the message's own continuity key,
+  throwing `IllegalArgumentException` (this repository's own established
+  convention for a caller-supplied precondition failure -- see "Exception
+  decision" below) if it is unknown or belongs to a different key --
+  Guarantee 3, never re-resolving, never substituting. No termination,
+  expiry, reopening, or cleanup policy is implemented (explicitly out of
+  scope, disclosed in the Contract Design's own Section 7); an opened
+  continuity key's mapping remains active indefinitely.
+- `src/interfaces/ReasoningContextAssembler.kt` -- new
+  `ResolvedInboundMessage(message, conversationId)` data class (the
+  Contract Design's own "Resolved Inbound Envelope"). `ReasoningContextAssembler.assemble`'s
+  input changes from a bare `InboundOwnerMessage` to this envelope --
+  additive, not a redesign of the interface's responsibilities,
+  determinism, statelessness, or side-effect-freedom.
+- `src/runtime/DefaultReasoningContextAssembler.kt` -- adapted to the new
+  input; additionally now renders a "Current conversation: <id>" entry,
+  reading `resolvedMessage.conversationId` directly, with no lookup, no
+  resolution, and no `ConversationEngine` dependency of any kind.
+- `src/runtime/ConversationTurnReasoningCoordinator.kt`,
+  `src/runtime/CommunicationConversationCoordinator.kt`,
+  `src/runtime/ConversationReplyCoordinator.kt` -- each gains one additive,
+  pass-through `conversationId: ConversationId` parameter on its one public
+  method, forwarded unchanged to the next component in the chain, exactly
+  mirroring the precedent already set when `reasoningContext` itself was
+  threaded through these same three coordinators in Sprint 11 Unit 3. None
+  of the three inspects continuity policy, generates or resolves any
+  identifier, or mutates the one it is given.
+- `src/composition/ParkerRuntime.kt` -- `submitOwnerMessage` now calls
+  `conversationEngine.resolveConversationId(message)` exactly once, as the
+  first action inside its `try` block, before constructing the
+  `ResolvedInboundMessage` envelope and invoking the Assembler; logs one
+  new `INFO` line, "Conversation continuity resolved (correlationId=...,
+  conversationId=...)", mirroring the existing "Reasoning Context
+  assembled" precedent, and giving `tests/composition` a direct way to
+  verify resolution happens exactly once, and before assembly, without a
+  test-only constructor parameter. `ConversationEngine` is now held as a
+  class field (previously a local value inside `buildAndRegisterRuntimeGraph`),
+  since `submitOwnerMessage` needs to call it directly. On a resolution
+  failure, no envelope is constructed and the fault falls straight through
+  to this method's own existing outer `try`/`catch`, unchanged --
+  Guarantee 4.
+
+**Exception decision (narrowest-existing-mechanism review, performed
+before implementing rejection behaviour, per this Unit's own task
+instructions).** Searched for existing Conversation Engine exceptions,
+domain error types, pipeline failure mappings, and failure-stage
+conventions. Found: this repository's own established convention (stated
+directly in `ParkerRuntimeException.kt`'s own KDoc) is that
+`IdentityService`, `ModuleRegistry`, and `ToolRegistry` all throw plain
+JVM exceptions directly for caller-misuse/precondition failures, rather
+than returning a sealed result or defining a bespoke exception hierarchy;
+`InMemoryModuleRegistry` throws `IllegalStateException` for an invalid
+state transition and `NoSuchElementException` for a registry-lookup miss;
+`GatedOutcome.NotAccepted`'s own `init` throws `IllegalArgumentException`
+for a blank, caller-supplied value; `InMemoryConversationEngine` itself
+already throws `IllegalStateException` for a different precondition
+failure (missing operating Principal). No sealed exception hierarchy
+exists for any in-`src/runtime` component -- `ParkerRuntimeException` is a
+deliberately different, outer, composition-root-only boundary
+(`ParkerRuntimeException.kt`'s own KDoc states this explicitly). Decision:
+`InMemoryConversationEngine.submitTurn` throws `IllegalArgumentException`
+(via `require`) for an unknown-or-mismatched supplied `conversationId` --
+the narrowest, most consistent choice, not a new exception type. This
+fault is never caught by any coordinator between it and
+`ParkerRuntime.submitOwnerMessage`'s own existing outer `catch (e:
+Exception)`, which classifies it `PipelineStage.UNKNOWN` -- the same,
+already-correct classification `ParkerRuntimeOutcome.kt`'s own KDoc
+documents for every non-`REASONING`-stage fault, requiring no change to
+`ParkerRuntimeOutcome.kt` or `PipelineStage` itself.
+
+**Concurrency.** One private `Mutex` in `InMemoryConversationEngine`,
+guarding only the continuity-key/Conversation-record map reads and writes
+inside `resolveConversationId` and `submitTurn` -- never held across
+`identityService.resolve` (a separate precondition check, not continuity
+state) and never held across anything downstream of this class (reasoning,
+model invocation, response composition/delivery all happen in later,
+unrelated calls this class has no reference to). No per-key lock, no lock
+registry -- per this Unit's own instruction, correctness is this
+revision's concern, not throughput, absent evidence of contention.
+
+**Tests.** Six files identified during the mandatory migration-impact
+review were updated for the new signatures: `InMemoryConversationEngineTest.kt`,
+`ConversationTurnReasoningCoordinatorTest.kt`,
+`CommunicationConversationCoordinatorTest.kt`,
+`ConversationReplyCoordinatorTest.kt`,
+`DefaultReasoningContextAssemblerTest.kt`,
+`ParkerRuntimeReasoningContextIntegrationTest.kt`. New coverage added:
+resolution semantics (fresh key, repeated resolution, different channel,
+different sender, `CorrelationId` and message-content independence);
+concurrency (50 concurrent resolutions for one key collapse to one
+identifier; multiple keys resolved concurrently remain independent, using
+`kotlinx.coroutines.test.runTest` with `async`/`awaitAll`, no
+timing-based sleeps); submission validation (accepted, unknown rejected,
+cross-key rejected, rejection creates no Turn, rejection does not
+substitute another identifier); a rejection propagation test at the
+`ConversationTurnReasoningCoordinator` layer (reasoning never reached when
+`submitTurn` rejects); and three `ParkerRuntime`-level integration tests
+(resolves exactly once and before assembly; the same resolved identifier
+reaches the Assembler's own rendered prompt and stays stable across
+repeated messages from the same owner/channel; the created Turn is bound
+to the exact identifier resolved upstream).
+
+**Disclosed test gap, not silently omitted.** "Resolution failure stops
+the pipeline" (Guarantee 4) is verified directly at the coordinator layer
+(a rejecting `ConversationEngine` fake), and is additionally guaranteed
+structurally by Kotlin's own exception semantics at the `ParkerRuntime`
+layer (`resolveConversationId` is the first statement inside
+`submitOwnerMessage`'s `try` block; any exception it throws necessarily
+skips every subsequent statement in that block, including envelope
+construction, Assembler invocation, and `submitAndDeliver`). It is **not**
+independently exercised by a forced-failure integration test against the
+real, running `ParkerRuntime`: `InMemoryConversationEngine.resolveConversationId`
+can only fail today via a missing operating-Principal registration, and
+`ParkerRuntime.start()` always registers that Principal itself -- there is
+no reachable path to a real resolution failure through the full,
+real-`ParkerRuntime` pipeline without an injectable `ConversationEngine`
+seam this Unit was not authorised to add. Recorded here rather than
+glossed over.
+
+**Build/test verification.** Not performed by this Unit -- consistent with
+this session's own repeatedly-diagnosed sandbox limitation (Gradle project
+evaluation cannot complete in this environment) and this Unit's own task
+instructions ("Steven will run the complete test suite in the available
+environment"). Every change above was verified by direct, repeated
+re-reading of the edited files and a repository-wide grep for every
+remaining call site of the four changed method signatures, confirming no
+`.kt` file under `src/` or `tests/` other than the ones named above
+references the old signatures.
+
+---
+
+### Unit 6 -- Conversation History Source Implementation (updates `IMPLEMENTATION_GAPS.md` #53, in part; closes the open question `CONVERSATION_HISTORY_SOURCE_IMPLEMENTATION_PLAN.md` Section 6 deferred)
+
+**Governance chain.** `CONVERSATION_HISTORY_SOURCE_IMPLEMENTATION_PLAN.md`
+and `CONVERSATION_HISTORY_SOURCE_SCOPE_LOCK.md` (Sprint 11, Unit 4) named
+Conversation History Source as a real, deferred boundary and recorded two
+open findings, without designing an interface. `docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
+(this Unit) performed the required fresh Phase 0/Phase 1 governance
+review, found no architectural conflict, resolved both Unit 4 findings
+(Finding 2 was already closed by Unit 5's Continuity work; Finding 1 --
+`ConversationEngine` exposes no read operation -- is resolved here), and
+designed the interface. The Scope Lock was revised in place (Section 1's
+correction, new Section 1a Included/Excluded, Section 4's ownership
+resolution) rather than replaced.
+
+**Production changes:**
+
+- `src/interfaces/ConversationHistorySource.kt` (new): one-method,
+  `suspend`-declared interface, `history(conversationId): List<Turn>`,
+  empty (never throwing) for no recorded history.
+- `src/runtime/InMemoryConversationEngine.kt`: now implements
+  `ConversationEngine` **and** `ConversationHistorySource` on the same
+  instance -- a second, narrower view over the same owned state, not a
+  second store. Adds one private `turnsById: MutableMap<TurnId, Turn>`,
+  populated inside `submitTurn`'s existing `stateLock`-guarded section
+  (retaining a value that was already, momentarily, constructed there --
+  not new authority). `history` is guarded by the same single `Mutex`,
+  independently precondition-checked (`requireOperatingPrincipalRegistered`)
+  exactly as `resolveConversationId` and `submitTurn` already are.
+- `src/runtime/DefaultReasoningContextAssembler.kt`: gains one
+  constructor dependency, `conversationHistorySource: ConversationHistorySource`.
+  `assemble` calls `history(resolvedMessage.conversationId)` once and
+  renders zero or more "Prior message: ..." entries, oldest first,
+  immediately after "Current conversation" -- no ranking, no truncation,
+  no summarisation, exactly what Contract Design Section 5 authorises and
+  nothing more.
+- `src/composition/ParkerRuntime.kt`: `InMemoryConversationEngine`'s
+  construction is moved ahead of `DefaultReasoningContextAssembler`'s own
+  (a pure ordering change -- its constructor depends only on
+  `identityService`, already available at that point) so the same
+  instance can be injected into the Assembler under both its
+  `ConversationEngine` and `ConversationHistorySource` types.
+
+**Two disclosed, deliberate limitations (not defects), per Contract Design
+Sections 4.3 and 5:**
+
+1. History is one-sided: only the owner's own prior inbound messages are
+   ever available. No `Turn` record anywhere in this runtime captures
+   Parker's own outbound replies -- `ResponseComposer` constructs an
+   `OutboundParkerResponse` downstream of `ConversationEngine.submitTurn`,
+   correlated only by `CorrelationId`, and nothing writes it back.
+2. No bound on history volume, age, or relevance is applied anywhere --
+   every `Turn` `history` returns is rendered. Bounding this is a
+   relevance/volume decision this Unit's own Scope Lock explicitly
+   excludes from Conversation History Source's boundary, and the
+   Assembler has never owned that decision either.
+
+**Test summary.** `InMemoryConversationEngineTest.kt`: nine new `history`
+tests -- unknown/never-resolved `ConversationId` returns empty; resolved
+but not yet submitted returns empty; single Turn; multiple Turns in
+submission order; isolation across two distinct continuity
+keys/Conversations; sender identity propagation (never the operating
+Principal); a rejected `submitTurn` never appears in history; missing
+operating Principal fails fast, mirroring `resolveConversationId`/`submitTurn`.
+`DefaultReasoningContextAssemblerTest.kt`: five new tests (empty history
+renders nothing but still calls `history` exactly once with the resolved
+`ConversationId`; single prior Turn renders one entry; multiple Turns
+render oldest-first in exact order; a `history` failure propagates
+unchanged; the structural constructor-dependency test is updated for
+three dependencies). `ParkerRuntimeReasoningContextIntegrationTest.kt`:
+one new end-to-end test confirming a second message in the same
+Conversation carries the first message's own text as a rendered "Prior
+message" entry, and the first message carries none.
+
+**Build/test verification.** Not independently performed inside this
+session's own sandbox -- consistent with this session's own
+repeatedly-diagnosed limitation. Every change above was first verified
+by direct, repeated re-reading of the edited files and a repository-wide
+grep confirming no other `.kt` file under `src/` or `tests/` references
+`DefaultReasoningContextAssembler`'s or `InMemoryConversationEngine`'s
+constructors in a way this Unit's changes would break. Steven's own
+`.\gradlew.bat test` run subsequently reported **BUILD SUCCESSFUL** (see
+the post-verification correction immediately below for the one failure
+found and fixed en route).
+
+**Post-verification correction (Steven's own `.\gradlew.bat test` run,
+696 tests, 1 failure).** `ParkerRuntimeReasoningContextIntegrationTest.kt`'s
+own "the same resolved ConversationId reaches the Assembler's own prompt
+and remains stable across repeated messages" test failed with `expected:
+<0b793b74-...-a37e6c\nAvailable> but was: <0b793b74-...-a37e6c\nPrior>` --
+**the same identifier in both** (confirmed correct `ConversationId`
+stability), differing only in a suffix neither value was supposed to
+carry. Root cause: the test's own extraction regex,
+`Regex("Current conversation: (\\S+)")`, applied to
+`stub.receivedRequestBodies` (the raw JSON HTTP request body, where the
+prompt's real newlines are JSON-escaped as literal `\`+`n` -- both
+non-whitespace) -- ran past the intended token boundary into the next
+rendered entry's own first word. Before this Unit, that next word was
+always "Available" (the tool-catalogue entries); this Unit's own,
+approved "Prior message" entry now legitimately appears there instead,
+for the second of two messages in one Conversation -- exposing a
+pre-existing test fragility that happened to be masked until an entry
+other than "Available tool" could ever follow "Current conversation."
+**Test defect, not an implementation defect** -- `ConversationId`
+propagation is correct; only the test's own extraction was insufficiently
+bounded. **Correction:** narrowed the capture group to
+`([0-9a-fA-F-]+)` -- exactly `ConversationId`'s own minted shape
+(`UUID.randomUUID().toString()`) -- in
+`tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` only.
+No production file changed; the equality assertion itself is unchanged
+and unweakened; no coverage removed. Remains within this Unit's own
+Scope Lock -- no architectural conflict was found, so neither the
+Contract Design nor the Scope Lock required any revision.
+
+**Final acceptance.** Following the correction above, Steven's complete
+local Gradle test run reported **BUILD SUCCESSFUL**. Committed as
+`ad21659` ("feat: add conversation history source") on branch
+`sprint-11-reasoning-context`; local and remote branches aligned;
+working tree clean. **Sprint 11 Unit 6 (Conversation History Source) is
+accepted.**
+
+### Unit 7 -- Memory Source Integration Implementation (updates `IMPLEMENTATION_GAPS.md` #53, in part)
+
+**Governance sequence.** `docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`, and
+`docs/implementation/MEMORY_SOURCE_INTEGRATION_SCOPE_LOCK.md` were each
+produced, then revised in a pre-approval architectural refinement pass
+(removing a fixed `maximumResults` value from the architecture,
+clarifying that the retrieval algorithm is owned entirely by the Memory
+implementation, and adding an explicit Constitutional Boundary section),
+then explicitly architecturally approved before any Kotlin was written --
+Steven's own instruction: "The Scope Lock is now frozen. Proceed with
+implementation only within the approved scope."
+
+**Pre-implementation conflict check.** Re-read the Parker Constitution,
+`PARKER_ENGINEERING_STANDARD.md`, `reasoning-context.md`,
+`src/interfaces/MemoryStore.kt`, `src/runtime/InMemoryMemoryStore.kt`,
+`tests/runtime/InMemoryMemoryStoreTest.kt`,
+`src/runtime/DefaultReasoningContextAssembler.kt`,
+`src/composition/ParkerRuntime.kt`,
+`src/interfaces/ConversationHistorySource.kt`, and
+`src/runtime/InMemoryConversationEngine.kt` fresh, immediately before
+implementation began. **No conflict found** between the approved design
+and current source -- confirmed directly: `MemoryQuery`'s mandatory
+`relevance`/`maximumResults` fields, `InMemoryMemoryStore.retrieve`'s
+existing deterministic ordering, and the complete absence of any
+`MemoryStore` reference in `ParkerRuntime.kt` all matched exactly what
+the Governance Review and Contract Design had already found and
+documented.
+
+**Implementation, exactly within the approved scope:**
+
+- `src/interfaces/MemorySource.kt` (new file) -- a single-method,
+  `suspend`-declared, read-only interface, `recall(query: MemoryQuery): List<MemoryRecord>`,
+  reusing `MemoryQuery`/`MemoryRecord` unchanged.
+- `src/runtime/InMemoryMemoryStore.kt` -- now
+  `class InMemoryMemoryStore(...) : MemoryStore, MemorySource`; `recall`
+  is a one-line, zero-logic delegate to the already-implemented, already-
+  tested `retrieve`. No new map, no new lock, no new field.
+- `src/runtime/DefaultReasoningContextAssembler.kt` -- gains a fourth
+  constructor dependency, `memorySource: MemorySource`. `assemble` now
+  constructs a `MemoryQuery` from fields already on its own input
+  (`requestingPrincipalId` = sender `PrincipalId`, `relevance` = request
+  text, `correlationId` = the message's own correlation id, `category` =
+  `null`, `maximumResults` = a new private companion constant,
+  `MEMORY_QUERY_MAXIMUM_RESULTS = 5` -- explicitly documented in its own
+  KDoc as implementation policy, not architecture, changeable without a
+  Contract Design revision), calls `memorySource.recall` once, and
+  renders zero or more "Memory" entries in the exact order returned -- no
+  ranking, scoring, reordering, summarisation, or interpretation.
+  Confidence is rendered when present, omitted (not fabricated) when
+  absent.
+- `src/composition/ParkerRuntime.kt` -- `buildAndRegisterRuntimeGraph()`
+  now constructs `InMemoryMemoryStore()` (defaulted
+  `DefaultMemoryPromotionPolicy`) and injects it into
+  `DefaultReasoningContextAssembler`'s constructor under the
+  `MemorySource` type. **This is the first production construction of
+  Memory anywhere in this repository's real, running composition root**
+  -- confirmed by grep against the pre-implementation state of
+  `ParkerRuntime.kt` (no `MemoryStore`/`WorldModel` match) -- a new
+  construction step, not a reordering, unlike Unit 6's
+  `InMemoryConversationEngine` change.
+
+**Tests added:**
+
+- `tests/runtime/FakeMemorySource.kt` (new) -- lambda-based fake,
+  mirroring `FakeConversationHistorySource`.
+- `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- all existing
+  constructor call sites updated for the new fourth parameter; the
+  structural dependency test updated to
+  `setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "MemorySource")`;
+  nine new tests (empty memory result; single memory rendered; multiple
+  memories rendered in exact returned order; confidence rendered when
+  present/omitted when absent; the constructed `MemoryQuery`'s four
+  fields asserted directly; `maximumResults` asserted positive without
+  asserting a specific architecturally-significant value; a `recall`
+  failure propagates unchanged; `MemorySource` exposes no `remember`/
+  `forget`; one real-`InMemoryMemoryStore`, not-a-fake, end-to-end test).
+- `tests/runtime/InMemoryMemoryStoreTest.kt` -- three new structural
+  tests (`InMemoryMemoryStore` also satisfies `MemorySource`; `recall`
+  returns exactly what `retrieve` would for an identical query; `MemorySource`
+  exposes no `remember`/`forget`). `retrieve`'s own substantive behaviour
+  is not re-tested -- the 14 existing tests already cover it exhaustively.
+- `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` --
+  one new test confirming `MemorySource` is wired into the real
+  `ParkerRuntime` without fault and renders no "Memory" entries, since
+  nothing in this Unit's own scope creates memories in production.
+
+**Disclosed, deliberate exclusions (per the frozen Scope Lock), none
+implemented:** memory creation/promotion/forgetting changes, memory
+extraction from conversation, summarisation, embeddings, semantic search
+beyond the existing substring match, ranking/scoring, confidence
+invention, provenance invention, contradiction resolution, World Model
+integration, Authentication implementation, Planner work, tool execution,
+Conversation History changes, unrelated refactoring.
+
+**Disclosed limitation: no `ParkerRuntime`-level integration test for a
+populated memory rendering end-to-end.** No in-scope seeding hook exists
+for the `InMemoryMemoryStore` `ParkerRuntime` constructs privately --
+adding one would itself be "changing how memories are created," excluded
+by the Scope Lock. The real-`InMemoryMemoryStore` Assembler-level test
+above is this Unit's best available substitute, disclosed as such in
+`MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 10 before implementation began.
+
+**Build/test verification.** Attempted in this session's own sandbox:
+`./gradlew --version`, `./gradlew compileKotlin`, and
+`./gradlew compileKotlin --offline` were each run; all returned exit code
+0 with **no captured output whatsoever**, including no Gradle banner from
+`--version` -- consistent with, and not contradicting, this session's own
+repeatedly-diagnosed sandbox limitation (the bash tool's per-call fresh
+PID namespace does not allow a Gradle daemon or long-running build to
+report output back across calls). **No build or test result is claimed
+from this sandbox.** Every change above was instead verified by direct,
+repeated re-reading of the final state of each edited file, structural
+review against the approved Contract Design and Scope Lock, and manual
+tracing of every new call path (query construction, delegation, rendering,
+composition-root wiring) against `MemoryQuery`/`MemoryRecord`'s own
+existing, already-tested contracts. Per PES-001 Stage 7, Steven's own
+`.\gradlew.bat test` run remains the authoritative verification; this
+Unit is **not yet accepted** pending that run's own reported result.
+
+### WorldQuery Optional Subject -- Contract Revision Implementation
+
+**Governance sequence.** `docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_GOVERNANCE_REVIEW.md`,
+`docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`, and
+`docs/implementation/WORLD_QUERY_OPTIONAL_SUBJECT_SCOPE_LOCK.md` were each
+produced as a narrowly-scoped architecture/compatibility/scope review of
+the specific contract revision identified by
+`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md` as
+the smallest fix for Sprint 11 Unit 8's blocking incompatibility, then
+explicitly approved before any Kotlin was written -- Steven's own
+instruction: "The Scope Lock is frozen. Proceed with implementation only
+within the approved scope."
+
+**Pre-implementation conflict check.** Re-read `src/interfaces/WorldModel.kt`,
+`src/runtime/InMemoryWorldModel.kt`,
+`docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md`,
+`tests/contracts/WorldModelContractsTest.kt`,
+`tests/runtime/InMemoryWorldModelTest.kt`, the Parker Constitution, and
+`PARKER_ENGINEERING_STANDARD.md` fresh, immediately before implementation
+began. **No conflict found** -- current source matched every assumption
+the Governance Review and Contract Revision had already documented,
+verbatim.
+
+**Implementation, exactly within the approved scope:**
+
+- `src/interfaces/WorldModel.kt` -- `WorldQuery.subjectMatch` widened from
+  `String` to `String? = null`; `init` block's `require` relaxed to
+  `require(subjectMatch == null || subjectMatch.isNotBlank())`. `null`
+  means "no subject filter." `maximumResults` and `minimumConfidence`
+  unchanged.
+- `src/runtime/InMemoryWorldModel.kt` -- `query`'s filter predicate's
+  subject condition becomes
+  `(query.subjectMatch == null || belief.subject.contains(query.subjectMatch, ignoreCase = true))`,
+  the identical `== null || ...` short-circuit shape already used one
+  line below it for `minimumConfidence`. No other line changed; no
+  ranking, scoring, ordering guarantee, or classification introduced.
+
+**Tests added/updated:**
+
+- `tests/contracts/WorldModelContractsTest.kt` -- `worldQuery(...)`
+  helper's `subjectMatch` parameter widened to `String?`; existing blank-
+  rejection test renamed for clarity
+  (`` `a WorldQuery with a blank, non-null subjectMatch is rejected` ``,
+  behaviour unchanged); one new test confirming a `null` `subjectMatch`
+  constructs successfully.
+- `tests/runtime/InMemoryWorldModelTest.kt` -- `query(...)` helper's
+  `subjectMatch` parameter widened to `String?`; four new tests (a `null`
+  `subjectMatch` returns every currently-non-stale belief across multiple
+  subjects; `maximumResults` still bounds a null-subject query;
+  `minimumConfidence` still filters a null-subject query; a non-null
+  `subjectMatch` continues to filter exactly as before this revision).
+  All fourteen pre-existing tests in this file are unmodified in
+  behaviour -- only the helper's parameter type widened, which does not
+  change any existing call site's supplied value.
+
+**Disclosed, deliberate exclusions (per the frozen Scope Lock), none
+implemented:** `WorldModelSource` (still unwritten), Assembler
+integration (`DefaultReasoningContextAssembler` unchanged),
+`ParkerRuntime` wiring (`InMemoryWorldModel` still unconstructed in the
+composition root), any change to `maximumResults`, any ordering
+guarantee, ranking, scoring, semantic search, embeddings, classification,
+topic inference, contradiction resolution, `minimumConfidence` changes,
+`WorldModel.current(subject)` changes, and any unrelated refactoring.
+
+**Build/test verification -- sandbox could not execute Gradle at all in
+this session, not merely time out.** `./gradlew --offline tasks`,
+`./gradlew --offline compileTestKotlin`, and, as a diagnostic control,
+`./gradlew --offline thisTaskDoesNotExist` (an intentionally invalid task
+name) were each run. Every invocation returned exit code 0 with zero
+lines of captured output -- including the deliberately-invalid task
+name, which a working Gradle invocation must reject with a non-zero exit
+code and an error message. This is stronger evidence than the "no output
+within the call window" limitation disclosed in Unit 7 above: it shows
+Gradle is not executing meaningfully in this sandbox this session at all,
+rather than merely running too slowly to report back. **No build or test
+result of any kind is claimed from this sandbox.** Every change above was
+instead verified by direct, repeated re-reading of the final state of
+each edited file, structural review against the approved Contract
+Revision and Scope Lock, and manual tracing of the one changed line in
+`InMemoryWorldModel.query` against `minimumConfidence`'s own, already-
+tested, identical-shape branch. Per PES-001 Stage 7, Steven's own
+`.\gradlew.bat test` run remains the authoritative verification; this
+revision is **not yet accepted** pending that run's own reported result.
+
+### Unit 8 -- World Model Source Integration Implementation
+
+**Governance sequence.** `docs/architecture/WORLD_MODEL_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`, and
+`docs/implementation/WORLD_MODEL_SOURCE_INTEGRATION_SCOPE_LOCK.md` were
+produced, found blocked on `WorldQuery.subjectMatch`'s then-mandatory
+field (`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md`),
+unblocked by the separately governed and implemented
+`WorldQuery` Optional Subject contract revision (commit `eb25d64`, entry
+above), reconciled to remove their own now-stale "blocked" wording, and
+explicitly re-approved as a reconciled set before this implementation
+began -- Steven's own instruction: "The Scope Lock is frozen. Proceed
+with implementation only within the approved scope."
+
+**Pre-implementation conflict check.** Re-read the Parker Constitution,
+`PARKER_ENGINEERING_STANDARD.md`, `reasoning-context.md`,
+`docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md`,
+`src/interfaces/WorldModel.kt`, `src/runtime/InMemoryWorldModel.kt`,
+`src/runtime/DefaultReasoningContextAssembler.kt`,
+`src/composition/ParkerRuntime.kt`, `tests/runtime/InMemoryWorldModelTest.kt`,
+`tests/runtime/DefaultReasoningContextAssemblerTest.kt`,
+`tests/runtime/FakeConversationHistorySource.kt`/`FakeMemorySource.kt`,
+and `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`
+fresh, immediately before implementation began. **No conflict found**
+between the approved design and current source -- `WorldQuery.subjectMatch`
+was confirmed already nullable (the approved prerequisite), and
+`ParkerRuntime.kt` was confirmed to construct no `WorldModel` anywhere,
+exactly as the Governance Review's own Finding 1 stated.
+
+**Implementation, exactly within the approved scope:**
+
+- `src/interfaces/WorldModelSource.kt` (new file) -- a single-method,
+  `suspend`-declared, read-only interface, `recall(query: WorldQuery): List<WorldBelief>`,
+  reusing `WorldQuery`/`WorldBelief` unchanged.
+- `src/runtime/InMemoryWorldModel.kt` -- now
+  `class InMemoryWorldModel(...) : WorldModel, WorldModelSource`; `recall`
+  is a one-line, zero-logic delegate to the already-implemented, already-
+  tested `query`. No new map, no new lock, no new field.
+- `src/runtime/DefaultReasoningContextAssembler.kt` -- gains a fifth
+  constructor dependency, `worldModelSource: WorldModelSource`. `assemble`
+  now constructs a `WorldQuery` with `subjectMatch = null` (no subject
+  filter -- a literal absence, never an inferred, classified, or parsed
+  value), `maximumResults` = a new private companion constant
+  (`WORLD_QUERY_MAXIMUM_RESULTS = 5`, implementation policy, not
+  architecture, mirroring `MEMORY_QUERY_MAXIMUM_RESULTS`'s identical
+  treatment), and `minimumConfidence = null` (no confidence floor is
+  required by the approved design). Calls `worldModelSource.recall` once,
+  and renders zero or more "World belief" entries in the exact order
+  returned -- no ranking, scoring, reordering, reconciliation, or
+  interpretation. `confidence` is a required field on `WorldBelief`
+  (unlike `MemoryRecord`'s optional one), so it is always rendered, never
+  fabricated.
+- `src/composition/ParkerRuntime.kt` -- `buildAndRegisterRuntimeGraph()`
+  now constructs `InMemoryWorldModel()` (defaulted
+  `DefaultWorldModelUpdatePolicy`) and injects it into
+  `DefaultReasoningContextAssembler`'s constructor under the
+  `WorldModelSource` type. **This is the first production construction of
+  the World Model anywhere in this repository's real, running composition
+  root** -- confirmed by grep against the pre-implementation state of
+  `ParkerRuntime.kt` (no `WorldModel` match) -- a new construction step,
+  not a reordering, mirroring exactly how Unit 7 added the first
+  production construction of Memory.
+
+**Tests added:**
+
+- `tests/runtime/FakeWorldModelSource.kt` (new) -- lambda-based fake,
+  mirroring `FakeMemorySource`.
+- `tests/runtime/InMemoryWorldModelTest.kt` -- three new structural tests
+  (`InMemoryWorldModel` also satisfies `WorldModelSource`; `recall`
+  returns exactly what `query` would for an identical `WorldQuery`;
+  `WorldModelSource` exposes no `observe`/`current`, only `recall`).
+- `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- all existing
+  constructor call sites updated for the new fifth parameter; the
+  structural dependency test updated to
+  `setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "MemorySource", "WorldModelSource")`;
+  nine new tests (empty World Model result; single belief rendered;
+  multiple beliefs rendered in exact returned order; each belief's own
+  confidence rendered exactly, never fabricated or shared; the
+  constructed `WorldQuery`'s `subjectMatch`/`maximumResults`/`minimumConfidence`
+  each asserted directly; a `recall` failure propagates unchanged; one
+  real-`InMemoryWorldModel`, not-a-fake, end-to-end test). Multiple-belief
+  ordering is asserted only against the fake's own fixed-order return
+  value, never against the real `InMemoryWorldModel`'s own unordered
+  `query` -- consistent with `WorldModel.query`'s own disclosed absence of
+  an ordering guarantee.
+- `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` --
+  one new test confirming `WorldModelSource` is wired into the real
+  `ParkerRuntime` without fault and renders no "World belief" entries,
+  since nothing in this Unit's own scope creates world state in
+  production.
+
+**Disclosed, deliberate exclusions (per the frozen Scope Lock), none
+implemented:** world-state creation/modification/merging/reconciliation,
+inference, prediction, planning, ranking, scoring, semantic search,
+embeddings, topic extraction, confidence invention, provenance invention,
+changes to `WorldModel.current`, changes to `WorldQuery` beyond the
+already-separately-approved optional-subject revision, Memory Source
+changes, Conversation History changes, Authentication implementation,
+Planner work, tool execution, unrelated refactoring.
+
+**Disclosed limitation, carried forward unchanged from Memory Source's own
+precedent: no `ParkerRuntime`-level integration test for a populated
+belief rendering end-to-end.** No in-scope seeding hook exists for the
+`InMemoryWorldModel` `ParkerRuntime` constructs privately -- adding one
+would itself be "creating world state," excluded by the Scope Lock. The
+real-`InMemoryWorldModel` Assembler-level test above is this Unit's best
+available substitute, disclosed as such in
+`WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` Section 9.
+
+**Ordering -- no guarantee added, none assumed.** `WorldModel.query`'s own
+absence of an ordering guarantee is unchanged and is not fixed by this
+Unit. The Assembler preserves whatever order `WorldModelSource.recall`
+returns; every test above either supplies a fixed-order fake or seeds
+exactly one real belief, never asserting an order the real, map-backed
+`InMemoryWorldModel` does not itself guarantee.
+
+**Performance -- no optimisation attempted.** `WorldQuery.maximumResults`
+bounds the returned result count only; the internal scan cost of
+`InMemoryWorldModel.query`'s own filter pass over every currently-held
+belief remains unbounded relative to stored belief count, exactly as
+disclosed in `WORLD_QUERY_OPTIONAL_SUBJECT_GOVERNANCE_REVIEW.md`'s own
+Risks section. This Unit does not attempt to bound or optimise it.
+
+**Build/test verification.** Attempted in this session's own sandbox; see
+this Unit's own final report for the honest account. Per PES-001 Stage 7,
+Steven's own `.\gradlew.bat test` run remains the authoritative
+verification; this Unit is **not yet accepted** pending that run's own
+reported result.
 
 Sprint 1 follows a strict implementation discipline:
 

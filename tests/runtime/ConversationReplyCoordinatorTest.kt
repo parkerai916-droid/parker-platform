@@ -127,17 +127,22 @@ class ConversationReplyCoordinatorTest {
         completedAt = fixedTimestamp,
     )
 
+    private val fixedConversationId = ConversationId("conv-1")
+
     /**
      * A `ConversationEngine` fake that wraps whatever [InboundOwnerMessage]
-     * it is given into a `Turn` unchanged -- mirrors
+     * and [ConversationId] it is given into a `Turn` unchanged -- mirrors
      * [CommunicationConversationCoordinatorTest]'s own identical
      * precedent, so tests here stay isolated to
      * [ConversationReplyCoordinator]'s own behaviour, not
-     * [InMemoryConversationEngine]'s.
+     * [InMemoryConversationEngine]'s. `resolveConversationId` is never
+     * expected to be called by anything under test in this file.
      */
     private fun passThroughConversationEngine() = object : ConversationEngine {
-        override suspend fun submitTurn(message: InboundOwnerMessage): ConversationDisposition {
-            val conversationId = ConversationId("conv-1")
+        override suspend fun resolveConversationId(message: InboundOwnerMessage): ConversationId =
+            throw UnsupportedOperationException("not exercised by this coordinator's own tests")
+
+        override suspend fun submitTurn(message: InboundOwnerMessage, conversationId: ConversationId): ConversationDisposition {
             val turnId = TurnId("turn-1")
             return ConversationDisposition(
                 conversation = Conversation(
@@ -197,7 +202,7 @@ class ConversationReplyCoordinatorTest {
             communicationIntake = FakeCommunicationIntake { msg -> CommunicationIntakeDisposition.Rejected(msg.correlationId, "channel not enabled") },
         )
 
-        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
         assertEquals("channel not enabled", notAccepted.reason)
@@ -214,7 +219,7 @@ class ConversationReplyCoordinatorTest {
         val f = fixture()
         val originalMessage = message(correlationId = "corr-1")
 
-        val outcome = f.coordinator.submitAndDeliver(originalMessage, ReasoningContext(listOf("prior context")))
+        val outcome = f.coordinator.submitAndDeliver(originalMessage, ReasoningContext(listOf("prior context")), fixedConversationId)
 
         assertIs<GatedOutcome.Produced<ExecutionResult>>(outcome)
         val request = f.pipeline.lastSubmittedRequest
@@ -234,7 +239,7 @@ class ConversationReplyCoordinatorTest {
     fun `a Goal returns ResponseComposer's own NotAccepted unchanged, and ResponseDelivery is never entered`() = runTest {
         val f = fixture(reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Goal("book a flight") })
 
-        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
         assertTrue("Goal" in notAccepted.reason)
@@ -247,7 +252,7 @@ class ConversationReplyCoordinatorTest {
     fun `a NoAction returns ResponseComposer's own NotAccepted unchanged, and ResponseDelivery is never entered`() = runTest {
         val f = fixture(reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.NoAction })
 
-        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
         assertTrue("NoAction" in notAccepted.reason)
@@ -262,7 +267,7 @@ class ConversationReplyCoordinatorTest {
     fun `a Reply that composes successfully but finds no channel Resource returns ResponseDelivery's own NotAccepted unchanged`() = runTest {
         val f = fixture(resources = FakeResourceRegistry { emptyList() })
 
-        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         val notAccepted = assertIs<GatedOutcome.NotAccepted>(outcome)
         assertTrue("no channel Resource found" in notAccepted.reason)
@@ -285,28 +290,28 @@ class ConversationReplyCoordinatorTest {
             },
         )
 
-        f.coordinator.submitAndDeliver(message(text = "reply-1", correlationId = "corr-1"), ReasoningContext(emptyList()))
+        f.coordinator.submitAndDeliver(message(text = "reply-1", correlationId = "corr-1"), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(1, f.communicationIntake.submitInboundMessageCallCount)
         assertEquals(1, f.reasoningProvider.reasonCallCount)
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(1, f.pipeline.submitCallCount)
 
-        f.coordinator.submitAndDeliver(message(text = "goal", correlationId = "corr-2"), ReasoningContext(emptyList()))
+        f.coordinator.submitAndDeliver(message(text = "goal", correlationId = "corr-2"), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(2, f.communicationIntake.submitInboundMessageCallCount)
         assertEquals(2, f.reasoningProvider.reasonCallCount)
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(1, f.pipeline.submitCallCount)
 
-        f.coordinator.submitAndDeliver(message(text = "noaction", correlationId = "corr-3"), ReasoningContext(emptyList()))
+        f.coordinator.submitAndDeliver(message(text = "noaction", correlationId = "corr-3"), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(3, f.communicationIntake.submitInboundMessageCallCount)
         assertEquals(3, f.reasoningProvider.reasonCallCount)
         assertEquals(1, f.identityService.resolveCallCount)
         assertEquals(1, f.resources.listByOwnerCallCount)
         assertEquals(1, f.pipeline.submitCallCount)
 
-        f.coordinator.submitAndDeliver(message(text = "reply-2", correlationId = "corr-4"), ReasoningContext(emptyList()))
+        f.coordinator.submitAndDeliver(message(text = "reply-2", correlationId = "corr-4"), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(4, f.communicationIntake.submitInboundMessageCallCount)
         assertEquals(4, f.reasoningProvider.reasonCallCount)
         assertEquals(2, f.identityService.resolveCallCount)
@@ -322,7 +327,7 @@ class ConversationReplyCoordinatorTest {
             communicationIntake = FakeCommunicationIntake { msg -> CommunicationIntakeDisposition.Rejected(msg.correlationId, "sender not resolved") },
         )
 
-        f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+        f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         assertEquals(0, f.identityService.resolveCallCount)
         assertEquals(0, f.resources.listByOwnerCallCount)
@@ -336,11 +341,11 @@ class ConversationReplyCoordinatorTest {
         val rejectingFixture = fixture(
             communicationIntake = FakeCommunicationIntake { msg -> CommunicationIntakeDisposition.Rejected(msg.correlationId, "channel not enabled") },
         )
-        rejectingFixture.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+        rejectingFixture.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(0, rejectingFixture.reasoningProvider.reasonCallCount)
 
         val acceptingFixture = fixture()
-        acceptingFixture.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+        acceptingFixture.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
         assertEquals(1, acceptingFixture.reasoningProvider.reasonCallCount)
     }
 
@@ -351,7 +356,7 @@ class ConversationReplyCoordinatorTest {
         val f = fixture(communicationIntake = FakeCommunicationIntake { throw IllegalStateException("communication boom") })
 
         assertFailsWith<IllegalStateException> {
-            f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+            f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
         }
         assertEquals(0, f.reasoningProvider.reasonCallCount)
         assertEquals(0, f.identityService.resolveCallCount)
@@ -366,7 +371,7 @@ class ConversationReplyCoordinatorTest {
         val f = fixture(identityService = throwingIdentityService())
 
         assertFailsWith<IllegalStateException> {
-            f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()))
+            f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
         }
         assertEquals(0, f.resources.listByOwnerCallCount)
         assertEquals(0, f.pipeline.submitCallCount)
@@ -482,7 +487,11 @@ class ConversationReplyCoordinatorTest {
         val coordinator = ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator)
 
         val originalMessage = message(correlationId = "corr-e2e-1")
-        val outcome = coordinator.submitAndDeliver(originalMessage, ReasoningContext(emptyList()))
+        // Sprint 11 Unit 5: resolution is a real, separate, upstream call in production
+        // (ParkerRuntime.submitOwnerMessage) -- mirrored here explicitly rather than via a fake,
+        // since this test's own purpose is real, end-to-end production wiring (item 12 above).
+        val conversationId = conversationEngine.resolveConversationId(originalMessage)
+        val outcome = coordinator.submitAndDeliver(originalMessage, ReasoningContext(emptyList()), conversationId)
 
         val produced = assertIs<GatedOutcome.Produced<ExecutionResult>>(outcome)
         assertEquals(ExecutionResultStatus.SUCCESS, produced.value.status)

@@ -2091,3 +2091,331 @@ production defect. Compilation and test count after this third
 correction are not yet independently verified in this sandbox. **This
 Unit remains not accepted; this gap remains Open**, pending Steven's own
 Android Studio re-run confirming 650/650/0/0, BUILD SUCCESSFUL.
+
+**Update (Sprint 11, Unit 3 -- Production Reasoning Context Assembler):
+the recurring "`ReasoningContext` assembly ownership remains unassigned"
+item, restated unchanged in every prior update above since Sprint 7, is
+now resolved for production. This gap remains Open -- not closed, not
+resolved in full.** `ReasoningContextAssembler`
+(`src/interfaces/ReasoningContextAssembler.kt`) and
+`DefaultReasoningContextAssembler`
+(`src/runtime/DefaultReasoningContextAssembler.kt`) now exist, per
+`docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+(Sprint 11, Unit 2) and
+`docs/implementation/PRODUCTION_REASONING_CONTEXT_SCOPE_LOCK.md` (Sprint
+11, Unit 1). `ParkerRuntime.buildAndRegisterRuntimeGraph` constructs it
+once, injecting the already-constructed `identityService` and
+`toolRegistry`; `ParkerRuntime.submitOwnerMessage` invokes it exactly
+once per inbound message, before `conversationReplyCoordinator.submitAndDeliver`
+-- replacing the previous always-empty `ReasoningContext(emptyList())`
+default this gap's own prior text (Sprint 10, Unit 4 update, above) named
+as the concrete symptom of "unassigned." Concretely:
+
+- A real, non-empty `ReasoningContext` now reaches `ModelReasoningProvider`'s
+  own prompt for the first time in this repository's production code --
+  confirmed directly, not only by inspection, by
+  `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`,
+  which captures the real HTTP request body `LocalHttpModelInferenceClient`
+  sends to a real (loopback) server and asserts the resolved owner's
+  display name, PrincipalId, the registered deliver Tool's own
+  description, the message's own timestamp, and the message's own text
+  all appear in it.
+- The Assembler renders four of Scope Lock Section 1's seven items today:
+  "Current request," "Active communication channel," and "Current time"
+  (straight from `InboundOwnerMessage`, no dependency), and "Requesting
+  principal identity" (via `IdentityService.resolve`, read-only). One
+  more, "Available tool descriptions," is rendered via
+  `ToolRegistry.listAll` (read-only).
+
+**What remains open, preventing closure, is narrower than before but
+still real -- and one new item is disclosed, not silently absorbed:**
+
+- **"Participant identities" collapses to "Requesting principal
+  identity" today, rendered as a single entry, not two.**
+  `InboundOwnerMessage` carries exactly one `PrincipalId`
+  (`senderPrincipalId`); no other participant's identity is available
+  anywhere on the one input the Assembler receives
+  (`PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 2). This
+  will only genuinely separate once a Conversation History Source (next
+  item) can supply another participant's `PrincipalId`.
+- **"Current conversation" (prior Turns) is not rendered at all --
+  a Conversation History Source does not exist.** Confirmed directly
+  against `ConversationEngine.kt`: `submitTurn` remains its only
+  operation, a mutating one; no read-only query for prior Turns by
+  `ConversationId` exists anywhere in this codebase. This Unit does not
+  work around that absence by injecting `ConversationEngine` itself --
+  doing so would hand the Assembler the ability to call `submitTurn`,
+  violating Statelessness and Side-effect-freedom
+  (`PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 5). This
+  boundary remains exactly as undefined as it was when Unit 2 named it,
+  on the same footing as the next two items.
+- **Memory Source and World Model Source remain entirely undefined --
+  unchanged from this gap's own prior text and from
+  `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 4.2.** No
+  Kotlin shape exists for either; neither is a dependency of the
+  Assembler as this Unit implements it.
+- The `Goal` / Planner Runtime routing path remains entirely
+  unimplemented, unchanged from this gap's own prior text.
+- `LocalHttpModelInferenceClient`'s live HTTP path is exercised further
+  by this Unit's own new integration test (a second, independent
+  real-loopback round trip, prompt content now actually inspected, not
+  merely a successful call observed) but remains narrowed, not closed --
+  no real model server (Ollama or otherwise) has been exercised by this
+  repository's test suite, unchanged from this gap's own prior text.
+- **Compilation and test count are not yet independently verified in
+  this sandbox** -- the same Gradle-project-evaluation limitation
+  recorded in every prior update above applies unchanged; see
+  `docs/implementation/IMPLEMENTATION_HISTORY.md`'s own Sprint 11, Unit 3
+  entry for the full, honest disclosure. **This Unit remains not
+  accepted; this gap remains Open**, pending Steven's own Android Studio
+  run.
+
+**Update (Sprint 11, Unit 3 -- Pre-Acceptance Review):** two architectural
+questions raised during pre-acceptance review were resolved without any
+Scope Lock or Contract Design amendment; see
+`docs/implementation/IMPLEMENTATION_HISTORY.md`'s own "Unit 3 --
+Pre-Acceptance Review" entry for the full reasoning. Restated here since
+both bear directly on this gap's own open items:
+
+- **`ParkerRuntime.submitOwnerMessage`'s previous `reasoningContext`
+  override parameter is confirmed removed, not restored.** Repository-wide
+  search found no caller, production or test, ever supplied it, and
+  `ParkerRuntime` is confirmed not an externally published contract (no
+  `maven-publish` plugin, single Gradle module, no `fun main(` anywhere
+  under `src/`).
+- **A new, narrow limitation is disclosed on the "Current time" item,
+  additive to the Conversation History Source limitation already
+  recorded above.** `InboundOwnerMessage.timestamp` satisfies
+  `PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`'s "Current time"
+  requirement only because no queueing, replay, or import mechanism
+  exists anywhere in this codebase today (confirmed by direct search).
+  `LocalTextChannel.submitOwnerText`'s own KDoc already anticipates this
+  potentially not holding in future ("when the owner sent \[text\], not
+  when this operation happens to be called") -- if a future channel,
+  import mechanism, or queueing layer is introduced, a future Contract
+  Design revision must decide whether a separate clock dependency is
+  then warranted. Not a defect in this Unit; a disclosed boundary
+  condition of today's synchronous, unbuffered runtime.
+- **The Conversation History Source gap, above, is unchanged and
+  restated, not newly discovered:** still no read-only interface exists
+  for prior Turns; this review did not attempt to close it.
+- **Verification remains unresolved, with a sharper diagnostic than
+  before:** four independent attempts in this sandbox all stalled at the
+  same concrete point, Gradle's own one-time `gradle-api-8.10.jar`
+  generation step, which never completed within a single sandboxed call
+  and cannot be resumed across calls (background processes do not
+  survive between tool calls in this sandbox, confirmed directly). **This
+  Unit remains not accepted; this gap remains Open**, pending Steven's
+  own Android Studio run.
+
+**Update (Sprint 11, Unit 5 -- Conversation Continuity Implementation):**
+implements the corrected, approved
+`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` --
+see `docs/implementation/IMPLEMENTATION_HISTORY.md`'s own "Unit 5 --
+Conversation Continuity Implementation" entry for the full change list.
+Restated here since it bears directly on this gap's own open items and on
+two earlier disclosed limitations:
+
+- **`ConversationEngine`'s own continuity recognition (Architecture
+  Section 13 Item 3, open since Sprint 7; Contract Design Section 3, open
+  since Sprint 7) is now closed for the base case.** Real, stateful
+  continuity recognition is implemented: one continuing Conversation per
+  `(channelId, senderPrincipalId)` pair. `InMemoryConversationEngine`'s own
+  prior "every Turn begins a new Conversation" scaffolding (Sprint 7's
+  "Required Implementation Decision 1") is retired.
+- **The "Current conversation" item this gap's own Sprint 11 Unit 3 entry
+  above records as unrendered is now partially rendered.**
+  `DefaultReasoningContextAssembler` now renders a resolved
+  `ConversationId` value (`"Current conversation: <id>"`) -- **prior Turns
+  / conversation history are still not rendered.** That remains
+  Conversation History Source's own, separately-scoped, still entirely
+  unimplemented future boundary -- this Unit provides the `ConversationId`
+  a future Conversation History Source read will need as its own key, and
+  does not itself read any history.
+- **Termination, expiry, and reopening (Architecture Section 13 Item 4)
+  remain open, and now matter more than before.** Absent a termination
+  rule, a continuity key's active Conversation, once opened, persists
+  indefinitely -- disclosed directly in the Contract Design's own Section
+  3 and Section 7, not discovered as a side effect here.
+- **Multi-channel Conversation span (Architecture Section 13 Item 5)
+  remains open**, and is now implicitly foreclosed by the continuity key's
+  own `channelId` component -- a future revision to the recognition rule
+  itself, not merely to `ConversationEngine`'s implementation, would be
+  required to change this.
+- **Verification remains unresolved, unchanged in kind from every prior
+  entry in this chain:** this sandbox still cannot complete a Gradle
+  build/test run (same diagnosed limitation as above). Per this Unit's
+  own task instructions, Steven will run the complete test suite and
+  report results; this Unit's own correctness claims rest on direct,
+  repeated re-reading of every changed file and a repository-wide search
+  confirming no remaining caller of any old signature, not on a passing
+  local build. **This Unit remains not accepted; this gap remains Open.**
+
+**Update (Sprint 11, Unit 6 -- Conversation History Source Implementation):
+this closes the item directly above** ("Conversation history is still not
+rendered") **for the owner's own prior messages only.** `ConversationHistorySource`
+(`src/interfaces/ConversationHistorySource.kt`) now exists, backed by
+`InMemoryConversationEngine` implementing it directly as a second,
+narrower view over the same owned state -- additively extended with a
+`turnsById` map so Turn *content*, not merely Turn *order*, is retained.
+`DefaultReasoningContextAssembler` now renders zero or more "Prior
+message" entries per Conversation, oldest first. What remains open,
+disclosed rather than silently narrowed:
+
+- **History is one-sided.** No `Turn` record anywhere in this runtime
+  captures Parker's own outbound replies -- only the owner's own prior
+  inbound messages are ever available through `ConversationHistorySource`.
+  A future, separately-scoped and separately-justified Unit would be
+  required to extend `Turn`/`ConversationEngine`'s own owned state to
+  also retain outbound replies.
+- **No bound on history volume, age, or relevance exists anywhere.**
+  Every Turn recorded for a Conversation is rendered into every
+  subsequent prompt for that Conversation, unconditionally. This is a
+  deliberate, disclosed scope boundary
+  (`CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md` Section 5) --
+  Conversation History Source's own Scope Lock explicitly excludes
+  relevance ranking and volume limits from this boundary -- not an
+  oversight, and not yet a problem this Unit has evidence justifies
+  solving.
+- **Termination, expiry, reopening, and multi-channel span** (both named
+  directly above) **remain exactly as open as before** -- this Unit
+  neither worsens nor resolves either; a Conversation's history simply
+  grows for as long as its continuity key remains active.
+- **Verification: complete.** Steven's own local Gradle test run
+  (`.\gradlew.bat test`) reported **BUILD SUCCESSFUL**. One failure was
+  found and corrected (a pre-existing test-extraction regex fragility in
+  `ParkerRuntimeReasoningContextIntegrationTest.kt`, exposed rather than
+  caused by this Unit's own new "Prior message" entry -- see this Unit's
+  own `IMPLEMENTATION_HISTORY.md` entry for the root-cause analysis); the
+  full suite passed on the subsequent run. Committed as `ad21659`
+  ("feat: add conversation history source") on `sprint-11-reasoning-context`,
+  pushed, local and remote aligned, working tree clean. **This Unit is
+  now accepted.** The underlying gap (this entry as a whole, Gap #53)
+  remains Open -- this Unit closes only the "Conversation history is
+  still not rendered" item for owner-side messages, per the disclosed,
+  still-open limitations immediately above (one-sided history, no volume
+  bound) and the still-open Continuity items (termination/expiry/
+  reopening, cross-channel span) restated above, none of which this
+  acceptance resolves.
+
+**Update (Sprint 11, Unit 7 -- Memory Source Integration Implementation):
+this closes one of the two remaining items named in this gap's Unit 3
+update** ("Memory Source and World Model Source remain entirely
+undefined") **-- Memory Source only. World Model Source remains exactly
+as undefined as before.** `MemorySource` (`src/interfaces/MemorySource.kt`)
+now exists, backed by `InMemoryMemoryStore` implementing it directly as a
+second, narrower, read-only view over the same owned state `MemoryStore`
+already had sole authority over -- no new map, no new lock, `recall` is a
+zero-logic delegate to the already-implemented, already-tested `retrieve`.
+`DefaultReasoningContextAssembler` now renders zero or more "Memory"
+entries per request, constructing a `MemoryQuery` from fields already
+present on its own input (sender `PrincipalId`, request text as
+`relevance`, the message's own `correlationId`, `category = null`).
+Governed by `docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`, and
+`docs/implementation/MEMORY_SOURCE_INTEGRATION_SCOPE_LOCK.md` (all three
+architecturally approved before this Unit's implementation began). What
+remains open, disclosed rather than silently narrowed:
+
+- **`MemoryStore`/`InMemoryMemoryStore` had no production wiring at all
+  before this Unit** -- confirmed directly by grep against
+  `ParkerRuntime.kt` before this Unit's own changes, no matches. This
+  Unit adds the first production construction of Memory anywhere in this
+  repository's real, running composition root (`InMemoryMemoryStore()`,
+  defaulted `DefaultMemoryPromotionPolicy`), not merely a reordering, as
+  Unit 6 required for `ConversationEngine`.
+- **The constructed `InMemoryMemoryStore` starts, and in production
+  remains, empty.** Nothing in this Unit's own scope calls `remember` --
+  "changing how memories are created" is explicitly excluded
+  (`MEMORY_SOURCE_INTEGRATION_SCOPE_LOCK.md`). `MemorySource.recall`
+  therefore returns an empty list on every real production request today,
+  rendering no "Memory" entries, until a separate, future, out-of-scope
+  mechanism populates Memory via `remember`. This is the correct, honest
+  consequence of wiring a read boundary before any write path exists, not
+  a defect of this Unit.
+- **`maximumResults` is implementation-defined, not architecturally
+  significant.** `MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5 deliberately
+  does not fix a figure; `DefaultReasoningContextAssembler`'s own private
+  `MEMORY_QUERY_MAXIMUM_RESULTS` constant may be changed by a future Unit
+  without any architecture or Contract Design revision.
+- **No `MemoryRetrievalPolicy`.** Ranking remains
+  `InMemoryMemoryStore.retrieve`'s existing, already-implemented,
+  already-tested fixed strategy (case-insensitive substring match,
+  most-recently-promoted-first) -- `MemorySource` defines no retrieval
+  algorithm of its own (`MEMORY_CONTRACT_DESIGN.md` Section 8's deferred
+  seam remains deferred, unchanged by this Unit).
+- **No `ParkerRuntime`-level integration test exists for a populated
+  memory rendering end-to-end.** No in-scope seeding hook exists (adding
+  one would itself be "changing how memories are created," excluded).
+  `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt`
+  confirms the real wiring reaches `MemorySource` without fault and
+  correctly renders nothing (since no memory exists in production yet);
+  `tests/runtime/DefaultReasoningContextAssemblerTest.kt`'s own
+  real-`InMemoryMemoryStore` test (Assembler-level, not
+  `ParkerRuntime`-level) is this Unit's best available substitute,
+  disclosed as such in `MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 10.
+- **World Model Source remains entirely undefined**, on the same footing
+  named in this gap's Unit 3 update -- unchanged by this Unit.
+- **Verification.** See `docs/implementation/IMPLEMENTATION_HISTORY.md`'s
+  own Sprint 11, Unit 7 entry for this Unit's own honest, sandbox-limited
+  verification account. **This Unit's acceptance status is recorded there,
+  not here** -- pending Steven's own Android Studio run, per this
+  repository's own established convention. The underlying gap (this entry
+  as a whole, Gap #53) remains Open -- this Unit closes only the "Memory
+  Source... remain entirely undefined" item's Memory Source half, per the
+  disclosed, still-open limitations immediately above (no production
+  memory creation path, no `MemoryRetrievalPolicy`, no
+  `ParkerRuntime`-level populated-memory test, World Model Source still
+  undefined), none of which this Unit resolves.
+
+**Update (Sprint 11, Unit 8 -- World Model Source Integration
+Implementation): this closes the second, and final, of the two items
+named in this gap's Unit 3 update.** `WorldModelSource` (`src/interfaces/WorldModelSource.kt`)
+now exists, backed by `InMemoryWorldModel` implementing it directly as a
+second, narrower, read-only view over the same owned state `WorldModel`
+already had sole authority over -- no new map, no new lock, `recall` is a
+zero-logic delegate to the already-implemented, already-tested `query`.
+`DefaultReasoningContextAssembler` now renders zero or more "World belief"
+entries per request, constructing a `WorldQuery` with `subjectMatch = null`
+(no subject filter, per the separately governed and implemented
+`WorldQuery` Optional Subject contract revision, commit `eb25d64`),
+`maximumResults` implementation-defined, and `minimumConfidence = null`.
+Governed by `docs/architecture/WORLD_MODEL_SOURCE_GOVERNANCE_REVIEW.md`,
+`docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`,
+`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md`, and
+`docs/implementation/WORLD_MODEL_SOURCE_INTEGRATION_SCOPE_LOCK.md` (all
+four re-approved as a reconciled set before this Unit's implementation
+began). What remains open, disclosed rather than silently narrowed:
+
+- **`WorldModel`/`InMemoryWorldModel` had no production wiring at all
+  before this Unit** -- confirmed directly by grep against
+  `ParkerRuntime.kt` before this Unit's own changes, no matches. This Unit
+  adds the first production construction of the World Model anywhere in
+  this repository's real, running composition root.
+- **The constructed `InMemoryWorldModel` starts, and in production
+  remains, empty.** Nothing in this Unit's own scope calls `observe` --
+  "creating world state" is explicitly excluded
+  (`WORLD_MODEL_SOURCE_INTEGRATION_SCOPE_LOCK.md`). `WorldModelSource.recall`
+  therefore returns an empty list on every real production request today,
+  rendering no "World belief" entries, until a separate, future,
+  out-of-scope mechanism populates the World Model via `observe`.
+- **No ordering guarantee.** `WorldModel.query`'s own absence of a
+  deterministic order (weaker than Memory's own explicit, deterministic
+  ordering) is inherited unchanged -- this Unit does not add one.
+- **Scan cost remains unbounded relative to stored belief count.**
+  `maximumResults` bounds the returned result count only, not the
+  internal filter pass's own cost -- disclosed, not addressed, per
+  `WORLD_QUERY_OPTIONAL_SUBJECT_GOVERNANCE_REVIEW.md`'s own Risks section.
+- **No `ParkerRuntime`-level integration test exists for a populated
+  belief rendering end-to-end**, for the identical reason Memory Source's
+  own equivalent gap exists -- no in-scope seeding hook.
+- **Verification.** See `docs/implementation/IMPLEMENTATION_HISTORY.md`'s
+  own Sprint 11, Unit 8 entry for this Unit's own honest, sandbox-limited
+  verification account. **This Unit's acceptance status is recorded
+  there, not here** -- pending Steven's own Android Studio run. The
+  underlying gap (this entry as a whole, Gap #53) remains Open -- this
+  Unit closes the "World Model Source... remain entirely undefined" item,
+  per the disclosed, still-open limitations immediately above (no
+  production world-state creation path, no retrieval-ranking seam, no
+  `ParkerRuntime`-level populated-belief test, no ordering guarantee),
+  none of which this Unit resolves.

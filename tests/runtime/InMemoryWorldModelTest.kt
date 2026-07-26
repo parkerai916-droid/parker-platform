@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.ObservationResult
 import parker.core.interfaces.WorldBelief
 import parker.core.interfaces.WorldModel
+import parker.core.interfaces.WorldModelSource
 import parker.core.interfaces.WorldObservation
 import parker.core.interfaces.WorldQuery
 import kotlin.reflect.full.functions
@@ -53,7 +54,7 @@ class InMemoryWorldModelTest {
     )
 
     private fun query(
-        subjectMatch: String = "device",
+        subjectMatch: String? = "device",
         maximumResults: Int = 10,
         minimumConfidence: Double? = null,
     ) = WorldQuery(
@@ -206,6 +207,59 @@ class InMemoryWorldModelTest {
         assertEquals("device-high-confidence", results.single().subject)
     }
 
+    // --- query: null subjectMatch (docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md) ---
+
+    @Test
+    fun `a null subjectMatch returns every currently-non-stale belief, unfiltered by subject`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-front-door", value = "locked"))
+        model.observe(observation(subject = "environment-porch-light", value = "on"))
+        model.observe(observation(subject = "user-activity-away", value = "true"))
+
+        val results = model.query(query(subjectMatch = null, maximumResults = 10))
+
+        assertEquals(3, results.size)
+        assertEquals(
+            setOf("device-front-door", "environment-porch-light", "user-activity-away"),
+            results.map { it.subject }.toSet(),
+        )
+    }
+
+    @Test
+    fun `maximumResults still bounds a null-subjectMatch query`() = runTest {
+        val model = InMemoryWorldModel()
+        repeat(5) { i -> model.observe(observation(subject = "subject-$i")) }
+
+        val results = model.query(query(subjectMatch = null, maximumResults = 2))
+
+        assertEquals(2, results.size)
+    }
+
+    @Test
+    fun `minimumConfidence still filters a null-subjectMatch query`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-high-confidence", confidence = 0.9))
+        model.observe(observation(subject = "environment-low-confidence", confidence = 0.2))
+
+        val results = model.query(query(subjectMatch = null, minimumConfidence = 0.5))
+
+        assertEquals(1, results.size)
+        assertEquals("device-high-confidence", results.single().subject)
+    }
+
+    @Test
+    fun `a non-null subjectMatch continues to filter exactly as before this revision`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-front-door", value = "locked"))
+        model.observe(observation(subject = "device-back-door", value = "locked"))
+        model.observe(observation(subject = "environment-porch-light", value = "on"))
+
+        val results = model.query(query(subjectMatch = "device"))
+
+        assertEquals(2, results.size)
+        assertTrue(results.all { it.subject.contains("device") })
+    }
+
     // --- lazy expiry ---
 
     @Test
@@ -271,6 +325,38 @@ class InMemoryWorldModelTest {
         )
         assertFalse("evaluate" in functionNames, "WorldModel must not expose WorldModelUpdatePolicy.evaluate")
         assertFalse("isStillCurrent" in functionNames, "WorldModel must not expose WorldModelUpdatePolicy.isStillCurrent")
+    }
+
+    // --- World Model Source (Sprint 11 Unit 8) ---
+
+    @Test
+    fun `InMemoryWorldModel also satisfies WorldModelSource`() {
+        val model: WorldModelSource = InMemoryWorldModel()
+        assertTrue(model is WorldModelSource)
+    }
+
+    @Test
+    fun `recall returns exactly what query would for an identical WorldQuery`() = runTest {
+        val model = InMemoryWorldModel()
+        model.observe(observation(subject = "device-front-door", value = "locked"))
+        model.observe(observation(subject = "device-back-door", value = "locked"))
+        model.observe(observation(subject = "environment-porch-light", value = "on"))
+        val worldModelSource: WorldModelSource = model
+        val theQuery = query(subjectMatch = "device")
+
+        val viaQuery = model.query(theQuery)
+        val viaRecall = worldModelSource.recall(theQuery)
+
+        assertEquals(viaQuery, viaRecall)
+    }
+
+    @Test
+    fun `WorldModelSource exposes exactly recall -- no path to observe`() {
+        val functionNames = WorldModelSource::class.functions.map { it.name }.toSet()
+
+        assertTrue("recall" in functionNames, "WorldModelSource must expose recall")
+        assertFalse("observe" in functionNames, "WorldModelSource must not expose observe")
+        assertFalse("current" in functionNames, "WorldModelSource must not expose current")
     }
 
     // --- concurrency ---

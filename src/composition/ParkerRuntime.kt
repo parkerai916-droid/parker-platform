@@ -7,7 +7,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
+import parker.core.interfaces.ConversationEngine
+import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.InboundOwnerMessage
+import parker.core.interfaces.MemorySource
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
@@ -19,8 +22,10 @@ import parker.core.interfaces.Principal
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
-import parker.core.interfaces.ReasoningContext
+import parker.core.interfaces.ReasoningContextAssembler
+import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.ResourceType
+import parker.core.interfaces.WorldModelSource
 import parker.core.runtime.ActionMapper
 import parker.core.runtime.CommunicationConversationCoordinator
 import parker.core.runtime.ConversationReplyCoordinator
@@ -28,6 +33,7 @@ import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultExecutionPipeline
 import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
+import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.GatedOutcome
 import parker.core.runtime.InMemoryActionVocabulary
@@ -35,10 +41,12 @@ import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
+import parker.core.runtime.InMemoryMemoryStore
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryResourceRegistry
 import parker.core.runtime.InMemoryToolInvocationBinding
 import parker.core.runtime.InMemoryToolRegistry
+import parker.core.runtime.InMemoryWorldModel
 import parker.core.runtime.LocalHttpModelInferenceClient
 import parker.core.runtime.LocalTextChannelDeliverTool
 import parker.core.runtime.ModelReasoningProvider
@@ -139,6 +147,8 @@ class ParkerRuntime(
     var state: RuntimeLifecycleState = RuntimeLifecycleState.NOT_STARTED
         private set
 
+    private lateinit var reasoningContextAssembler: ReasoningContextAssembler
+    private lateinit var conversationEngine: ConversationEngine
     private lateinit var conversationReplyCoordinator: ConversationReplyCoordinator
     private lateinit var runtimeEventLogger: RuntimeEventLogger
 
@@ -152,7 +162,23 @@ class ParkerRuntime(
      * **Startup sequence**, in order: (1) transition to `STARTING`, log
      * "Runtime starting"; (2) construct every stateless collaborator
      * (registries, event bus, action mapper, permission policy/engine,
-     * execution pipeline); (3) register and activate this runtime's
+     * execution pipeline); (2a, Sprint 11 Unit 6) construct
+     * [ConversationEngine] (`InMemoryConversationEngine`) -- moved ahead of
+     * the Assembler's own construction, since the Assembler now also
+     * depends on this same instance under its narrower
+     * `ConversationHistorySource` type; (2a-ii, Sprint 11 Unit 7) construct
+     * `InMemoryMemoryStore` -- the first production construction of Memory
+     * anywhere in this repository's real, running composition root
+     * (`docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md` Finding 1);
+     * (2a-iii, Sprint 11 Unit 8) construct `InMemoryWorldModel` -- the
+     * first production construction of the World Model anywhere in this
+     * repository's real, running composition root
+     * (`docs/architecture/WORLD_MODEL_SOURCE_GOVERNANCE_REVIEW.md` Finding
+     * 1); (2b, Sprint 11 Unit 3/6/7/8) construct
+     * the [ReasoningContextAssembler] (`DefaultReasoningContextAssembler`),
+     * injecting the already-constructed `identityService`, `toolRegistry`,
+     * `conversationHistorySource`, `memorySource`, and `worldModelSource`;
+     * (3) register and activate this runtime's
      * system Principals (`system.parker`, `system.conversation-engine`,
      * `system.response-composer`) and the configured owner Principal; (4)
      * register the `notify owner` action-vocabulary entry; (5) construct
@@ -211,6 +237,43 @@ class ParkerRuntime(
         val eventBus = InMemoryEventBus()
         val identityService = InMemoryIdentityService()
 
+        // Sprint 11 Unit 6: InMemoryConversationEngine must now be constructed before the
+        // Reasoning Context Assembler (reversing Unit 3's original order), since the Assembler
+        // now also depends on this same instance under its narrower ConversationHistorySource
+        // type (CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md Section 5). A pure ordering
+        // change -- InMemoryConversationEngine's own constructor takes only identityService,
+        // already available here.
+        val inMemoryConversationEngine = InMemoryConversationEngine(identityService)
+        conversationEngine = inMemoryConversationEngine
+        val conversationHistorySource: ConversationHistorySource = inMemoryConversationEngine
+
+        // Sprint 11 Unit 7: InMemoryMemoryStore is constructed here for the first time in this
+        // repository's production composition root -- nowhere before this Unit did anything
+        // construct MemoryStore/InMemoryMemoryStore in the real, running system (Governance
+        // Review Finding 1). This is a new construction step, not a reordering: InMemoryMemoryStore
+        // takes only its defaulted DefaultMemoryPromotionPolicy, so no new ParkerRuntimeConfig
+        // field or ordering constraint is introduced beyond existing before the Assembler.
+        val inMemoryMemoryStore = InMemoryMemoryStore()
+        val memorySource: MemorySource = inMemoryMemoryStore
+
+        // Sprint 11 Unit 8: InMemoryWorldModel is constructed here for the first time in this
+        // repository's production composition root -- nowhere before this Unit did anything
+        // construct WorldModel/InMemoryWorldModel in the real, running system (Governance Review
+        // Finding 1), the identical situation Memory Source Integration (Unit 7) faced. This is a
+        // new construction step, not a reordering: InMemoryWorldModel takes only its defaulted
+        // DefaultWorldModelUpdatePolicy, so no new ParkerRuntimeConfig field or ordering
+        // constraint is introduced beyond existing before the Assembler. Exactly one instance is
+        // constructed and exposed to the Assembler only through the narrower WorldModelSource
+        // type -- no duplicate ownership, no duplicate state, mirroring precisely how
+        // InMemoryMemoryStore/InMemoryConversationEngine are each constructed once and exposed
+        // through two interfaces on the same instance.
+        val inMemoryWorldModel = InMemoryWorldModel()
+        val worldModelSource: WorldModelSource = inMemoryWorldModel
+
+        reasoningContextAssembler = stage("Reasoning Context Assembler construction") {
+            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource, memorySource, worldModelSource)
+        }
+
         registerSystemIdentities(identityService)
 
         stage("action vocabulary registration") {
@@ -266,7 +329,6 @@ class ParkerRuntime(
             InMemoryCommunicationIntake(moduleRegistry, identityService),
             logger,
         )
-        val conversationEngine = InMemoryConversationEngine(identityService)
 
         val reasoningProvider = stage("Reasoning Provider construction") {
             LoggingReasoningProvider(
@@ -335,11 +397,57 @@ class ParkerRuntime(
      * (`PermissionEngine`, via `ExecutionPipeline`) mandatory on the
      * delivery path, exactly as [ConversationReplyCoordinator.submitAndDeliver]
      * (this method's own sole delegate) already guarantees on its own,
-     * unmodified terms. [reasoningContext] is accepted, not assembled --
-     * `ReasoningContext` assembly ownership remains unassigned
-     * (`REASONING_PROVIDER_CONTRACT_DESIGN.md` Section 9), unchanged by
-     * this Unit; a caller with no assembled context may pass
-     * `ReasoningContext(emptyList())`.
+     * unmodified terms.
+     *
+     * **Reasoning Context assembly (Sprint 11, Unit 3).** This method
+     * invokes [reasoningContextAssembler]`.assemble(...)` exactly once, as
+     * the first action it takes after confirming
+     * [RuntimeLifecycleState.RUNNING] and before its one call to
+     * [ConversationReplyCoordinator.submitAndDeliver]. The resulting
+     * `ReasoningContext` is passed, unchanged, into `submitAndDeliver`.
+     * Logs one `INFO` line, "Reasoning Context assembled
+     * (correlationId=...)", immediately after the call -- mirroring
+     * `CommunicationConversationCoordinator`'s "Conversation accepted"
+     * and `ModelReasoningProvider`'s "Reasoning completed" INFO logs this
+     * method's own caller-facing pipeline already relies on for
+     * observability.
+     *
+     * **Conversation continuity resolution (Sprint 11, Unit 5 --
+     * Conversation Continuity Implementation).** Before assembling
+     * `ReasoningContext` at all, this method now calls
+     * [conversationEngine]`.resolveConversationId(message)` exactly
+     * once -- the one authoritative continuity decision for this inbound
+     * message (`docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`
+     * ("the Continuity Contract Design") Section 5, propagation path,
+     * step 1). This method makes no decision of its own here: it only
+     * invokes the authority ([ConversationEngine] alone decides continuity
+     * and mints identifiers) and carries the result forward. Logs one
+     * `INFO` line, "Conversation continuity resolved (correlationId=...,
+     * conversationId=...)", immediately after the call -- mirroring the
+     * "Reasoning Context assembled" precedent above, and giving
+     * `tests/composition` a direct way to verify resolution happens
+     * exactly once, and before assembly, without a test-only constructor
+     * parameter. The resolved
+     * [parker.core.interfaces.ConversationId] is wrapped, together with
+     * the original, unmutated `message`, into a
+     * [ResolvedInboundMessage] (Continuity Contract Design Section 6) --
+     * constructed exactly once per inbound message, by this method alone
+     * -- which becomes the Assembler's own input. This same resolved
+     * identifier is then forwarded, unchanged, as an additional argument
+     * to [ConversationReplyCoordinator.submitAndDeliver], propagating
+     * through the unchanged coordinator chain to
+     * [ConversationEngine.submitTurn] (Continuity Contract Design Section
+     * 5, propagation path, steps 2-7) -- never recomputed, never
+     * re-resolved, anywhere downstream of this one call.
+     *
+     * **Resolution failure (Continuity Contract Design Section 5.1,
+     * Guarantee 4).** If `resolveConversationId` throws, this method
+     * constructs no [ResolvedInboundMessage], never invokes the
+     * Assembler, and the fault falls straight through to this method's
+     * own existing outer `try`/`catch` below, exactly as any other
+     * pipeline-stage fault already does -- reported as
+     * [ParkerRuntimeOutcome.Failed] with [PipelineStage.UNKNOWN], never
+     * silently converted into "begin a new Conversation instead."
      *
      * Throws [ParkerRuntimeException.NotRunning] if [state] is not
      * [RuntimeLifecycleState.RUNNING].
@@ -374,16 +482,18 @@ class ParkerRuntime(
      * shutdown) is rethrown unchanged, never swallowed, never reported as
      * [ParkerRuntimeOutcome.Failed].
      */
-    suspend fun submitOwnerMessage(
-        message: InboundOwnerMessage,
-        reasoningContext: ReasoningContext = ReasoningContext(emptyList()),
-    ): ParkerRuntimeOutcome {
+    suspend fun submitOwnerMessage(message: InboundOwnerMessage): ParkerRuntimeOutcome {
         if (state != RuntimeLifecycleState.RUNNING) {
             throw ParkerRuntimeException.NotRunning(state)
         }
 
         return try {
-            when (val outcome = conversationReplyCoordinator.submitAndDeliver(message, reasoningContext)) {
+            val conversationId = conversationEngine.resolveConversationId(message)
+            logger.info("Conversation continuity resolved (correlationId=${message.correlationId.value}, conversationId=${conversationId.value})")
+            val resolvedMessage = ResolvedInboundMessage(message, conversationId)
+            val reasoningContext = reasoningContextAssembler.assemble(resolvedMessage)
+            logger.info("Reasoning Context assembled (correlationId=${message.correlationId.value})")
+            when (val outcome = conversationReplyCoordinator.submitAndDeliver(message, reasoningContext, conversationId)) {
                 is GatedOutcome.NotAccepted -> {
                     logger.info("Conversation not accepted for delivery (correlationId=${message.correlationId.value}, reason=${outcome.reason})")
                     ParkerRuntimeOutcome.NotAccepted(outcome.reason)

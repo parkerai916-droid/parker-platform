@@ -1,6 +1,7 @@
 package parker.core.runtime
 
 import parker.core.interfaces.ConversationEngine
+import parker.core.interfaces.ConversationId
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProvider
@@ -10,7 +11,15 @@ import parker.core.interfaces.ReasoningProviderResponse
 /**
  * Sequences [ConversationEngine.submitTurn] followed by [ReasoningProvider.reason]
  * for Sprint 7, Stage 3 Implementation Unit, per
- * `docs/implementation/CONVERSATION_ENGINE_IMPLEMENTATION_PLAN.md`.
+ * `docs/implementation/CONVERSATION_ENGINE_IMPLEMENTATION_PLAN.md`. Revised
+ * Sprint 11 Unit 5 (Conversation Continuity Implementation): [submitTurnAndReason]
+ * gains one additive, pass-through [conversationId] parameter, forwarded
+ * unchanged into [ConversationEngine.submitTurn] --
+ * `docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` Section 5's
+ * own propagation path. This class still never decides identity, never
+ * calls [ConversationEngine.resolveConversationId], and never re-derives
+ * or substitutes the value it is given -- it only threads it through,
+ * exactly as it already threads [reasoningContext] through unchanged.
  *
  * **Required Implementation Decision 2** (accepted at Scope Lock): this
  * coordinator is intentionally concrete and **not interface-backed**. It
@@ -41,8 +50,9 @@ class ConversationTurnReasoningCoordinator(
     suspend fun submitTurnAndReason(
         message: InboundOwnerMessage,
         reasoningContext: ReasoningContext,
+        conversationId: ConversationId,
     ): ReasoningProviderResponse {
-        val disposition = conversationEngine.submitTurn(message)
+        val disposition = conversationEngine.submitTurn(message, conversationId)
 
         val request = ReasoningProviderRequest(
             turn = disposition.turn,

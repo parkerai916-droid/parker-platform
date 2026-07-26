@@ -94,22 +94,24 @@ data class Turn(
 )
 
 /**
- * Contract Design Section 2: the outcome of [ConversationEngine]'s one
- * operation, kept as a **plain data class, not a sealed type** -- unlike
- * [CommunicationIntakeDisposition]'s two-variant sealed shape. No
- * `Rejected` variant exists because `submitTurn`'s only precondition is an
- * already-`CommunicationIntake`-accepted message; Architecture Section 11
- * treats correlation failure or ambiguity as non-blocking, resolved by
- * opening a new Conversation, not a rejectable error.
+ * Contract Design Section 2: the outcome of [ConversationEngine.submitTurn],
+ * kept as a **plain data class, not a sealed type** -- unlike
+ * [CommunicationIntakeDisposition]'s two-variant sealed shape.
  *
  * @param conversation The resulting Conversation, whether newly created or
  *   continued, in its state immediately after this Turn was bound.
  * @param turn The newly created Turn.
- * @param isNewConversation Whether this call began a new Conversation or
- *   continued an existing one -- intrinsic, not transient: the caller
- *   supplies no [ConversationId] on the way in, so this is the only way to
- *   observe which branch occurred without duplicating this engine's own
- *   owned lookup outside it.
+ * @param isNewConversation Whether this call bound the first Turn ever
+ *   recorded for [conversation]'s own [Conversation.conversationId], or
+ *   appended to one that already had at least one. **Revised
+ *   (`CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` Section 5, Contract
+ *   Authority and Propagation Correction):** the caller now *does* supply a
+ *   [ConversationId] on the way in (resolved beforehand by
+ *   [ConversationEngine.resolveConversationId]) -- this field no longer
+ *   exists because the caller supplies none; it exists because the caller
+ *   is not told, and must not decide for itself, whether that identifier
+ *   already had a Conversation record. [submitTurn] alone determines this,
+ *   from its own owned state, exactly as before.
  */
 data class ConversationDisposition(
     val conversation: Conversation,
@@ -118,23 +120,67 @@ data class ConversationDisposition(
 )
 
 /**
- * Contract Design Section 1: the single public interface for Turn
- * consumption and Conversation continuity binding, mirroring
- * [CommunicationIntake]'s exact shape and minimalism (one method, one
- * payload type, one outcome type).
+ * Contract Design Section 1; revised by
+ * `docs/architecture/CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md`
+ * ("the Continuity Contract Design", Sprint 11 Unit 5) Sections 4-6. The
+ * single public interface for conversation continuity recognition and Turn
+ * binding. **Two operations, not one** -- an additive extension of this
+ * interface's original single-operation shape, made because Question 2 of
+ * the Continuity Contract Design (making a `ConversationId` available
+ * before a Turn exists) cannot be answered without exposing continuity
+ * recognition as its own, separately-callable step. Both operations remain
+ * exclusively owned by, and implemented by, [ConversationEngine] -- this
+ * is an additive extension of *how many operations* the same, single owner
+ * exposes to reach its one, unchanged responsibility (Continuity Contract
+ * Design Section 6), not a reassignment of that responsibility, and not a
+ * redesign of it.
  *
- * Given an [InboundOwnerMessage] already accepted by [CommunicationIntake],
- * an implementation determines whether it continues an existing
- * Conversation or begins a new one, creates a [Turn] bound to that
- * Conversation, and returns a [ConversationDisposition] describing the
- * result.
+ * **[resolveConversationId] -- the sole authoritative continuity
+ * decision.** Given an [InboundOwnerMessage], determines the continuity
+ * key (`message.channelId`, `message.senderPrincipalId` -- Continuity
+ * Contract Design Section 3) and returns the [ConversationId] of whichever
+ * Conversation is currently open for that key, minting a new one if none
+ * is open. This is a **stateful, authoritative operation, not a passive
+ * lookup** (Continuity Contract Design Section 5.1's naming caution) --
+ * calling it may register a continuity key as newly open, an observable
+ * change to this engine's own state, even though it also returns a value.
  *
- * **What an implementation must not do (Contract Design Section 1):**
- * engage a reasoning provider; construct a `PlanningRequest`; construct an
- * `OutboundParkerResponse`; call `PlannerRuntime`, `ExecutionPipeline`,
- * `PermissionEngine`, `MemoryStore`, or `WorldModel`; repeat, second-guess,
- * or bypass [CommunicationIntake]'s own two structural checks.
+ * Binding guarantees (Continuity Contract Design Section 5.1), required of
+ * every implementation, not merely encouraged:
+ *
+ * 1. **Atomic.** Two concurrent calls for the same continuity key must
+ *    never each mint a distinct [ConversationId] -- at most one is ever
+ *    active per key.
+ * 2. **Idempotent while active.** Repeated calls for the same,
+ *    still-open continuity key return the identical [ConversationId]
+ *    every time.
+ *
+ * **[submitTurn] -- consumes, never re-decides, the resolved identity.**
+ * Given an [InboundOwnerMessage] and the exact [ConversationId]
+ * [resolveConversationId] already produced for it, creates a [Turn] bound
+ * to that identifier and returns a [ConversationDisposition]. Guarantee 3
+ * (Continuity Contract Design Section 5.1): this method must not invoke
+ * the continuity rule, consult continuity-key state, or compute or
+ * substitute any identifier other than the one supplied -- its only
+ * permitted responses to [conversationId] are to accept it (when it is the
+ * active identifier for `message`'s own continuity key) or reject it
+ * (when it is not -- see [IllegalArgumentException], thrown, never
+ * silently repaired). Guarantee 4: rejection here prevents every
+ * downstream effect (no Turn recorded, no reasoning, no delivery),
+ * propagating unchanged to the caller exactly as any other fault from this
+ * engine already does.
+ *
+ * **What an implementation must not do (Contract Design Section 1,
+ * unchanged):** engage a reasoning provider; construct a
+ * `PlanningRequest`; construct an `OutboundParkerResponse`; call
+ * `PlannerRuntime`, `ExecutionPipeline`, `PermissionEngine`, `MemoryStore`,
+ * or `WorldModel`; repeat, second-guess, or bypass [CommunicationIntake]'s
+ * own two structural checks; implement termination, expiry, reopening, or
+ * cleanup policy (Continuity Contract Design Section 7 -- out of this
+ * Unit's scope, left open).
  */
 interface ConversationEngine {
-    suspend fun submitTurn(message: InboundOwnerMessage): ConversationDisposition
+    suspend fun resolveConversationId(message: InboundOwnerMessage): ConversationId
+
+    suspend fun submitTurn(message: InboundOwnerMessage, conversationId: ConversationId): ConversationDisposition
 }

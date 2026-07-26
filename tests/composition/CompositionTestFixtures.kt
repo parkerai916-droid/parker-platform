@@ -66,6 +66,20 @@ class StubModelServer private constructor(private val server: HttpServer) : Auto
     val port: Int get() = server.address.port
     val endpointUrl: String get() = "http://127.0.0.1:$port/api/generate"
 
+    /**
+     * Every request body this server has received, in arrival order, as
+     * raw UTF-8 text -- the literal Ollama-shaped JSON
+     * `LocalHttpModelInferenceClient` sends, prompt field included
+     * (Sprint 11, Unit 3 addition, additive only: every prior caller of
+     * [start] that never reads [receivedRequestBodies] is unaffected).
+     * Exists so a test can confirm a real, real-production-assembled
+     * `ReasoningContext`'s own entries actually reached the real prompt
+     * sent over this real HTTP call, rather than merely trusting that
+     * they did.
+     */
+    private val backingRequestBodies = CopyOnWriteArrayList<String>()
+    val receivedRequestBodies: List<String> get() = backingRequestBodies.toList()
+
     override fun close() = server.stop(0)
 
     companion object {
@@ -77,9 +91,11 @@ class StubModelServer private constructor(private val server: HttpServer) : Auto
          */
         fun start(responseFieldValue: String, delayMillis: Long = 0L): StubModelServer {
             val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+            lateinit var stub: StubModelServer
             server.createContext("/api/generate") { exchange ->
                 try {
-                    exchange.requestBody.readBytes()
+                    val requestText = exchange.requestBody.readBytes().toString(Charsets.UTF_8)
+                    stub.backingRequestBodies.add(requestText)
                     if (delayMillis > 0) Thread.sleep(delayMillis)
                     val escaped = responseFieldValue.replace("\\", "\\\\").replace("\"", "\\\"")
                     val body = "{\"response\":\"$escaped\"}".toByteArray(Charsets.UTF_8)
@@ -91,7 +107,8 @@ class StubModelServer private constructor(private val server: HttpServer) : Auto
                 }
             }
             server.start()
-            return StubModelServer(server)
+            stub = StubModelServer(server)
+            return stub
         }
     }
 }

@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ObservationResult
 import parker.core.interfaces.WorldBelief
 import parker.core.interfaces.WorldModel
+import parker.core.interfaces.WorldModelSource
 import parker.core.interfaces.WorldModelUpdatePolicy
 import parker.core.interfaces.WorldObservation
 import parker.core.interfaces.WorldQuery
@@ -56,10 +57,23 @@ import parker.core.interfaces.WorldQuery
  * (`WORLD_MODEL_CONTRACT_DESIGN.md` §1), so a stale entry sitting
  * unread is harmless, and it is replaced the moment a fresh Observation
  * for the same subject is accepted.
+ *
+ * ## World Model Source (Sprint 11 Unit 8)
+ *
+ * Also implements [WorldModelSource] directly -- a second, narrower
+ * interface over this exact same instance and the exact same owned state,
+ * not a second store (`docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`
+ * Section 2.3), mirroring precisely how this class's own sibling
+ * `InMemoryMemoryStore` implements `MemoryStore` and `MemorySource`
+ * together. [recall] is a direct, zero-logic delegate to [query] -- no new
+ * map, no new lock, no new field, and no duplicated filtering logic: the
+ * one authoritative subject-matching, confidence-filtering, and
+ * staleness-exclusion behaviour [query] already implements is the only
+ * such behaviour this class has, and [recall] simply calls it.
  */
 class InMemoryWorldModel(
     private val updatePolicy: WorldModelUpdatePolicy = DefaultWorldModelUpdatePolicy(),
-) : WorldModel {
+) : WorldModel, WorldModelSource {
 
     private val mutex = Mutex()
     private val beliefs = mutableMapOf<String, WorldBelief>()
@@ -92,22 +106,39 @@ class InMemoryWorldModel(
     /**
      * The minimal, deterministic matching this Unit is scoped to
      * implement: a case-insensitive substring match of
-     * [WorldQuery.subjectMatch] against [WorldBelief.subject], narrowed
-     * by [WorldQuery.minimumConfidence] if supplied, excluding any
-     * belief [WorldModelUpdatePolicy.isStillCurrent] judges stale, and
-     * truncated to [WorldQuery.maximumResults]. No ranking or scoring
-     * formula is applied -- results are returned in whatever order the
-     * underlying map iterates, per `WORLD_MODEL_CONTRACT_DESIGN.md` §4's
-     * own "what it must not carry" rule; a caller must not depend on any
-     * particular ordering beyond the filters and bound stated here.
+     * [WorldQuery.subjectMatch] against [WorldBelief.subject] --
+     * skipped entirely when [WorldQuery.subjectMatch] is `null`, per
+     * `docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`
+     * -- narrowed by [WorldQuery.minimumConfidence] if supplied,
+     * excluding any belief [WorldModelUpdatePolicy.isStillCurrent]
+     * judges stale, and truncated to [WorldQuery.maximumResults]. No
+     * ranking or scoring formula is applied -- results are returned in
+     * whatever order the underlying map iterates, per
+     * `WORLD_MODEL_CONTRACT_DESIGN.md` §4's own "what it must not carry"
+     * rule; a caller must not depend on any particular ordering beyond
+     * the filters and bound stated here. A `null` `subjectMatch` does
+     * not introduce ranking, scoring, inference, or topic extraction --
+     * it removes one filter condition, exactly as a `null`
+     * [WorldQuery.minimumConfidence] already does for the confidence
+     * condition.
      */
     override suspend fun query(query: WorldQuery): List<WorldBelief> = mutex.withLock {
         beliefs.values
             .filter { belief ->
-                belief.subject.contains(query.subjectMatch, ignoreCase = true) &&
+                (query.subjectMatch == null || belief.subject.contains(query.subjectMatch, ignoreCase = true)) &&
                     (query.minimumConfidence == null || belief.confidence >= query.minimumConfidence) &&
                     updatePolicy.isStillCurrent(belief)
             }
             .take(query.maximumResults)
     }
+
+    /**
+     * [WorldModelSource]'s own single operation -- a direct, zero-logic
+     * delegate to [query]. Named `recall`, not `query`, so a caller
+     * holding only a [WorldModelSource] reference is never confused for
+     * one holding a full [WorldModel] reference, even though the
+     * underlying behaviour is identical
+     * (`WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` Section 2.1).
+     */
+    override suspend fun recall(query: WorldQuery): List<WorldBelief> = query(query)
 }

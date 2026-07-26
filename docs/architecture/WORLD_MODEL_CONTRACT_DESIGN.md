@@ -450,6 +450,21 @@ none is missing by omission.
   `MEMORY_CONTRACT_DESIGN.md` §7 leaves `MemoryQuery`'s own relevance
   criteria implementation-defined. This document does not shape how
   matching is computed.
+
+  **Sprint 11 amendment — now optional.** Per
+  `docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`
+  (a narrowly-scoped, separately governed and implemented revision), the
+  subject-matching criterion is `String? = null`, where `null` means "no
+  subject filter — match every currently-current belief regardless of
+  subject," mirroring the null-means-skip-this-filter shape
+  `minimumConfidence` (below) already uses. A supplied, non-null value is
+  matched exactly as originally designed here and must still be
+  non-blank. This amendment was required to unblock Sprint 11 Unit 8
+  (World Model Source Integration): `WorldQuery.subjectMatch` was
+  originally mandatory, and no non-inventive way existed for a caller
+  without a structured subject already in hand (Reasoning Context
+  assembly, among the callers this section names) to express "no subject
+  filter." See that document for the full compatibility analysis.
 - A **`maximumResults`** bound, for the identical architectural reason
   `MemoryQuery` requires one: `query` must not imply "return every belief
   matching," and without a caller-stated bound, nothing in this contract
