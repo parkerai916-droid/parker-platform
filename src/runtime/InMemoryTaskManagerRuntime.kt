@@ -4,7 +4,11 @@ import java.time.Instant
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.AgentRunCommand
+import parker.core.interfaces.AgentRunCommandChannel
+import parker.core.interfaces.AgentRunCommandResult
 import parker.core.interfaces.AgentRunCommandType
+import parker.core.interfaces.AgentRunExecutionTrigger
+import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.EventBus
 import parker.core.interfaces.EventType
 import parker.core.interfaces.IdentityService
@@ -61,11 +65,21 @@ import parker.core.interfaces.TaskStatus
  * still the full, specified 9-state machine -- this class simply never
  * calls it for any edge beyond the one it needs.
  *
- * **Constructs, but never submits, an [AgentRunCommand].** `START` is
- * built and stored so a caller (a future unit's test, or Unit 10's
- * end-to-end test) can observe it, but this class never calls
- * `AgentRunCommandChannel.submit` -- no implementation of that interface
- * exists yet (Unit 7).
+ * **Constructs and submits an [AgentRunCommand]** (Controlled Agent Run
+ * Submission, `docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`).
+ * `START` is built, stored (so a caller can still observe it via
+ * [agentRunCommandsFor], unchanged), and now also submitted via
+ * [agentRunCommandChannel] -- this class is the sole production caller of
+ * `AgentRunCommandChannel.submit` (Scope Lock decision 2). On
+ * [AgentRunCommandResult.Accepted]: `task.agent_run_started` is published
+ * and this Task transitions `Queued -> Running`. On
+ * [AgentRunCommandResult.Rejected]: `task.agent_run_rejected` is
+ * published, carrying the exact rejection reason, and this Task remains
+ * `Queued`. Either way, [submitProposal] still returns
+ * [TaskProposalDisposition.Accepted] -- proposal intake and run
+ * authorisation are independently reported outcomes (Scope Lock Section
+ * 6.1); an Agent Run being denied does not retroactively make the
+ * originating [TaskProposal] itself unaccepted.
  *
  * **Does not resolve the proposed assignee.** Only
  * [TaskProposal.proposedOwnerPrincipalId] is resolved through
@@ -85,13 +99,17 @@ import parker.core.interfaces.TaskStatus
  *
  * Publishes `task.created` and `task.ready` -- the two real Task Status
  * transitions this class performs (`TaskManagerRuntimeSpecification.md`
- * §10). Not published: `task.agent_run_started` -- its trigger is "an
- * Agent Run is created ... on behalf of this Task," and this class only
- * *constructs* an [AgentRunCommand] value object, never submits it to an
- * [parker.core.interfaces.AgentRunCommandChannel]; no Agent Run exists yet
- * for this method to truthfully report. Also not published: any event for
- * the unresolvable-owner `Rejected` path -- no [Task] record is ever
- * created there, so there is no `taskId` to correlate an event against.
+ * §10). Also not published: any event for the unresolvable-owner
+ * `Rejected` path -- no [Task] record is ever created there, so there is
+ * no `taskId` to correlate an event against.
+ *
+ * **Controlled Agent Run Submission update:** `task.agent_run_started` is
+ * now published (its trigger, "an Agent Run is created... on behalf of
+ * this Task," is now genuinely true at the point this class publishes it,
+ * since [agentRunCommandChannel]`.submit` has, by then, actually run) and
+ * `task.agent_run_rejected` is published for the `Rejected` case -- see
+ * this class's own file-level KDoc, "Constructs and submits" section,
+ * above.
  *
  * `publisherPrincipalId` is [TASK_MANAGER_RUNTIME_PRINCIPAL_ID], the same
  * kind of hardcoded Sprint 1 placeholder as
@@ -215,10 +233,38 @@ import parker.core.interfaces.TaskStatus
  * language and this class's established missing-field handling).
  * `IMPLEMENTATION_GAPS.md` #43 is closed in full by this change, per
  * that plan's own Section 7.
+ *
+ * ## Two-Phase Acceptance/Execution Amendment
+ * (`docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_CONTRACT_DESIGN.md`
+ * Amendment 1; `docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+ * "Amendment -- Two-Phase Agent Run Operation," Section A.3/A.4)
+ *
+ * `AgentRunCommandChannel.submit()` returning [AgentRunCommandResult.Accepted]
+ * no longer means the Agent Run has finished, or even started, executing --
+ * only that it has been accepted and is `READY` (Contract Design Amendment
+ * 1, §A1.8). This class is now also the sole production caller of
+ * [agentRunExecutionTrigger]`.execute`, invoked exactly once per `Accepted`
+ * result, **strictly after this class's own [mutex] has been released** --
+ * never from inside the `mutex.withLock` block [submitProposal] uses for
+ * its Task/`AgentRunCommand` bookkeeping. This is the specific, named rule
+ * (Scope Lock Amendment, A.4) that resolves the genuine self-deadlock
+ * Native Verification found in an earlier version of this method (root
+ * cause: `docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_DEADLOCK_DESIGN_RECONCILIATION.md`
+ * §1) without reintroducing it: `execute()` runs `runLoop()` to completion
+ * synchronously and, along the way, triggers this class's own
+ * `agent.completed`/`agent.failed` subscription handlers inline (Sprint 2,
+ * Track B, Unit B1/B2, above), which themselves need to reacquire [mutex] --
+ * safe only because it is not already held by the caller.
+ *
+ * `execute()` is never called on the [AgentRunCommandResult.Rejected]
+ * branch -- structurally guaranteed, not merely conventional: the
+ * `AgentRunId` needed to call it only exists on the `Accepted` branch.
  */
 class InMemoryTaskManagerRuntime(
     private val identityService: IdentityService,
     private val eventBus: EventBus,
+    private val agentRunCommandChannel: AgentRunCommandChannel,
+    private val agentRunExecutionTrigger: AgentRunExecutionTrigger,
 ) : TaskProposalIntake {
 
     private companion object {
@@ -249,64 +295,114 @@ class InMemoryTaskManagerRuntime(
         }
     }
 
-    override suspend fun submitProposal(proposal: TaskProposal): TaskProposalDisposition = mutex.withLock {
+    override suspend fun submitProposal(proposal: TaskProposal): TaskProposalDisposition {
         val taskId = TaskId("task-for-${proposal.taskProposalId.value}")
-        check(taskId !in tasks) {
-            "TaskProposal '${proposal.taskProposalId.value}' has already been submitted; " +
-                "reconsideration requires a new TaskProposal, not resubmitting this one"
-        }
 
-        val owner = identityService.resolve(proposal.proposedOwnerPrincipalId)
-            ?: return@withLock TaskProposalDisposition.Rejected(
-                proposal.taskProposalId,
-                "proposedOwnerPrincipalId '${proposal.proposedOwnerPrincipalId.value}' does not resolve " +
-                    "to a registered Principal",
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.4): captured
+        // inside mutex.withLock below, on the Accepted branch only, then read after the lock
+        // is released to invoke agentRunExecutionTrigger.execute() strictly outside it. Stays
+        // null on the Rejected branch and on the unresolvable-owner early return -- execute()
+        // is called only when this is non-null.
+        var acceptedAgentRunId: AgentRunId? = null
+
+        val disposition = mutex.withLock {
+            check(taskId !in tasks) {
+                "TaskProposal '${proposal.taskProposalId.value}' has already been submitted; " +
+                    "reconsideration requires a new TaskProposal, not resubmitting this one"
+            }
+
+            val owner = identityService.resolve(proposal.proposedOwnerPrincipalId)
+                ?: return@withLock TaskProposalDisposition.Rejected(
+                    proposal.taskProposalId,
+                    "proposedOwnerPrincipalId '${proposal.proposedOwnerPrincipalId.value}' does not resolve " +
+                        "to a registered Principal",
+                )
+
+            // Created -- the Task Manager Task record now exists.
+            val created = Task(
+                taskId = taskId,
+                ownerPrincipalId = owner.principalId,
+                assigneePrincipalId = proposal.proposedAssigneePrincipalId,
+                status = TaskStatus.CREATED,
+                source = proposal.source,
+                goal = proposal.goal,
+                priority = proposal.priority,
+                correlationId = proposal.correlationId,
+                originatingTaskProposalId = proposal.taskProposalId,
+            )
+            tasks[taskId] = created
+            publish(
+                eventType = "task.created",
+                taskId = taskId,
+                correlationId = proposal.correlationId,
+                payload = mapOf("ownerPrincipalId" to owner.principalId.value, "source" to proposal.source.name),
             )
 
-        // Created -- the Task Manager Task record now exists.
-        val created = Task(
-            taskId = taskId,
-            ownerPrincipalId = owner.principalId,
-            assigneePrincipalId = proposal.proposedAssigneePrincipalId,
-            status = TaskStatus.CREATED,
-            source = proposal.source,
-            goal = proposal.goal,
-            priority = proposal.priority,
-            correlationId = proposal.correlationId,
-            originatingTaskProposalId = proposal.taskProposalId,
-        )
-        tasks[taskId] = created
-        publish(
-            eventType = "task.created",
-            taskId = taskId,
-            correlationId = proposal.correlationId,
-            payload = mapOf("ownerPrincipalId" to owner.principalId.value, "source" to proposal.source.name),
-        )
+            // Created -> Queued: accept-only, Sprint 1's fixed happy path.
+            TaskLifecycleTransitions.requireValidTransition(TaskStatus.CREATED, TaskStatus.QUEUED)
+            val queued = created.copy(status = TaskStatus.QUEUED)
+            tasks[taskId] = queued
+            publish(eventType = "task.ready", taskId = taskId, correlationId = proposal.correlationId)
 
-        // Created -> Queued: accept-only, Sprint 1's fixed happy path.
-        TaskLifecycleTransitions.requireValidTransition(TaskStatus.CREATED, TaskStatus.QUEUED)
-        tasks[taskId] = created.copy(status = TaskStatus.QUEUED)
-        publish(eventType = "task.ready", taskId = taskId, correlationId = proposal.correlationId)
+            // Construct, then submit, exactly one AgentRunCommand (Controlled Agent Run Submission,
+            // Scope Lock Section 6) -- this class is the sole production caller of
+            // AgentRunCommandChannel.submit (decision 2).
+            val command = AgentRunCommand(
+                commandType = AgentRunCommandType.START,
+                taskId = taskId,
+                requestingPrincipalId = owner.principalId,
+                targetAgentCapability = proposal.requiredCapabilities,
+                goalDescription = proposal.goal,
+                contextReferences = proposal.contextReferences,
+                // Sprint 1, Unit 11B: propagate the Task Proposal's own resourceReferences
+                // (Unit 11B addition to TaskProposal.kt) forward unchanged -- this is the one
+                // missing link that previously left AgentRunCommand.resourceReferences always
+                // empty in a real (non-hand-built) chain. See TaskProposal.kt's own KDoc for
+                // this field's provenance.
+                resourceReferences = proposal.resourceReferences,
+                correlationId = proposal.correlationId,
+            )
+            agentRunCommands.getOrPut(taskId) { mutableListOf() }.add(command)
 
-        // Construct (do not submit) exactly one AgentRunCommand.
-        val command = AgentRunCommand(
-            commandType = AgentRunCommandType.START,
-            taskId = taskId,
-            requestingPrincipalId = owner.principalId,
-            targetAgentCapability = proposal.requiredCapabilities,
-            goalDescription = proposal.goal,
-            contextReferences = proposal.contextReferences,
-            // Sprint 1, Unit 11B: propagate the Task Proposal's own resourceReferences
-            // (Unit 11B addition to TaskProposal.kt) forward unchanged -- this is the one
-            // missing link that previously left AgentRunCommand.resourceReferences always
-            // empty in a real (non-hand-built) chain. See TaskProposal.kt's own KDoc for
-            // this field's provenance.
-            resourceReferences = proposal.resourceReferences,
-            correlationId = proposal.correlationId,
-        )
-        agentRunCommands.getOrPut(taskId) { mutableListOf() }.add(command)
+            when (val result = agentRunCommandChannel.submit(command)) {
+                is AgentRunCommandResult.Accepted -> {
+                    publish(
+                        eventType = "task.agent_run_started",
+                        taskId = taskId,
+                        correlationId = proposal.correlationId,
+                        payload = mapOf("agentRunId" to result.agentRunId.value),
+                    )
+                    TaskLifecycleTransitions.requireValidTransition(TaskStatus.QUEUED, TaskStatus.RUNNING)
+                    tasks[taskId] = queued.copy(status = TaskStatus.RUNNING)
+                    // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.3):
+                    // recorded here, invoked after this mutex.withLock block returns -- see
+                    // this class's own "Two-Phase Acceptance/Execution Amendment" KDoc section
+                    // and A.4.
+                    acceptedAgentRunId = result.agentRunId
+                }
+                is AgentRunCommandResult.Rejected -> {
+                    publish(
+                        eventType = "task.agent_run_rejected",
+                        taskId = taskId,
+                        correlationId = proposal.correlationId,
+                        payload = mapOf("reason" to result.reason, "commandType" to result.commandType.name),
+                    )
+                    // Task remains QUEUED -- no TaskLifecycleTransitions call (Scope Lock Section 6.2).
+                }
+            }
 
-        TaskProposalDisposition.Accepted(proposal.taskProposalId, taskId)
+            TaskProposalDisposition.Accepted(proposal.taskProposalId, taskId)
+        }
+
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.3-A.4): execute()
+        // runs strictly outside the mutex.withLock block above -- the specific, named rule
+        // that resolves the original self-deadlock without reintroducing it (root cause:
+        // docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_DEADLOCK_DESIGN_RECONCILIATION.md
+        // §1). Never invoked on the Rejected branch or the unresolvable-owner early return --
+        // acceptedAgentRunId stays null on both.
+        acceptedAgentRunId?.let { agentRunExecutionTrigger.execute(it) }
+
+        return disposition
     }
 
     /** The current state of [taskId], or `null` if no Task with that ID exists. */

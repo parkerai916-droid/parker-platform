@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
+import parker.core.interfaces.AgentPolicy
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.InboundOwnerMessage
@@ -26,6 +27,10 @@ import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ResolvedInboundMessage
+import parker.core.interfaces.Resource
+import parker.core.interfaces.ResourceId
+import parker.core.interfaces.ResourceLifecycleState
+import parker.core.interfaces.ResourceSensitivity
 import parker.core.interfaces.ResourceType
 import parker.core.interfaces.WorldModelSource
 import parker.core.runtime.ActionMapper
@@ -39,9 +44,11 @@ import parker.core.runtime.DefaultPermissionPolicy
 import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
+import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.GoalPlanningHandoffCoordinator
 import parker.core.runtime.GoalPlanningHandoffOutcome
 import parker.core.runtime.InMemoryActionVocabulary
+import parker.core.runtime.InMemoryAgentRuntime
 import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
@@ -125,23 +132,33 @@ enum class RuntimeLifecycleState {
  * parameters, none of them read from anywhere but this function's own
  * local variables and [config].
  *
- * **The one real policy-content decision this class makes.**
+ * **The policy-content decisions this class makes.**
  * `DefaultPermissionPolicy` requires a caller-supplied
  * `List<PermissionPolicyRule>` -- `IMPLEMENTATION_GAPS.md` #25 states
  * plainly that policy *content* "remains something a caller decides."
  * This composition root is the first real caller, and therefore the first
  * component in this repository that must supply one. It supplies exactly
- * one rule: `NOTIFY` on `TOOL` -> `APPROVED`/`AUTOMATIC` -- the minimum
+ * two rules: `NOTIFY` on `TOOL` -> `APPROVED`/`AUTOMATIC` -- the minimum
  * required for the one Tool this runtime registers (the Local Text
  * Channel's `deliver` Tool) to be reachable at all, mirroring the
  * identical rule `ResponseDeliveryTest.kt`'s and
  * `LocalTextChannelDeliverToolTest.kt`'s own end-to-end tests already use
  * via `FakePermissionEngine`, now expressed as a real
- * `DefaultPermissionPolicy` rule instead of a test fake's canned decision.
- * No other action/resource-type pair is approved -- every other request
- * this runtime's `PermissionEngine` ever evaluates is `DENIED` by
- * `DefaultPermissionPolicy`'s own already-implemented, unmodified
- * conservative default (`PermissionPolicy.md` §7).
+ * `DefaultPermissionPolicy` rule instead of a test fake's canned decision
+ * -- and, per Controlled Agent Run Submission
+ * (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`
+ * Section 3), `EXECUTE` on `AGENT` -> `APPROVED`/`AUTOMATIC`, the minimum
+ * required for a legitimate owner-requested Agent Run `START` to be
+ * authorised at all -- narrow in what it grants (creation and
+ * commencement of the governed Agent Run only, never any action that run
+ * later proposes) and scoped to the one Resource
+ * [InMemoryAgentRuntime]'s run-initiation check ever targets
+ * (`AGENT_RUNTIME_BOUNDARY_RESOURCE_ID`), not a general grant over every
+ * `AGENT`-typed Resource that might ever exist. No other action/resource-type
+ * pair is approved -- every other request this runtime's `PermissionEngine`
+ * ever evaluates is `DENIED` by `DefaultPermissionPolicy`'s own
+ * already-implemented, unmodified conservative default (`PermissionPolicy.md`
+ * §7).
  */
 class ParkerRuntime(
     private val config: ParkerRuntimeConfig,
@@ -187,12 +204,19 @@ class ParkerRuntime(
      * `conversationHistorySource`, `memorySource`, and `worldModelSource`;
      * (3) register and activate this runtime's
      * system Principals (`system.parker`, `system.conversation-engine`,
-     * `system.response-composer`) and the configured owner Principal; (4)
-     * register the `notify owner` action-vocabulary entry; (5) construct
-     * the Local Text Channel's `deliver` Tool, register+enable its owning
-     * Module, and bind the Tool for invocation; (6) construct the
-     * Reasoning Provider stack (real `LocalHttpModelInferenceClient`
-     * against [ParkerRuntimeConfig.modelEndpointUrl]); (7) construct the
+     * `system.response-composer`) and the configured owner Principal;
+     * (3a, Controlled Agent Run Submission) register the single,
+     * deterministic Agent Runtime Execution Boundary Resource; (4)
+     * register the `notify owner` and (3a's companion, Controlled Agent
+     * Run Submission) `start agent run` action-vocabulary entries; (5)
+     * construct the Local Text Channel's `deliver` Tool, register+enable
+     * its owning Module, and bind the Tool for invocation; (6) construct
+     * the Reasoning Provider stack (real `LocalHttpModelInferenceClient`
+     * against [ParkerRuntimeConfig.modelEndpointUrl]); (6a, Controlled
+     * Agent Run Submission) construct `DeterministicAgentStepSource` and
+     * `InMemoryAgentRuntime` -- now constructed ahead of
+     * `InMemoryTaskManagerRuntime`, which submits every `AgentRunCommand`
+     * it builds through it; (7) construct the
      * full coordinator chain
      * (`CommunicationConversationCoordinator -> ConversationTurnReasoningCoordinator`,
      * `ReplyDeliveryCoordinator -> ResponseComposer`/`ResponseDelivery`,
@@ -287,11 +311,41 @@ class ParkerRuntime(
 
         registerSystemIdentities(identityService)
 
+        // Controlled Agent Run Submission (Scope Lock Section 4): a single, deterministic,
+        // pre-registered Resource representing the Agent Runtime's own execution boundary --
+        // never a specific Agent Run, which does not exist until InMemoryAgentRuntime.start()
+        // creates one, strictly after the run-initiation permission check this Resource backs
+        // succeeds. Registered once, at startup, before any TaskProposal is ever submitted.
+        stage("agent runtime boundary resource registration") {
+            val now = clock()
+            resourceRegistry.register(
+                Resource(
+                    resourceId = AGENT_RUNTIME_BOUNDARY_RESOURCE_ID,
+                    resourceType = ResourceType.AGENT,
+                    displayName = "Agent Runtime Execution Boundary",
+                    ownerPrincipalId = SYSTEM_PARKER_PRINCIPAL_ID,
+                    sensitivity = ResourceSensitivity.PUBLIC,
+                    lifecycleState = ResourceLifecycleState.REGISTERED,
+                    createdAt = now,
+                    updatedAt = now,
+                    source = "composition-root:agent-runtime-boundary",
+                ),
+            )
+        }
+
         stage("action vocabulary registration") {
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = NOTIFY_OWNER_VERB_PHRASE,
                     mappings = setOf(ActionResourceMapping(PermissionAction.NOTIFY, ResourceType.TOOL)),
+                ),
+            )
+            // Controlled Agent Run Submission (Scope Lock Section 3.1): the one production
+            // ActionVocabulary entry backing the new run-initiation permission check.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = AGENT_RUN_START_VERB_PHRASE,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.EXECUTE, ResourceType.AGENT)),
                 ),
             )
         }
@@ -303,6 +357,20 @@ class ParkerRuntime(
                 PermissionPolicyRule(
                     action = PermissionAction.NOTIFY,
                     resourceType = ResourceType.TOOL,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                ),
+                // Controlled Agent Run Submission (Scope Lock Section 3.2-3.4): permits
+                // creation and commencement of a governed Agent Run only -- it does not
+                // authorise any action that Agent Run later proposes, which remains
+                // independently evaluated by this same PermissionEngine via ExecutionPipeline,
+                // unchanged. Owner-scoping is enforced by call-site structure (Scope Lock
+                // Section 3.3), not by this rule's own matching logic: InMemoryTaskManagerRuntime
+                // is the sole production caller of AgentRunCommandChannel.submit, and it always
+                // sets requestingPrincipalId to the Task's own resolved owner.
+                PermissionPolicyRule(
+                    action = PermissionAction.EXECUTE,
+                    resourceType = ResourceType.AGENT,
                     outcome = PermissionDecisionOutcome.APPROVED,
                     level = PermissionLevel.AUTOMATIC,
                 ),
@@ -360,14 +428,36 @@ class ParkerRuntime(
         val responseDelivery = ResponseDelivery(resourceRegistry, executionPipeline)
         val replyDeliveryCoordinator = ReplyDeliveryCoordinator(responseComposer, responseDelivery)
 
-        // Plan Candidate to PlannerRuntime Integration: InMemoryTaskManagerRuntime is
-        // constructed here solely to satisfy InMemoryPlannerRuntime's mandatory
-        // TaskProposalIntake constructor parameter (docs/implementation/
-        // PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_SCOPE_LOCK.md Section 9) -- this is not a
-        // separately-designed Task Manager production-wiring decision, and no code anywhere in
-        // this repository ever submits the AgentRunCommand InMemoryTaskManagerRuntime
-        // constructs, so no Agent Run or tool invocation can result from this wiring.
-        val taskManagerRuntime = InMemoryTaskManagerRuntime(identityService, eventBus)
+        // Controlled Agent Run Submission (Scope Lock Sections 4, 9): InMemoryAgentRuntime must
+        // now be constructed before InMemoryTaskManagerRuntime, reversing the prior ordering
+        // assumption that the Task Manager Runtime had no runtime-side dependency. permissionEngine
+        // is the same instance already composed into executionPipeline above -- one Permission
+        // Engine for the whole runtime, not two independently configured ones.
+        val deterministicAgentStepSource = DeterministicAgentStepSource()
+        val agentRuntime = InMemoryAgentRuntime(
+            identityService = identityService,
+            executionPipeline = executionPipeline,
+            eventBus = eventBus,
+            agentStepSource = deterministicAgentStepSource,
+            agentPolicy = DEFAULT_AGENT_POLICY,
+            permissionEngine = permissionEngine,
+            runInitiationResourceId = AGENT_RUNTIME_BOUNDARY_RESOURCE_ID,
+            runInitiationVerbPhrase = AGENT_RUN_START_VERB_PHRASE,
+        )
+
+        // Plan Candidate to PlannerRuntime Integration: InMemoryTaskManagerRuntime is also
+        // constructed to satisfy InMemoryPlannerRuntime's mandatory TaskProposalIntake
+        // constructor parameter (docs/implementation/
+        // PLAN_CANDIDATE_TO_PLANNER_INTEGRATION_SCOPE_LOCK.md Section 9). Controlled Agent Run
+        // Submission updates the claim this comment previously made: InMemoryTaskManagerRuntime
+        // now genuinely submits the AgentRunCommand it constructs, via agentRuntime above, which
+        // is the sole production AgentRunCommandChannel implementation (Scope Lock decision 2).
+        //
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.2): the same
+        // agentRuntime instance is also passed as the new agentRunExecutionTrigger argument --
+        // InMemoryAgentRuntime implements both AgentRunCommandChannel and
+        // AgentRunExecutionTrigger; no second implementation exists or is composed here.
+        val taskManagerRuntime = InMemoryTaskManagerRuntime(identityService, eventBus, agentRuntime, agentRuntime)
         val plannerRuntime = InMemoryPlannerRuntime(identityService, eventBus, taskManagerRuntime)
         val planCandidateGenerator = DefaultPlanCandidateGenerator()
 
@@ -636,6 +726,25 @@ class ParkerRuntime(
         // constants above.
         val PLANNER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.planner-runtime")
         val TASK_MANAGER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.task-manager-runtime")
+
+        // Controlled Agent Run Submission (docs/implementation/
+        // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and
+        // the Resource identifying the Agent Runtime's own execution boundary are both owned by
+        // this private companion object, and are threaded into InMemoryAgentRuntime's
+        // constructor explicitly (runInitiationVerbPhrase, runInitiationResourceId) rather than
+        // duplicated as a second literal or exposed via loosened visibility -- the same
+        // resolution this project's own Plan Candidate to PlannerRuntime Integration Scope Lock
+        // already established for system-identity literals, applied here to a Resource and a
+        // verb phrase instead of a PrincipalId.
+        const val AGENT_RUN_START_VERB_PHRASE = "start agent run"
+        val AGENT_RUNTIME_BOUNDARY_RESOURCE_ID = ResourceId("resource-agent-runtime-boundary")
+
+        // Scope Lock Section 9: a Sprint-phase default, not a permanent or authoritative
+        // production value -- no specification currently authorises a specific maxAgentSteps
+        // figure. 10 is promoted here explicitly from the only existing precedent for it
+        // (tests/runtime/SingleStepAgentStepSource.kt's own DEFAULT_AGENT_POLICY), rather than
+        // silently reused.
+        val DEFAULT_AGENT_POLICY = AgentPolicy(maxAgentSteps = 10)
     }
 }
 

@@ -133,6 +133,31 @@ class ParkerRuntimeStartupAndShutdownTest {
         assertTrue(logger.messages(LogLevel.ERROR).isEmpty())
     }
 
+    /**
+     * Controlled Agent Run Submission (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`
+     * Section 11, item 5): `ParkerRuntime` exposes none of `buildAndRegisterRuntimeGraph`'s local
+     * construction variables (`agentRuntime`, `resourceRegistry`, the vocabulary/policy-rule
+     * entries) as fields, so this test cannot assert on them directly. What it can, and does,
+     * prove: `start()` -- which the pre-existing tests above already confirm exercises the
+     * complete construction graph, throwing `DependencyConstructionFailed` (naming the failing
+     * step) on any failure -- succeeds cleanly with the Agent Runtime Execution Boundary
+     * Resource registration, the `start agent run` ActionVocabulary entry, the `EXECUTE`/`AGENT`
+     * PermissionPolicyRule, `DeterministicAgentStepSource`, and `InMemoryAgentRuntime` (now
+     * constructed ahead of `InMemoryTaskManagerRuntime`) all wired in. A regression in any of
+     * these -- a duplicate Resource registration, a malformed vocabulary entry, or a
+     * constructor-argument mismatch -- would surface here as a thrown
+     * `ParkerRuntimeException.DependencyConstructionFailed`, exactly as it already would for any
+     * other construction step this file's existing tests cover.
+     */
+    @Test
+    fun `start() succeeds with Controlled Agent Run Submission wiring in place`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+
+        runtime.start()
+
+        assertEquals(RuntimeLifecycleState.RUNNING, runtime.state)
+    }
+
     private fun sampleMessage(channelId: String) = InboundOwnerMessage(
         channelId = ModuleId(channelId),
         senderPrincipalId = PrincipalId("user.owner-lifecycle-test"),

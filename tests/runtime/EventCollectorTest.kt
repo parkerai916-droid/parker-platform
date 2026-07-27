@@ -4,8 +4,11 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
 import parker.core.interfaces.AgentRunCommand
+import parker.core.interfaces.AgentRunCommandChannel
 import parker.core.interfaces.AgentRunCommandResult
 import parker.core.interfaces.AgentRunCommandType
+import parker.core.interfaces.AgentRunExecutionTrigger
+import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.DecisionId
 import parker.core.interfaces.EventBus
 import parker.core.interfaces.EventHandler
@@ -82,6 +85,33 @@ class EventCollectorTest {
             delegate.subscribe(eventType, subscriberPrincipalId, handler)
     }
 
+    /**
+     * Corrective compilation pass (Controlled Agent Run Submission):
+     * [InMemoryTaskManagerRuntime] gained a required [AgentRunCommandChannel]
+     * constructor parameter this milestone. This file's own task-event test
+     * (below) does not exercise Agent Run submission at all, so the
+     * narrowest fixture -- a fixed rejection -- keeps that test's assertions
+     * otherwise unaffected; the one new `task.agent_run_rejected` event it
+     * now produces is accounted for directly in that test's own assertion.
+     */
+    private class RejectingAgentRunCommandChannel : AgentRunCommandChannel {
+        override suspend fun submit(command: AgentRunCommand): AgentRunCommandResult =
+            AgentRunCommandResult.Rejected(command.commandType, "test fixture -- no Agent Run started")
+    }
+
+    /**
+     * Two-Phase Acceptance/Execution Amendment
+     * (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+     * "Amendment -- Two-Phase Agent Run Operation," A.5): [InMemoryTaskManagerRuntime]'s new
+     * fourth constructor parameter. [RejectingAgentRunCommandChannel] always returns `Rejected`,
+     * so `execute()` is structurally never called for it -- this fixture throws if it ever is.
+     */
+    private class ThrowingAgentRunExecutionTrigger : AgentRunExecutionTrigger {
+        override suspend fun execute(agentRunId: AgentRunId) {
+            error("execute() must never be called when AgentRunCommandChannel.submit returned Rejected")
+        }
+    }
+
     // ================= planner.* =================
 
     @Test
@@ -144,12 +174,12 @@ class EventCollectorTest {
         val collector = EventCollector(bus)
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, bus)
+        val runtime = InMemoryTaskManagerRuntime(identity, bus, RejectingAgentRunCommandChannel(), ThrowingAgentRunExecutionTrigger())
 
         val disposition = runtime.submitProposal(taskProposal())
 
         assertIs<TaskProposalDisposition.Accepted>(disposition) // no regression: runtime's own return value is unaffected by the collector
-        assertEquals(listOf("task.created", "task.ready"), collector.collectedEvents().map { it.eventType.value })
+        assertEquals(listOf("task.created", "task.ready", "task.agent_run_rejected"), collector.collectedEvents().map { it.eventType.value })
         assertTrue(collector.collectedEvents().all { it.publisherPrincipalId == PrincipalId("system.task-manager-runtime") })
     }
 
@@ -157,6 +187,8 @@ class EventCollectorTest {
 
     private val calendarResourceId = ResourceId("res.calendar.1")
     private val toolResourceId = ResourceId("res.tool.calendar-reader")
+    private val runInitiationResourceId = ResourceId("resource-agent-runtime-boundary")
+    private val runInitiationVerbPhrase = "start agent run"
 
     private suspend fun buildAgentRuntime(bus: EventBus): InMemoryAgentRuntime {
         val resources = InMemoryResourceRegistry()
@@ -218,6 +250,21 @@ class EventCollectorTest {
                 timestamp = Instant.parse("2026-01-01T00:00:00Z"),
             )
         }
+        // Controlled Agent Run Submission: a second, independent FakePermissionEngine for the
+        // new run-initiation check, isolated from `permissionEngine` above so this file's
+        // event-sequence assertions (which start at "agent.created", after run-initiation is
+        // already resolved) are unaffected. Always approves.
+        val runInitiationPermissionEngine = FakePermissionEngine { request ->
+            PermissionDecision(
+                decisionId = DecisionId("dec-run-initiation"),
+                principalId = request.principalId,
+                resourceId = runInitiationResourceId,
+                action = PermissionAction.EXECUTE,
+                decision = PermissionDecisionOutcome.APPROVED,
+                level = PermissionLevel.AUTOMATIC,
+                timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+            )
+        }
         // Sprint 1, Unit 11A: bind a MockTool so this suite's event-collection assertions
         // are unaffected by DefaultExecutionPipeline now actually invoking the bound Tool.
         val toolInvocationBinding = InMemoryToolInvocationBinding()
@@ -248,7 +295,16 @@ class EventCollectorTest {
             ),
         )
 
-        return InMemoryAgentRuntime(identity, pipeline, bus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY)
+        return InMemoryAgentRuntime(
+            identity,
+            pipeline,
+            bus,
+            SingleStepAgentStepSource(),
+            DEFAULT_AGENT_POLICY,
+            runInitiationPermissionEngine,
+            runInitiationResourceId,
+            runInitiationVerbPhrase,
+        )
     }
 
     private fun startCommand(correlationId: String = "corr-1") = AgentRunCommand(
@@ -268,7 +324,10 @@ class EventCollectorTest {
 
         val result = runtime.submit(startCommand())
 
-        assertIs<AgentRunCommandResult.Accepted>(result) // no regression: runtime's own return value is unaffected by the collector
+        val accepted = assertIs<AgentRunCommandResult.Accepted>(result) // no regression: runtime's own return value is unaffected by the collector
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit() alone
+        // now only reaches READY; execute() drives the rest of this sequence.
+        runtime.execute(accepted.agentRunId)
         val types = collector.collectedEvents().map { it.eventType.value }
         assertEquals(
             listOf(
@@ -295,7 +354,10 @@ class EventCollectorTest {
         val collector = EventCollector(bus)
         val runtime = buildAgentRuntime(bus)
 
-        runtime.submit(startCommand())
+        val result = runtime.submit(startCommand())
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit() alone
+        // now only reaches READY; execute() is required for the agent.* events this test asserts.
+        runtime.execute((result as AgentRunCommandResult.Accepted).agentRunId)
 
         val agentEvents = collector.collectedEvents().filter { it.eventType.value.startsWith("agent.") }
         assertTrue(agentEvents.isNotEmpty())

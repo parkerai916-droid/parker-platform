@@ -10,6 +10,7 @@ import parker.core.interfaces.AgentRunCommand
 import parker.core.interfaces.AgentRunCommandChannel
 import parker.core.interfaces.AgentRunCommandResult
 import parker.core.interfaces.AgentRunCommandType
+import parker.core.interfaces.AgentRunExecutionTrigger
 import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.AgentRunLifecycleTransitions
 import parker.core.interfaces.AgentRunStatus
@@ -24,6 +25,8 @@ import parker.core.interfaces.ExecutionResult
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.IdentityService
 import parker.core.interfaces.ParkerEvent
+import parker.core.interfaces.PermissionDecisionOutcome
+import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.RequestId
@@ -97,6 +100,48 @@ import parker.core.interfaces.ResourceId
  * `src/contracts/AgentRunLifecycle.kt`. This class now drives more of it
  * (`WAITING_FOR_PERMISSION`, `SUSPENDED`, and cancellation from more
  * states) than Unit 7 did, but adds no new state or edge.
+ *
+ * ## Controlled Agent Run Submission (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`)
+ *
+ * [start] now performs one additional Trust Framework check before any
+ * [AgentRun] record is created: a run-initiation permission evaluation
+ * against [command's][AgentRunCommand] `requestingPrincipalId` (Scope Lock
+ * Section 1). This is independent of, and does not alter, the per-action
+ * Trust-gating [runLoop] already performs via [executionPipeline] for
+ * every proposed step -- see [permissionEngine]'s own field KDoc below for
+ * why a second, direct [PermissionEngine] dependency exists rather than
+ * routing this check through [executionPipeline] itself. `START`
+ * authorisation permits creation and commencement of the governed Agent
+ * Run; it does not authorise any action that Agent Run later proposes
+ * (Scope Lock Section 3.4) -- this class's own long-standing
+ * [AgentRunCommandResult] KDoc already states this exact distinction.
+ *
+ * ## Two-Phase Acceptance/Execution Amendment
+ * (`docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_CONTRACT_DESIGN.md`,
+ * Amendment 1, corrected by its own Lifecycle State Correction, §A1.8;
+ * `docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+ * "Amendment -- Two-Phase Agent Run Operation")
+ *
+ * [start] (phase 1, [AgentRunCommandChannel.submit] for `START`) no longer
+ * drives a `START`ed Agent Run to completion. It performs the run-initiation
+ * check, the duplicate-`START` guard, [AgentRun] creation, Agent Identity
+ * resolution, and the unconditional `CREATED -> INITIALISED -> READY`
+ * advance -- then returns `Accepted`. **It stops at `READY`, not
+ * `RUNNING`** -- a state named `RUNNING` must mean execution has actually
+ * begun, and at this point it has not. `agent.started` is not published by
+ * [start].
+ *
+ * [execute] (phase 2, [AgentRunExecutionTrigger.execute]) is what a caller
+ * invokes, separately, once it has finished whatever bookkeeping of its own
+ * needs to happen strictly before execution begins (in production,
+ * `InMemoryTaskManagerRuntime` publishing `task.agent_run_started` and
+ * transitioning its own `Task` to `RUNNING`, outside its own held lock).
+ * [execute] performs the `READY -> RUNNING` transition, publishes
+ * `agent.started` -- now truthfully coincident with `RUNNING` -- and then
+ * calls the existing, unmodified [runLoop]. This class implements both
+ * [AgentRunCommandChannel] and [AgentRunExecutionTrigger]; `InMemoryTaskManagerRuntime`
+ * is the sole production caller of both, always in that order, always for
+ * the same `agentRunId`, never concurrently for the same one.
  */
 class InMemoryAgentRuntime(
     private val identityService: IdentityService,
@@ -104,7 +149,37 @@ class InMemoryAgentRuntime(
     private val eventBus: EventBus,
     private val agentStepSource: AgentStepSource,
     private val agentPolicy: AgentPolicy,
-) : AgentRunCommandChannel {
+    /**
+     * Used exclusively for the new run-initiation check inside [start]
+     * (Scope Lock Section 1) -- never consulted by, or substituted for,
+     * [executionPipeline]'s own internal per-action evaluation, which is
+     * unchanged. In production composition, this instance and the one
+     * wired into [executionPipeline] are the same object -- one Permission
+     * Engine for the whole runtime, not two independently configured ones
+     * (Scope Lock Section 9).
+     */
+    private val permissionEngine: PermissionEngine,
+    /**
+     * The single, deterministic, pre-registered Resource representing the
+     * Agent Runtime's own execution boundary (Scope Lock Section 4) --
+     * never a specific Agent Run, which does not exist until after this
+     * check succeeds. Supplied by the composition root rather than
+     * referenced as a shared literal, since it is owned by a `private`
+     * composition-root constant this class cannot otherwise reach.
+     */
+    private val runInitiationResourceId: ResourceId,
+    /**
+     * The exact `ActionVocabulary` verb phrase the composition root
+     * registers for `(PermissionAction.EXECUTE, ResourceType.AGENT)`
+     * (Scope Lock Section 3.1). Must match that registration exactly --
+     * `InMemoryActionVocabulary.lookup` is an exact string match -- and is
+     * threaded through as a constructor parameter for the same reason as
+     * [runInitiationResourceId]: it is owned by a `private`
+     * composition-root constant this class cannot otherwise reach
+     * (Implementation Clarification approved alongside this Scope Lock).
+     */
+    private val runInitiationVerbPhrase: String,
+) : AgentRunCommandChannel, AgentRunExecutionTrigger {
 
     /**
      * Per-Agent-Run accumulated state that is not part of the [AgentRun]
@@ -149,9 +224,39 @@ class InMemoryAgentRuntime(
         val agentRunId = AgentRunId("run-for-${command.taskId.value}")
         val agentIdentityPrincipalId = PrincipalId("agent-for-${command.taskId.value}")
 
-        // CREATED -- the Agent Instance record now exists. Check-and-insert happens atomically
-        // under one lock acquisition so two concurrent STARTs for the same taskId cannot both pass
-        // the check before either inserts.
+        // Controlled Agent Run Submission, Scope Lock Section 1: the run-initiation permission
+        // evaluation happens before any AgentRun record is created -- not merely before the
+        // record leaves CREATED. A DENIED/DEFERRED outcome writes nothing to `agentRuns`,
+        // resolves no Agent Identity, invokes no AgentStepSource, and publishes no agent.*
+        // event; the only observable trace of a rejected START is the caller's own
+        // task.agent_run_rejected event (published by InMemoryTaskManagerRuntime, not here).
+        val runInitiationRequest = ExecutionRequest(
+            requestId = RequestId("run-init-${command.taskId.value}"),
+            principalId = command.requestingPrincipalId,
+            origin = RequestOrigin.AGENT,
+            intent = "Start Agent Run for Task '${command.taskId.value}': ${command.goalDescription}",
+            targetResources = listOf(runInitiationResourceId),
+            proposedActions = listOf(runInitiationVerbPhrase),
+            priority = RequestPriority.NORMAL,
+            createdAt = Instant.now(),
+            correlationId = command.correlationId,
+        )
+        when (permissionEngine.evaluate(runInitiationRequest).decision) {
+            PermissionDecisionOutcome.DENIED -> return AgentRunCommandResult.Rejected(
+                command.commandType,
+                "run-initiation permission DENIED for requestingPrincipalId '${command.requestingPrincipalId.value}'",
+            )
+            PermissionDecisionOutcome.DEFERRED -> return AgentRunCommandResult.Rejected(
+                command.commandType,
+                "run-initiation permission DEFERRED for requestingPrincipalId '${command.requestingPrincipalId.value}'",
+            )
+            PermissionDecisionOutcome.APPROVED, PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION -> Unit
+        }
+
+        // CREATED -- the Agent Instance record now exists, strictly after run-initiation
+        // permission approval above. Check-and-insert happens atomically under one lock
+        // acquisition so two concurrent STARTs for the same taskId cannot both pass the check
+        // before either inserts.
         var run = AgentRun(
             agentRunId = agentRunId,
             agentIdentityPrincipalId = agentIdentityPrincipalId,
@@ -192,26 +297,89 @@ class InMemoryAgentRuntime(
         publish(run, "agent.initialised")
         // READY -- Sprint 1 placeholder: no Agent Capability/Policy binding logic exists yet, so
         // this transition is unconditional rather than a real validation step.
+        //
+        // Two-Phase Acceptance/Execution Amendment: phase 1 (this method) stops here. The
+        // READY -> RUNNING transition, the agent.started publish, and runLoop() itself all move
+        // to execute() (AgentRunExecutionTrigger, below) -- a state named RUNNING must mean
+        // execution has actually begun, and at this point it has not (Lifecycle State
+        // Correction, Contract Design Amendment 1 §A1.8).
         run = advanceInitial(run, AgentRunStatus.READY)
         publish(run, "agent.ready")
-        // RUNNING -- begin the multi-step loop.
-        run = advanceInitial(run, AgentRunStatus.RUNNING)
-        publish(run, "agent.started")
 
-        mutex.withLock { runStates[agentRunId] = RunState() }
+        // RunState is created here, in phase 1, not in execute() -- it must exist before
+        // Accepted is returned so a caller's immediately-following execute() call always finds
+        // it. command.resourceReferences is seeded into it now, since execute() receives only
+        // an AgentRunId and has no other route back to the originating AgentRunCommand;
+        // runLoop()'s own seeding step (`if (state.resourceReferences.isEmpty() && ...)`) is
+        // unmodified and simply becomes a no-op once this has already run.
+        mutex.withLock {
+            val state = RunState()
+            state.resourceReferences += command.resourceReferences
+            runStates[agentRunId] = state
+        }
 
-        val finalRun = runLoop(run, identity.principalId, command.resourceReferences, startingStepNumber = 1)
-        return AgentRunCommandResult.Accepted(finalRun.agentRunId, command.commandType)
+        return AgentRunCommandResult.Accepted(run.agentRunId, command.commandType)
+    }
+
+    // --- Two-Phase Acceptance/Execution Amendment: phase 2 -------------
+
+    /**
+     * [AgentRunExecutionTrigger.execute]. Requires [agentRunId] to name an
+     * Agent Run [start] has already accepted (i.e. currently at `READY`,
+     * with an existing [RunState] -- both guaranteed by [start] before it
+     * returns `Accepted`, never by any other path). Performs the
+     * `READY -> RUNNING` transition, publishes `agent.started` -- the first
+     * point at which that event is truthful, since execution is about to
+     * genuinely begin -- and then calls the existing, unmodified [runLoop].
+     * Synchronous on the caller's own coroutine: no new coroutine scope, no
+     * background work, no new shutdown responsibility. When this returns,
+     * the Agent Run has reached whatever terminal or suspended state its
+     * step loop reached -- exactly what `submit()` alone used to guarantee
+     * for `START`, one call later.
+     */
+    override suspend fun execute(agentRunId: AgentRunId) {
+        val run = checkNotNull(mutex.withLock { agentRuns[agentRunId] }) {
+            "execute() called for agentRunId '${agentRunId.value}' with no known AgentRun -- " +
+                "execute() may only be called for an AgentRunId a prior submit(START) call already " +
+                "accepted"
+        }
+        check(run.status == AgentRunStatus.READY) {
+            "execute() called for agentRunId '${agentRunId.value}' at status '${run.status}', " +
+                "expected READY -- execute() may be called exactly once, immediately after the " +
+                "submit(START) call that accepted this Agent Run, never before READY and never twice"
+        }
+        val identity = checkNotNull(identityService.resolve(run.agentIdentityPrincipalId)) {
+            "execute() could not re-resolve Agent Identity '${run.agentIdentityPrincipalId.value}' -- " +
+                "start() already required this identity to resolve before accepting this Agent Run, " +
+                "so this indicates the identity was removed between acceptance and execution"
+        }
+
+        val running = advanceInitial(run, AgentRunStatus.RUNNING)
+        publish(running, "agent.started")
+
+        // resourceReferences was already seeded into RunState by start() (see the comment
+        // there); passing emptyList() here is correct, not a placeholder -- runLoop()'s own
+        // seeding step only acts when RunState.resourceReferences is still empty.
+        runLoop(running, identity.principalId, emptyList(), startingStepNumber = 1)
     }
 
     /**
-     * Unconditional transition used only during `START`'s
-     * `CREATED -> INITIALISED -> READY -> RUNNING` setup, before this
-     * Agent Run's [RunState] exists and before any `SUSPEND`/`RESUME`/
-     * `CANCEL` command could legally target it (every such command
-     * requires an already-known `agentRunId` -- `AgentRunCommand`'s own
-     * `init` block). From `RUNNING` onward, every transition instead goes
-     * through [tryAdvance], which is safe against a concurrent `CANCEL`.
+     * Unconditional transition used only for the two setup edges neither
+     * `submit(START)`'s phase 1 ([start], `CREATED -> INITIALISED -> READY`)
+     * nor `execute()`'s phase 2 ([execute], `READY -> RUNNING`) needs to
+     * guard against a concurrent `SUSPEND`/`RESUME`/`CANCEL`: every such
+     * command requires an already-known `agentRunId` (`AgentRunCommand`'s
+     * own `init` block) naming an Agent Run in [agentRuns], and this method
+     * is the only writer of [agentRuns] for a not-yet-`RUNNING` Agent Run.
+     *
+     * Two-Phase Acceptance/Execution Amendment: the `READY -> RUNNING` edge
+     * now runs from [execute], by which point this Agent Run's [RunState]
+     * already exists (created by [start], before `Accepted` was returned) --
+     * unlike the two earlier edges, which still run before any [RunState]
+     * exists. This method itself is unaware of [RunState] either way; the
+     * distinction matters only to its two callers. From `RUNNING` onward,
+     * every transition instead goes through [tryAdvance], which is safe
+     * against a concurrent `CANCEL`.
      */
     private suspend fun advanceInitial(run: AgentRun, next: AgentRunStatus): AgentRun {
         AgentRunLifecycleTransitions.requireValidTransition(run.status, next)

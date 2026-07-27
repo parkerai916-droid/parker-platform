@@ -115,11 +115,16 @@ sealed class AgentStepDecision {
  * already is.
  *
  * This interface does not specify what implements it. Unit C2 supplies
- * only a fixed, deterministic, non-Planner stand-in for testing and for
- * any production wiring that exists before a real Planner does
- * (`FixedSequenceAgentStepSource`, `tests/runtime/`) -- a real Planner
- * (Chapter 20) implementing this same interface is the seam this design
- * reserves, without specifying it (design document Section 11).
+ * only a fixed, deterministic, non-Planner stand-in for testing
+ * (`SingleStepAgentStepSource`, `tests/runtime/`); Controlled Agent Run
+ * Submission (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`
+ * Section 10) supplies the behaviourally-identical production stand-in
+ * this KDoc previously (and incorrectly) named `FixedSequenceAgentStepSource`
+ * -- the real production class is [DeterministicAgentStepSource]
+ * (`src/runtime/`), a separate implementation from the test fixture, not a
+ * relocation of it. A real Planner (Chapter 20) implementing this same
+ * interface is the seam this design reserves, without specifying it
+ * (design document Section 11).
  */
 interface AgentStepSource {
     suspend fun nextStep(context: AgentStepContext): AgentStepDecision

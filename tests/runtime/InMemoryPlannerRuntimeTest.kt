@@ -1,6 +1,11 @@
 package parker.core.runtime
 
 import kotlinx.coroutines.test.runTest
+import parker.core.interfaces.AgentRunCommand
+import parker.core.interfaces.AgentRunCommandChannel
+import parker.core.interfaces.AgentRunCommandResult
+import parker.core.interfaces.AgentRunExecutionTrigger
+import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.EventType
 import parker.core.interfaces.PlanCandidate
 import parker.core.interfaces.PlanCandidateId
@@ -62,6 +67,37 @@ import kotlin.test.assertTrue
  * "publisher identity does not resolve" tests below are the only ones that
  * deliberately omit this registration.
  */
+/**
+ * Corrective compilation pass (Controlled Agent Run Submission):
+ * [InMemoryTaskManagerRuntime] gained a required [AgentRunCommandChannel]
+ * constructor parameter this milestone. None of this file's own tests
+ * assert on Agent Run submission outcomes or on `task.*` events (its
+ * `EventCollector` instances are filtered to `plannerEventTypes`, and its
+ * own assertions read `taskManager.listTasks()` directly) -- a fixed
+ * rejection is therefore the narrowest fixture, with no other change
+ * required anywhere in this file.
+ */
+private class PlannerRejectingAgentRunCommandChannel : AgentRunCommandChannel {
+    override suspend fun submit(command: AgentRunCommand): AgentRunCommandResult =
+        AgentRunCommandResult.Rejected(command.commandType, "test fixture -- no Agent Run started")
+}
+
+/**
+ * Two-Phase Acceptance/Execution Amendment
+ * (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+ * "Amendment -- Two-Phase Agent Run Operation," A.1/A.2): [InMemoryTaskManagerRuntime]'s new
+ * fourth constructor parameter, threaded through every test in this file alongside
+ * [PlannerRejectingAgentRunCommandChannel]. Since that channel always returns `Rejected`,
+ * `InMemoryTaskManagerRuntime.submitProposal()` structurally never calls `execute()` (A.3) --
+ * this fixture throws if it ever is, the same "narrowest fixture, no other change required"
+ * approach this file's own corrective-compilation-pass KDoc above already took for the channel.
+ */
+private class PlannerThrowingAgentRunExecutionTrigger : AgentRunExecutionTrigger {
+    override suspend fun execute(agentRunId: AgentRunId) {
+        error("execute() must never be called when AgentRunCommandChannel.submit returned Rejected")
+    }
+}
+
 class InMemoryPlannerRuntimeTest {
 
     private val goal = "read today's calendar"
@@ -138,7 +174,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         val result = planner.plan(request(), oneCandidate())
@@ -159,7 +195,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         val result = planner.plan(request(), emptyList())
@@ -178,7 +214,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         val result = planner.plan(
@@ -201,7 +237,7 @@ class InMemoryPlannerRuntimeTest {
         identity.register(principal("user-1"))
         identity.register(principal("user-2"))
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
         val candidates = listOf(candidate("cand-1"), candidate("cand-2"))
 
@@ -222,7 +258,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         val result = planner.plan(
@@ -244,7 +280,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         val result = planner.plan(
@@ -264,7 +300,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
         val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
 
@@ -289,7 +325,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
         val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
 
@@ -314,7 +350,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
         val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
 
@@ -351,7 +387,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         assertNull(planner.getSessionStatus(PlanningSessionId("session-1")))
@@ -370,7 +406,7 @@ class InMemoryPlannerRuntimeTest {
         // publisher-identity tests below.
         val identity = identityServiceWithPlannerRegistered() // no *initiating* Principal registered
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         val result = planner.plan(request(initiatingPrincipalId = "ghost-user"), oneCandidate())
@@ -386,7 +422,7 @@ class InMemoryPlannerRuntimeTest {
     fun `an unresolvable initiating Principal publishes no planner events at all`() = runTest {
         val identity = identityServiceWithPlannerRegistered()
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
         val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
 
@@ -400,7 +436,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         planner.plan(request(), oneCandidate())
@@ -418,7 +454,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         planner.plan(request(), oneCandidate())
@@ -490,7 +526,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner: PlannerRuntime = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         val result = planner.plan(request(), oneCandidate())
@@ -508,7 +544,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
 
         assertEquals(
@@ -525,7 +561,7 @@ class InMemoryPlannerRuntimeTest {
         // including "system.planner-runtime" itself -- this is the gap #49 failure path.
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
         val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
 
@@ -545,7 +581,7 @@ class InMemoryPlannerRuntimeTest {
         val identity = identityServiceWithPlannerRegistered()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus)
+        val taskManager = InMemoryTaskManagerRuntime(identity, eventBus, PlannerRejectingAgentRunCommandChannel(), PlannerThrowingAgentRunExecutionTrigger())
         val planner = InMemoryPlannerRuntime(identity, eventBus, taskManager)
         val collector = EventCollector(eventBus, eventTypes = plannerEventTypes)
 

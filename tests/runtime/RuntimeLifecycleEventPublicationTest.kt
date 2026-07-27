@@ -4,8 +4,11 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
 import parker.core.interfaces.AgentRunCommand
+import parker.core.interfaces.AgentRunCommandChannel
 import parker.core.interfaces.AgentRunCommandResult
 import parker.core.interfaces.AgentRunCommandType
+import parker.core.interfaces.AgentRunExecutionTrigger
+import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.DecisionId
 import parker.core.interfaces.EventBus
 import parker.core.interfaces.EventHandler
@@ -86,6 +89,34 @@ class RuntimeLifecycleEventPublicationTest {
 
         override fun subscribe(eventType: EventType, subscriberPrincipalId: PrincipalId, handler: EventHandler): Subscription =
             delegate.subscribe(eventType, subscriberPrincipalId, handler)
+    }
+
+    /**
+     * Corrective compilation pass (Controlled Agent Run Submission):
+     * [InMemoryTaskManagerRuntime] gained a required [AgentRunCommandChannel]
+     * constructor parameter this milestone. A fixed rejection is the
+     * narrowest fixture for this file's own `task.*` tests below -- the one
+     * new `task.agent_run_rejected` event it produces is accounted for
+     * directly in each affected assertion.
+     */
+    private class RejectingAgentRunCommandChannel : AgentRunCommandChannel {
+        override suspend fun submit(command: AgentRunCommand): AgentRunCommandResult =
+            AgentRunCommandResult.Rejected(command.commandType, "test fixture -- no Agent Run started")
+    }
+
+    /**
+     * Two-Phase Acceptance/Execution Amendment
+     * (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+     * "Amendment -- Two-Phase Agent Run Operation," A.5): [InMemoryTaskManagerRuntime]'s new
+     * fourth constructor parameter, threaded through this file's `task.*` tests alongside
+     * [RejectingAgentRunCommandChannel]. That channel always returns `Rejected`, so
+     * `execute()` is structurally never called for those tests -- this fixture throws if it
+     * ever is.
+     */
+    private class ThrowingAgentRunExecutionTrigger : AgentRunExecutionTrigger {
+        override suspend fun execute(agentRunId: AgentRunId) {
+            error("execute() must never be called when AgentRunCommandChannel.submit returned Rejected")
+        }
     }
 
     // ================= DeterministicPlannerHarness (planner.*) =================
@@ -179,11 +210,11 @@ class RuntimeLifecycleEventPublicationTest {
         val bus = RecordingEventBus()
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, bus)
+        val runtime = InMemoryTaskManagerRuntime(identity, bus, RejectingAgentRunCommandChannel(), ThrowingAgentRunExecutionTrigger())
 
         runtime.submitProposal(taskProposal())
 
-        assertEquals(listOf("task.created", "task.ready"), bus.published.map { it.eventType.value })
+        assertEquals(listOf("task.created", "task.ready", "task.agent_run_rejected"), bus.published.map { it.eventType.value })
         assertTrue(bus.published.all { it.correlationId == "corr-1" })
     }
 
@@ -192,7 +223,7 @@ class RuntimeLifecycleEventPublicationTest {
         val bus = RecordingEventBus()
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, bus)
+        val runtime = InMemoryTaskManagerRuntime(identity, bus, RejectingAgentRunCommandChannel(), ThrowingAgentRunExecutionTrigger())
 
         runtime.submitProposal(taskProposal())
 
@@ -204,7 +235,7 @@ class RuntimeLifecycleEventPublicationTest {
     @Test
     fun `an unresolvable owner publishes no task events -- no Task record was ever created`() = runTest {
         val bus = RecordingEventBus()
-        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), bus)
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), bus, RejectingAgentRunCommandChannel(), ThrowingAgentRunExecutionTrigger())
 
         runtime.submitProposal(taskProposal(ownerPrincipalId = "ghost-user"))
 
@@ -217,20 +248,39 @@ class RuntimeLifecycleEventPublicationTest {
         val identity = InMemoryIdentityService()
         identity.register(principal("user-1"))
         identity.register(principal("user-2"))
-        val runtime = InMemoryTaskManagerRuntime(identity, bus)
+        val runtime = InMemoryTaskManagerRuntime(identity, bus, RejectingAgentRunCommandChannel(), ThrowingAgentRunExecutionTrigger())
 
         runtime.submitProposal(taskProposal(taskProposalId = "proposal-1", ownerPrincipalId = "user-1", correlationId = "corr-1"))
         runtime.submitProposal(taskProposal(taskProposalId = "proposal-2", ownerPrincipalId = "user-2", correlationId = "corr-2"))
 
-        assertEquals(4, bus.published.size)
-        assertEquals(2, bus.published.count { it.correlationId == "corr-1" })
-        assertEquals(2, bus.published.count { it.correlationId == "corr-2" })
+        assertEquals(6, bus.published.size)
+        assertEquals(3, bus.published.count { it.correlationId == "corr-1" })
+        assertEquals(3, bus.published.count { it.correlationId == "corr-2" })
     }
 
     // ================= InMemoryAgentRuntime (agent.*) =================
 
     private val calendarResourceId = ResourceId("res.calendar.1")
     private val toolResourceId = ResourceId("res.tool.calendar-reader")
+    private val runInitiationResourceId = ResourceId("resource-agent-runtime-boundary")
+    private val runInitiationVerbPhrase = "start agent run"
+
+    // Controlled Agent Run Submission: a fresh, always-approving run-initiation
+    // FakePermissionEngine, factored out since two separate InMemoryAgentRuntime
+    // construction sites in this file need one (buildAgentRuntime and the standalone
+    // "unresolvable Agent Identity" test below), isolated in both cases from whatever
+    // per-action permissionEngine that call site configures.
+    private fun approvedRunInitiationPermissionEngine() = FakePermissionEngine { request ->
+        PermissionDecision(
+            decisionId = DecisionId("dec-run-initiation"),
+            principalId = request.principalId,
+            resourceId = runInitiationResourceId,
+            action = PermissionAction.EXECUTE,
+            decision = PermissionDecisionOutcome.APPROVED,
+            level = PermissionLevel.AUTOMATIC,
+            timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+        )
+    }
 
     private suspend fun buildAgentRuntime(
         decisionFor: (ExecutionRequest) -> PermissionDecision,
@@ -285,6 +335,11 @@ class RuntimeLifecycleEventPublicationTest {
 
         val bus = RecordingEventBus()
         val permissionEngine = FakePermissionEngine(decisionFor)
+        // Controlled Agent Run Submission: a second, independent FakePermissionEngine for the
+        // new run-initiation check -- isolated from `permissionEngine` above (which some callers
+        // configure to DENY, to test per-action denial) so run-initiation always approves and
+        // every test below still reaches its own per-action outcome exactly as before.
+        val runInitiationPermissionEngine = approvedRunInitiationPermissionEngine()
         // Sprint 1, Unit 11A: bind a MockTool so this suite's event-sequence assertions are
         // unaffected by DefaultExecutionPipeline now actually invoking the bound Tool.
         val toolInvocationBinding = InMemoryToolInvocationBinding()
@@ -315,7 +370,16 @@ class RuntimeLifecycleEventPublicationTest {
             ),
         )
 
-        return InMemoryAgentRuntime(identity, pipeline, bus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY) to bus
+        return InMemoryAgentRuntime(
+            identity,
+            pipeline,
+            bus,
+            SingleStepAgentStepSource(),
+            DEFAULT_AGENT_POLICY,
+            runInitiationPermissionEngine,
+            runInitiationResourceId,
+            runInitiationVerbPhrase,
+        ) to bus
     }
 
     private fun approvedDecision() = PermissionDecision(
@@ -343,7 +407,11 @@ class RuntimeLifecycleEventPublicationTest {
 
         val result = runtime.submit(startCommand())
 
-        assertIs<AgentRunCommandResult.Accepted>(result)
+        val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit() alone
+        // now only reaches READY; execute() drives the rest of this sequence, exactly as
+        // submit() alone used to.
+        runtime.execute(accepted.agentRunId)
         // Sprint 3, Track C, Unit C2 supersedes Sprint 1 Unit 7's single-step event assumptions:
         // this test's name and its original 6-event expectation date from when InMemoryAgentRuntime
         // modelled exactly one Agent Step per Agent Run and never reached WAITING_FOR_PERMISSION.
@@ -375,7 +443,10 @@ class RuntimeLifecycleEventPublicationTest {
     fun `agent events share run() commands correlationId and are published under the Agent Identity`() = runTest {
         val (runtime, bus) = buildAgentRuntime { approvedDecision() }
 
-        runtime.submit(startCommand(correlationId = "corr-xyz"))
+        val result = runtime.submit(startCommand(correlationId = "corr-xyz"))
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit() alone
+        // now only reaches READY; execute() is required for the agent.* events this test asserts.
+        runtime.execute((result as AgentRunCommandResult.Accepted).agentRunId)
 
         val agentEvents = bus.published.filter { it.eventType.value.startsWith("agent.") }
         assertTrue(agentEvents.isNotEmpty())
@@ -387,7 +458,11 @@ class RuntimeLifecycleEventPublicationTest {
     fun `a DENIED ExecutionResult publishes agent_action_denied then agent_failed, never agent_step_completed or agent_completed`() = runTest {
         val (runtime, bus) = buildAgentRuntime { approvedDecision().copy(decision = PermissionDecisionOutcome.DENIED) }
 
-        runtime.submit(startCommand())
+        val result = runtime.submit(startCommand())
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): run-initiation
+        // is approved (only the per-action decision above is DENIED), so submit() still returns
+        // Accepted at READY; execute() drives the step loop to the DENIED/FAILED outcome below.
+        runtime.execute((result as AgentRunCommandResult.Accepted).agentRunId)
 
         val agentEventTypes = bus.published.filter { it.eventType.value.startsWith("agent.") }.map { it.eventType.value }
         // Sprint 3, Track C, Unit C2 supersedes this test's original expectation, which dated from
@@ -434,7 +509,16 @@ class RuntimeLifecycleEventPublicationTest {
             InMemoryToolInvocationBinding(),
         )
         val identity = InMemoryIdentityService() // Agent Identity deliberately not registered
-        val runtime = InMemoryAgentRuntime(identity, pipeline, bus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY)
+        val runtime = InMemoryAgentRuntime(
+            identity,
+            pipeline,
+            bus,
+            SingleStepAgentStepSource(),
+            DEFAULT_AGENT_POLICY,
+            approvedRunInitiationPermissionEngine(),
+            runInitiationResourceId,
+            runInitiationVerbPhrase,
+        )
 
         val result = runtime.submit(startCommand())
 
@@ -446,7 +530,11 @@ class RuntimeLifecycleEventPublicationTest {
     fun `agent events and the ExecutionPipeline's own execution and permission events share one causal correlationId on the same bus`() = runTest {
         val (runtime, bus) = buildAgentRuntime { approvedDecision() }
 
-        runtime.submit(startCommand(correlationId = "corr-shared"))
+        val result = runtime.submit(startCommand(correlationId = "corr-shared"))
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit() alone
+        // now only reaches READY; execute() is required for the execution.*/agent.completed
+        // events this test asserts.
+        runtime.execute((result as AgentRunCommandResult.Accepted).agentRunId)
 
         val allTypes = bus.published.map { it.eventType.value }
         assertTrue("execution.request_received" in allTypes)

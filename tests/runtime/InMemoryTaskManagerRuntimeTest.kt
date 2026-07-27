@@ -1,7 +1,12 @@
 package parker.core.runtime
 
 import kotlinx.coroutines.test.runTest
+import parker.core.interfaces.AgentRunCommand
+import parker.core.interfaces.AgentRunCommandChannel
+import parker.core.interfaces.AgentRunCommandResult
 import parker.core.interfaces.AgentRunCommandType
+import parker.core.interfaces.AgentRunExecutionTrigger
+import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.EventType
 import parker.core.interfaces.ParkerEvent
 import parker.core.interfaces.PermissionAction
@@ -86,13 +91,57 @@ class InMemoryTaskManagerRuntimeTest {
         correlationId = correlationId,
     )
 
+    /**
+     * Controlled Agent Run Submission (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`
+     * Section 11, item 1): a fake [AgentRunCommandChannel], threaded through every test in this
+     * file via the new third constructor parameter. Defaults to [AgentRunCommandResult.Rejected]
+     * -- not [AgentRunCommandResult.Accepted] -- specifically so every pre-existing test's
+     * assertions (most of which expect a Task to remain `QUEUED` immediately after
+     * `submitProposal`, per this class's own Sprint 1/Sprint 2 scope) continue to hold exactly
+     * as before: a default-`Accepted` fake would make every proposal's Task jump straight to
+     * `RUNNING`, which is not what any pre-existing test was written to exercise. Tests that
+     * specifically target the new `Accepted`/`Rejected` branches (below) configure this fake
+     * explicitly instead of relying on the default.
+     */
+    private class FakeAgentRunCommandChannel(
+        private val resultFor: (AgentRunCommand) -> AgentRunCommandResult = {
+            AgentRunCommandResult.Rejected(it.commandType, "test fixture default -- no Agent Run started")
+        },
+    ) : AgentRunCommandChannel {
+        val submittedCommands = mutableListOf<AgentRunCommand>()
+
+        override suspend fun submit(command: AgentRunCommand): AgentRunCommandResult {
+            submittedCommands += command
+            return resultFor(command)
+        }
+    }
+
+    /**
+     * Two-Phase Acceptance/Execution Amendment
+     * (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+     * "Amendment -- Two-Phase Agent Run Operation," A.1/A.2/A.6 item 4): a fake
+     * [AgentRunExecutionTrigger], threaded through every test in this file via the new fourth
+     * constructor parameter. Records every `agentRunId` it is called with; performs no other
+     * behaviour, since no test in this file observes anything `execute()` itself would do
+     * (`InMemoryAgentRuntimeTest.kt` covers that). Most tests in this file use
+     * [FakeAgentRunCommandChannel]'s default `Rejected` result, so this trigger is never called
+     * for them -- only the dedicated `Accepted`-branch test below expects a call.
+     */
+    private class FakeAgentRunExecutionTrigger : AgentRunExecutionTrigger {
+        val executedAgentRunIds = mutableListOf<AgentRunId>()
+
+        override suspend fun execute(agentRunId: AgentRunId) {
+            executedAgentRunIds += agentRunId
+        }
+    }
+
     // --- accept path ---
 
     @Test
     fun `submitting a well-formed proposal with a resolvable owner results in exactly one Task in Queued state`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         val disposition = runtime.submitProposal(proposal())
 
@@ -113,7 +162,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         val registered = principal("user-1")
         identity.register(registered)
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         val disposition = runtime.submitProposal(proposal(ownerPrincipalId = "user-1"))
 
@@ -128,7 +177,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `accepting a proposal constructs exactly one AgentRunCommand referencing the created Task`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         val disposition = runtime.submitProposal(proposal())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(disposition)
@@ -148,7 +197,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `requiredCapabilities on the proposal carry forward to targetAgentCapability on the command`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         val withCapabilities = proposal().copy(requiredCapabilities = setOf(PermissionAction.READ))
         val disposition = runtime.submitProposal(withCapabilities)
@@ -164,7 +213,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `proposal resourceReferences propagate unchanged to the command's resourceReferences`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val calendarResourceId = ResourceId("res.calendar.1")
 
         val withResources = proposal().copy(resourceReferences = listOf(calendarResourceId))
@@ -179,7 +228,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `a proposal with no resourceReferences produces a command with an empty resourceReferences, not a default fabrication`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         val disposition = runtime.submitProposal(proposal())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(disposition)
@@ -193,7 +242,7 @@ class InMemoryTaskManagerRuntimeTest {
     @Test
     fun `an unresolvable owner is Rejected, and no Task or AgentRunCommand is created`() = runTest {
         val identity = InMemoryIdentityService() // no Principal registered
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         val disposition = runtime.submitProposal(proposal(ownerPrincipalId = "ghost-user"))
 
@@ -207,7 +256,7 @@ class InMemoryTaskManagerRuntimeTest {
 
     @Test
     fun `getTask returns null for an unknown taskId, not an exception`() = runTest {
-        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         assertNull(runtime.getTask(TaskId("task-for-nonexistent")))
         assertTrue(runtime.agentRunCommandsFor(TaskId("task-for-nonexistent")).isEmpty())
@@ -219,7 +268,7 @@ class InMemoryTaskManagerRuntimeTest {
     fun `resubmitting the same taskProposalId is rejected as caller misuse`() = runTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         runtime.submitProposal(proposal())
 
@@ -235,7 +284,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal("user-1"))
         identity.register(principal("user-2"))
-        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(identity, InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         val first = assertIs<TaskProposalDisposition.Accepted>(
             runtime.submitProposal(proposal(taskProposalId = "proposal-1", ownerPrincipalId = "user-1", correlationId = "corr-1")),
@@ -294,7 +343,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         eventBus.publish(agentEvent("agent.completed", accepted.taskId))
@@ -309,7 +358,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         eventBus.publish(agentEvent("agent.failed", accepted.taskId))
@@ -325,7 +374,7 @@ class InMemoryTaskManagerRuntimeTest {
         identity.register(principal("user-1"))
         identity.register(principal("user-2"))
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val first = assertIs<TaskProposalDisposition.Accepted>(
             runtime.submitProposal(proposal(taskProposalId = "proposal-1", ownerPrincipalId = "user-1")),
         )
@@ -347,7 +396,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         eventBus.publish(agentEvent("agent.completed", accepted.taskId))
@@ -362,7 +411,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         val malformed = ParkerEvent(
@@ -384,7 +433,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         eventBus.publish(agentEvent("agent.completed", TaskId("task-for-nonexistent"))) // must not throw
 
@@ -409,7 +458,7 @@ class InMemoryTaskManagerRuntimeTest {
 
     @Test
     fun `agentEventsFor returns empty for a Task with no recorded events, not an exception`() = runTest {
-        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus())
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), InMemoryEventBus(), FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         assertTrue(runtime.agentEventsFor(TaskId("task-for-nonexistent")).isEmpty())
     }
@@ -452,7 +501,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
         assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
 
@@ -476,7 +525,7 @@ class InMemoryTaskManagerRuntimeTest {
             publishedTypes += "task.completed"
             publishedPayloads["task.completed"] = event.payload
         }
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         eventBus.publish(agentEvent("agent.completed", accepted.taskId, agentRunId = "run-for-${accepted.taskId.value}"))
@@ -506,7 +555,7 @@ class InMemoryTaskManagerRuntimeTest {
         eventBus.subscribe(EventType("task.started"), PrincipalId("test-subscriber")) { event ->
             startedPayload = event.payload
         }
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         // No agentRunId supplied -- mirrors a triggering agent.completed event that, for
@@ -530,7 +579,7 @@ class InMemoryTaskManagerRuntimeTest {
             publishedTypes += "task.completed"
             completedPayload = event.payload
         }
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
         forceTaskStatus(runtime, accepted.taskId, TaskStatus.RUNNING)
         assertEquals(TaskStatus.RUNNING, runtime.getTask(accepted.taskId)?.status)
@@ -549,7 +598,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
         eventBus.publish(agentEvent("agent.completed", accepted.taskId))
         assertEquals(TaskStatus.COMPLETED, runtime.getTask(accepted.taskId)?.status)
@@ -566,7 +615,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
         assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
 
@@ -584,7 +633,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
         val malformed = ParkerEvent(
             eventId = "evt-test-malformed-b2",
@@ -603,7 +652,7 @@ class InMemoryTaskManagerRuntimeTest {
     @Test
     fun `agent-completed with an unknown taskId is ignored safely and creates no Task`() = runTest {
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), eventBus)
+        val runtime = InMemoryTaskManagerRuntime(InMemoryIdentityService(), eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
 
         eventBus.publish(agentEvent("agent.completed", TaskId("task-for-nonexistent"))) // must not throw
 
@@ -617,7 +666,7 @@ class InMemoryTaskManagerRuntimeTest {
         val identity = InMemoryIdentityService()
         identity.register(principal())
         val eventBus = InMemoryEventBus()
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         eventBus.publish(agentEvent("agent.completed", accepted.taskId))
@@ -652,7 +701,7 @@ class InMemoryTaskManagerRuntimeTest {
         eventBus.subscribe(EventType("task.completed"), PrincipalId("test-subscriber")) { event ->
             completedPayload = event.payload
         }
-        val runtime = InMemoryTaskManagerRuntime(identity, eventBus)
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, FakeAgentRunCommandChannel(), FakeAgentRunExecutionTrigger())
         val accepted = assertIs<TaskProposalDisposition.Accepted>(runtime.submitProposal(proposal()))
 
         eventBus.publish(agentEvent("agent.completed", accepted.taskId))
@@ -679,4 +728,71 @@ class InMemoryTaskManagerRuntimeTest {
     // removed, not rewritten, for the same reason this file's own Unit B1-->B2 supersession note
     // above gives: rewriting it in place would duplicate coverage those two tests already provide
     // correctly.
+
+    // ================= Controlled Agent Run Submission =================
+    // docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 5, 6.1, 6.2, 10;
+    // Definition of Complete items 3 and 5.
+
+    @Test
+    fun `an Accepted AgentRunCommandResult publishes task-agent_run_started and transitions the Task to RUNNING`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        var startedPayload: Map<String, String>? = null
+        eventBus.subscribe(EventType("task.agent_run_started"), PrincipalId("test-subscriber")) { event ->
+            startedPayload = event.payload
+        }
+        val channel = FakeAgentRunCommandChannel { command ->
+            AgentRunCommandResult.Accepted(AgentRunId("run-for-${command.taskId.value}"), command.commandType)
+        }
+        val executionTrigger = FakeAgentRunExecutionTrigger()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, channel, executionTrigger)
+
+        val disposition = runtime.submitProposal(proposal())
+
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(disposition)
+        assertEquals(TaskStatus.RUNNING, runtime.getTask(accepted.taskId)?.status)
+        assertEquals(mapOf("agentRunId" to "run-for-${accepted.taskId.value}"), startedPayload)
+        assertEquals(1, channel.submittedCommands.size)
+        assertEquals(AgentRunCommandType.START, channel.submittedCommands.single().commandType)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.3/A.6 item 3):
+        // AgentRunExecutionTrigger.execute() is invoked exactly once, with the accepted
+        // AgentRunId, after mutex.withLock releases.
+        assertEquals(listOf(AgentRunId("run-for-${accepted.taskId.value}")), executionTrigger.executedAgentRunIds)
+    }
+
+    @Test
+    fun `a Rejected AgentRunCommandResult publishes task-agent_run_rejected, preserves the reason, and leaves the Task QUEUED`() = runTest {
+        val identity = InMemoryIdentityService()
+        identity.register(principal())
+        val eventBus = InMemoryEventBus()
+        var rejectedPayload: Map<String, String>? = null
+        eventBus.subscribe(EventType("task.agent_run_rejected"), PrincipalId("test-subscriber")) { event ->
+            rejectedPayload = event.payload
+        }
+        val channel = FakeAgentRunCommandChannel { command ->
+            AgentRunCommandResult.Rejected(command.commandType, "run-initiation permission DENIED for requestingPrincipalId 'user-1'")
+        }
+        val executionTrigger = FakeAgentRunExecutionTrigger()
+        val runtime = InMemoryTaskManagerRuntime(identity, eventBus, channel, executionTrigger)
+
+        val disposition = runtime.submitProposal(proposal())
+
+        // Scope Lock Section 6.1: TaskProposalDisposition.Accepted is returned regardless of the
+        // AgentRunCommandResult -- proposal intake and run authorisation are independently
+        // reported outcomes.
+        val accepted = assertIs<TaskProposalDisposition.Accepted>(disposition)
+        assertEquals(TaskStatus.QUEUED, runtime.getTask(accepted.taskId)?.status)
+        assertEquals(
+            mapOf(
+                "reason" to "run-initiation permission DENIED for requestingPrincipalId 'user-1'",
+                "commandType" to "START",
+            ),
+            rejectedPayload,
+        )
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.6 item 4):
+        // AgentRunExecutionTrigger.execute() is never invoked on the Rejected branch --
+        // structurally guaranteed, proven here with a call-count assertion of zero.
+        assertTrue(executionTrigger.executedAgentRunIds.isEmpty())
+    }
 }

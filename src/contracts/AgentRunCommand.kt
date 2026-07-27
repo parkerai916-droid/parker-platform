@@ -167,6 +167,18 @@ data class AgentRunCommand(
  * accepting a `START` command means an Agent Run now exists and will
  * begin its own lifecycle (`AgentRuntimeSpecification.md` Section 5), not
  * that any action it later proposes is pre-approved.
+ *
+ * **Controlled Agent Run Submission, Two-Phase Acceptance/Execution
+ * Amendment** (`docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_CONTRACT_DESIGN.md`,
+ * Amendment 1, corrected by its own Lifecycle State Correction, §A1.8):
+ * for `START` specifically, [Accepted] means **START has been authorised,
+ * the `AgentRun` exists, Agent Identity has been resolved, and the
+ * `AgentRun` is `READY` for execution. Execution has not yet begun.**
+ * `submit()` no longer runs the Agent Run's step loop to completion before
+ * returning `Accepted` for `START` -- that is now [AgentRunExecutionTrigger.execute]'s
+ * responsibility, a deliberate, separate second phase, not an oversight.
+ * `Accepted` for `SUSPEND`/`RESUME`/`CANCEL` is unaffected by this
+ * amendment -- those command types are untouched.
  */
 sealed class AgentRunCommandResult {
     data class Accepted(val agentRunId: AgentRunId, val commandType: AgentRunCommandType) : AgentRunCommandResult()
@@ -184,13 +196,48 @@ sealed class AgentRunCommandResult {
  * `AgentRuntimeSpecification.md`'s own "explicit suspend request" /
  * "external cancellation request" language (Section 5).
  *
- * This interface declares the operation's signature only. **No
- * implementation of this interface exists in this repository as of this
- * change** -- providing one (an in-memory Agent Runtime that actually
- * creates and manages Agent Runs) is Sprint 1 coding work, per
- * `docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Unit 7, not this
- * contract-preparation change.
+ * This interface declares the operation's signature only. **Implemented,
+ * in full, by `InMemoryAgentRuntime` (`src/runtime/`)** -- Sprint 3, Track
+ * C, Unit C2. The claim that no implementation existed was accurate only
+ * as of this file's original Sprint 1 contract-preparation change and had
+ * gone stale by the time Controlled Agent Run Submission
+ * (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`
+ * Section 12) corrected it: `InMemoryTaskManagerRuntime` is the sole
+ * production caller of [AgentRunCommandChannel.submit] for `START`.
+ *
+ * **For `START`, see [AgentRunCommandResult]'s own KDoc for what
+ * `Accepted` now means** (Two-Phase Acceptance/Execution Amendment) --
+ * `submit()` alone no longer drives a `START`ed Agent Run to completion;
+ * see [AgentRunExecutionTrigger].
  */
 interface AgentRunCommandChannel {
     suspend fun submit(command: AgentRunCommand): AgentRunCommandResult
+}
+
+/**
+ * Controlled Agent Run Submission, Two-Phase Acceptance/Execution Amendment
+ * (`docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_CONTRACT_DESIGN.md`,
+ * Amendment 1; `docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+ * "Amendment -- Two-Phase Agent Run Operation"). The second of the two
+ * phases `AgentRunCommandChannel.submit()` for `START` used to bundle into
+ * one call: driving a previously **accepted** (`READY`) Agent Run through
+ * `READY -> RUNNING`, publishing `agent.started`, and executing its step
+ * loop to a terminal or suspended state.
+ *
+ * **Implemented, in full, by `InMemoryAgentRuntime`** -- the same instance
+ * that implements [AgentRunCommandChannel], not a second, cooperating
+ * object. `InMemoryTaskManagerRuntime` is the sole production caller,
+ * invoking [execute] only after [AgentRunCommandChannel.submit] has
+ * returned [AgentRunCommandResult.Accepted] for a `START` command, and
+ * only outside its own held lock (Scope Lock Amendment, Section A.4) --
+ * never for a [AgentRunCommandResult.Rejected] result.
+ *
+ * [execute] is a plain, synchronous suspend function: it introduces no
+ * background coroutine and no new shutdown responsibility. When it
+ * returns, the Agent Run named by [agentRunId] has reached whatever
+ * terminal or suspended state its step loop reached -- exactly what
+ * `submit()` alone used to guarantee for `START`, one call later.
+ */
+interface AgentRunExecutionTrigger {
+    suspend fun execute(agentRunId: AgentRunId)
 }

@@ -4,7 +4,11 @@ import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
+import parker.core.interfaces.AgentRunCommand
+import parker.core.interfaces.AgentRunCommandChannel
 import parker.core.interfaces.AgentRunCommandResult
+import parker.core.interfaces.AgentRunExecutionTrigger
+import parker.core.interfaces.AgentRunId
 import parker.core.interfaces.AgentRunStatus
 import parker.core.interfaces.CancellationResult
 import parker.core.interfaces.DecisionId
@@ -133,6 +137,38 @@ private class RecordingExecutionPipeline(private val delegate: ExecutionPipeline
  * Neither ordering was changed to produce this result -- both are exactly
  * what the already-approved, unmodified Unit 9/Unit 11A code already does.
  */
+/**
+ * Corrective compilation pass (Controlled Agent Run Submission): [InMemoryTaskManagerRuntime]
+ * and [InMemoryAgentRuntime] both gained new required constructor parameters this milestone.
+ * This fake supplies the narrowest possible [AgentRunCommandChannel] for the
+ * [InMemoryTaskManagerRuntime] instance below -- deliberately NOT the real [InMemoryAgentRuntime]
+ * instance the test already builds and drives manually, so the pre-existing manual
+ * `agentRuntime.submit(command)` call later in this test is completely unaffected (no double
+ * submission, no duplicate-START collision). Mirrors
+ * `InMemoryTaskManagerRuntimeTest.kt`'s own `FakeAgentRunCommandChannel` default-Rejected
+ * convention, for the same reason: minimising behavioural impact on a file this milestone does
+ * not otherwise touch.
+ */
+private class VerticalSliceRejectingAgentRunCommandChannel : AgentRunCommandChannel {
+    override suspend fun submit(command: AgentRunCommand): AgentRunCommandResult =
+        AgentRunCommandResult.Rejected(command.commandType, "test fixture -- no Agent Run started")
+}
+
+/**
+ * Two-Phase Acceptance/Execution Amendment
+ * (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+ * "Amendment -- Two-Phase Agent Run Operation," A.5): [InMemoryTaskManagerRuntime]'s new fourth
+ * constructor parameter. [VerticalSliceRejectingAgentRunCommandChannel] always returns
+ * `Rejected` for `taskManagerRuntime`'s own submission, so `execute()` is structurally never
+ * called for it -- this fixture throws if it ever is. The test's manually-driven `agentRuntime`
+ * instance (below) is entirely separate and calls `execute()` directly, not through this.
+ */
+private class VerticalSliceThrowingAgentRunExecutionTrigger : AgentRunExecutionTrigger {
+    override suspend fun execute(agentRunId: AgentRunId) {
+        error("execute() must never be called when AgentRunCommandChannel.submit returned Rejected")
+    }
+}
+
 class VerticalSliceEndToEndTest {
 
     private val planningSessionId = PlanningSessionId("e2e-session")
@@ -141,6 +177,8 @@ class VerticalSliceEndToEndTest {
     private val correlationId = "corr-e2e-1"
     private val calendarResourceId = ResourceId("res.calendar.1")
     private val toolResourceId = ResourceId("res.tool.calendar-reader")
+    private val runInitiationResourceId = ResourceId("resource-agent-runtime-boundary")
+    private val runInitiationVerbPhrase = "start agent run"
 
     @Test
     fun `a caller-supplied ResourceId flows structurally from the Planner to a SUCCESS ExecutionResult, with no manual patching`() = runTest {
@@ -170,6 +208,23 @@ class VerticalSliceEndToEndTest {
                 ownerPrincipalId = PrincipalId("system"),
                 sensitivity = ResourceSensitivity.PUBLIC,
                 lifecycleState = ResourceLifecycleState.AVAILABLE,
+                createdAt = Instant.parse("2026-01-01T00:00:00Z"),
+                updatedAt = Instant.parse("2026-01-01T00:00:00Z"),
+                source = "test",
+            ),
+        )
+        // Controlled Agent Run Submission: the real production shape (a registered AGENT
+        // Resource representing the Agent Runtime Execution Boundary), even though the
+        // dedicated run-initiation FakePermissionEngine below does not itself consult the
+        // registry -- registered for consistency with the composition root's real semantics.
+        resources.register(
+            Resource(
+                resourceId = runInitiationResourceId,
+                resourceType = ResourceType.AGENT,
+                displayName = "Agent Runtime Execution Boundary",
+                ownerPrincipalId = PrincipalId("system.parker"),
+                sensitivity = ResourceSensitivity.PUBLIC,
+                lifecycleState = ResourceLifecycleState.REGISTERED,
                 createdAt = Instant.parse("2026-01-01T00:00:00Z"),
                 updatedAt = Instant.parse("2026-01-01T00:00:00Z"),
                 source = "test",
@@ -214,6 +269,23 @@ class VerticalSliceEndToEndTest {
             )
         }
 
+        // Controlled Agent Run Submission: a second, independent FakePermissionEngine for the
+        // new run-initiation check, isolated from `permissionEngine` above so its own
+        // `evaluateCallCount == 1` assertion (per-action gating only) is unaffected. Always
+        // approves -- this test's manual `agentRuntime.submit(command)` call further below must
+        // still reach Accepted exactly as it did before this milestone.
+        val runInitiationPermissionEngine = FakePermissionEngine { request ->
+            PermissionDecision(
+                decisionId = DecisionId("dec-e2e-run-initiation"),
+                principalId = request.principalId,
+                resourceId = runInitiationResourceId,
+                action = PermissionAction.EXECUTE,
+                decision = PermissionDecisionOutcome.APPROVED,
+                level = PermissionLevel.AUTOMATIC,
+                timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+            )
+        }
+
         val realPipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus, toolInvocationBinding)
         // Records the real ExecutionRequest/ExecutionResult InMemoryAgentRuntime and
         // DefaultExecutionPipeline exchange internally, so this test can assert on them --
@@ -234,8 +306,22 @@ class VerticalSliceEndToEndTest {
             ),
         )
 
-        val taskManagerRuntime = InMemoryTaskManagerRuntime(identity, eventBus)
-        val agentRuntime = InMemoryAgentRuntime(identity, pipeline, eventBus, SingleStepAgentStepSource(), DEFAULT_AGENT_POLICY)
+        val taskManagerRuntime = InMemoryTaskManagerRuntime(
+            identity,
+            eventBus,
+            VerticalSliceRejectingAgentRunCommandChannel(),
+            VerticalSliceThrowingAgentRunExecutionTrigger(),
+        )
+        val agentRuntime = InMemoryAgentRuntime(
+            identity,
+            pipeline,
+            eventBus,
+            SingleStepAgentStepSource(),
+            DEFAULT_AGENT_POLICY,
+            runInitiationPermissionEngine,
+            runInitiationResourceId,
+            runInitiationVerbPhrase,
+        )
         val plannerHarness = DeterministicPlannerHarness(eventBus)
         val collector = EventCollector(eventBus)
 
@@ -284,6 +370,11 @@ class VerticalSliceEndToEndTest {
 
         val commandResult = agentRuntime.submit(command)
         val commandAccepted = assertIs<AgentRunCommandResult.Accepted>(commandResult)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit() alone
+        // now only reaches READY; execute() drives the rest of this chain -- the real
+        // ExecutionRequest/ExecutionResult capture, the Tool invocation, and the COMPLETED
+        // outcome this test asserts below all require it.
+        agentRuntime.execute(commandAccepted.agentRunId)
 
         // --- requirement 1: the same ResourceId is carried unchanged through every real
         // stage's own object, not reconstructed or guessed. Task.kt (src/contracts/Task.kt)
@@ -345,6 +436,7 @@ class VerticalSliceEndToEndTest {
                 "planner.proposal_submitted",
                 "task.created",
                 "task.ready",
+                "task.agent_run_rejected",
                 "agent.created",
                 "agent.initialised",
                 "agent.ready",

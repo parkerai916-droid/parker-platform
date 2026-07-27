@@ -2783,6 +2783,216 @@ be reconciled against its real, observed result.
 
 ---
 
+## Controlled Agent Run Submission
+
+Implements
+`docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_GOVERNANCE_REVIEW.md`,
+`docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_CONTRACT_DESIGN.md`,
+and
+`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`
+exactly, performed after the Plan Candidate to PlannerRuntime Integration
+Unit above. That Unit's own entry states plainly: "`InMemoryTaskManagerRuntime`
+constructs, but never submits, an `AgentRunCommand` -- no
+`AgentRunCommandChannel` implementation exists anywhere in this
+repository, so there is no code path capable of consuming it." Both
+halves of that sentence were already false by the time this Unit's own
+Governance Review began: `InMemoryAgentRuntime` (Sprint 3, Track C, Unit
+C2) had already fully implemented `AgentRunCommandChannel`, with working
+Trust-gating through `ExecutionPipeline`/`PermissionEngine` already built
+and tested -- the real, narrower gap was that nothing in production ever
+called `.submit()` on it, and that its own mandatory `AgentStepSource`
+dependency had no production implementation. This Unit closes both.
+
+### What changed
+
+- **`src/runtime/DeterministicAgentStepSource.kt`** (new). The fixed,
+  deterministic, non-Planner `AgentStepSource` production wiring needed --
+  a new, separate implementation, not a relocation of
+  `tests/runtime/SingleStepAgentStepSource.kt`, mirroring
+  `DefaultPlanCandidateGenerator`'s own precedent from the preceding Unit.
+- **`src/runtime/InMemoryAgentRuntime.kt`.** Constructor gains
+  `permissionEngine: PermissionEngine`, `runInitiationResourceId:
+  ResourceId`, and `runInitiationVerbPhrase: String`. The eighth parameter,
+  `runInitiationVerbPhrase`, is the approved Implementation Clarification
+  recorded during implementation, not a new Scope Lock design decision: it
+  resolves the same cross-file private-literal problem the Scope Lock had
+  already identified and solved for `runInitiationResourceId`, applied a
+  second time to `ParkerRuntime.kt`'s private `AGENT_RUN_START_VERB_PHRASE`
+  constant, using the identical, already-frozen mechanism (an explicit
+  constructor parameter). `start()` now
+  performs a run-initiation permission evaluation (`requestingPrincipalId`
+  against a synthetic `ExecutionRequest` targeting the one, fixed Agent
+  Runtime Execution Boundary Resource, proposing the one registered
+  `start agent run` action) before any `AgentRun` record is created --
+  not merely before the record leaves `CREATED`. `DENIED`/`DEFERRED`
+  produce `AgentRunCommandResult.Rejected` with no map entry, no Agent
+  Identity resolution, no `AgentStepSource` consultation, and no `agent.*`
+  event published. This is independent of, and does not alter, the
+  per-action Trust-gating `runLoop` already performs via
+  `executionPipeline` for every proposed step.
+- **`src/runtime/InMemoryTaskManagerRuntime.kt`.** Constructor gains
+  `agentRunCommandChannel: AgentRunCommandChannel`. `submitProposal` now
+  submits the `AgentRunCommand.START` it constructs: on `Accepted`,
+  publishes `task.agent_run_started` and drives `QUEUED -> RUNNING`; on
+  `Rejected`, publishes `task.agent_run_rejected` (carrying the exact
+  rejection reason and command type) and leaves the Task at `QUEUED`.
+  `TaskProposalDisposition.Accepted` is returned in both cases -- proposal
+  intake and run authorisation are independently reported outcomes.
+- **`src/composition/ParkerRuntime.kt`.** New composition-root constants:
+  `AGENT_RUN_START_VERB_PHRASE` ("start agent run", matching the file's
+  own existing natural-phrase convention, not the dotted machine-style
+  string the Contract Design first proposed), `AGENT_RUNTIME_BOUNDARY_RESOURCE_ID`
+  ("resource-agent-runtime-boundary"), and `DEFAULT_AGENT_POLICY`
+  (`maxAgentSteps = 10`, promoted explicitly from the only existing
+  precedent for that figure). One new Resource is registered at startup
+  (the Agent Runtime Execution Boundary, `ResourceType.AGENT`, owned by
+  `system.parker`); one new `ActionVocabulary` entry and one new
+  `PermissionPolicyRule` (`EXECUTE`/`AGENT` -> `APPROVED`/`AUTOMATIC`) are
+  registered alongside the existing `NOTIFY`/`TOOL` rule. `InMemoryAgentRuntime`
+  is now constructed ahead of `InMemoryTaskManagerRuntime` (reversing the
+  prior ordering assumption), reusing the same `PermissionEngine` instance
+  already composed into `ExecutionPipeline`. Zero new system identity
+  registrations were required.
+- **The `EXECUTE`/`AGENT` permission rule is not Principal-scoped by
+  itself.** `PermissionPolicyRule` matches only `(action, resourceType)`;
+  narrowness to "the Task's own resolved owner" is enforced entirely by
+  call-site structure (`InMemoryTaskManagerRuntime` is the sole production
+  caller, and always submits the Task's resolved owner as
+  `requestingPrincipalId`), not by the rule's own matching logic. This is
+  disclosed explicitly, not silently assumed away, in both the Contract
+  Design and Scope Lock.
+- **KDoc corrections**: `src/contracts/AgentRunCommand.kt` (`AgentRunCommandChannel`'s
+  stale "no implementation exists" claim) and `src/contracts/AgentStep.kt`
+  (the `FixedSequenceAgentStepSource` citation, which never existed under
+  that name, corrected to name `DeterministicAgentStepSource`).
+
+### Tests
+
+- **`tests/runtime/InMemoryAgentRuntimeTest.kt`** (updated): a second,
+  independent `FakePermissionEngine` threaded through every existing test
+  for the new run-initiation check, isolated from the pre-existing
+  per-action `evaluateCallCount` fixture so no existing count-based
+  assertion changed; three new tests for `DENIED`/`DEFERRED`/
+  `APPROVED_WITH_CONFIRMATION` run-initiation outcomes.
+- **`tests/runtime/InMemoryTaskManagerRuntimeTest.kt`** (updated): a new
+  `FakeAgentRunCommandChannel`, defaulted to `Rejected` (not `Accepted`)
+  specifically so every pre-existing `QUEUED`-state assertion continues to
+  hold unchanged; two new tests for the `Accepted`/`Rejected` branches.
+- **`tests/runtime/DeterministicAgentStepSourceTest.kt`** (new): direct
+  unit coverage of the `Propose`-then-`Complete` contract.
+- **`tests/runtime/TaskManagerAgentRunSubmissionIntegrationTest.kt`**
+  (new): real `InMemoryTaskManagerRuntime` and `InMemoryAgentRuntime`
+  wired together, with the real production `ActionVocabulary` entry,
+  `PermissionPolicyRule`, and boundary Resource shape reproduced exactly
+  -- both the accepted and rejected flows, end to end.
+- **`tests/composition/ParkerRuntimeStartupAndShutdownTest.kt`**
+  (updated): one new test confirming `ParkerRuntime.start()` succeeds with
+  the new wiring in place -- the most direct proof available, since
+  `ParkerRuntime` exposes none of its construction-graph locals as fields.
+
+### Verification
+
+**Not run in this sandbox**, for the same, already-documented reason as
+every prior Unit's own entry in this file. This Unit's own correctness
+claims rest on direct, repeated re-reading of every modified file and
+hand-tracing the real production call sequence, including the
+`DefaultPermissionPolicy`/`ActionMapper`/`ResourceRegistry` resolution
+path for the new run-initiation `ExecutionRequest`. **This Unit is not
+yet accepted; per PES-001, Steven's own native `.\gradlew.bat test` run
+is the authoritative verification.**
+
+### Addendum — Two-Phase Acceptance/Execution Correction
+
+Native Verification (Steven's own `.\gradlew.bat test` run) found 3
+behavioural failures out of 769 tests. Two were test-fixture omissions in
+`tests/runtime/EventCollector.kt`'s `SPRINT_1_EVENT_TYPES` set (fixed
+directly, no design question). The third —
+`TaskManagerAgentRunSubmissionIntegrationTest.kt`'s accepted flow — was a
+genuine production self-deadlock: `InMemoryTaskManagerRuntime.submitProposal()`
+held its own `Mutex` across a nested, synchronous call into
+`AgentRunCommandChannel.submit()`, which ran `InMemoryAgentRuntime`'s full
+step loop to completion inline and published `agent.completed`/`agent.failed`
+synchronously, triggering `InMemoryTaskManagerRuntime`'s own subscription
+handler to try to reacquire the same non-reentrant `Mutex`
+(root cause: `docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_DEADLOCK_DESIGN_RECONCILIATION.md`
+§1).
+
+A first candidate fix (releasing the Task Manager's mutex before calling
+`submit()`, same document, §7) was rejected: it let `task.agent_run_started`
+observably follow `agent.completed`/`task.completed` for a synchronously-
+completing run, changing that event's meaning from a start notification into
+a retrospective acknowledgement.
+
+The approved correction
+(`docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_ACCEPTANCE_EXECUTION_SEPARATION_RECONCILIATION.md`,
+Option 1; `docs/architecture/CONTROLLED_AGENT_RUN_SUBMISSION_CONTRACT_DESIGN.md`
+Amendment 1; `docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+"Amendment — Two-Phase Agent Run Operation") splits `START` into two
+explicit phases instead: `AgentRunCommandChannel.submit()` now stops at
+`AgentRunStatus.READY` and returns `Accepted` without running any Agent
+Step; a new `AgentRunExecutionTrigger.execute(agentRunId)`
+(`src/contracts/AgentRunCommand.kt`), implemented by the same
+`InMemoryAgentRuntime` instance, performs the `READY -> RUNNING` transition,
+publishes `agent.started`, and then calls the existing, unmodified
+`runLoop()`. `InMemoryTaskManagerRuntime` gains a fourth constructor
+parameter, `agentRunExecutionTrigger: AgentRunExecutionTrigger`
+(`ParkerRuntime.kt` passes the same `agentRuntime` instance already passed
+as `agentRunCommandChannel`); `submitProposal()` calls `execute()` strictly
+after its own `mutex.withLock` block has released, and only on the
+`Accepted` branch — the specific, named rule that resolves the deadlock
+without reintroducing it, and without disturbing `task.agent_run_started`'s
+meaning or position in the event sequence. An initial version of this
+correction placed the phase boundary at `RUNNING` rather than `READY`; this
+was caught and corrected (Lifecycle State Correction, Contract Design
+Amendment 1 §A1.8) before implementation began, since a state named
+`RUNNING` must mean execution has actually begun.
+
+`src/runtime/InMemoryAgentRuntime.kt`'s `start()` and new `execute()`
+methods, `src/runtime/InMemoryTaskManagerRuntime.kt`'s `submitProposal()`,
+and `src/composition/ParkerRuntime.kt`'s composition wiring were updated
+accordingly; all ~52 `InMemoryTaskManagerRuntime(...)` test call sites
+across 6 files were updated to the new four-argument constructor; every
+direct `InMemoryAgentRuntime.submit()` test caller that previously relied
+on it running to completion now calls `execute()` explicitly; two new tests
+prove the phase boundary itself (`InMemoryAgentRuntimeTest.kt`: `submit(START)`
+alone reaches `READY` without entering the step loop or publishing
+`agent.started`; `execute()` afterward reproduces the same event sequence
+and terminal state single-call `submit()` used to produce);
+`InMemoryTaskManagerRuntimeTest.kt` gained a negative test proving
+`execute()` is never invoked on the `Rejected` branch.
+
+`TaskManagerAgentRunSubmissionIntegrationTest.kt`'s accepted-flow test
+was also corrected at the documentation level: Scope Lock Amendment A.6
+item 3 originally named `agent.completed` as the only terminal event to
+assert against, in tension with the Scope Lock's own A.3, which already
+freezes both `agent.completed` and `agent.failed` as legitimate accepted-
+flow outcomes. That test's fixture has no `ActionVocabulary` entry for its
+Task's own goal (only the run-initiation verb phrase is registered), so its
+accepted flow has always terminated at `agent.failed` — a genuine
+execution-failure path, not a submission failure, and pre-existing
+behaviour unaffected by this amendment. Rather than narrow the test to fit
+the original wording or broaden the fixture beyond the approved file
+boundary to force `agent.completed`, A.6 item 3 was corrected to require
+asserting whichever terminal event the fixture actually produces, plus a
+fixed set of orderings (`task.agent_run_started` before `agent.started`;
+`task.agent_run_started` before the terminal event; the flow completing
+without deadlock; the observed terminal event matching the fixture's
+configured behaviour) that hold regardless of which terminal event occurs.
+
+**Native Verification of this correction was attempted in this sandbox
+and could not be completed**: `gradle/wrapper/gradle-wrapper.jar` in this
+checkout has no main manifest attribute (`java -jar
+gradle/wrapper/gradle-wrapper.jar --version` fails with "no main manifest
+attribute"), so `./gradlew` cannot run here; separately, this sandbox's
+only available JDK is 11, while `build.gradle.kts` requires a JVM 17
+toolchain. This Addendum's own correctness claims rest on direct,
+repeated re-reading of every modified file and hand-tracing the real
+production call sequence, exactly as the base entry above already
+discloses for the original Unit. **Steven's own native `.\gradlew.bat
+test` run remains the authoritative verification.**
+
+---
+
 ## Current Vertical Slice
 
 ```

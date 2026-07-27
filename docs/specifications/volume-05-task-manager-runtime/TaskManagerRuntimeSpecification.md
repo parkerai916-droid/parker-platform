@@ -731,6 +731,7 @@ event corresponds to a real status transition or is informational only.
 | TaskDeferred | `task.deferred` | A permission decision affecting the Task (direct or via an associated Agent Run's `agent.action_deferred`) comes back `DEFERRED`. | `decisionId`, Agent Run Reference if applicable | Informational only; MAY lead to `Running --> Paused` per Task Manager rules, not automatically. |
 | TaskExecutionRequested | `task.execution_requested` | The Task Manager Runtime submits an `ExecutionRequest` directly on the Task's behalf (no Agent Run involved). | `requestId` | Informational only. |
 | TaskAgentRunStarted | `task.agent_run_started` | An Agent Run is created within or on behalf of this Task. | Agent Run Reference | Informational only; recorded per Section 6. |
+| TaskAgentRunRejected | `task.agent_run_rejected` | An `AgentRunCommand.START` submitted on this Task's behalf is rejected by the Agent Runtime — most commonly a `DENIED`/`DEFERRED` run-initiation permission evaluation (Controlled Agent Run Submission, `docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md` Section 1), added by that same Scope Lock. | `reason`, `commandType` | Informational only; the Task remains at its prior Task Status — no transition results from this event (Scope Lock Section 6.2). |
 | TaskAgentRunCompleted | `task.agent_run_completed` | An Agent Run associated with this Task reaches a terminal Agent Run lifecycle state (`COMPLETED`, `FAILED`, or `CANCELLED` — Agent Runtime Specification, Section 5). | Agent Run Reference, terminal Agent Run state | Informational only; evaluated per Section 6 for whether it warrants a Task Status transition. |
 | TaskPermissionRequired | `task.permission_required` | A permission evaluation is pending for a Task-Manager-direct `ExecutionRequest`, or is being surfaced from an associated Agent Run's `WAITING_FOR_PERMISSION`. | `requestId` or Agent Run Reference | Informational only. |
 | TaskPermissionDenied | `task.permission_denied` | A `PermissionDecisionOutcome.DENIED` is returned for a request associated with this Task. | `decisionId` | Informational only; MAY lead the Task Manager Runtime to transition to `Failed` per its own rules (Section 6/11), not automatically. |
@@ -1032,10 +1033,18 @@ not that any action it later proposes is pre-approved — every
 `ExecutionRequest` that Agent Run eventually submits is still
 independently evaluated by `PermissionEngine.evaluate`, unchanged.
 
-**No implementation of `AgentRunCommandChannel` exists yet.** This
-section, and the contract it names, are preparation for Sprint 1 coding
-(`docs/implementation/SPRINT_1_VERTICAL_SLICE_PLAN.md` Units 6 and 7), not
-an implementation of it.
+**`AgentRunCommandChannel` is implemented, in full, by `InMemoryAgentRuntime`**
+(`src/runtime/`, Sprint 3 Track C Unit C2). The claim that no
+implementation existed was accurate only as of this section's own Sprint
+1 contract-closure addendum and had gone stale by the time Controlled
+Agent Run Submission (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`
+Section 12) corrected it: `InMemoryTaskManagerRuntime` is the sole
+production caller of `AgentRunCommandChannel.submit` for `START`, and its
+`START` submissions now additionally pass through a run-initiation
+permission evaluation before the Agent Runtime creates any Agent Run
+record (Scope Lock Section 1) — an authorisation step this section did
+not anticipate needing to name, since no caller existed for it to gate at
+the time this section was written.
 
 ## Open Questions (not resolved by this document)
 

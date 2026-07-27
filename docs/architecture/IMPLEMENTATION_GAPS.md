@@ -2517,3 +2517,36 @@ submitted or consumed); task lifecycle completion beyond `CREATED ->
 QUEUED`; tool use; the Goal-naming-collision item tied to Goal
 Manager/Chapter 23 (not touched by this Unit); and every other item this
 gap's own prior updates already left open.
+
+**Update (Controlled Agent Run Submission,
+`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`).**
+This Unit closes the "execution" item named directly above, and only that
+item. `AgentRunCommandChannel` was, in fact, already implemented in full
+by `InMemoryAgentRuntime` (Sprint 3 Track C Unit C2) by the time this Unit
+began -- the paragraph above's claim that "no `AgentRunCommandChannel`
+implementation exists anywhere in this repository" was itself stale, not
+merely the submission gap it was describing; this Unit corrects both.
+`InMemoryTaskManagerRuntime` now genuinely submits the `AgentRunCommand`
+it constructs, via a real `InMemoryAgentRuntime` instance now constructed
+in `ParkerRuntime.kt`'s production composition root, gated by a new
+run-initiation permission evaluation (`PermissionAction.EXECUTE` on
+`ResourceType.AGENT`, against a single pre-registered Agent Runtime
+Execution Boundary Resource) that did not exist before this Unit. Task
+lifecycle completion now also reaches `QUEUED -> RUNNING` at `START`
+acceptance (previously only reachable via a real `agent.completed`
+event, which nothing in production could ever generate). **Gap #53 as a
+whole is still not fully closed by this update**: tool use by a real
+Planner-backed `AgentStepSource` remains absent (`DeterministicAgentStepSource`
+is a deliberate, deterministic stand-in, not a Planner); the
+Goal-naming-collision item tied to Goal Manager/Chapter 23 is untouched;
+`SUSPEND`/`RESUME`/`CANCEL` submission wiring (as opposed to the
+already-implemented Agent Runtime handling of those commands once
+submitted) remains out of this Unit's own scope. **Two-Phase
+Acceptance/Execution correction** (`docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md`,
+"Amendment — Two-Phase Agent Run Operation"): `AgentRunCommandChannel.submit()`
+for `START` now returns once the Agent Run is accepted and `READY`, before
+any execution begins, rather than running to completion; a caller wanting
+the pre-amendment "submit and wait for completion" behaviour must now call
+the new `AgentRunExecutionTrigger.execute(agentRunId)` immediately
+afterward (`InMemoryTaskManagerRuntime` does this automatically for its
+own submissions).

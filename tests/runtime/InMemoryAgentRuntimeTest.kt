@@ -37,6 +37,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -84,6 +85,26 @@ class InMemoryAgentRuntimeTest {
 
     private val calendarResourceId = ResourceId("res.calendar.1")
     private val toolResourceId = ResourceId("res.tool.calendar-reader")
+
+    // Controlled Agent Run Submission (docs/implementation/
+    // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Section 4): test-fixture values for
+    // InMemoryAgentRuntime's two new composition-owned constructor parameters. These need not
+    // equal production's own literals -- every test in this file wires a FakePermissionEngine,
+    // never the real DefaultPermissionPolicy/ActionMapper/ResourceRegistry chain, so nothing
+    // here performs real vocabulary or resource resolution against these values.
+    private val runInitiationResourceId = ResourceId("res.agent-runtime-boundary.test")
+    private val RUN_INITIATION_VERB_PHRASE = "start agent run"
+
+    /** Default-approve decision for the run-initiation permission check -- see [buildRuntime]'s new `runInitiationDecisionFor` parameter. */
+    private fun approvedRunInitiationDecision() = PermissionDecision(
+        decisionId = DecisionId("dec-run-init"),
+        principalId = PrincipalId("user-1"),
+        resourceId = runInitiationResourceId,
+        action = PermissionAction.EXECUTE,
+        decision = PermissionDecisionOutcome.APPROVED,
+        level = PermissionLevel.AUTOMATIC,
+        timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+    )
 
     // Distinct resources/tools used only by the concurrency tests further down, so a slow
     // (ControllableTool-backed) Agent Run and a fast (MockTool-backed) Agent Run can coexist in
@@ -149,6 +170,13 @@ class InMemoryAgentRuntimeTest {
     private suspend fun buildRuntime(
         agentStepSource: AgentStepSource = singleStepThenCompleteSource(),
         agentPolicy: AgentPolicy = AgentPolicy(maxAgentSteps = 10),
+        // Controlled Agent Run Submission: defaulted to always-approve, and placed before the
+        // existing trailing-lambda parameter (not after it), so every pre-existing
+        // `buildRuntime { ... }`/`buildRuntime(agentStepSource = ..., agentPolicy = ...) { ... }`
+        // call site is unaffected -- trailing lambda syntax still binds to `decisionFor`, still
+        // the last parameter. A test that needs to deny/defer run-initiation supplies this
+        // parameter by name instead.
+        runInitiationDecisionFor: (ExecutionRequest) -> PermissionDecision = { approvedRunInitiationDecision() },
         decisionFor: (ExecutionRequest) -> PermissionDecision,
     ): RuntimeFixture {
         val resources = InMemoryResourceRegistry()
@@ -206,7 +234,24 @@ class InMemoryAgentRuntimeTest {
         val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus, toolInvocationBinding)
 
         val identity = InMemoryIdentityService()
-        val runtime = InMemoryAgentRuntime(identity, pipeline, eventBus, agentStepSource, agentPolicy)
+        // Controlled Agent Run Submission: a separate FakePermissionEngine instance for the new
+        // run-initiation check, independent of `permissionEngine` above (which remains wired
+        // only into `pipeline`, for per-action gating) -- so every pre-existing
+        // `evaluateCallCount` assertion in this file continues to count only per-action
+        // evaluations, exactly as before, mirroring production's real distinction between the
+        // two call sites (Scope Lock Section 2) even though production reuses one instance for
+        // both.
+        val runInitiationPermissionEngine = FakePermissionEngine(runInitiationDecisionFor)
+        val runtime = InMemoryAgentRuntime(
+            identity,
+            pipeline,
+            eventBus,
+            agentStepSource,
+            agentPolicy,
+            permissionEngine = runInitiationPermissionEngine,
+            runInitiationResourceId = runInitiationResourceId,
+            runInitiationVerbPhrase = RUN_INITIATION_VERB_PHRASE,
+        )
         return RuntimeFixture(runtime, identity, permissionEngine, eventBus)
     }
 
@@ -327,7 +372,16 @@ class InMemoryAgentRuntimeTest {
         val pipeline = DefaultExecutionPipeline(resources, actionMapper, permissionEngine, tools, eventBus, toolInvocationBinding)
 
         val identity = InMemoryIdentityService()
-        val runtime = InMemoryAgentRuntime(identity, pipeline, eventBus, agentStepSource, AgentPolicy(maxAgentSteps = 10))
+        val runtime = InMemoryAgentRuntime(
+            identity,
+            pipeline,
+            eventBus,
+            agentStepSource,
+            AgentPolicy(maxAgentSteps = 10),
+            permissionEngine = FakePermissionEngine { approvedRunInitiationDecision() },
+            runInitiationResourceId = runInitiationResourceId,
+            runInitiationVerbPhrase = RUN_INITIATION_VERB_PHRASE,
+        )
         return ConcurrencyFixture(runtime, identity, controllableTool)
     }
 
@@ -424,6 +478,9 @@ class InMemoryAgentRuntimeTest {
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
         assertEquals(AgentRunCommandType.START, accepted.commandType)
         assertEquals(AgentRunId("run-for-task-1"), accepted.agentRunId)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit() alone
+        // now only reaches READY; execute() drives the rest of this sequence.
+        runtime.execute(accepted.agentRunId)
 
         val run = runtime.getAgentRun(accepted.agentRunId)
         assertNotNull(run)
@@ -431,6 +488,74 @@ class InMemoryAgentRuntimeTest {
         assertEquals(PrincipalId("agent-for-task-1"), run.agentIdentityPrincipalId)
         assertEquals(TaskId("task-1"), run.taskId)
         assertEquals(1, permissionEngine.evaluateCallCount)
+    }
+
+    // --- Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.6) ---
+    // docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md,
+    // "Amendment -- Two-Phase Agent Run Operation," A.6 items 1-2.
+
+    @Test
+    fun `submit(START) alone reaches READY without entering the step loop or publishing agent-started`() = runTest {
+        val source = FakeAgentStepSource { AgentStepDecision.Propose("read today's calendar", listOf(calendarResourceId)) }
+        var agentStartedPublished = false
+        val fixture = buildRuntime(agentStepSource = source) { approvedDecision() }
+        fixture.identity.register(owner())
+        fixture.identity.register(agentIdentity())
+        fixture.eventBus.subscribe(EventType("agent.started"), PrincipalId("test-subscriber")) { agentStartedPublished = true }
+
+        val result = fixture.runtime.submit(startCommand())
+
+        // A.6 item 1: submit(START) alone reaches READY, not RUNNING (Lifecycle State
+        // Correction, Contract Design Amendment 1 §A1.8), and does neither of the two things
+        // only execute() now owns: consulting AgentStepSource, and publishing agent.started.
+        val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        assertEquals(AgentRunStatus.READY, fixture.runtime.getAgentRun(accepted.agentRunId)?.status)
+        assertEquals(0, source.nextStepCallCount)
+        assertFalse(agentStartedPublished)
+    }
+
+    @Test
+    fun `execute() after submit(START) acceptance runs the same step-loop event sequence single-call submit() used to produce, ending at COMPLETED`() = runTest {
+        val fixture = buildRuntime { approvedDecision() }
+        fixture.identity.register(owner())
+        fixture.identity.register(agentIdentity())
+        val publishedTypes = mutableListOf<String>()
+        listOf(
+            "agent.started",
+            "agent.step_started",
+            "agent.action_proposed",
+            "agent.permission_required",
+            "agent.action_approved",
+            "agent.step_completed",
+            "agent.completed",
+        ).forEach { type ->
+            fixture.eventBus.subscribe(EventType(type), PrincipalId("test-subscriber")) { publishedTypes += type }
+        }
+
+        val result = fixture.runtime.submit(startCommand())
+        val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // A.6 item 1, restated: phase 1 alone publishes none of the step-loop events above.
+        assertTrue(publishedTypes.isEmpty())
+
+        // A.6 item 2: execute() drives the previously-accepted, READY Agent Run through exactly
+        // the event sequence single-call submit() used to produce, from agent.started onward,
+        // ending at the same terminal state (COMPLETED here).
+        fixture.runtime.execute(accepted.agentRunId)
+
+        assertEquals(
+            listOf(
+                "agent.started",
+                "agent.step_started",
+                "agent.action_proposed",
+                "agent.permission_required",
+                "agent.action_approved",
+                "agent.step_completed",
+                "agent.step_started",
+                "agent.completed",
+            ),
+            publishedTypes,
+        )
+        assertEquals(AgentRunStatus.COMPLETED, fixture.runtime.getAgentRun(accepted.agentRunId)?.status)
     }
 
     // --- Agent Run Reference Exposure (docs/implementation/AGENT_RUN_REFERENCE_EXPOSURE_IMPLEMENTATION_PLAN.md) ---
@@ -447,6 +572,9 @@ class InMemoryAgentRuntimeTest {
 
         val result = fixture.runtime.submit(startCommand())
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): agent.completed
+        // is now only published once execute() drives the run to completion.
+        fixture.runtime.execute(accepted.agentRunId)
 
         assertEquals(accepted.agentRunId.value, completedPayload?.get("agentRunId"))
     }
@@ -480,7 +608,11 @@ class InMemoryAgentRuntimeTest {
         identity.register(owner())
         identity.register(agentIdentity())
 
-        runtime.submit(startCommand())
+        val result = runtime.submit(startCommand())
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the
+        // ExecutionRequest this test inspects is only constructed once execute() runs the step
+        // loop -- submit() alone no longer reaches it.
+        runtime.execute((result as AgentRunCommandResult.Accepted).agentRunId)
 
         assertEquals(RequestOrigin.AGENT, capturedOrigin)
     }
@@ -537,6 +669,9 @@ class InMemoryAgentRuntimeTest {
         val result = runtime.submit(startCommand())
 
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the DENIED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(accepted.agentRunId)
         assertEquals(AgentRunStatus.FAILED, runtime.getAgentRun(accepted.agentRunId)?.status)
     }
 
@@ -549,6 +684,9 @@ class InMemoryAgentRuntimeTest {
         val result = runtime.submit(startCommand())
 
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the SUSPENDED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(accepted.agentRunId)
         assertEquals(AgentRunStatus.SUSPENDED, runtime.getAgentRun(accepted.agentRunId)?.status)
     }
 
@@ -561,6 +699,9 @@ class InMemoryAgentRuntimeTest {
         val result = runtime.submit(startCommand(resourceReferences = listOf(ResourceId("nonexistent"))))
 
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the FAILED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(accepted.agentRunId)
         assertEquals(AgentRunStatus.FAILED, runtime.getAgentRun(accepted.agentRunId)?.status)
     }
 
@@ -583,6 +724,9 @@ class InMemoryAgentRuntimeTest {
         val result = runtime.submit(startCommand())
 
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the multi-step
+        // loop this test asserts on only runs once execute() is called.
+        runtime.execute(accepted.agentRunId)
         assertEquals(AgentRunStatus.COMPLETED, runtime.getAgentRun(accepted.agentRunId)?.status)
         assertEquals(listOf(1, 2, 3), stepNumbersSeen)
         assertEquals(2, permissionEngine.evaluateCallCount)
@@ -598,6 +742,9 @@ class InMemoryAgentRuntimeTest {
         val result = runtime.submit(startCommand())
 
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the FAILED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(accepted.agentRunId)
         assertEquals(AgentRunStatus.FAILED, runtime.getAgentRun(accepted.agentRunId)?.status)
         assertEquals(0, permissionEngine.evaluateCallCount)
     }
@@ -612,6 +759,9 @@ class InMemoryAgentRuntimeTest {
         val result = runtime.submit(startCommand())
 
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the FAILED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(accepted.agentRunId)
         assertEquals(AgentRunStatus.FAILED, runtime.getAgentRun(accepted.agentRunId)?.status)
         assertEquals(0, permissionEngine.evaluateCallCount)
     }
@@ -629,6 +779,9 @@ class InMemoryAgentRuntimeTest {
         val result = runtime.submit(startCommand())
 
         val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the SUSPENDED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(accepted.agentRunId)
         assertEquals(AgentRunStatus.SUSPENDED, runtime.getAgentRun(accepted.agentRunId)?.status)
         assertEquals(1, permissionEngine.evaluateCallCount) // only the one permitted step was ever attempted
         assertEquals(1, source.nextStepCallCount) // the second consultation never happened -- the bound is
@@ -654,7 +807,17 @@ class InMemoryAgentRuntimeTest {
         identity.register(agentIdentity())
 
         var result: AgentRunCommandResult? = null
-        val job = launch { result = runtime.submit(startCommand()) }
+        val job = launch {
+            val submitResult = runtime.submit(startCommand())
+            result = submitResult
+            // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit()
+            // alone now only reaches READY, before AgentStepSource is ever consulted; execute()
+            // (called here, in the same launched coroutine) is what actually enters step 1 and
+            // lets source.enteredStep1 below fire.
+            if (submitResult is AgentRunCommandResult.Accepted) {
+                runtime.execute(submitResult.agentRunId)
+            }
+        }
 
         source.enteredStep1.await()
         val suspendResult = runtime.submit(suspendCommand())
@@ -674,7 +837,10 @@ class InMemoryAgentRuntimeTest {
         val (runtime, identity, _) = buildRuntime { approvedDecision() }
         identity.register(owner())
         identity.register(agentIdentity())
-        runtime.submit(startCommand()) // reaches COMPLETED synchronously
+        val started = assertIs<AgentRunCommandResult.Accepted>(runtime.submit(startCommand()))
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): reaches
+        // COMPLETED once execute() is called -- submit() alone now only reaches READY.
+        runtime.execute(started.agentRunId)
 
         val result = runtime.submit(suspendCommand())
 
@@ -705,7 +871,17 @@ class InMemoryAgentRuntimeTest {
         identity.register(agentIdentity())
 
         var startResult: AgentRunCommandResult? = null
-        val startJob = launch { startResult = runtime.submit(startCommand()) }
+        val startJob = launch {
+            val submitResult = runtime.submit(startCommand())
+            startResult = submitResult
+            // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit()
+            // alone now only reaches READY, before AgentStepSource is ever consulted; execute()
+            // (called here, in the same launched coroutine) is what actually enters step 1 and
+            // lets source.enteredStep1 below fire.
+            if (submitResult is AgentRunCommandResult.Accepted) {
+                runtime.execute(submitResult.agentRunId)
+            }
+        }
 
         source.enteredStep1.await()
         assertIs<AgentRunCommandResult.Accepted>(runtime.submit(suspendCommand()))
@@ -729,7 +905,10 @@ class InMemoryAgentRuntimeTest {
         val (runtime, identity, _) = buildRuntime { approvedDecision() }
         identity.register(owner())
         identity.register(agentIdentity())
-        runtime.submit(startCommand()) // reaches COMPLETED synchronously
+        val started = assertIs<AgentRunCommandResult.Accepted>(runtime.submit(startCommand()))
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): reaches
+        // COMPLETED once execute() is called -- submit() alone now only reaches READY.
+        runtime.execute(started.agentRunId)
 
         val result = runtime.submit(resumeCommand())
 
@@ -757,6 +936,9 @@ class InMemoryAgentRuntimeTest {
         identity.register(owner())
         identity.register(agentIdentity())
         val started = assertIs<AgentRunCommandResult.Accepted>(runtime.submit(startCommand()))
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the SUSPENDED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(started.agentRunId)
         assertEquals(AgentRunStatus.SUSPENDED, runtime.getAgentRun(started.agentRunId)?.status)
 
         val result = runtime.submit(cancelCommand())
@@ -771,6 +953,9 @@ class InMemoryAgentRuntimeTest {
         identity.register(owner())
         identity.register(agentIdentity())
         val started = assertIs<AgentRunCommandResult.Accepted>(runtime.submit(startCommand()))
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the COMPLETED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(started.agentRunId)
         assertEquals(AgentRunStatus.COMPLETED, runtime.getAgentRun(started.agentRunId)?.status)
 
         val result = runtime.submit(cancelCommand(reason = "too late"))
@@ -809,7 +994,7 @@ class InMemoryAgentRuntimeTest {
         fixture.identity.register(agentIdentity(taskId = "task-fast", owner = PrincipalId("user-2")))
 
         val slowJob = launch {
-            fixture.runtime.submit(
+            val submitResult = fixture.runtime.submit(
                 startCommand(
                     taskId = "task-slow",
                     goalDescription = "slow action",
@@ -817,15 +1002,22 @@ class InMemoryAgentRuntimeTest {
                     correlationId = "corr-slow",
                 ),
             )
+            // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit()
+            // alone now only reaches READY, before the ControllableTool is ever invoked;
+            // execute() (called here, in the same launched coroutine) is what actually blocks
+            // inside the Tool and lets controllableTool.executeStarted below fire.
+            if (submitResult is AgentRunCommandResult.Accepted) {
+                fixture.runtime.execute(submitResult.agentRunId)
+            }
         }
 
         fixture.controllableTool.executeStarted.await()
 
         // While the slow Agent Run's step is still executing -- blocked inside the Tool, with the
         // Agent Runtime's own Mutex deliberately NOT held across that call (design document
-        // Section 8) -- a completely unrelated Agent Run's START must still be able to proceed and
-        // finish. If the Mutex were (incorrectly) held for the whole slow submit() call, this next
-        // line would hang until the test timed out.
+        // Section 8) -- a completely unrelated Agent Run's START/execute() must still be able to
+        // proceed and finish. If the Mutex were (incorrectly) held for the whole slow execute()
+        // call, the next line would hang until the test timed out.
         val fastResult = fixture.runtime.submit(
             startCommand(
                 taskId = "task-fast",
@@ -835,6 +1027,7 @@ class InMemoryAgentRuntimeTest {
             ),
         )
         val fastAccepted = assertIs<AgentRunCommandResult.Accepted>(fastResult)
+        fixture.runtime.execute(fastAccepted.agentRunId)
         assertEquals(AgentRunStatus.COMPLETED, fixture.runtime.getAgentRun(fastAccepted.agentRunId)?.status)
 
         fixture.controllableTool.complete(ToolResult(toolId = "tool.slow", success = true))
@@ -851,7 +1044,7 @@ class InMemoryAgentRuntimeTest {
         fixture.identity.register(agentIdentity(taskId = "task-slow", owner = PrincipalId("user-1")))
 
         val job = launch {
-            fixture.runtime.submit(
+            val submitResult = fixture.runtime.submit(
                 startCommand(
                     taskId = "task-slow",
                     goalDescription = "slow action",
@@ -859,6 +1052,13 @@ class InMemoryAgentRuntimeTest {
                     correlationId = "corr-slow",
                 ),
             )
+            // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): submit()
+            // alone now only reaches READY, before the ControllableTool is ever invoked;
+            // execute() (called here, in the same launched coroutine) is what actually blocks
+            // inside the Tool and lets controllableTool.executeStarted below fire.
+            if (submitResult is AgentRunCommandResult.Accepted) {
+                fixture.runtime.execute(submitResult.agentRunId)
+            }
         }
 
         fixture.controllableTool.executeStarted.await()
@@ -934,5 +1134,75 @@ class InMemoryAgentRuntimeTest {
         assertEquals(2, runtime.listAgentRuns().size)
         assertEquals(TaskId("task-1"), runtime.getAgentRun(first.agentRunId)?.taskId)
         assertEquals(TaskId("task-2"), runtime.getAgentRun(second.agentRunId)?.taskId)
+    }
+
+    // --- Controlled Agent Run Submission: run-initiation permission check
+    // (docs/implementation/CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Section 1) ---
+
+    @Test
+    fun `a DENIED run-initiation permission evaluation is Rejected before any AgentRun record is created`() = runTest {
+        val source = FakeAgentStepSource { AgentStepDecision.Complete }
+        var agentCreatedPublished = false
+        val fixture = buildRuntime(
+            agentStepSource = source,
+            runInitiationDecisionFor = { approvedRunInitiationDecision().copy(decision = PermissionDecisionOutcome.DENIED) },
+        ) { approvedDecision() }
+        fixture.identity.register(owner())
+        fixture.identity.register(agentIdentity())
+        fixture.eventBus.subscribe(EventType("agent.created"), PrincipalId("test-subscriber")) { agentCreatedPublished = true }
+
+        val result = fixture.runtime.submit(startCommand())
+
+        val rejected = assertIs<AgentRunCommandResult.Rejected>(result)
+        assertEquals(AgentRunCommandType.START, rejected.commandType)
+        assertTrue(rejected.reason.contains("DENIED"))
+        // No record at all -- not merely "stuck at CREATED" (Scope Lock Section 1 corrects the
+        // Contract Design's CREATED-vs-FAILED question: the question is void, since no AgentRun
+        // is ever inserted for a permission-denied START).
+        assertNull(fixture.runtime.getAgentRun(AgentRunId("run-for-task-1")))
+        assertFalse(agentCreatedPublished)
+        // Agent Identity resolution and AgentStepSource consultation both never happen: if
+        // identity resolution had been attempted, a CREATED record would exist (per the
+        // unresolvable-Agent-Identity precedent above) -- it does not.
+        assertEquals(0, source.nextStepCallCount)
+    }
+
+    @Test
+    fun `a DEFERRED run-initiation permission evaluation is also Rejected, with a distinct reason, before any AgentRun record is created`() = runTest {
+        val source = FakeAgentStepSource { AgentStepDecision.Complete }
+        var agentCreatedPublished = false
+        val fixture = buildRuntime(
+            agentStepSource = source,
+            runInitiationDecisionFor = { approvedRunInitiationDecision().copy(decision = PermissionDecisionOutcome.DEFERRED) },
+        ) { approvedDecision() }
+        fixture.identity.register(owner())
+        fixture.identity.register(agentIdentity())
+        fixture.eventBus.subscribe(EventType("agent.created"), PrincipalId("test-subscriber")) { agentCreatedPublished = true }
+
+        val result = fixture.runtime.submit(startCommand())
+
+        val rejected = assertIs<AgentRunCommandResult.Rejected>(result)
+        assertTrue(rejected.reason.contains("DEFERRED"))
+        assertNull(fixture.runtime.getAgentRun(AgentRunId("run-for-task-1")))
+        assertFalse(agentCreatedPublished)
+        assertEquals(0, source.nextStepCallCount)
+    }
+
+    @Test
+    fun `an APPROVED_WITH_CONFIRMATION run-initiation decision proceeds exactly like APPROVED`() = runTest {
+        val (runtime, identity, permissionEngine) = buildRuntime(
+            runInitiationDecisionFor = { approvedRunInitiationDecision().copy(decision = PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION) },
+        ) { approvedDecision() }
+        identity.register(owner())
+        identity.register(agentIdentity())
+
+        val result = runtime.submit(startCommand())
+
+        val accepted = assertIs<AgentRunCommandResult.Accepted>(result)
+        // Two-Phase Acceptance/Execution Amendment (Scope Lock Amendment, A.5): the COMPLETED
+        // outcome this test asserts is only reached once execute() runs the step loop.
+        runtime.execute(accepted.agentRunId)
+        assertEquals(AgentRunStatus.COMPLETED, runtime.getAgentRun(accepted.agentRunId)?.status)
+        assertEquals(1, permissionEngine.evaluateCallCount)
     }
 }

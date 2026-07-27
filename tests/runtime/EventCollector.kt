@@ -86,6 +86,13 @@ class EventCollector(
             // task.* (InMemoryTaskManagerRuntime, Unit 9)
             EventType("task.created"),
             EventType("task.ready"),
+            // task.* (Controlled Agent Run Submission -- deferred test-fixture-only fix,
+            // agreed during this milestone's Native Verification: InMemoryTaskManagerRuntime
+            // has published these two since Controlled Agent Run Submission landed, but this
+            // set was not updated at the time, so a collector attached to a run through
+            // InMemoryTaskManagerRuntime silently never saw either event)
+            EventType("task.agent_run_started"),
+            EventType("task.agent_run_rejected"),
             // agent.* (InMemoryAgentRuntime, Unit 9)
             EventType("agent.created"),
             EventType("agent.initialised"),
