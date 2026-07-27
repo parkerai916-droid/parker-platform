@@ -81,9 +81,13 @@ Parker is governed by published architectural principles.
 
 # What Works Today
 
-Parker's constitutional foundation is complete and frozen. The project has moved well beyond isolated runtime components and now includes a production-composed conversational pipeline covering intake, context assembly, reasoning, reply delivery, Goal handoff, Plan Candidate generation, and Planner Runtime invocation.
+Parker's constitutional foundation is complete and frozen. The project has moved well beyond isolated runtime components and now includes a production-composed pipeline covering intake, context assembly, reasoning, reply delivery, Goal handoff, Plan Candidate generation, Planner Runtime invocation, and — as of the Controlled Agent Run Submission milestone — controlled Agent Run submission and synchronous execution.
 
-This represents a meaningful architectural transition, not merely an additive one. Parker now has a production composition root: a single, real assembly point where the runtime components built and verified across previous units are wired together into the platform's canonical runtime, rather than remaining a set of independently verified, isolated pieces. The conversation, reasoning, reply, and planning pipeline described below exists today as a production-composed system — constructed once, in one place, and exercised by real production code — not merely as a design proven correct only inside isolated tests.
+This represents a meaningful architectural transition, not merely an additive one. Parker now has a production composition root: a single, real assembly point where the runtime components built and verified across previous units are wired together into the platform's canonical runtime, rather than remaining a set of independently verified, isolated pieces. The conversation, reasoning, reply, planning, and execution pipeline described below exists today as a production-composed system — constructed once, in one place, and exercised by real production code — not merely as a design proven correct only inside isolated tests.
+
+An accepted Task Proposal no longer stops at queueing. The Task Manager Runtime now submits a `START` command for every accepted proposal, gated by an explicit run-initiation permission evaluation before any Agent Run record exists. Acceptance and execution are deliberately separate phases: an accepted Agent Run stops at `READY`, and `AgentRunExecutionTrigger.execute(agentRunId)` — invoked only after the Task Manager Runtime has released its own lock — owns the `READY → RUNNING` transition, the `agent.started` event, and execution through the existing Agent Runtime. Reasoning, planning, trust, and execution remain architecturally separate, independently governed components throughout.
+
+This is controlled submission and execution wired into the production path, not a general-purpose autonomous agent or a finished tool-execution surface — see "What Is Not Yet Complete" below.
 
 The current implementation has been developed through governance-first units under the Parker Engineering Standard (**PES-001**).
 
@@ -122,7 +126,13 @@ Trust and execution substrate:
 - Resource Registry
 - Event Bus and runtime event coordination
 - Task Manager Runtime
+- controlled Agent Run submission from the Task Manager Runtime
+- explicit `START` run-initiation permission evaluation
+- two-phase Agent Run acceptance and execution
+- `AgentRunExecutionTrigger`
+- deterministic production `AgentStepSource`
 - Multi-step Agent Runtime
+- Agent Run lifecycle ordering through `READY`, `RUNNING`, and terminal Agent events
 - suspend, resume, and cancel semantics
 - auditable runtime outcomes
 
@@ -169,7 +179,7 @@ Goal and planning path:
 | Reply Delivery | Complete |
 | Goal Routing | Complete |
 | Planner Integration | Complete |
-| Agent Execution | In Progress |
+| Agent Execution | Controlled Submission Complete |
 | Workflow Engine | Planned |
 | Android Product | Planned |
 
@@ -216,7 +226,19 @@ ConversationReplyCoordinator
       │         PlannerRuntime
       │              │
       │              ▼
-      │       PlanningSessionResult
+      │      TaskManagerRuntime
+      │              │
+      │              ▼
+      │    AgentRunCommandChannel
+      │              │
+      │              ▼
+      │    AgentRunExecutionTrigger
+      │              │
+      │              ▼
+      │         AgentRuntime
+      │              │
+      │              ▼
+      │      ExecutionPipeline
       │
       └── NoAction → NotAccepted
       │
@@ -227,7 +249,7 @@ ConversationOutcome
 ParkerRuntimeOutcome
 ```
 
-This path is now assembled in the production composition root rather than existing only in isolated tests.
+This path is now assembled in the production composition root rather than existing only in isolated tests. The Goal branch now reaches controlled Agent Run submission and synchronous execution through the Agent Runtime, not merely `PlanningSessionResult` — production Tool execution from planned Goals remains incomplete.
 
 ---
 
@@ -267,12 +289,55 @@ ParkerRuntimeOutcome.Planned
 
 ---
 
+## Milestone: Controlled Agent Run Submission
+
+Parker can now carry an accepted Task Proposal through controlled Agent Run submission and synchronous execution:
+
+```text
+TaskProposal
+    ↓
+TaskManagerRuntime
+    ↓
+START permission evaluation
+    ↓
+AgentRunCommandChannel.submit()
+    ↓
+AgentRun READY
+    ↓
+task.agent_run_started
+    ↓
+Task QUEUED → RUNNING
+    ↓
+AgentRunExecutionTrigger.execute()
+    ↓
+AgentRun RUNNING
+    ↓
+ExecutionPipeline
+```
+
+This path preserves Parker's constitutional separation:
+
+> **Cognition proposes. Trust authorises. Runtime executes.**
+
+A Planner Runtime may propose a Task Proposal, but nothing may submit or execute an Agent Run except through the same Trust Framework that already governs every other executable action in this platform.
+
+Submission and execution are deliberately two separate phases, not one combined call, in order to preserve:
+
+- truthful lifecycle semantics — an Agent Run only reaches `RUNNING` once execution has actually begun;
+- correct event ordering — `task.agent_run_started` is always published before execution begins;
+- mutex safety — the Task Manager Runtime releases its own lock before execution runs; and
+- explicit Trust control — acceptance and execution remain independently governed steps.
+
+An earlier single-phase design was found, during native verification, to risk a runtime deadlock under this ordering; the two-phase design above is the corrected, adopted result.
+
+---
+
 ## Current Verified Baseline
 
 - **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
-- **Implementation status:** Sprint 11 complete, followed by the Reasoning-to-Planning Handoff, Plan Candidate Generation, and Plan Candidate to PlannerRuntime Integration units, all complete
-- **Latest completed unit:** Plan Candidate to PlannerRuntime production integration
-- **Latest commit:** `8f6c3d1` — `feat: wire plan candidate generation into production planning pipeline`
+- **Implementation status:** Controlled Agent Run Submission complete
+- **Latest completed unit:** Controlled Agent Run Submission
+- **Latest commit:** `991fca3` — `feat(runtime): implement approved two-phase agent run submission`
 - **Verification:** full native Gradle test suite passed
 - **Build result:** `BUILD SUCCESSFUL`
 - **Repository state:** `main` synchronized with `origin/main`; working tree clean
@@ -283,32 +348,33 @@ ParkerRuntimeOutcome.Planned
 
 Parker is not yet a finished consumer assistant.
 
-The most important remaining boundary is no longer basic reasoning or planning. It is the controlled transition from an authorised Task Proposal into Agent Run submission and execution — the point where a plan Trust has not yet examined would otherwise become autonomous action. That transition must preserve Parker's constitutional separation between cognition, trust, and execution: a Planner Runtime may propose a Task Proposal, but nothing may submit or execute an Agent Run except through the same Trust Framework that already governs every other executable action in this platform.
+Controlled Agent Run submission is now live, and synchronous execution through the Agent Runtime is now wired into the production path. The remaining boundary is the transition from an accepted, executing Agent Run into real Tool execution against planned Goals, and the broader Task lifecycle behaviour that follows an Agent Run's outcome.
 
 Still under development:
 
-- Agent Run submission from the Task Manager Runtime
-- execution of constructed `AgentRunCommand` values
-- production task lifecycle completion beyond the currently implemented proposal and queueing path
-- tool execution initiated from planned Goals
+- production tool execution initiated from planned Goals
+- broader Task lifecycle handling after Agent failure
+- richer production completion and recovery semantics
 - scheduling and workflow orchestration
 - Workflow Engine
 - live validation of `LocalHttpModelInferenceClient` against the intended local model server
-- production-ready plugin ecosystem
-- complete Android application runtime and user experience
+- plugin ecosystem
+- Android runtime and user experience
 - multi-device deployment
-- public developer SDK
-- production security hardening
-- end-user release packaging
+- public SDK
+- security hardening
+- release packaging
 
-A real Task record may now be created and reach `QUEUED`, but the current `InMemoryTaskManagerRuntime` constructs and does not submit an `AgentRunCommand`. No production `AgentRunCommandChannel` implementation currently consumes that command.
+The production `AgentStepSource` used today, `DeterministicAgentStepSource`, is a deliberate, deterministic stand-in for a future Planner-backed step source, not tool execution driven by real planned Goals. A configured Agent Run may still terminate in `agent.failed` where no executable action mapping exists for its proposed action — an expected outcome for an unmapped action today, not a defect this milestone resolves.
 
 Therefore:
 
 - planning is live;
 - task proposal and queueing infrastructure exists;
-- autonomous execution is not live;
-- tool invocation from the Goal-planning path is not live.
+- controlled Agent Run submission is live;
+- synchronous execution through the Agent Runtime is wired;
+- a configured Agent Run may still terminate in `agent.failed` where no executable action mapping exists;
+- planned Goal to real Tool execution remains incomplete.
 
 This boundary is intentional and remains subject to future governance.
 
@@ -430,8 +496,27 @@ ConversationReplyCoordinator
         │             └── ResponseDelivery
         │
         ├── Goal → GoalPlanningHandoffCoordinator
-        │            ├── PlanCandidateGenerator
-        │            └── PlannerRuntime
+        │            │
+        │            ▼
+        │       PlanCandidateGenerator
+        │            │
+        │            ▼
+        │         PlannerRuntime
+        │            │
+        │            ▼
+        │      TaskManagerRuntime
+        │            │
+        │            ▼
+        │    AgentRunCommandChannel
+        │            │
+        │            ▼
+        │    AgentRunExecutionTrigger
+        │            │
+        │            ▼
+        │         AgentRuntime
+        │            │
+        │            ▼
+        │      ExecutionPipeline
         │
         └── NoAction → NotAccepted
         │
@@ -442,7 +527,7 @@ ConversationOutcome
 ParkerRuntimeOutcome
 ```
 
-The conversation path is now constructed by the production composition root. Reply delivery remains permission-gated. Goal planning reaches the real Planner Runtime. Every branch converges on `ConversationOutcome`, then `ParkerRuntimeOutcome`. The next unresolved boundary is controlled Agent Run submission and execution.
+The conversation path is now constructed by the production composition root. Reply delivery remains permission-gated. Goal planning reaches the real Planner Runtime, and an accepted Task Proposal now reaches controlled Agent Run submission and synchronous execution through the Agent Runtime. Every branch converges on `ConversationOutcome`, then `ParkerRuntimeOutcome`. The next unresolved boundary is production tool execution from planned Goals and broader Task lifecycle completion.
 
 ---
 
@@ -582,10 +667,10 @@ The constitutional foundation is defined by:
 
 - **Architecture:** Constitutional Foundation complete and frozen
 - **Runtime Foundation:** Complete
-- **Sprint status:** Sprint 11 complete
-- **Latest completed unit:** Plan Candidate to PlannerRuntime production integration
-- **Latest production commit:** `8f6c3d1`
-- **Current focus:** governance for the transition from an authorised Task Proposal to Agent Run submission and controlled execution
+- **Sprint status:** Controlled Agent Run Submission complete
+- **Latest completed unit:** Controlled Agent Run Submission, implemented per the approved two-phase acceptance/execution design
+- **Latest production commit:** `991fca3`
+- **Current focus:** production Tool execution from planned Goals, and broader Task lifecycle handling
 
 ---
 
@@ -682,8 +767,8 @@ tools/
 | Item | Status |
 |---|---|
 | Architecture | Constitutional Foundation (Frozen) |
-| Implementation | Sprint 11+ |
-| Latest Commit | `8f6c3d1` |
+| Implementation | Controlled Agent Run Submission complete |
+| Latest Commit | `991fca3` — `feat(runtime): implement approved two-phase agent run submission` |
 | Build Status | `BUILD SUCCESSFUL` |
 | Branch | `main` |
 | Repository | Clean • Synced with origin |
@@ -701,13 +786,13 @@ Parker is being developed in deliberate stages:
 5. Reply composition and delivery ✅
 6. Goal handoff and Plan Candidate generation ✅
 7. Planner Runtime production integration ✅
-8. Controlled Agent Run submission
+8. Controlled Agent Run submission ✅
 9. Workflow Engine
 10. Plugins and richer tools
 11. Android product integration
 12. Multi-device production platform
 
-The next major trust boundary is:
+The controlled transition from an authorised Task Proposal into Agent Run submission and synchronous execution is now implemented:
 
 ```text
 PlanningSessionResult
@@ -719,7 +804,13 @@ AgentRunCommand
 Authorised execution
 ```
 
-That transition must preserve the constitutional separation between cognition, trust, and execution.
+This does not make Agent Execution complete overall. The next unresolved boundary is:
+
+- production Tool execution from planned Goals;
+- broader Task lifecycle completion and failure handling;
+- workflow orchestration.
+
+That transition must continue to preserve the constitutional separation between cognition, trust, and execution.
 
 ---
 
