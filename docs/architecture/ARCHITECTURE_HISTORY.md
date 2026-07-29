@@ -159,3 +159,119 @@ across subsystems, not asserted by a single one of them.
 
 This milestone does not supersede or alter any principle established by
 Architecture v1.0. It records what was built on top of it.
+
+---
+
+# Constitutional Foundation Extension — Epistemic Integrity
+
+**Date:** 29 July 2026
+
+## Summary
+
+This milestone ratifies Constitutional Amendment No. 1 — Epistemic
+Integrity as the fourth document of Parker's Constitutional Foundation,
+alongside the Parker Constitution, User Authorship and Evidence, and
+Reasoning Context established at Architecture v1.0. It is recorded as
+its own milestone, rather than folded into the 5 July 2026 entry above,
+so that the historical record of what was introduced at v1.0 is not
+rewritten.
+
+This entry deliberately does not claim a new "Architecture vX.Y" number.
+It extends the existing Constitutional Foundation rather than
+introducing a new runtime or architecture layer, and any renumbering of
+the platform's own architecture-version track remains a decision for
+the maintainers.
+
+## Introduced
+
+- Epistemic Integrity (`docs/architecture/epistemic-integrity.md`),
+  Constitutional Amendment No. 1, Version 1.0 — Ratified: 19 Articles
+  and 69 Constitutional Tests governing how Parker represents
+  knowledge.
+
+## Established Principles
+
+- Representation rather than absolute truth: Parker communicates the
+  best-supported understanding the evidence justifies, not a claim of
+  absolute truth.
+- A constitutional separation between reasoning and representation:
+  reasoning providers propose; the Constitution governs what may be
+  claimed.
+- A fourteen-state evidential taxonomy (from direct observation to
+  indeterminate), with constitutional criteria distinguishing adjacent
+  states.
+- Propositional Integrity: a proposition's framing, assumptions, and
+  structure must be examined before evidence is evaluated for or
+  against it.
+- A narrowly scoped Burden of Justification: existence, precedence, and
+  the absence of a contradicting account do not, by themselves,
+  discharge a proposition's burden of justification.
+- Evidential integrity as distinct from provenance: original evidence
+  must be distinguished from derivative evidence, and authenticity must
+  be distinguished from truth of content.
+- Negative evidence: an unexplained absence of expected evidence may be
+  relevant, but is never proof, and requires disclosure of what was
+  expected and what alternative explanations were considered.
+- Temporal integrity and revision: Parker's understanding may be
+  revised as new evidence arrives, without rewriting the historical
+  record of what was known when an earlier conclusion was reached.
+
+## Review Process
+
+This amendment underwent four drafting rounds and one independent
+adversarial constitutional audit before ratification:
+
+1. Initial drafting (Version 0.1).
+2. Constitutional review and expansion (Version 0.2).
+3. Constitutional review and narrowed doctrine (Version 0.3).
+4. Independent adversarial constitutional audit of Version 0.3 —
+   twelve findings identified across materiality, evidential-state
+   definition, interpretive hierarchy, disclosure obligations, test
+   coverage, and terminology consistency.
+5. Narrow hardening amendment resolving all twelve findings, with no
+   new constitutional doctrine introduced (Version 0.4).
+6. Ratification as Version 1.0.
+
+Full drafting and audit history is preserved in `docs/reviews/`:
+`EPISTEMIC_INTEGRITY_DRAFT_V0_1.md` through `_V0_3.md`,
+`EPISTEMIC_INTEGRITY_CONSTITUTIONAL_AUDIT_V0_3.md`,
+`EPISTEMIC_INTEGRITY_V0_4_RATIFICATION_SOURCE.md`, the
+`EPISTEMIC_INTEGRITY_CONSTITUTIONAL_REGISTER.md`, and the
+`EPISTEMIC_INTEGRITY_RATIFICATION_RECORD.md`.
+
+## Architectural Significance
+
+This milestone extends Parker's constitutional discipline from
+authority (v1.0's original scope) to knowledge: the same principle that
+no intelligence within Parker holds unchecked authority now has a
+counterpart for what Parker is permitted to claim to know. Capability,
+persuasiveness, official status, and repetition are each explicitly
+denied as substitutes for evidence.
+
+## Implementation Impact
+
+From this milestone onwards:
+
+- All reasoning providers, memory systems, retrieval engines, document
+  processors, world models, workflows, agents, tools, and plugins must
+  comply with Epistemic Integrity's 19 Articles.
+- Future capabilities inherit these obligations by function (storing,
+  retrieving, transforming, or representing a material proposition),
+  not merely by being named in Article XIX's illustrative list.
+- `docs/architecture/epistemic-integrity.md` is constitutionally frozen;
+  future changes require a formal constitutional amendment, following
+  a review process of the kind recorded in
+  `docs/reviews/EPISTEMIC_INTEGRITY_CONSTITUTIONAL_REGISTER.md`.
+
+## Constitutional Documents
+
+- parker-constitution.md
+- user-authorship-and-evidence.md
+- reasoning-context.md
+- epistemic-integrity.md
+
+## Notes
+
+This milestone does not supersede or alter any principle established by
+Architecture v1.0 or v2.0. It adds a fourth constitutional document to
+the Constitutional Foundation established at v1.0.

@@ -11,8 +11,9 @@ These documents sit above the numbered chapters below and take precedence over t
 1. [Parker Constitution](parker-constitution.md) — Parker's highest-level, immutable values and architectural constraints.
 2. [User Authorship and Evidence](user-authorship-and-evidence.md) — how Parker assists communication without fabricating evidence or rewriting the user's account.
 3. [Reasoning Context](reasoning-context.md) — the three knowledge layers (Memory, World Model, Reasoning Context) and how information flows between them.
+4. [Epistemic Integrity](epistemic-integrity.md) — Constitutional Amendment No. 1, Version 1.0 (Ratified): how Parker represents knowledge — evidential states, propositional integrity, the burden of justification, provenance, evidential integrity, contemporaneity, evidential weight, uncertainty, confidence, and revision — so that reasoning is never represented with more certainty than the evidence justifies.
 
-Architecture v1.0 (Constitutional Foundation) is established by the constitutional documents: parker-constitution.md, user-authorship-and-evidence.md, reasoning-context.md, and the existing trust model. The wider numbered architecture set remains on its existing version track until a separate versioning pass updates it.
+Architecture v1.0 (Constitutional Foundation) is established by the constitutional documents: parker-constitution.md, user-authorship-and-evidence.md, reasoning-context.md, and the existing trust model. The wider numbered architecture set remains on its existing version track until a separate versioning pass updates it. Epistemic Integrity (epistemic-integrity.md) was ratified afterward, on 29 July 2026, as Constitutional Amendment No. 1 to this same Constitutional Foundation; its ratification history is recorded as its own milestone in `ARCHITECTURE_HISTORY.md` and in `docs/reviews/EPISTEMIC_INTEGRITY_CONSTITUTIONAL_REGISTER.md`, rather than folded into the original 5 July 2026 entry.
 
 This folder contains Chapters 1-20 of the Parker Platform Architecture working draft.
 
