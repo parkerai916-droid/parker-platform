@@ -346,3 +346,279 @@ interface KnowledgeStore {
     suspend fun retrieve(query: KnowledgeQuery): List<KnowledgeRecord>
     suspend fun forget(memoryId: KnowledgeId): Boolean
 }
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 4 (Knowledge Item,
+ * Knowledge Promotion, Knowledge Reference). Additively extends this
+ * file (`docs/implementation/PROGRAMME_3_KNOWLEDGE_MEMORY_IMPLEMENTATION_PLAN.md`
+ * §4's own repository-impact table names this file, not a new one, as
+ * Unit 4's location) with the three public model types
+ * `docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`
+ * §12 (the Contract Inventory) requires, plus the one minimal supporting
+ * value type ([KnowledgeItemStatus]) that Knowledge Item's own approved
+ * "current lifecycle status" field requires to compile. Every existing
+ * declaration above this comment -- [KnowledgeId], [KnowledgeCategory],
+ * [CandidateKnowledge], [KnowledgeRecord], [KnowledgePromotionDecision],
+ * [KnowledgePromotionPolicy], [KnowledgeQuery], [KnowledgeStore] -- is
+ * unchanged by this Unit; nothing below alters an existing field,
+ * method, or behaviour.
+ *
+ * ## Why this Unit adds to this file rather than a new one
+ *
+ * Unlike Units 2 and 3 ([EvidentialState], [ProvenanceReference]), which
+ * the Implementation Plan's own repository-impact table places in "a new
+ * value-type location," that same table places Unit 4 in this file
+ * specifically: "`src/interfaces/MemoryStore.kt` | 1, 4, 5 | Renamed
+ * (Unit 1); additively extended (Units 4, 5)." The Migration Strategy's
+ * "avoid duplicate sources of truth" principle (Section 5) reinforces
+ * this: Knowledge Item, Knowledge Promotion, and Knowledge Reference are
+ * built as additive extensions of the renamed record shape this file
+ * already holds, sharing its identifier space ([KnowledgeId]) rather
+ * than existing as an unrelated, independently addressed type family in
+ * a different file.
+ *
+ * ## No duplicated field -- the actual test this Unit applies
+ *
+ * "Additive extension... never a second, parallel type carrying its own
+ * independent copy of what the renamed shape already holds" (Migration
+ * Strategy, Section 5) is satisfied concretely, not merely asserted:
+ * [KnowledgeItem] carries none of [KnowledgeRecord]'s own fields
+ * ([KnowledgeRecord.knowledgePayload], [KnowledgeRecord.category],
+ * [KnowledgeRecord.sourceSubsystem], [KnowledgeRecord.correlationId],
+ * [KnowledgeRecord.promotedAt], [KnowledgeRecord.originatingPrincipalId],
+ * [KnowledgeRecord.sensitive], [KnowledgeRecord.relatedMemoryIds]) -- it
+ * shares only [KnowledgeId], the identifier space, and adds exclusively
+ * the four things Contract Design Version 2 §12's own Knowledge Item row
+ * names: a Memory Core evidence reference, an evidential-state
+ * classification, a provenance reference, and an ordered history -- plus
+ * the current-status field that row also names. This is a disclosed,
+ * reasoned reading of "additive extension," not a literal in-place field
+ * merge into [KnowledgeRecord] itself -- Contract Design Version 2 §12
+ * lists Knowledge Item as its own, separately named contract, and this
+ * task's own instruction is to "introduce the approved public Knowledge
+ * Memory model types," which only makes sense read as introducing
+ * genuinely new, distinctly named types.
+ *
+ * [KnowledgeItem.history] and [KnowledgeRecord.history] remain two
+ * differently-shaped fields sharing the word "history" -- this was
+ * identified by the Unit 4 Governance Reconciliation as a genuine
+ * duplicate-source-of-truth risk, not a merely apparent one, and is now
+ * resolved by
+ * `docs/governance/PROGRAMME_3_UNIT_4_SCOPE_LOCK_CLARIFICATION.md` §1:
+ * [KnowledgeItem.history] is the sole constitutionally authoritative
+ * structured history for the new public model; [KnowledgeRecord.history]
+ * remains legacy migration state only, never independently authoritative
+ * for the same promoted knowledge, and neither is synchronised, copied,
+ * merged, or dual-written by this or any unit before Unit 10. See that
+ * clarification document for the full reasoning and for which later unit
+ * (Unit 10) owns retiring or adapting the legacy field.
+ *
+ * ## Why the evidence reference is `MemoryCoreRecordReference`, not `AssertionId`
+ *
+ * This Unit originally typed [KnowledgeItem.evidenceReference] and
+ * [KnowledgePromotion.evidenceReference] as [AssertionId], reasoning from
+ * Contract Design Version 2's own illustrative examples (Section 3: "a
+ * referenced Assertion's own recorded confidence"; "the underlying
+ * Assertion" being marked superseded). The Unit 4 Governance
+ * Reconciliation identified this as an unauthorised over-narrowing:
+ * every *general* statement in the frozen documents describing this
+ * field is deliberately generic ("a Memory Core record," Contract Design
+ * Version 2 §5; "a reference to Memory Core content," §7; "Memory Core
+ * evidence reference," §2, §12), and
+ * `docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_SCOPE_LOCK.md` §3 is
+ * explicit that the submission path must be adapted to reference real
+ * Memory Core "Provenance, Entity, Document, and Evidence records" --
+ * not Assertion alone. [MemoryCoreRecordReference]
+ * (`MemoryCore.kt`, Programme 2 Unit 7 Amendment) is the existing,
+ * already-authoritative sealed type covering exactly this breadth
+ * ([EntityId], [DocumentId], [AssertionId], [RelationshipId]), reused
+ * here unchanged rather than inventing a new reference hierarchy, per
+ * this task's own repeated instruction not to invent a duplicate type
+ * where an authoritative one already exists.
+ *
+ * ## Why [KnowledgeItemStatus] exists, and why it is exactly two values
+ *
+ * Contract Design Version 2 §12 states Knowledge Item carries "its own
+ * current lifecycle status" but does not itself enumerate the value set
+ * -- this task's own instruction, anticipating exactly this gap,
+ * authorises introducing "only that minimal approved representation"
+ * where the contract requires a lifecycle value type for these models to
+ * compile coherently, provided it is explained rather than improvised.
+ * Section 3's own lifecycle prose names exactly two states a Knowledge
+ * Item's *current* status can honestly be: "current" (the state entered
+ * at promotion and preserved through revision) and "no longer current"
+ * (Retirement's own defining language). Restoration does not introduce a
+ * third current-status value -- Section 3 is explicit that restoration
+ * is a new, visible history *event*, appended alongside promotion,
+ * revision, and retirement, not a status value of its own; a restored
+ * Knowledge Item's current status returns to [KnowledgeItemStatus.ACTIVE],
+ * with the fact that it was once retired preserved permanently in
+ * [KnowledgeItem.history], never in the current-status field. No
+ * transition method, validation, or enforcement of legal transitions
+ * exists on this enum, mirroring [MemoryCoreRecordStatus]'s own identical
+ * precedent ("enforced by MemoryCore's own implementation, never by this
+ * enum itself") -- that enforcement is Unit 7's own, later, separately
+ * authorised responsibility.
+ *
+ * ## What this Unit does not implement
+ *
+ * No promotion decision, no promotion algorithm, no revision logic, no
+ * supersession logic, no contradiction handling, no retirement or
+ * restoration logic, no ordering rule, no persistence, no retrieval, and
+ * no permission evaluation exist anywhere in this Unit's additions --
+ * every type below is a plain, immutable data holder, exactly like every
+ * other record in this file and in `MemoryCore.kt`. [KnowledgeItem.history]
+ * is declared as an ordered `List` (Kotlin's own read-only collection
+ * interface, matching every other collection field in this file and in
+ * `MemoryCore.kt`), but nothing in this Unit populates it, sorts it, or
+ * enforces the non-forking guarantee Contract Design Version 2 §3
+ * describes -- exactly as [Entity.aliases]'s own "additive-only" KDoc
+ * already discloses for a structurally identical reason, that guarantee
+ * is a future write-path behaviour (Unit 7's own responsibility), not a
+ * property a plain data class can enforce on itself.
+ */
+
+/**
+ * The minimal, closed representation of a [KnowledgeItem]'s own current
+ * lifecycle status -- see this file's Unit 4 header KDoc, "Why
+ * [KnowledgeItemStatus] exists, and why it is exactly two values," for
+ * the full reasoning. [ACTIVE] is the state a newly promoted
+ * [KnowledgeItem] enters and remains in through ordinary revision;
+ * [RETIRED] is entered only through Unit 7's own, not-yet-implemented
+ * retirement act. No other value exists, and no transition between them
+ * is validated by this enum itself.
+ */
+enum class KnowledgeItemStatus {
+    ACTIVE,
+    RETIRED,
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 4. The disclosed,
+ * read-only record documenting the basis for one classification event --
+ * an initial promotion, or a subsequent revision -- of exactly one
+ * [KnowledgeItem]
+ * (`docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`
+ * §12: "One such record exists per promotion and per subsequent
+ * revision -- never only at initial promotion; each is attached to
+ * exactly one classification event and never independently altered
+ * afterward"). This type is a plain data holder only -- it is never
+ * caller-invocable, carries no `execute` method or algorithm of any
+ * kind, and makes no permission or truth determination. Nothing in this
+ * Unit constructs a [KnowledgePromotion] value; that begins with Unit 6
+ * (initial promotion) and Unit 7 (subsequent revision).
+ *
+ * [knowledgeId] identifies the [KnowledgeItem] this disclosure belongs
+ * to. [evidenceReference] names the specific Memory Core record whose
+ * evidence justified this particular classification event -- see this
+ * file's Unit 4 header KDoc, "Why the evidence reference is
+ * `MemoryCoreRecordReference`" -- deliberately its own field, separate
+ * from [KnowledgeItem.evidenceReference], since a later revision may
+ * cite different or additional evidence than the promotion that preceded
+ * it (Contract Design Version 2 §3, Revision). [resultingState] is the
+ * [EvidentialState] this event produced. [occurredAt] carries no default
+ * value, consistent with every other event timestamp in this file and in
+ * `MemoryCore.kt` (a data class must not silently read the system
+ * clock). [basis] is the disclosed, non-blank, free-text explanation of
+ * why this classification was assigned -- the same free-text-over-new-
+ * type choice this file's own [KnowledgePromotionDecision.Reject.reason]
+ * already makes, for the same reason: a promotion or revision's basis
+ * weighs several named factors together (Contract Design Version 2 §5),
+ * not a single structural rule a closed enum could represent without
+ * misrepresenting it as one.
+ */
+data class KnowledgePromotion(
+    val knowledgeId: KnowledgeId,
+    val evidenceReference: MemoryCoreRecordReference,
+    val resultingState: EvidentialState,
+    val occurredAt: Instant,
+    val basis: String,
+) {
+    init {
+        require(basis.isNotBlank()) { "KnowledgePromotion.basis must not be blank" }
+    }
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 4. Represents a
+ * single piece of promoted, durable knowledge
+ * (`docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`
+ * §12). See this file's own Unit 4 header KDoc for the full reasoning
+ * behind this type's shape, its shared identifier space with
+ * [KnowledgeRecord], and why it duplicates none of that type's own
+ * fields.
+ *
+ * [knowledgeId] reuses [KnowledgeId] unchanged -- this task's own
+ * instruction not to invent a duplicate identifier type where an
+ * authoritative one already exists, and the Migration Strategy's own
+ * "avoid duplicate sources of truth" principle (Implementation Plan
+ * Section 5), applied directly. [evidenceReference] names the Memory
+ * Core record currently supporting this Knowledge Item -- see this
+ * file's Unit 4 header KDoc, "Why the evidence reference is
+ * `MemoryCoreRecordReference`." [provenanceReference] is the immutable,
+ * identifier-only pointer (Unit 3) to that evidence's own originating
+ * [Provenance] record -- carried directly on [KnowledgeItem] so a
+ * caller can reach provenance detail without a second Memory Core hop
+ * through [evidenceReference] first, per Contract Design Version 2 §6's
+ * own "retrieve provenance references" capability. [evidentialState] is
+ * the current Article IV classification (Unit 2) -- never a truth
+ * determination (Contract Design Version 2 §1, §3). [status] defaults to
+ * [KnowledgeItemStatus.ACTIVE], mirroring [Entity.status]'s own identical
+ * "single, deterministic, always-correct default for a genuinely new
+ * record" reasoning -- every promoted Knowledge Item begins current, by
+ * definition. [history] defaults to an empty list, matching this file's
+ * own [KnowledgeRecord.history] and `MemoryCore.kt`'s own collection-field
+ * convention; nothing in this Unit populates it (see this file's Unit 4
+ * header KDoc, "What this Unit does not implement"). [history] is the
+ * sole constitutionally authoritative structured history for this
+ * record -- [KnowledgeRecord.history] is a separate, legacy field
+ * belonging to the still-production-wired legacy path and is never
+ * synchronised with this one
+ * (`docs/governance/PROGRAMME_3_UNIT_4_SCOPE_LOCK_CLARIFICATION.md` §1).
+ *
+ * No `init` block validates [evidenceReference], [provenanceReference],
+ * [evidentialState], or [status] beyond their own types' construction-
+ * time checks -- consistent with this task's own instruction that this
+ * Unit's types contain no validation beyond ordinary type safety.
+ */
+data class KnowledgeItem(
+    val knowledgeId: KnowledgeId,
+    val evidenceReference: MemoryCoreRecordReference,
+    val provenanceReference: ProvenanceReference,
+    val evidentialState: EvidentialState,
+    val status: KnowledgeItemStatus = KnowledgeItemStatus.ACTIVE,
+    val history: List<KnowledgePromotion> = emptyList(),
+)
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 4. A lightweight,
+ * read-oriented handle to exactly one [KnowledgeItem]
+ * (`docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`
+ * §12: "Lightweight identifier and summary for a Knowledge Item...
+ * carries no independent state"). [knowledgeId] is the [KnowledgeItem]
+ * this reference points to -- the only field this type carries.
+ *
+ * This type originally also carried a stored `summary: String` field.
+ * The Unit 4 Governance Reconciliation found that a stored, captured-at-
+ * construction field is in tension with "carries no independent state"
+ * -- a value captured once and possibly held by a caller after the
+ * underlying [KnowledgeItem] changes is structurally exactly the
+ * "independent state" that phrase forbids, and neither Contract Design
+ * version specifies a concrete field shape for "summary detail" beyond
+ * prose. `docs/governance/PROGRAMME_3_UNIT_4_SCOPE_LOCK_CLARIFICATION.md`
+ * §2 resolved this: [KnowledgeReference] is identifier-only for
+ * Programme 3; any summary or task-scoped display content is a
+ * retrieval-time projection belonging to Unit 9's own Knowledge Result
+ * contract, never stored state owned by this type.
+ *
+ * Deliberately absent, per Contract Design Version 2 §12's own "carries
+ * no independent state": [evidentialState], [provenanceReference],
+ * [status], and [history] all remain exclusively on [KnowledgeItem]
+ * itself -- a caller needing any of them must follow [knowledgeId] to
+ * the full record, never rely on a copy embedded here, so that this type
+ * can never drift out of sync with the record it points to (this row's
+ * own "no silent rewriting" constitutional obligation).
+ */
+data class KnowledgeReference(
+    val knowledgeId: KnowledgeId,
+)
