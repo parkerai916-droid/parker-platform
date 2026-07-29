@@ -622,3 +622,39 @@ data class KnowledgeItem(
 data class KnowledgeReference(
     val knowledgeId: KnowledgeId,
 )
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 5. The caller-facing
+ * proposal that existing Memory Core evidence be evaluated for promotion
+ * (`docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`
+ * §2, §7, §12). This type is distinct from, and not a rename, adapter,
+ * or evolution in place of, legacy [CandidateKnowledge] -- see
+ * `docs/governance/PROGRAMME_3_UNIT_5_SCOPE_LOCK_CLARIFICATION.md` §1 for
+ * the full reasoning. It represents nothing durable: a candidate that is
+ * not promoted produces no [KnowledgeItem] and no Knowledge Memory record
+ * of any kind (Contract Design Version 2 §3).
+ *
+ * [evidenceReference] is the only field this type carries, per Contract
+ * Design Version 2's own three independent, consistent statements of this
+ * contract's shape (§2: "a reference to existing Memory Core evidence
+ * and nothing else evidential"; §7: "a reference to Memory Core content
+ * -- never a copy"; §12: "a Memory Core evidence reference only"). It is
+ * typed [MemoryCoreRecordReference], not [AssertionId], for the same
+ * reason [KnowledgeItem.evidenceReference] and
+ * [KnowledgePromotion.evidenceReference] are (see this file's Unit 4
+ * header KDoc).
+ *
+ * No confidence field and no [EvidentialState] field exist on this type,
+ * by design, not by omission -- `docs/governance/PROGRAMME_3_UNIT_5_SCOPE_LOCK_CLARIFICATION.md`
+ * §4 confirms this makes a caller-declared confidence or evidential-state
+ * value structurally impossible to construct through this contract at
+ * all, a compile-time guarantee stronger than a runtime-rejected
+ * malformed instance, and the intended satisfaction of Contract Design
+ * Version 2 §5's Amendment 2 ("a Knowledge Candidate carrying either is
+ * malformed and must be rejected on that basis"). No `init` block exists
+ * on this type -- there is no field beyond ordinary type safety left to
+ * validate.
+ */
+data class KnowledgeCandidate(
+    val evidenceReference: MemoryCoreRecordReference,
+)
