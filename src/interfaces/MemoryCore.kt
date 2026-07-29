@@ -5,7 +5,7 @@ import java.time.Instant
 /**
  * Programme 2, Memory Core, Implementation Unit 1 (Shared identifiers and
  * enumerations). Opens `src/interfaces/MemoryCore.kt`, following exactly
- * the "one file per subsystem" precedent [MemoryStore] and [WorldModel]
+ * the "one file per subsystem" precedent [KnowledgeStore] and [WorldModel]
  * already established -- every Memory Core contract
  * `docs/architecture/MEMORY_CORE_CONTRACT_DESIGN.md` (the Contract
  * Design) approved, and every rule
@@ -30,7 +30,7 @@ import java.time.Instant
  * (Contract Design Section 4; Scope Lock Section 11's own "stable
  * identifiers" performance expectation). Follows the same established
  * identifier pattern every other long-lived Parker object already uses
- * ([PrincipalId], [ResourceId], [MemoryId], [ConversationId],
+ * ([PrincipalId], [ResourceId], [KnowledgeId], [ConversationId],
  * [AgentRunId]): a single, blank-rejecting `String` value, validated at
  * construction, with no behaviour beyond identity.
  */
@@ -364,7 +364,7 @@ enum class DocumentProcessingStatus {
  * -- never through a field embedded on [Document] itself. Repeating an
  * embedded, untyped relationship list here would reintroduce exactly
  * the weakness the Governance Review found and criticised in today's
- * `MemoryRecord.relatedMemoryIds`, which `Relationship` was designed to
+ * `KnowledgeRecord.relatedMemoryIds`, which `Relationship` was designed to
  * remove. Deliberately, no such field exists on this data class, and
  * `DocumentTest.kt`'s own structural test confirms it, rather than
  * merely asserting it in this comment.
@@ -430,7 +430,7 @@ data class Document(
  * ever could -- adding a second, parallel origin field here would
  * reintroduce exactly the scattered-provenance-fields weakness the
  * Governance Review already found and criticised in today's
- * `MemoryRecord`.
+ * `KnowledgeRecord`.
  *
  * ## Supporting and contradicting references, satisfied without an
  * embedded field
@@ -642,8 +642,8 @@ data class Relationship(
  * corresponding [MemoryCore] operation mints the identifier and any other
  * Memory-Core-owned field internally, and returns the completed, stored
  * record. This mirrors the repository's own existing
- * `CandidateMemory -> MemoryStore.remember -> MemoryRecord` precedent
- * (`src/interfaces/MemoryStore.kt`), extended here to Memory Core's five
+ * `CandidateKnowledge -> KnowledgeStore.remember -> KnowledgeRecord` precedent
+ * (`src/interfaces/KnowledgeStore.kt`), extended here to Memory Core's five
  * record kinds.
  *
  * Each candidate type carries exactly its stored counterpart's
@@ -681,10 +681,10 @@ data class Relationship(
  * ranked, embedding-based, or inferred retrieval exists anywhere in this
  * interface, and no method accepts or evaluates a permission decision --
  * [requestingPrincipalId] is carried on every query for auditability
- * only, mirroring [MemoryQuery.requestingPrincipalId]'s own identical,
+ * only, mirroring [KnowledgeQuery.requestingPrincipalId]'s own identical,
  * already-approved treatment; permission evaluation remains entirely
  * external to Memory Core (Contract Design Section 9's own disclosed
- * correction against today's `MemoryStore.retrieve` precedent).
+ * correction against today's `KnowledgeStore.retrieve` precedent).
  */
 
 /**
@@ -1019,7 +1019,7 @@ enum class RelationshipTraversalDirection {
  * optional and additive -- omitting all of them (aside from the
  * mandatory [requestingPrincipalId] and [maximumResults]) is a valid
  * request meaning "any Entity," not an error. [maximumResults] mirrors
- * [MemoryQuery.maximumResults]'s own already-approved required, positive
+ * [KnowledgeQuery.maximumResults]'s own already-approved required, positive
  * bound.
  */
 data class EntityLookupQuery(
@@ -1181,8 +1181,8 @@ data class ProvenanceLookupQuery(
  * else. No semantic, ranked, embedding-based, or inferred retrieval
  * exists anywhere on this interface, and no method performs
  * principal-based filtering internally: [PrincipalId] parameters here
- * exist for auditability only, exactly as [MemoryQuery]'s own already-
- * approved [MemoryQuery.requestingPrincipalId] does. A caller receiving
+ * exist for auditability only, exactly as [KnowledgeQuery]'s own already-
+ * approved [KnowledgeQuery.requestingPrincipalId] does. A caller receiving
  * more than it should ever see is prevented entirely externally, by a
  * future permission-filtering decorator
  * (`PermissionFilteredMemoryRetrieval`, not implemented by this Unit)

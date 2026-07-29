@@ -115,7 +115,7 @@ sealed class ReasoningProviderResponse {
  * supplied [ReasoningContext] and returns a [ReasoningProviderResponse].
  * It is a pure callee: it never executes or authorises actions, never
  * accesses tools directly, never invokes `PlannerRuntime`,
- * `ExecutionPipeline`, `PermissionEngine`, `MemoryStore`, or `WorldModel`,
+ * `ExecutionPipeline`, `PermissionEngine`, `KnowledgeStore`, or `WorldModel`,
  * and never remembers continuity internally -- any continuity across
  * chained invocations is supplied by the caller re-presenting context, not
  * retained by the provider (Architecture Sections 4 and 7).

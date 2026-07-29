@@ -16,7 +16,7 @@ import parker.core.interfaces.WorldQuery
  * `docs/architecture/WORLD_MODEL_CONTRACT_DESIGN.md`). Implements
  * [WorldModel] directly -- no separate `WorldModelRuntime` interface
  * exists to implement instead, per `WORLD_MODEL_CONTRACT_DESIGN.md` §6's
- * own determination -- mirroring [InMemoryMemoryStore]/
+ * own determination -- mirroring [InMemoryKnowledgeStore]/
  * [InMemoryIdentityService]'s identical "one interface, one implementing
  * class" precedent.
  *
@@ -64,7 +64,7 @@ import parker.core.interfaces.WorldQuery
  * interface over this exact same instance and the exact same owned state,
  * not a second store (`docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md`
  * Section 2.3), mirroring precisely how this class's own sibling
- * `InMemoryMemoryStore` implements `MemoryStore` and `MemorySource`
+ * `InMemoryKnowledgeStore` implements `KnowledgeStore` and `KnowledgeSource`
  * together. [recall] is a direct, zero-logic delegate to [query] -- no new
  * map, no new lock, no new field, and no duplicated filtering logic: the
  * one authoritative subject-matching, confidence-filtering, and

@@ -73,7 +73,7 @@ import java.util.UUID
  *   Principal before acting. This is the only dependency this
  *   implementation accepts -- its absence of any other constructor
  *   parameter is itself the structural guarantee that this engine cannot
- *   reach `PlannerRuntime`, `ExecutionPipeline`, `MemoryStore`, `WorldModel`,
+ *   reach `PlannerRuntime`, `ExecutionPipeline`, `KnowledgeStore`, `WorldModel`,
  *   or any reasoning provider.
  */
 class InMemoryConversationEngine(

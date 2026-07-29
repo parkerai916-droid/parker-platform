@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
  * types), never-throw resolution, PrincipalLifecycleTransitions
  * enforcement, lastSeenAt tracking, and ownership queries.
  *
- * Does not exercise, mock, or reference Agent, MemoryStore, WorldModel,
+ * Does not exercise, mock, or reference Agent, KnowledgeStore, WorldModel,
  * ModelManager, Plugin, or any AI/model integration -- none of those
  * systems are dependencies of this service, per this phase's explicit
  * scope (see the last test in this file for the structural proof).
@@ -238,7 +238,7 @@ class InMemoryIdentityServiceTest {
     @Test
     fun `InMemoryIdentityService has no dependency on Agent, Memory, World Model, or AI systems`() {
         // Structural proof, not a runtime assertion: the constructor takes no arguments, and
-        // nothing in this class references Agent, MemoryStore, WorldModel, ModelManager, or
+        // nothing in this class references Agent, KnowledgeStore, WorldModel, ModelManager, or
         // Plugin types -- none of those systems exist as concrete implementations, and none are
         // touched by this phase, per its explicit scope.
         val service: IdentityService = InMemoryIdentityService()

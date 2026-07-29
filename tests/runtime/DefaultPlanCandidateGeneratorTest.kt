@@ -170,7 +170,7 @@ class DefaultPlanCandidateGeneratorTest {
         // minimum-dependency list): a class with no fields at all cannot hold a
         // reference to PlannerRuntime, TaskManagerRuntime, PermissionEngine,
         // ToolRegistry, ReasoningContext, ConversationEngine/ConversationHistorySource,
-        // MemoryStore/MemorySource, or WorldModel/WorldModelSource -- there is no
+        // KnowledgeStore/KnowledgeSource, or WorldModel/WorldModelSource -- there is no
         // field for any such reference to occupy.
         val fieldNames = DefaultPlanCandidateGenerator::class.java.declaredFields.map { it.name }.toSet()
 

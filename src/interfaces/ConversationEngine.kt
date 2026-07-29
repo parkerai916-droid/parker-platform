@@ -173,7 +173,7 @@ data class ConversationDisposition(
  * **What an implementation must not do (Contract Design Section 1,
  * unchanged):** engage a reasoning provider; construct a
  * `PlanningRequest`; construct an `OutboundParkerResponse`; call
- * `PlannerRuntime`, `ExecutionPipeline`, `PermissionEngine`, `MemoryStore`,
+ * `PlannerRuntime`, `ExecutionPipeline`, `PermissionEngine`, `KnowledgeStore`,
  * or `WorldModel`; repeat, second-guess, or bypass [CommunicationIntake]'s
  * own two structural checks; implement termination, expiry, reopening, or
  * cleanup policy (Continuity Contract Design Section 7 -- out of this

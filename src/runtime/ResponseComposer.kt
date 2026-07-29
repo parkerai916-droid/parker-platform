@@ -36,7 +36,7 @@ import java.time.Instant
  *   itself the structural guarantee that this class cannot reach
  *   `ResponseDelivery`, `ExecutionPipeline`, `ResourceRegistry`,
  *   `ToolRegistry`, `PermissionEngine`, `PlannerRuntime`,
- *   `ReasoningProvider`, `MemoryStore`, or `WorldModel`.
+ *   `ReasoningProvider`, `KnowledgeStore`, or `WorldModel`.
  */
 class ResponseComposer(
     private val identityService: IdentityService,

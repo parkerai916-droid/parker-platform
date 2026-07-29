@@ -68,7 +68,7 @@ data class WorldBelief(
  * deliberately excluded, per that same table) submits via
  * [WorldModel.observe].
  *
- * [confidence] is required, not optional, unlike `CandidateMemory`'s own
+ * [confidence] is required, not optional, unlike `CandidateKnowledge`'s own
  * confidence field -- `WorldModel.md`'s Normative Requirement ("World
  * state MUST have confidence") is unconditional.
  *
@@ -130,7 +130,7 @@ sealed class ObservationResult {
      * The Observation was not applied at all; whatever belief existed
      * for [subject] beforehand (if any) is unchanged. [reason] is free
      * text, not a closed enum, for the same reason
-     * `MemoryPromotionDecision.Reject.reason` is
+     * `KnowledgePromotionDecision.Reject.reason` is
      * (`WORLD_MODEL_CONTRACT_DESIGN.md` §3): a weighing decision (a
      * confidence comparison against an existing, competing belief, or a
      * retraction with nothing to retract), not a fixed set of
@@ -173,7 +173,7 @@ interface WorldModelUpdatePolicy {
  * (`WORLD_MODEL_CONTRACT_DESIGN.md` §4). Deliberately carries no
  * requesting-Principal field and no correlation identifier -- neither
  * has an identified concrete need for the World Model, unlike Memory's
- * own `MemoryQuery` (see that section for the reasoning).
+ * own `KnowledgeQuery` (see that section for the reasoning).
  *
  * [subjectMatch] is optional (`docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`,
  * a narrowly-scoped Sprint 11 revision to this originally Sprint 4,
@@ -206,7 +206,7 @@ data class WorldQuery(
  * Foundation component reaches the World Model
  * (`WORLD_MODEL_CONTRACT_DESIGN.md` §6). No separate `WorldModelRuntime`
  * interface exists -- this remains the World Model's one public
- * interface, mirroring `MemoryStore`'s identical "one interface, no
+ * interface, mirroring `KnowledgeStore`'s identical "one interface, no
  * wrapper" determination.
  */
 interface WorldModel {

@@ -1,14 +1,14 @@
 package parker.core.runtime
 
 import kotlinx.coroutines.test.runTest
-import parker.core.interfaces.CandidateMemory
+import parker.core.interfaces.CandidateKnowledge
 import parker.core.interfaces.ConversationId
 import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.InboundOwnerMessage
-import parker.core.interfaces.MemoryCategory
-import parker.core.interfaces.MemoryId
-import parker.core.interfaces.MemoryRecord
-import parker.core.interfaces.MemorySource
+import parker.core.interfaces.KnowledgeCategory
+import parker.core.interfaces.KnowledgeId
+import parker.core.interfaces.KnowledgeRecord
+import parker.core.interfaces.KnowledgeSource
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.Principal
 import parker.core.interfaces.PrincipalId
@@ -56,18 +56,18 @@ import kotlin.test.assertTrue
  * once; a single returned memory renders one entry; multiple returned
  * memories render in the exact order `recall` returns them, never
  * reordered; confidence is rendered when present and omitted, not
- * fabricated, when absent; the constructed `MemoryQuery` carries the
+ * fabricated, when absent; the constructed `KnowledgeQuery` carries the
  * sender `PrincipalId`, the request text as `relevance`, and the
  * message's own `correlationId`, with `category` always `null`;
  * `maximumResults` is always positive and caller-supplied, with no
  * specific value architecturally asserted; a `recall` failure propagates
- * unchanged; `MemorySource` exposes no mutation operation; and one
- * real-collaborator test exercises a real [InMemoryMemoryStore], not a
+ * unchanged; `KnowledgeSource` exposes no mutation operation; and one
+ * real-collaborator test exercises a real [InMemoryKnowledgeStore], not a
  * fake, end-to-end.
  *
  * [FakeIdentityService], [FakeToolRegistry], [FakeConversationHistorySource],
  * and [FakeMemorySource] are used throughout (except where a real
- * [InMemoryMemoryStore] is deliberately substituted, Section 13, below),
+ * [InMemoryKnowledgeStore] is deliberately substituted, Section 13, below),
  * never a real
  * [InMemoryIdentityService]/[InMemoryToolRegistry]/[InMemoryConversationEngine]
  * -- this file exercises [DefaultReasoningContextAssembler] in isolation,
@@ -394,12 +394,12 @@ class DefaultReasoningContextAssemblerTest {
     // --- structural: no prohibited dependency slot exists ---
 
     @Test
-    fun `the assembler's constructor accepts exactly five dependencies -- IdentityService, ToolRegistry, ConversationHistorySource, MemorySource, and WorldModelSource`() {
+    fun `the assembler's constructor accepts exactly five dependencies -- IdentityService, ToolRegistry, ConversationHistorySource, KnowledgeSource, and WorldModelSource`() {
         val constructor = DefaultReasoningContextAssembler::class.java.declaredConstructors.single()
         val parameterTypes = constructor.parameterTypes.map { it.simpleName }.toSet()
 
         assertEquals(
-            setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "MemorySource", "WorldModelSource"),
+            setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "KnowledgeSource", "WorldModelSource"),
             parameterTypes,
         )
     }
@@ -410,11 +410,11 @@ class DefaultReasoningContextAssemblerTest {
         payload: String,
         sourceSubsystem: String = "test-harness",
         confidence: Double? = null,
-        memoryId: MemoryId = MemoryId("memory-${System.nanoTime()}"),
+        memoryId: KnowledgeId = KnowledgeId("memory-${System.nanoTime()}"),
         promotedAt: Instant = Instant.parse("2026-01-01T08:00:00Z"),
-    ) = MemoryRecord(
+    ) = KnowledgeRecord(
         memoryId = memoryId,
-        category = MemoryCategory.SEMANTIC,
+        category = KnowledgeCategory.SEMANTIC,
         sourceSubsystem = sourceSubsystem,
         correlationId = "corr-memory-test",
         promotedAt = promotedAt,
@@ -489,7 +489,7 @@ class DefaultReasoningContextAssemblerTest {
     }
 
     @Test
-    fun `the constructed MemoryQuery carries the sender PrincipalId, the request text as relevance, and the message's own correlationId, with a null category`() = runTest {
+    fun `the constructed KnowledgeQuery carries the sender PrincipalId, the request text as relevance, and the message's own correlationId, with a null category`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val memorySource = FakeMemorySource { emptyList() }
@@ -506,7 +506,7 @@ class DefaultReasoningContextAssemblerTest {
     }
 
     @Test
-    fun `the constructed MemoryQuery always carries a positive, caller-supplied maximumResults -- no specific value is architecturally asserted`() = runTest {
+    fun `the constructed KnowledgeQuery always carries a positive, caller-supplied maximumResults -- no specific value is architecturally asserted`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val memorySource = FakeMemorySource { emptyList() }
@@ -515,7 +515,7 @@ class DefaultReasoningContextAssemblerTest {
         assembler.assemble(resolved(message()))
 
         val query = memorySource.recallCallArguments.single()
-        assertTrue(query.maximumResults >= 1, "MemoryQuery.maximumResults must be a positive, caller-supplied bound")
+        assertTrue(query.maximumResults >= 1, "KnowledgeQuery.maximumResults must be a positive, caller-supplied bound")
     }
 
     @Test
@@ -531,25 +531,25 @@ class DefaultReasoningContextAssemblerTest {
     }
 
     @Test
-    fun `MemorySource exposes no mutation operation -- no remember, no forget, only recall`() {
-        val functionNames = MemorySource::class.functions.map { it.name }.toSet()
+    fun `KnowledgeSource exposes no mutation operation -- no remember, no forget, only recall`() {
+        val functionNames = KnowledgeSource::class.functions.map { it.name }.toSet()
 
-        assertTrue("recall" in functionNames, "MemorySource must expose recall")
-        assertFalse("remember" in functionNames, "MemorySource must not expose remember")
-        assertFalse("forget" in functionNames, "MemorySource must not expose forget")
+        assertTrue("recall" in functionNames, "KnowledgeSource must expose recall")
+        assertFalse("remember" in functionNames, "KnowledgeSource must not expose remember")
+        assertFalse("forget" in functionNames, "KnowledgeSource must not expose forget")
     }
 
-    // --- 13. Sprint 11 Unit 7: real-collaborator integration (InMemoryMemoryStore, not a fake) ---
+    // --- 13. Sprint 11 Unit 7: real-collaborator integration (InMemoryKnowledgeStore, not a fake) ---
 
     @Test
-    fun `a memory promoted through a real InMemoryMemoryStore is retrieved and rendered end-to-end`() = runTest {
+    fun `a memory promoted through a real InMemoryKnowledgeStore is retrieved and rendered end-to-end`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val realMemoryStore = InMemoryMemoryStore()
+        val realMemoryStore = InMemoryKnowledgeStore()
         realMemoryStore.remember(
-            CandidateMemory(
+            CandidateKnowledge(
                 knowledgePayload = "the owner's favourite programming language is Kotlin",
-                proposedCategory = MemoryCategory.SEMANTIC,
+                proposedCategory = KnowledgeCategory.SEMANTIC,
                 sourceSubsystem = "test-harness",
                 correlationId = "corr-seed",
                 originatingPrincipalId = ownerPrincipalId,
@@ -557,8 +557,8 @@ class DefaultReasoningContextAssemblerTest {
             ),
         )
         val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), realMemoryStore, FakeWorldModelSource())
-        // The request text becomes MemoryQuery.relevance (Contract Design Section 5), and
-        // InMemoryMemoryStore.retrieve's own existing, already-tested behaviour requires the
+        // The request text becomes KnowledgeQuery.relevance (Contract Design Section 5), and
+        // InMemoryKnowledgeStore.retrieve's own existing, already-tested behaviour requires the
         // memory's knowledgePayload to *contain* relevance as a substring -- so a short,
         // substring-matching request text is used here deliberately, not a full sentence, to
         // exercise the real, unmodified matching behaviour rather than inventing a semantic one.

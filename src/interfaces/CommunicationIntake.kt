@@ -26,7 +26,7 @@ import java.time.Instant
  *   `ExecutionRequest`.
  * - **This file deliberately does NOT introduce any dependency on, or call
  *   into, `ExecutionPipeline`, `PermissionEngine`, `ToolRegistry`,
- *   `PlannerRuntime`, `AgentRuntime`, `MemoryStore`, or `WorldModel`.**
+ *   `PlannerRuntime`, `AgentRuntime`, `KnowledgeStore`, or `WorldModel`.**
  *   Constructing an `ExecutionRequest` and submitting it through
  *   `ExecutionPipeline` is Response Delivery's job (Contract Design Section
  *   7) and, further upstream of that, Cognition's job (Section 9) -- both
@@ -95,7 +95,7 @@ data class InboundOwnerMessage(
 /**
  * Contract Design Section 3: the outbound response, field-shaped, kept as a
  * **distinct type** from [InboundOwnerMessage] rather than a single
- * direction-flagged type -- mirroring [CandidateMemory]/[MemoryRecord] and
+ * direction-flagged type -- mirroring [CandidateKnowledge]/[KnowledgeRecord] and
  * [WorldObservation]/[WorldBelief]'s identical precedent of keeping
  * structurally-similar but semantically-distinct lifecycle stages
  * structurally distinct, precisely so a future implementation cannot
@@ -197,7 +197,7 @@ sealed class CommunicationIntakeDisposition {
  * **What an implementation must not do (Section 6):** interpret
  * `message.text`; decide whether the message implies an action; construct a
  * `PlanningRequest` or an `ExecutionRequest`; or itself call
- * `PlannerRuntime`, `AgentRuntime`, `MemoryStore`, or `WorldModel`.
+ * `PlannerRuntime`, `AgentRuntime`, `KnowledgeStore`, or `WorldModel`.
  *
  * **What happens to an accepted message next is not decided by this
  * interface.** `CommunicationIntake` makes an accepted [InboundOwnerMessage]
@@ -209,7 +209,7 @@ sealed class CommunicationIntakeDisposition {
  * **Dependencies.** An implementation's only two collaborators are
  * `ModuleRegistry` (channel-status check) and `IdentityService`
  * (sender-resolution check) -- no dependency on `ToolRegistry`,
- * `ExecutionPipeline`, `PlannerRuntime`, `AgentRuntime`, `MemoryStore`, or
+ * `ExecutionPipeline`, `PlannerRuntime`, `AgentRuntime`, `KnowledgeStore`, or
  * `WorldModel` is introduced (Section 9).
  */
 interface CommunicationIntake {

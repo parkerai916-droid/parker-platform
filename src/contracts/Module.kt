@@ -15,7 +15,7 @@ package parker.core.interfaces
  * Contract Design Section 1: a stable, caller-declared identity (declared
  * in a module's own [ModuleDescriptor], validated for uniqueness by
  * [ModuleRegistry] at Registration -- never minted by Parker itself),
- * matching [PrincipalId]/[ResourceId]/[MemoryId]'s identical established
+ * matching [PrincipalId]/[ResourceId]/[KnowledgeId]'s identical established
  * shape.
  */
 @JvmInline

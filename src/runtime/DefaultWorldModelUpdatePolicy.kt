@@ -10,7 +10,7 @@ import parker.core.interfaces.WorldObservation
 /**
  * Sprint 4, Track B, Unit B3. The concrete, deterministic
  * [WorldModelUpdatePolicy] this Unit supplies, mirroring
- * `DefaultMemoryPromotionPolicy`'s own role for Memory and
+ * `DefaultKnowledgePromotionPolicy`'s own role for Memory and
  * `DefaultPlanDecision`'s own role for the Planner Runtime.
  *
  * ## Structural validity is not this class's concern
@@ -18,8 +18,8 @@ import parker.core.interfaces.WorldObservation
  * Blank subject, blank value (outside a retraction), and out-of-range
  * confidence are already rejected at [WorldObservation]'s own
  * construction time (a thrown `IllegalArgumentException`), exactly as
- * `CandidateMemory` rejects the same class of problem before a
- * `MemoryPromotionPolicy` is ever consulted. By the time an Observation
+ * `CandidateKnowledge` rejects the same class of problem before a
+ * `KnowledgePromotionPolicy` is ever consulted. By the time an Observation
  * reaches [evaluate], it is already known to be well-formed; this
  * policy's own decisions concern currency, never malformation.
  *

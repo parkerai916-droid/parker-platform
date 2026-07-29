@@ -41,7 +41,7 @@ import parker.core.interfaces.ReasoningProviderResponse
  * @param reasoningProvider Used to reason about the resulting Turn.
  *   The absence of any other constructor parameter is itself the
  *   structural guarantee that this coordinator cannot reach
- *   `PlannerRuntime`, `ExecutionPipeline`, `MemoryStore`, or `WorldModel`.
+ *   `PlannerRuntime`, `ExecutionPipeline`, `KnowledgeStore`, or `WorldModel`.
  */
 class ConversationTurnReasoningCoordinator(
     private val conversationEngine: ConversationEngine,

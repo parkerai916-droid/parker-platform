@@ -39,7 +39,7 @@ import parker.core.interfaces.ReasoningProviderResponse
  *   constructor parameter is itself the structural guarantee that this
  *   class cannot reach `IdentityService`, `ExecutionPipeline`,
  *   `PermissionEngine`, `ReasoningProvider`, `ResourceRegistry`,
- *   `ToolRegistry`, `PlannerRuntime`, `MemoryStore`, or `WorldModel`,
+ *   `ToolRegistry`, `PlannerRuntime`, `KnowledgeStore`, or `WorldModel`,
  *   at any depth, except transitively through these two dependencies'
  *   own already-approved internals.
  */

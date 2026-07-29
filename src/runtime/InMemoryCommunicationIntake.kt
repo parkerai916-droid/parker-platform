@@ -35,7 +35,7 @@ import parker.core.interfaces.ModuleStatus
  *   [InboundOwnerMessage] is retained in an internal, in-memory list,
  *   exposed via [acceptedMessages]/[acceptedMessageFor] -- observability
  *   methods outside the formal [CommunicationIntake] interface, mirroring
- *   `InMemoryMemoryStore.wasForgotten`'s identical "observability method
+ *   `InMemoryKnowledgeStore.wasForgotten`'s identical "observability method
  *   outside the formal interface" precedent. This is exactly the shape
  *   Contract Design's own Conclusion names as sufficient for a first
  *   implementation unit ("making accepted ones inspectable").
@@ -47,7 +47,7 @@ import parker.core.interfaces.ModuleStatus
  *   [CommunicationIntake] itself. Response Delivery (Contract Design
  *   Section 7) and everything upstream of it (Cognition, Section 9) are
  *   both explicitly out of scope for a first Communication Runtime unit.
- * - No `PlannerRuntime`, `AgentRuntime`, `MemoryStore`, or `WorldModel` call
+ * - No `PlannerRuntime`, `AgentRuntime`, `KnowledgeStore`, or `WorldModel` call
  *   is made. Section 9 is explicit that engaging any of the four frozen
  *   subsystems is Cognition's own decision, downstream of an accepted
  *   message -- not `CommunicationIntake`'s.
@@ -94,7 +94,7 @@ class InMemoryCommunicationIntake(
     /**
      * Every [InboundOwnerMessage] accepted so far, in acceptance order.
      * Observability method outside the formal [CommunicationIntake]
-     * interface, mirroring `InMemoryMemoryStore.wasForgotten`'s identical
+     * interface, mirroring `InMemoryKnowledgeStore.wasForgotten`'s identical
      * precedent. Not a substitute for a real Cognition consumption
      * mechanism (Section 6's own disclosed open item) -- this exists only
      * so an accepted message's fate can be inspected by a test or a future

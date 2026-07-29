@@ -25,7 +25,7 @@ import parker.core.interfaces.PrincipalId
  * `ModuleStatus`. [communicationIntake] is this channel's sole
  * downstream collaborator. No dependency on `ExecutionPipeline`,
  * `ExecutionRequest`, `PlannerRuntime`, `AgentRuntime`, `ToolRegistry`,
- * `ResourceRegistry`, `MemoryStore`, `WorldModel`, `PermissionEngine`,
+ * `ResourceRegistry`, `KnowledgeStore`, `WorldModel`, `PermissionEngine`,
  * `IdentityService`, or `ModuleRegistry` is introduced.
  *
  * **`CorrelationId` minting (IDR-001).** Each call mints a fresh

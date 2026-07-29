@@ -29,7 +29,7 @@ import kotlin.test.assertTrue
  * (channel `ENABLED`, sender resolves), their order, deterministic and
  * thread-safe behaviour, invalid-request handling, that acceptance is
  * inspectable, and the scope boundary that no `ExecutionPipeline`,
- * `PlannerRuntime`, `AgentRuntime`, `MemoryStore`, or `WorldModel`
+ * `PlannerRuntime`, `AgentRuntime`, `KnowledgeStore`, or `WorldModel`
  * dependency is introduced.
  */
 class InMemoryCommunicationIntakeTest {
@@ -293,11 +293,11 @@ class InMemoryCommunicationIntakeTest {
     // --- Scope discipline ---
 
     @Test
-    fun `InMemoryCommunicationIntake has no dependency on ExecutionPipeline, ToolRegistry, PlannerRuntime, AgentRuntime, MemoryStore, or WorldModel`() = runTest {
+    fun `InMemoryCommunicationIntake has no dependency on ExecutionPipeline, ToolRegistry, PlannerRuntime, AgentRuntime, KnowledgeStore, or WorldModel`() = runTest {
         // Structural proof, not a runtime assertion, mirroring InMemoryMemoryStoreTest's own
         // identical pattern: InMemoryCommunicationIntake's constructor takes only a
         // ModuleRegistry and an IdentityService. If this class ever gained an
-        // ExecutionPipeline, ToolRegistry, PlannerRuntime, AgentRuntime, MemoryStore, or
+        // ExecutionPipeline, ToolRegistry, PlannerRuntime, AgentRuntime, KnowledgeStore, or
         // WorldModel dependency, this two-argument construction would no longer compile --
         // the constructor signature itself is the guarantee, not this assertion.
         val registry = registryWithEnabledChannel()

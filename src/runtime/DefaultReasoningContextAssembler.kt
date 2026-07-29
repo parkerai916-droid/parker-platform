@@ -2,8 +2,8 @@ package parker.core.runtime
 
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.IdentityService
-import parker.core.interfaces.MemoryQuery
-import parker.core.interfaces.MemorySource
+import parker.core.interfaces.KnowledgeQuery
+import parker.core.interfaces.KnowledgeSource
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ResolvedInboundMessage
@@ -131,20 +131,20 @@ import parker.core.interfaces.WorldQuery
  * ## Memory (Sprint 11 Unit 7)
  *
  * One further item is rendered from [memorySource]. Unlike
- * [conversationHistorySource], `MemorySource.recall` requires a full
- * [MemoryQuery] -- there is no already-resolved key to read the way
+ * [conversationHistorySource], `KnowledgeSource.recall` requires a full
+ * [KnowledgeQuery] -- there is no already-resolved key to read the way
  * `resolvedMessage.conversationId` already is. This class therefore
- * constructs the [MemoryQuery] itself, using no new derived concept, only
+ * constructs the [KnowledgeQuery] itself, using no new derived concept, only
  * fields already present on its own input
  * (`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5):
  *
  * - `requestingPrincipalId` = `message.senderPrincipalId` -- the same
  *   `PrincipalId` already used to render "Requesting principal."
  * - `relevance` = `message.text` -- the current request's own text,
- *   reusing [MemoryStore][parker.core.interfaces.MemoryStore]'s existing,
+ *   reusing [KnowledgeStore][parker.core.interfaces.KnowledgeStore]'s existing,
  *   already-implemented, already-tested case-insensitive substring match.
  *   This is not semantic search and invents no ranking algorithm; it
- *   supplies the one value [MemoryQuery.relevance] already, contractually,
+ *   supplies the one value [KnowledgeQuery.relevance] already, contractually,
  *   requires every caller to provide.
  * - `correlationId` = `message.correlationId.value`.
  * - `maximumResults` = [MEMORY_QUERY_MAXIMUM_RESULTS] -- an
@@ -154,14 +154,14 @@ import parker.core.interfaces.WorldQuery
  * - `category` = `null` -- no category narrowing (Contract Design
  *   Section 5).
  *
- * - "Memories" -- [MemorySource.recall], called once with the constructed
- *   `MemoryQuery`. Zero or more entries are rendered, one per returned
- *   `MemoryRecord`, **in the order [MemorySource.recall] returns them** --
+ * - "Memories" -- [KnowledgeSource.recall], called once with the constructed
+ *   `KnowledgeQuery`. Zero or more entries are rendered, one per returned
+ *   `KnowledgeRecord`, **in the order [KnowledgeSource.recall] returns them** --
  *   this class does not rank, score, reorder, summarise, or interpret
  *   what it receives (Contract Design Section 6, Section 8). An empty
  *   result renders no entries at all, exactly as "no tools" and "no prior
  *   Turns" already render nothing. Each rendered entry surfaces only
- *   fields [parker.core.interfaces.MemoryRecord] already carries
+ *   fields [parker.core.interfaces.KnowledgeRecord] already carries
  *   (`knowledgePayload`, `sourceSubsystem`, and `confidence` where
  *   present) -- no confidence is computed, estimated, or defaulted where
  *   absent, and no provenance is fabricated.
@@ -174,7 +174,7 @@ import parker.core.interfaces.WorldQuery
  * `resolvedMessage.conversationId` already is, and unlike [memorySource],
  * no field on this method's own input represents a world-model subject:
  * `WorldQuery.subjectMatch` matches a structured topic key, not free-text
- * request content, so reusing the request's own text the way `MemoryQuery.relevance`
+ * request content, so reusing the request's own text the way `KnowledgeQuery.relevance`
  * does would require inventing a classification step this Unit's own
  * Scope Lock excludes
  * (`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md`).
@@ -206,7 +206,7 @@ import parker.core.interfaces.WorldQuery
  *   and "no memories" already render nothing. Each rendered entry
  *   surfaces only fields [parker.core.interfaces.WorldBelief] already
  *   carries (`subject`, `value`, `confidence`, `source`) -- `confidence`
- *   is a required field on `WorldBelief` (unlike `MemoryRecord`'s optional
+ *   is a required field on `WorldBelief` (unlike `KnowledgeRecord`'s optional
  *   one), so it is always rendered, never fabricated or computed; no
  *   provenance beyond `source` is invented.
  *
@@ -221,7 +221,7 @@ import parker.core.interfaces.WorldQuery
  *   `submitTurn` even if this class wished to.
  * @param memorySource Read use only (`recall`) -- Sprint 11 Unit 7
  *   `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5. This
- *   class never calls `MemoryStore.remember` or `MemoryStore.forget`;
+ *   class never calls `KnowledgeStore.remember` or `KnowledgeStore.forget`;
  *   [memorySource] is a separate, narrower type that cannot reach either
  *   even if this class wished to.
  * @param worldModelSource Read use only (`recall`) -- Sprint 11 Unit 8
@@ -234,14 +234,14 @@ class DefaultReasoningContextAssembler(
     private val identityService: IdentityService,
     private val toolRegistry: ToolRegistry,
     private val conversationHistorySource: ConversationHistorySource,
-    private val memorySource: MemorySource,
+    private val memorySource: KnowledgeSource,
     private val worldModelSource: WorldModelSource,
 ) : ReasoningContextAssembler {
 
     private companion object {
         /**
          * The `maximumResults` bound this Assembler supplies on every
-         * [MemoryQuery] it constructs. **Implementation policy, not
+         * [KnowledgeQuery] it constructs. **Implementation policy, not
          * architecture** -- `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`
          * Section 5 deliberately does not fix this figure, so that the
          * architecture remains neutral to whatever bounding policy a future
@@ -294,12 +294,12 @@ class DefaultReasoningContextAssembler(
         }
 
         // Sprint 11 Unit 7: memories relevant to the current request, rendered in the exact
-        // order MemorySource.recall returns them -- no ranking, no scoring, no reordering, no
+        // order KnowledgeSource.recall returns them -- no ranking, no scoring, no reordering, no
         // summarisation, no interpretation (Memory Source Contract Design Section 6/8). The
-        // MemoryQuery below is constructed entirely from fields already present on this
+        // KnowledgeQuery below is constructed entirely from fields already present on this
         // method's own input; maximumResults is implementation-defined, never architecturally
         // significant (Contract Design Section 5).
-        val memoryQuery = MemoryQuery(
+        val memoryQuery = KnowledgeQuery(
             requestingPrincipalId = message.senderPrincipalId,
             relevance = message.text,
             correlationId = message.correlationId.value,

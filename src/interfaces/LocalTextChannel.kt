@@ -44,7 +44,7 @@ import java.time.Instant
  * **Dependencies.** An implementation's only collaborator is
  * [CommunicationIntake]. No dependency on [ModuleRegistry],
  * [IdentityService], `ExecutionPipeline`, `ToolRegistry`,
- * `PermissionEngine`, `PlannerRuntime`, `AgentRuntime`, `MemoryStore`, or
+ * `PermissionEngine`, `PlannerRuntime`, `AgentRuntime`, `KnowledgeStore`, or
  * `WorldModel` is introduced or authorised by the Contract Design.
  *
  * **Validation.** No new validation rule is introduced. `text` must be

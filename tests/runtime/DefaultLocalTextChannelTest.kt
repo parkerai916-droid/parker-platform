@@ -242,7 +242,7 @@ class DefaultLocalTextChannelTest {
         // Structural proof, not a runtime assertion, mirroring InMemoryCommunicationIntakeTest's
         // own identical pattern: DefaultLocalTextChannel's constructor takes only a ModuleId and
         // a CommunicationIntake. If this class ever gained an ExecutionPipeline, ToolRegistry,
-        // PermissionEngine, PlannerRuntime, AgentRuntime, MemoryStore, WorldModel, ModuleRegistry,
+        // PermissionEngine, PlannerRuntime, AgentRuntime, KnowledgeStore, WorldModel, ModuleRegistry,
         // or IdentityService dependency, this two-argument construction would no longer compile --
         // the constructor signature itself is the guarantee, not this assertion.
         val fake = FakeCommunicationIntake { message -> CommunicationIntakeDisposition.Accepted(message.correlationId, message) }

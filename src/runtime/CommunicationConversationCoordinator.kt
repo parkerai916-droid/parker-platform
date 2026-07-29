@@ -93,7 +93,7 @@ import parker.core.interfaces.ReasoningProviderResponse
  * **Dependencies (structural, not merely asserted).** The only two
  * dependencies below are the entirety of this class's reach. There is no
  * slot for `PlannerRuntime`, `ExecutionPipeline`, `PermissionEngine`,
- * `ToolRegistry`, `MemoryStore`, `WorldModel`, `ModuleRegistry`, or
+ * `ToolRegistry`, `KnowledgeStore`, `WorldModel`, `ModuleRegistry`, or
  * `IdentityService` to even construct this class with one.
  *
  * @param communicationIntake Used exactly once per call, to accept or

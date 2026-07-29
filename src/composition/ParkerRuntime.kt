@@ -12,7 +12,7 @@ import parker.core.interfaces.AgentPolicy
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.InboundOwnerMessage
-import parker.core.interfaces.MemorySource
+import parker.core.interfaces.KnowledgeSource
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
@@ -53,7 +53,7 @@ import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
-import parker.core.runtime.InMemoryMemoryStore
+import parker.core.runtime.InMemoryKnowledgeStore
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryPlannerRuntime
 import parker.core.runtime.InMemoryResourceRegistry
@@ -191,7 +191,7 @@ class ParkerRuntime(
      * the Assembler's own construction, since the Assembler now also
      * depends on this same instance under its narrower
      * `ConversationHistorySource` type; (2a-ii, Sprint 11 Unit 7) construct
-     * `InMemoryMemoryStore` -- the first production construction of Memory
+     * `InMemoryKnowledgeStore` -- the first production construction of Memory
      * anywhere in this repository's real, running composition root
      * (`docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md` Finding 1);
      * (2a-iii, Sprint 11 Unit 8) construct `InMemoryWorldModel` -- the
@@ -282,14 +282,14 @@ class ParkerRuntime(
         conversationEngine = inMemoryConversationEngine
         val conversationHistorySource: ConversationHistorySource = inMemoryConversationEngine
 
-        // Sprint 11 Unit 7: InMemoryMemoryStore is constructed here for the first time in this
+        // Sprint 11 Unit 7: InMemoryKnowledgeStore is constructed here for the first time in this
         // repository's production composition root -- nowhere before this Unit did anything
-        // construct MemoryStore/InMemoryMemoryStore in the real, running system (Governance
-        // Review Finding 1). This is a new construction step, not a reordering: InMemoryMemoryStore
-        // takes only its defaulted DefaultMemoryPromotionPolicy, so no new ParkerRuntimeConfig
+        // construct KnowledgeStore/InMemoryKnowledgeStore in the real, running system (Governance
+        // Review Finding 1). This is a new construction step, not a reordering: InMemoryKnowledgeStore
+        // takes only its defaulted DefaultKnowledgePromotionPolicy, so no new ParkerRuntimeConfig
         // field or ordering constraint is introduced beyond existing before the Assembler.
-        val inMemoryMemoryStore = InMemoryMemoryStore()
-        val memorySource: MemorySource = inMemoryMemoryStore
+        val inMemoryMemoryStore = InMemoryKnowledgeStore()
+        val memorySource: KnowledgeSource = inMemoryMemoryStore
 
         // Sprint 11 Unit 8: InMemoryWorldModel is constructed here for the first time in this
         // repository's production composition root -- nowhere before this Unit did anything
@@ -300,7 +300,7 @@ class ParkerRuntime(
         // constraint is introduced beyond existing before the Assembler. Exactly one instance is
         // constructed and exposed to the Assembler only through the narrower WorldModelSource
         // type -- no duplicate ownership, no duplicate state, mirroring precisely how
-        // InMemoryMemoryStore/InMemoryConversationEngine are each constructed once and exposed
+        // InMemoryKnowledgeStore/InMemoryConversationEngine are each constructed once and exposed
         // through two interfaces on the same instance.
         val inMemoryWorldModel = InMemoryWorldModel()
         val worldModelSource: WorldModelSource = inMemoryWorldModel

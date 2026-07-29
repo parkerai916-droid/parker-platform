@@ -30,7 +30,7 @@ import parker.core.interfaces.ReasoningProviderResponse
  *
  * No `IdentityService`, `PlannerRuntime`, `ExecutionPipeline`,
  * `PermissionEngine`, `ToolRegistry`, `ToolInvocationBinding`,
- * `MemoryStore`, `WorldModel`, `ModuleRegistry`, `ConversationEngine`,
+ * `KnowledgeStore`, `WorldModel`, `ModuleRegistry`, `ConversationEngine`,
  * `ResponseDelivery`, or `ModelManager` dependency exists anywhere in
  * this class (Review Section 4).
  *

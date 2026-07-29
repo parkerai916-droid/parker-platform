@@ -59,8 +59,8 @@ import parker.core.interfaces.RelationshipEndpoint
  * `memory.record_status_changed` -- no `memory.provenance_created` event
  * exists, and this Unit's own scope explicitly excludes adding one.
  * [createProvenance] is therefore a zero-logic delegate, exactly as
- * [MemorySource.recall] is a zero-logic delegate to
- * [parker.core.interfaces.MemoryStore.retrieve] in [InMemoryMemoryStore].
+ * [KnowledgeSource.recall] is a zero-logic delegate to
+ * [parker.core.interfaces.KnowledgeStore.retrieve] in [InMemoryKnowledgeStore].
  *
  * ## Payload shape
  *

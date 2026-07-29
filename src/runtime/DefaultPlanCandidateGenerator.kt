@@ -89,7 +89,7 @@ private const val VERBATIM_CANDIDATE_RATIONALE = "This is a direct, undecomposed
  * No constructor parameter of any kind -- the strongest possible
  * structural guarantee, stronger than a minimum-dependency list, that
  * this class holds no reference to `IdentityService`, `EventBus`,
- * `MemorySource`, `WorldModelSource`, `ReasoningContext`,
+ * `KnowledgeSource`, `WorldModelSource`, `ReasoningContext`,
  * `PermissionEngine`, `ToolRegistry`, `PlannerRuntime`, or
  * `TaskManagerRuntime`. [generate] never calls `PlannerRuntime.plan`, and
  * cannot: it has no way to reach it.

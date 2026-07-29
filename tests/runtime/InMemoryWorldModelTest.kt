@@ -405,7 +405,7 @@ class InMemoryWorldModelTest {
         // Structural proof, not a runtime assertion, mirroring InMemoryMemoryStoreTest's own
         // identical pattern: InMemoryWorldModel's constructor takes only a
         // WorldModelUpdatePolicy (defaulted to DefaultWorldModelUpdatePolicy). If this class
-        // ever gained a MemoryStore, PlannerRuntime, AgentRunCommandChannel, PermissionEngine,
+        // ever gained a KnowledgeStore, PlannerRuntime, AgentRunCommandChannel, PermissionEngine,
         // or EventBus dependency, this single-argument construction would no longer compile --
         // the constructor signature itself is the guarantee, not this assertion.
         val model: WorldModel = InMemoryWorldModel()

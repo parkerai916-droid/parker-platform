@@ -96,7 +96,7 @@ import parker.core.interfaces.ReasoningProviderResponse
  *   `ReasoningProvider`, `ResponseComposer`, `ResponseDelivery`,
  *   `IdentityService`, `ExecutionPipeline`, `PermissionEngine`,
  *   `PlannerRuntime`, `ModelReasoningProvider`,
- *   `LocalHttpModelInferenceClient`, `MemoryStore`, or `WorldModel`,
+ *   `LocalHttpModelInferenceClient`, `KnowledgeStore`, or `WorldModel`,
  *   directly.
  */
 class ConversationReplyCoordinator(

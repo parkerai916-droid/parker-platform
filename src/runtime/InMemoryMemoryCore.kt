@@ -41,11 +41,11 @@ import parker.core.interfaces.RelationshipTraversalQuery
  * `docs/implementation/MEMORY_CORE_IMPLEMENTATION_PLAN.md`, the
  * Implementation Plan). Implements both interfaces directly on one
  * class, over one shared set of in-memory stores -- mirroring
- * [InMemoryMemoryStore]'s own "one interface, one implementing class"
+ * [InMemoryKnowledgeStore]'s own "one interface, one implementing class"
  * precedent, extended here to two interfaces over the same owned state,
- * the same way [InMemoryMemoryStore] itself already implements both
- * [parker.core.interfaces.MemoryStore] and
- * [parker.core.interfaces.MemorySource].
+ * the same way [InMemoryKnowledgeStore] itself already implements both
+ * [parker.core.interfaces.KnowledgeStore] and
+ * [parker.core.interfaces.KnowledgeSource].
  *
  * ## What this class does not do
  *
@@ -55,7 +55,7 @@ import parker.core.interfaces.RelationshipTraversalQuery
  * invocation; a future `PermissionGatedMemoryCore`/
  * `PermissionFilteredMemoryRetrieval` decorator, not built here, is
  * where that lives), no persistence (in-memory only, exactly like
- * [InMemoryMemoryStore]), no Knowledge Memory/Conversation/World Model
+ * [InMemoryKnowledgeStore]), no Knowledge Memory/Conversation/World Model
  * integration, no semantic or ranked retrieval, and no runtime
  * composition (`ParkerRuntime.kt` is untouched by this Unit). This
  * class's constructor takes no dependency at all -- no `PermissionEngine`,
@@ -79,7 +79,7 @@ import parker.core.interfaces.RelationshipTraversalQuery
  * ## Concurrency
  *
  * One [Mutex] guards every store and every counter, exactly as
- * [InMemoryMemoryStore] itself does -- no per-kind or per-operation
+ * [InMemoryKnowledgeStore] itself does -- no per-kind or per-operation
  * locking, since nothing in this Unit's scope requires finer granularity
  * and a single lock keeps every operation's ordering unambiguous.
  *
@@ -88,7 +88,7 @@ import parker.core.interfaces.RelationshipTraversalQuery
  * Each of the five record kinds has its own independent, monotonically
  * increasing counter, minted only while holding [mutex] -- guaranteeing
  * every identifier this instance ever mints is unique within that kind's
- * own namespace, mirroring [InMemoryMemoryStore.nextSequence]'s identical
+ * own namespace, mirroring [InMemoryKnowledgeStore.nextSequence]'s identical
  * pattern.
  *
  * ## Referential integrity implemented by this Unit

@@ -1,17 +1,17 @@
 package parker.core.runtime
 
 import kotlinx.coroutines.test.runTest
-import parker.core.interfaces.CandidateMemory
-import parker.core.interfaces.MemoryCategory
-import parker.core.interfaces.MemoryId
-import parker.core.interfaces.MemoryPromotionDecision
+import parker.core.interfaces.CandidateKnowledge
+import parker.core.interfaces.KnowledgeCategory
+import parker.core.interfaces.KnowledgeId
+import parker.core.interfaces.KnowledgePromotionDecision
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * Sprint 4, Track A, Unit A3. Unit tests of [DefaultMemoryPromotionPolicy]'s
+ * Sprint 4, Track A, Unit A3. Unit tests of [DefaultKnowledgePromotionPolicy]'s
  * own two-rule evaluation, stated in full in that class's KDoc: explicit
  * request promotes unconditionally; otherwise confidence at or above the
  * threshold promotes; otherwise the candidate is rejected with a
@@ -22,14 +22,14 @@ import kotlin.test.assertTrue
  */
 class DefaultMemoryPromotionPolicyTest {
 
-    private val policy = DefaultMemoryPromotionPolicy()
-    private val memoryId = MemoryId("memory-1")
+    private val policy = DefaultKnowledgePromotionPolicy()
+    private val memoryId = KnowledgeId("memory-1")
 
     private fun candidate(
         confidence: Double? = null,
         explicitlyRequested: Boolean = false,
-        category: MemoryCategory = MemoryCategory.SEMANTIC,
-    ) = CandidateMemory(
+        category: KnowledgeCategory = KnowledgeCategory.SEMANTIC,
+    ) = CandidateKnowledge(
         knowledgePayload = "the user prefers window seats",
         proposedCategory = category,
         sourceSubsystem = "test-harness",
@@ -44,7 +44,7 @@ class DefaultMemoryPromotionPolicyTest {
     fun `an explicitly requested candidate is promoted even with no confidence figure at all`() = runTest {
         val result = policy.evaluate(candidate(confidence = null, explicitlyRequested = true), memoryId)
 
-        val promote = assertIs<MemoryPromotionDecision.Promote>(result)
+        val promote = assertIs<KnowledgePromotionDecision.Promote>(result)
         assertEquals(memoryId, promote.memoryId)
     }
 
@@ -52,7 +52,7 @@ class DefaultMemoryPromotionPolicyTest {
     fun `an explicitly requested candidate is promoted even with confidence far below the threshold`() = runTest {
         val result = policy.evaluate(candidate(confidence = 0.01, explicitlyRequested = true), memoryId)
 
-        assertIs<MemoryPromotionDecision.Promote>(result)
+        assertIs<KnowledgePromotionDecision.Promote>(result)
     }
 
     // --- confidence-based promotion factor ---
@@ -60,29 +60,29 @@ class DefaultMemoryPromotionPolicyTest {
     @Test
     fun `a non-explicit candidate at or above the confidence threshold is promoted`() = runTest {
         val result = policy.evaluate(
-            candidate(confidence = DefaultMemoryPromotionPolicy.DEFAULT_CONFIDENCE_THRESHOLD, explicitlyRequested = false),
+            candidate(confidence = DefaultKnowledgePromotionPolicy.DEFAULT_CONFIDENCE_THRESHOLD, explicitlyRequested = false),
             memoryId,
         )
 
-        assertIs<MemoryPromotionDecision.Promote>(result)
+        assertIs<KnowledgePromotionDecision.Promote>(result)
     }
 
     @Test
     fun `a non-explicit candidate comfortably above the confidence threshold is promoted`() = runTest {
         val result = policy.evaluate(candidate(confidence = 0.95, explicitlyRequested = false), memoryId)
 
-        assertIs<MemoryPromotionDecision.Promote>(result)
+        assertIs<KnowledgePromotionDecision.Promote>(result)
     }
 
     @Test
     fun `the confirmed category on Promote is the candidate's own proposed category`() = runTest {
         val result = policy.evaluate(
-            candidate(explicitlyRequested = true, category = MemoryCategory.EPISODIC),
+            candidate(explicitlyRequested = true, category = KnowledgeCategory.EPISODIC),
             memoryId,
         )
 
-        val promote = assertIs<MemoryPromotionDecision.Promote>(result)
-        assertEquals(MemoryCategory.EPISODIC, promote.category)
+        val promote = assertIs<KnowledgePromotionDecision.Promote>(result)
+        assertEquals(KnowledgeCategory.EPISODIC, promote.category)
     }
 
     // --- rejection ---
@@ -90,11 +90,11 @@ class DefaultMemoryPromotionPolicyTest {
     @Test
     fun `a non-explicit candidate just below the confidence threshold is rejected`() = runTest {
         val result = policy.evaluate(
-            candidate(confidence = DefaultMemoryPromotionPolicy.DEFAULT_CONFIDENCE_THRESHOLD - 0.01, explicitlyRequested = false),
+            candidate(confidence = DefaultKnowledgePromotionPolicy.DEFAULT_CONFIDENCE_THRESHOLD - 0.01, explicitlyRequested = false),
             memoryId,
         )
 
-        val reject = assertIs<MemoryPromotionDecision.Reject>(result)
+        val reject = assertIs<KnowledgePromotionDecision.Reject>(result)
         assertEquals(memoryId, reject.memoryId)
         assertTrue(reject.reason.isNotBlank())
     }
@@ -103,7 +103,7 @@ class DefaultMemoryPromotionPolicyTest {
     fun `a non-explicit candidate with no confidence figure at all is rejected`() = runTest {
         val result = policy.evaluate(candidate(confidence = null, explicitlyRequested = false), memoryId)
 
-        val reject = assertIs<MemoryPromotionDecision.Reject>(result)
+        val reject = assertIs<KnowledgePromotionDecision.Reject>(result)
         assertTrue(reject.reason.contains("absent", ignoreCase = true))
     }
 
@@ -111,7 +111,7 @@ class DefaultMemoryPromotionPolicyTest {
     fun `rejection reason is never a bare numeric score`() = runTest {
         val result = policy.evaluate(candidate(confidence = 0.1, explicitlyRequested = false), memoryId)
 
-        val reject = assertIs<MemoryPromotionDecision.Reject>(result)
+        val reject = assertIs<KnowledgePromotionDecision.Reject>(result)
         assertTrue(reject.reason.toDoubleOrNull() == null, "reason '${reject.reason}' must not be a bare numeric score")
     }
 
@@ -129,10 +129,10 @@ class DefaultMemoryPromotionPolicyTest {
 
     @Test
     fun `a custom confidence threshold is honoured`() = runTest {
-        val lenientPolicy = DefaultMemoryPromotionPolicy(confidenceThreshold = 0.2)
+        val lenientPolicy = DefaultKnowledgePromotionPolicy(confidenceThreshold = 0.2)
 
         val result = lenientPolicy.evaluate(candidate(confidence = 0.25, explicitlyRequested = false), memoryId)
 
-        assertIs<MemoryPromotionDecision.Promote>(result)
+        assertIs<KnowledgePromotionDecision.Promote>(result)
     }
 }

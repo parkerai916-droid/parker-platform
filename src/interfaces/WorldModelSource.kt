@@ -13,7 +13,7 @@ package parker.core.interfaces
  * field. `recall` is named distinctly from [WorldModel.query] so a caller
  * holding only a [WorldModelSource] reference is never confused for one
  * holding a full [WorldModel] reference, even though the underlying
- * behaviour is identical -- mirroring exactly why [MemorySource.recall] is
+ * behaviour is identical -- mirroring exactly why [KnowledgeSource.recall] is
  * not named `retrieve`.
  *
  * **`query`, not `current`, is the operation this interface exposes**
@@ -50,10 +50,10 @@ package parker.core.interfaces
  * **Read-only, never throws for "no matches."** [recall] returns an empty
  * list -- never an exception -- when nothing matches [WorldQuery], the
  * same convention [WorldModel.query] itself already establishes and
- * [ConversationHistorySource.history]/[MemorySource.recall] already share.
+ * [ConversationHistorySource.history]/[KnowledgeSource.recall] already share.
  *
- * **No ordering guarantee.** Unlike [MemorySource] (which inherits
- * `InMemoryMemoryStore.retrieve`'s explicit, deterministic
+ * **No ordering guarantee.** Unlike [KnowledgeSource] (which inherits
+ * `InMemoryKnowledgeStore.retrieve`'s explicit, deterministic
  * most-recently-promoted-first guarantee), [WorldModel.query]'s own KDoc
  * makes no ordering guarantee at all -- results are returned in whatever
  * order the underlying implementation produces them. [WorldModelSource]
@@ -69,8 +69,8 @@ package parker.core.interfaces
  * separately from [WorldModel] specifically so a caller holding only a
  * [WorldModelSource] reference is structurally unable to reach `observe`
  * -- capability narrowing enforced by the type system, not by convention
- * alone, mirroring exactly why [MemorySource] is declared separately from
- * [MemoryStore] and [ConversationHistorySource] from [ConversationEngine].
+ * alone, mirroring exactly why [KnowledgeSource] is declared separately from
+ * [KnowledgeStore] and [ConversationHistorySource] from [ConversationEngine].
  *
  * **Not decided by this interface (Contract Design Section 3):** exactly
  * how a caller constructs the `WorldQuery` it passes to [recall] --
@@ -78,7 +78,7 @@ package parker.core.interfaces
  * itself (`docs/architecture/WORLD_QUERY_OPTIONAL_SUBJECT_CONTRACT_REVISION.md`),
  * not of this interface, and the concrete `maximumResults` a caller
  * supplies on any given call is implementation policy, not architecture,
- * deliberately left unfixed here -- mirroring [MemorySource]'s identical
+ * deliberately left unfixed here -- mirroring [KnowledgeSource]'s identical
  * treatment of its own `maximumResults`.
  */
 fun interface WorldModelSource {

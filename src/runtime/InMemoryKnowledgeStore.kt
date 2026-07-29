@@ -3,20 +3,20 @@ package parker.core.runtime
 import java.time.Instant
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import parker.core.interfaces.CandidateMemory
-import parker.core.interfaces.MemoryId
-import parker.core.interfaces.MemoryPromotionDecision
-import parker.core.interfaces.MemoryPromotionPolicy
-import parker.core.interfaces.MemoryQuery
-import parker.core.interfaces.MemoryRecord
-import parker.core.interfaces.MemorySource
-import parker.core.interfaces.MemoryStore
+import parker.core.interfaces.CandidateKnowledge
+import parker.core.interfaces.KnowledgeId
+import parker.core.interfaces.KnowledgePromotionDecision
+import parker.core.interfaces.KnowledgePromotionPolicy
+import parker.core.interfaces.KnowledgeQuery
+import parker.core.interfaces.KnowledgeRecord
+import parker.core.interfaces.KnowledgeSource
+import parker.core.interfaces.KnowledgeStore
 
 /**
  * Sprint 4, Track A, Unit A3. The first in-memory implementation of
- * [MemoryStore] (`docs/architecture/MEMORY_RUNTIME_ARCHITECTURE.md`,
+ * [KnowledgeStore] (`docs/architecture/MEMORY_RUNTIME_ARCHITECTURE.md`,
  * `docs/architecture/MEMORY_CONTRACT_DESIGN.md`). Implements
- * [MemoryStore] directly -- no separate `MemoryRuntime` interface exists
+ * [KnowledgeStore] directly -- no separate `MemoryRuntime` interface exists
  * to implement instead, per `MEMORY_CONTRACT_DESIGN.md` §9's own
  * determination -- mirroring [InMemoryIdentityService]/
  * [InMemoryToolRegistry]'s identical "one interface, one implementing
@@ -25,11 +25,11 @@ import parker.core.interfaces.MemoryStore
  * ## Boundary this class enforces
  *
  * [remember] performs submission, Evaluation (via the injected
- * [MemoryPromotionPolicy]), and Promotion in one call, exactly as
+ * [KnowledgePromotionPolicy]), and Promotion in one call, exactly as
  * `MEMORY_CONTRACT_DESIGN.md` §9 requires: an external caller submits a
- * [CandidateMemory] and learns the outcome; there is no separate,
+ * [CandidateKnowledge] and learns the outcome; there is no separate,
  * caller-facing "now promote this" operation for it to invoke instead,
- * and [MemoryPromotionPolicy] is never reachable from outside this
+ * and [KnowledgePromotionPolicy] is never reachable from outside this
  * class.
  *
  * ## What this class does not do
@@ -41,52 +41,52 @@ import parker.core.interfaces.MemoryStore
  * consolidation, autonomous retention sweeps, any Memory-to-World-Model
  * mutation, any World-Model-to-Memory automatic copying, or any
  * dependency on the Planner Runtime, the Agent Runtime, or the
- * Permission Engine. Its constructor takes only a [MemoryPromotionPolicy]
- * (defaulted to [DefaultMemoryPromotionPolicy]) -- no `EventBus`,
+ * Permission Engine. Its constructor takes only a [KnowledgePromotionPolicy]
+ * (defaulted to [DefaultKnowledgePromotionPolicy]) -- no `EventBus`,
  * `IdentityService`, or `PermissionEngine` dependency exists, since
  * nothing in the approved architecture requires one and Memory never
  * reacts to, or triggers, any of those systems.
  *
  * ## Memory Source (Sprint 11 Unit 7)
  *
- * Also implements [MemorySource] directly -- a second, narrower interface
+ * Also implements [KnowledgeSource] directly -- a second, narrower interface
  * over this same instance and the same owned state
  * (`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 4.2), not
- * a second store and not a new method added to [MemoryStore] itself.
+ * a second store and not a new method added to [KnowledgeStore] itself.
  * [recall] is a zero-logic delegate to [retrieve]: no new map, no new
  * lock, no new field is added by this Unit. A caller holding only a
- * [MemorySource]-typed reference is structurally unable to reach
+ * [KnowledgeSource]-typed reference is structurally unable to reach
  * [remember] or [forget] -- capability narrowing enforced by the Kotlin
  * type system, mirroring exactly why [InMemoryConversationEngine]
  * declares [parker.core.interfaces.ConversationHistorySource] separately
  * from [parker.core.interfaces.ConversationEngine].
  */
-class InMemoryMemoryStore(
-    private val promotionPolicy: MemoryPromotionPolicy = DefaultMemoryPromotionPolicy(),
-) : MemoryStore, MemorySource {
+class InMemoryKnowledgeStore(
+    private val promotionPolicy: KnowledgePromotionPolicy = DefaultKnowledgePromotionPolicy(),
+) : KnowledgeStore, KnowledgeSource {
 
     private val mutex = Mutex()
-    private val records = mutableMapOf<MemoryId, MemoryRecord>()
+    private val records = mutableMapOf<KnowledgeId, KnowledgeRecord>()
 
     /**
-     * Every [MemoryId] this store has ever forgotten, retained here (not
+     * Every [KnowledgeId] this store has ever forgotten, retained here (not
      * in [records]) purely as an audit trail -- per
-     * `docs/specifications/volume-03-core-interfaces/MemoryStore.md`'s
+     * `docs/specifications/volume-03-core-interfaces/KnowledgeStore.md`'s
      * "Forgetting MUST be auditable" and `MEMORY_CONTRACT_DESIGN.md` §1's
-     * "a forgotten record's `MemoryId` is not recycled." No content is
+     * "a forgotten record's `KnowledgeId` is not recycled." No content is
      * retained here, only the fact that this identifier once existed and
      * was forgotten -- inspectable via [wasForgotten].
      */
-    private val forgottenIds = mutableSetOf<MemoryId>()
+    private val forgottenIds = mutableSetOf<KnowledgeId>()
 
     private var nextSequence = 1L
 
-    override suspend fun remember(candidate: CandidateMemory): MemoryPromotionDecision = mutex.withLock {
-        val memoryId = MemoryId("memory-${nextSequence++}")
+    override suspend fun remember(candidate: CandidateKnowledge): KnowledgePromotionDecision = mutex.withLock {
+        val memoryId = KnowledgeId("memory-${nextSequence++}")
         when (val decision = promotionPolicy.evaluate(candidate, memoryId)) {
-            is MemoryPromotionDecision.Promote -> {
+            is KnowledgePromotionDecision.Promote -> {
                 val promotedAt = Instant.now()
-                records[memoryId] = MemoryRecord(
+                records[memoryId] = KnowledgeRecord(
                     memoryId = memoryId,
                     category = decision.category,
                     sourceSubsystem = candidate.sourceSubsystem,
@@ -101,7 +101,7 @@ class InMemoryMemoryStore(
                 decision
             }
 
-            is MemoryPromotionDecision.Reject -> decision
+            is KnowledgePromotionDecision.Reject -> decision
         }
     }
 
@@ -109,27 +109,27 @@ class InMemoryMemoryStore(
      * The minimal, deterministic retrieval this Unit is scoped to
      * implement (`MemoryRetrievalPolicy`, the pluggable ranking seam
      * `MEMORY_CONTRACT_DESIGN.md` §8 reserves, is a deferred seam this
-     * Unit does not implement). Matching is: scoped to [MemoryQuery.requestingPrincipalId]
-     * (a record with no [MemoryRecord.originatingPrincipalId] is treated
+     * Unit does not implement). Matching is: scoped to [KnowledgeQuery.requestingPrincipalId]
+     * (a record with no [KnowledgeRecord.originatingPrincipalId] is treated
      * as Principal-agnostic and visible to every requester; a record with
      * one is visible only to that same Principal); narrowed by
-     * [MemoryQuery.category] if supplied; and filtered by a
-     * case-insensitive substring match of [MemoryQuery.relevance] against
-     * [MemoryRecord.knowledgePayload]. Results are ordered most-recently-
-     * promoted first, then truncated to [MemoryQuery.maximumResults].
+     * [KnowledgeQuery.category] if supplied; and filtered by a
+     * case-insensitive substring match of [KnowledgeQuery.relevance] against
+     * [KnowledgeRecord.knowledgePayload]. Results are ordered most-recently-
+     * promoted first, then truncated to [KnowledgeQuery.maximumResults].
      *
      * "Most-recently-promoted first" is implemented via [records]' own
      * insertion order (a `LinkedHashMap`, per `mutableMapOf`'s default,
      * and every promotion is a fresh key, inserted under [mutex], so
      * insertion order is exactly promotion order) reversed, rather than
-     * by comparing [MemoryRecord.promotedAt] values directly -- two
+     * by comparing [KnowledgeRecord.promotedAt] values directly -- two
      * promotions completing within the same clock tick would otherwise
      * tie, and a tie-breaking rule based on wall-clock time is not
      * genuinely deterministic. Ordering by structure, not by a
      * potentially-colliding timestamp, is what keeps this a "fixed,
      * stable, repeatable rule," not a scored ranking.
      */
-    override suspend fun retrieve(query: MemoryQuery): List<MemoryRecord> = mutex.withLock {
+    override suspend fun retrieve(query: KnowledgeQuery): List<KnowledgeRecord> = mutex.withLock {
         val matches = records.values.filter { record ->
             (record.originatingPrincipalId == null || record.originatingPrincipalId == query.requestingPrincipalId) &&
                 (query.category == null || record.category == query.category) &&
@@ -139,18 +139,18 @@ class InMemoryMemoryStore(
     }
 
     /**
-     * [MemorySource]'s sole operation ([MemorySource]'s own KDoc). A
+     * [KnowledgeSource]'s sole operation ([KnowledgeSource]'s own KDoc). A
      * direct, zero-logic delegate to [retrieve] -- this class exposes no
-     * retrieval behaviour under [MemorySource] that [MemoryStore.retrieve]
+     * retrieval behaviour under [KnowledgeSource] that [KnowledgeStore.retrieve]
      * does not already, identically, provide. No new state, no new
      * ordering, no new absence semantic -- everything [retrieve]'s own
      * KDoc already documents (identity scoping, category narrowing,
      * `maximumResults` capping, most-recently-promoted-first ordering,
      * empty-never-throws absence) is inherited unchanged.
      */
-    override suspend fun recall(query: MemoryQuery): List<MemoryRecord> = retrieve(query)
+    override suspend fun recall(query: KnowledgeQuery): List<KnowledgeRecord> = retrieve(query)
 
-    override suspend fun forget(memoryId: MemoryId): Boolean = mutex.withLock {
+    override suspend fun forget(memoryId: KnowledgeId): Boolean = mutex.withLock {
         val removed = records.remove(memoryId)
         if (removed != null) {
             forgottenIds += memoryId
@@ -161,13 +161,13 @@ class InMemoryMemoryStore(
     }
 
     /**
-     * Class-specific inspection method, not part of [MemoryStore] --
+     * Class-specific inspection method, not part of [KnowledgeStore] --
      * mirrors `InMemoryPlannerRuntime.getSessionStatus`/
      * `InMemoryTaskManagerRuntime.getTask`'s identical precedent of an
      * observability method sitting outside the formal interface. Exists
-     * so a forgotten [MemoryId] can be confirmed, auditably, to have once
+     * so a forgotten [KnowledgeId] can be confirmed, auditably, to have once
      * existed and been forgotten, proving [forget]'s auditability without
-     * adding a public `MemoryStore` member Unit A2 never authorised.
+     * adding a public `KnowledgeStore` member Unit A2 never authorised.
      */
-    fun wasForgotten(memoryId: MemoryId): Boolean = memoryId in forgottenIds
+    fun wasForgotten(memoryId: KnowledgeId): Boolean = memoryId in forgottenIds
 }
