@@ -651,10 +651,104 @@ data class KnowledgeReference(
  * all, a compile-time guarantee stronger than a runtime-rejected
  * malformed instance, and the intended satisfaction of Contract Design
  * Version 2 §5's Amendment 2 ("a Knowledge Candidate carrying either is
- * malformed and must be rejected on that basis"). No `init` block exists
- * on this type -- there is no field beyond ordinary type safety left to
- * validate.
+ * malformed and must be rejected on that basis").
+ *
+ * ## `explicitlyRequested` (Contract Design Version 2 §16, Phase 1
+ * Amendment 5, and its extension, §§16.9-16.13)
+ *
+ * The one authorised, non-evidential submission-context field this type
+ * carries beyond [evidenceReference]. It records whether this submission
+ * arose in direct response to an explicit request -- a fact about the
+ * circumstances of submission, never a claim about the underlying
+ * proposition's truth, confidence, provenance, corroboration,
+ * contradiction, or importance (§16.9's own enumerated prohibitions). It
+ * does not permit any reasoning provider or other module to self-certify
+ * the truth or evidential status of its own output (§16.9; Article XV,
+ * applied here as an extension of that Article's separation principle,
+ * not a literal application of its own reasoning-provider-specific
+ * text).
+ *
+ * Nullable, and deliberately so: `true` and `false` are both honest,
+ * caller-reported facts; `null` means the constructing subsystem
+ * genuinely could not determine this at submission time. §16.3's
+ * Guarantee 4 forbids fabricating either direction -- this field must
+ * never default an unknown submission to `true`, and an implementation
+ * must never coerce `null` to `false` merely for convenience. The only
+ * authorised consumer of this field is Knowledge Memory's own promotion
+ * evaluator (§16.5); it never by itself determines promotion (§16.3's
+ * Guarantee 3; Section 5's multi-factor discipline applies unchanged),
+ * and its contribution must be disclosed in the promotion basis whenever
+ * relied upon (§16.5).
+ *
+ * No `init` block exists on this type -- there is no field beyond
+ * ordinary type safety left to validate.
  */
 data class KnowledgeCandidate(
     val evidenceReference: MemoryCoreRecordReference,
+    val explicitlyRequested: Boolean? = null,
 )
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 6 (Constitutional
+ * Knowledge Promotion Pipeline). The outcome of one
+ * [KnowledgeCandidateEvaluator] evaluation of one [KnowledgeCandidate] --
+ * see
+ * `docs/governance/PROGRAMME_3_UNIT_6_SCOPE_LOCK_CLARIFICATION.md` §3 for
+ * why this type exists rather than reusing [KnowledgePromotionDecision]:
+ * that type's own `Promote` case is hard-wired to [KnowledgeCategory], a
+ * concept [KnowledgeItem] does not carry, making it structurally
+ * incapable of representing this evaluation's result. This is not a
+ * second legacy promotion hierarchy -- it belongs exclusively to the
+ * constitutional [KnowledgeCandidate] path.
+ *
+ * [Promote] carries the proposed, not-yet-persisted [KnowledgeItem] and
+ * its accompanying [KnowledgePromotion] disclosure record -- construction
+ * only, per the Unit 6 Clarification §4; nothing implementing this type
+ * writes either value anywhere. [Reject] carries a disclosed,
+ * constitutionally required [basis], mirroring
+ * [KnowledgePromotionDecision.Reject.reason]'s own identical free-text
+ * treatment, for the same reason: multi-factor evidential weighing is not
+ * a single structural rule a closed enum could represent without
+ * misrepresenting it as one.
+ */
+sealed interface KnowledgeCandidateEvaluation {
+    data class Promote(
+        val item: KnowledgeItem,
+        val promotion: KnowledgePromotion,
+    ) : KnowledgeCandidateEvaluation
+
+    data class Reject(
+        val basis: String,
+    ) : KnowledgeCandidateEvaluation {
+        init {
+            require(basis.isNotBlank()) { "KnowledgeCandidateEvaluation.Reject.basis must not be blank" }
+        }
+    }
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 6. The seam by which
+ * Knowledge Memory evaluates a submitted [KnowledgeCandidate] against the
+ * constitutional multi-factor promotion requirements (Contract Design
+ * Version 2 §5, Amendments 1 and 2; Article XI). Structurally analogous
+ * to [KnowledgePromotionPolicy], but operating on the new,
+ * constitutionally governed model rather than the legacy one -- the two
+ * are independent seams, never adapted into one another (Unit 6
+ * Clarification §1).
+ *
+ * This interface performs no persistence, no lifecycle transition, and
+ * no permission decision of its own -- see
+ * [DefaultKnowledgeCandidateEvaluator]'s own KDoc for the concrete
+ * factors one implementation considers and the structural prerequisites
+ * it checks first. Deliberately not `suspend`, per this Unit's own
+ * authorised signature -- [DefaultKnowledgeCandidateEvaluator] bridges to
+ * [MemoryRetrieval]'s `suspend` methods internally (see its own KDoc)
+ * rather than this interface propagating suspension outward; a future
+ * implementation is free to introduce its own, separate suspending seam
+ * without changing this one, exactly as [KnowledgePromotionPolicy]'s own
+ * precedent left room for parallel seams rather than retrofitting a
+ * shared one.
+ */
+interface KnowledgeCandidateEvaluator {
+    fun evaluate(candidate: KnowledgeCandidate): KnowledgeCandidateEvaluation
+}
