@@ -1034,3 +1034,101 @@ interface KnowledgeRevisionEvaluator {
         occurredAt: Instant,
     ): KnowledgeRevisionEvaluation
 }
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 7.3 (Knowledge
+ * Retirement Evaluation). The outcome of one [KnowledgeRetirementEvaluator]
+ * evaluation of one proposed retirement of an existing [KnowledgeItem]
+ * (`docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md` §8,
+ * §15). A distinct, independent contract from [KnowledgeRevisionEvaluation]
+ * -- revision (Unit 7.2) and retirement (Unit 7.3) are separate, governed
+ * seams, never adapted into one another.
+ *
+ * Represents only the two result outcomes this Unit is authorised to
+ * implement, per the Unit 7.3 Targeted Retirement Boundary Review's own
+ * confirmed conclusions: [Applied] and [NotPermittedFromCurrentStatus].
+ * `StructurallyUnresolvable` is deliberately absent -- Section 15 names
+ * that outcome only for "evidence a revision or restoration cites";
+ * retirement cites no evidence and resolves nothing through
+ * [MemoryRetrieval], so no failure mode exists for it to express.
+ * Stale-version conflict, `NotQualifyingRevision`, and restoration
+ * outcomes are also absent, for the same reason they are absent from
+ * [KnowledgeRevisionEvaluation] -- they belong to lifecycle-sequence
+ * enforcement, revision qualification, and restoration, none of which
+ * this Unit implements.
+ */
+sealed interface KnowledgeRetirementEvaluation {
+    /**
+     * The submitted [KnowledgeItem] was [KnowledgeItemStatus.ACTIVE] and
+     * was retired. [item] is the new, proposed [KnowledgeItem] value --
+     * [KnowledgeItem.status] is [KnowledgeItemStatus.RETIRED] and
+     * [KnowledgeItem.history] carries exactly one more entry than the
+     * [KnowledgeItem] this evaluation started from, with every prior
+     * entry preserved unchanged (Scope Lock Clarification §6, §8).
+     * [KnowledgeItem.evidenceReference], [KnowledgeItem.provenanceReference],
+     * and [KnowledgeItem.evidentialState] are all carried over unchanged --
+     * retirement is a status change, never an evidential classification
+     * (§5, §8). [retirement] is the same, newly appended
+     * [KnowledgeRetirement] value already present as the final element of
+     * [item]'s own [KnowledgeItem.history], surfaced here directly for a
+     * caller's convenience, mirroring [KnowledgeRevisionEvaluation.Applied]'s
+     * own identical shape. Construction only -- nothing implementing this
+     * type writes [item] or [retirement] anywhere; persistence remains a
+     * later, separately authorised responsibility.
+     */
+    data class Applied(
+        val item: KnowledgeItem,
+        val retirement: KnowledgeRetirement,
+    ) : KnowledgeRetirementEvaluation
+
+    /**
+     * The submitted [KnowledgeItem] was not [KnowledgeItemStatus.ACTIVE]
+     * at the time retirement was attempted -- retirement is defined,
+     * exhaustively, as the `ACTIVE`-to-`RETIRED` transition (§8), so a
+     * submission against an item already [KnowledgeItemStatus.RETIRED]
+     * names no transition this document defines at all. No lifecycle
+     * event is appended and the existing [KnowledgeItem] is returned
+     * unchanged by the caller (this type carries no [KnowledgeItem]
+     * value, since none was produced). This is rejected, never treated as
+     * a disclosed no-op and never treated as a new permitted event (§8),
+     * mirroring Memory Core Scope Lock §8's own governing convention that
+     * every transition it does not define is refused, not quietly
+     * absorbed.
+     */
+    data class NotPermittedFromCurrentStatus(
+        val basis: String,
+    ) : KnowledgeRetirementEvaluation {
+        init {
+            require(basis.isNotBlank()) { "KnowledgeRetirementEvaluation.NotPermittedFromCurrentStatus.basis must not be blank" }
+        }
+    }
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 7.3. The seam by
+ * which Knowledge Memory decides whether an already-promoted
+ * [KnowledgeItem] may be retired
+ * (`docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md` §8).
+ * Structurally analogous to [KnowledgeRevisionEvaluator], but a distinct,
+ * independent seam -- revision and retirement are never adapted into one
+ * another.
+ *
+ * This interface performs no persistence, no compare-and-append, no
+ * lifecycle-sequence enforcement, no restoration decision, and consults
+ * no [MemoryRetrieval] dependency of any kind -- see
+ * [DefaultKnowledgeRetirementEvaluator]'s own KDoc, and the Unit 7.3
+ * Targeted Retirement Boundary Review's own confirmed conclusion that
+ * retirement's qualification depends only on [KnowledgeItem.status] and
+ * the caller-supplied [basis], never on Memory Core evidence. [occurredAt]
+ * is supplied by the caller, not read internally from the system clock,
+ * mirroring [KnowledgeRevisionEvaluator]'s own identical, disclosed
+ * choice, for the same reason: qualification and outcome remain
+ * deterministic, testable pure functions of their own inputs.
+ */
+interface KnowledgeRetirementEvaluator {
+    fun evaluate(
+        item: KnowledgeItem,
+        basis: String,
+        occurredAt: Instant,
+    ): KnowledgeRetirementEvaluation
+}
