@@ -494,19 +494,97 @@ enum class KnowledgeItemStatus {
 }
 
 /**
- * Programme 3, Knowledge Memory, Implementation Unit 4. The disclosed,
- * read-only record documenting the basis for one classification event --
- * an initial promotion, or a subsequent revision -- of exactly one
- * [KnowledgeItem]
+ * Programme 3, Knowledge Memory, Implementation Unit 7.1 (Lifecycle Event
+ * Type Foundation). Introduces the closed, sealed lifecycle-event
+ * contract `docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md`
+ * §5 requires, widens [KnowledgeItem.history] to hold it, and adds the
+ * two new event variants (§5) that Contract Design Version 2 §3 names but
+ * Unit 4 deliberately left unimplemented ("that guarantee is a future
+ * write-path behaviour (Unit 7's own responsibility)"). This Unit adds
+ * only type structure -- no lifecycle operation (revision evaluation,
+ * supersession evaluation, retirement, restoration, compare-and-append,
+ * or any ordering/concurrency mechanism) is implemented here; those
+ * remain later Unit 7 sub-units' own, separately authorised
+ * responsibility. Nothing below alters Unit 6's promotion behaviour,
+ * promotion-result semantics, promotion factors, corroboration handling,
+ * contradiction handling, or confidence handling.
+ *
+ * ## [KnowledgeLifecycleEvent] -- exactly the three fields genuinely common to every variant
+ *
+ * Scope Lock Clarification §5 authorises exactly three lifecycle-event
+ * variants and no fourth: [KnowledgePromotion] (reused, unchanged in
+ * meaning, for both initial promotion and subsequent revision),
+ * [KnowledgeRetirement], and [KnowledgeRestoration]. The common sealed
+ * contract exposes only [KnowledgeLifecycleEvent.knowledgeId],
+ * [KnowledgeLifecycleEvent.occurredAt], and
+ * [KnowledgeLifecycleEvent.basis] -- the three fields every one of
+ * Scope Lock Clarification §5's own "carrying at minimum..." clauses
+ * names for all three variants. An evidence or provenance reference is
+ * deliberately **not** hoisted onto the common interface:
+ * [KnowledgeRetirement] carries no such reference at all (§5: retirement
+ * is a status change, never an evidential classification, and needs no
+ * evidence to justify it), so forcing one onto every variant would
+ * fabricate a field retirement's own governance never requires --
+ * exactly the "speculative abstraction... to make the hierarchy visually
+ * symmetrical" this Unit's own task instructs against. [resultingState]
+ * is similarly not common: only [KnowledgePromotion] ever produces an
+ * [EvidentialState] classification.
+ *
+ * ## Why append-only history, not this type, enforces immutability
+ *
+ * [KnowledgeLifecycleEvent] is a closed, sealed interface over three
+ * immutable `data class` variants; it declares no method and enforces no
+ * behaviour of its own. Scope Lock Clarification §6's append-only,
+ * never-edited-in-place guarantee is a property of how
+ * [KnowledgeItem.history] is populated by a future write path, not
+ * something this type can enforce on itself -- mirroring Unit 4's own,
+ * identical disclosure for [KnowledgeItem.history] before this Unit
+ * existed.
+ */
+sealed interface KnowledgeLifecycleEvent {
+    /** The [KnowledgeItem] this lifecycle event belongs to. */
+    val knowledgeId: KnowledgeId
+
+    /**
+     * The wall-clock instant this event occurred. Not deterministic and
+     * not required to be -- see [KnowledgePromotion.occurredAt]'s own,
+     * unchanged KDoc and
+     * `docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md`
+     * §12. This Unit does not implement, and this field does not itself
+     * define, any ordering rule over multiple events -- that remains a
+     * later Unit 7 sub-unit's own responsibility (Scope Lock
+     * Clarification §10).
+     */
+    val occurredAt: Instant
+
+    /**
+     * The disclosed, non-blank, free-text explanation for this event --
+     * the same free-text-over-new-type choice this file already makes
+     * for [KnowledgePromotionDecision.Reject.reason] and
+     * [KnowledgeCandidateEvaluation.Reject.basis], for the same reason.
+     */
+    val basis: String
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 4 (original type),
+ * reused unchanged by Unit 7.1 as one [KnowledgeLifecycleEvent] variant.
+ * The disclosed, read-only record documenting the basis for one
+ * classification event -- an initial promotion, or a subsequent revision
+ * -- of exactly one [KnowledgeItem]
  * (`docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`
  * §12: "One such record exists per promotion and per subsequent
  * revision -- never only at initial promotion; each is attached to
  * exactly one classification event and never independently altered
- * afterward"). This type is a plain data holder only -- it is never
- * caller-invocable, carries no `execute` method or algorithm of any
- * kind, and makes no permission or truth determination. Nothing in this
- * Unit constructs a [KnowledgePromotion] value; that begins with Unit 6
- * (initial promotion) and Unit 7 (subsequent revision).
+ * afterward"; `docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md`
+ * §5: "`KnowledgePromotion` **is** a lifecycle event and **must not** be
+ * duplicated by a separate 'revision' type"). This type is a plain data
+ * holder only -- it is never caller-invocable, carries no `execute`
+ * method or algorithm of any kind, and makes no permission or truth
+ * determination. This Unit does not implement revision evaluation --
+ * only Unit 6 (initial promotion) presently constructs a
+ * [KnowledgePromotion] value; a later Unit 7 sub-unit (revision
+ * evaluation) is the only other authorised constructor of one.
  *
  * [knowledgeId] identifies the [KnowledgeItem] this disclosure belongs
  * to. [evidenceReference] names the specific Memory Core record whose
@@ -516,26 +594,102 @@ enum class KnowledgeItemStatus {
  * from [KnowledgeItem.evidenceReference], since a later revision may
  * cite different or additional evidence than the promotion that preceded
  * it (Contract Design Version 2 §3, Revision). [resultingState] is the
- * [EvidentialState] this event produced. [occurredAt] carries no default
- * value, consistent with every other event timestamp in this file and in
- * `MemoryCore.kt` (a data class must not silently read the system
- * clock). [basis] is the disclosed, non-blank, free-text explanation of
- * why this classification was assigned -- the same free-text-over-new-
- * type choice this file's own [KnowledgePromotionDecision.Reject.reason]
- * already makes, for the same reason: a promotion or revision's basis
- * weighs several named factors together (Contract Design Version 2 §5),
- * not a single structural rule a closed enum could represent without
- * misrepresenting it as one.
+ * [EvidentialState] this event produced -- deliberately not part of the
+ * common [KnowledgeLifecycleEvent] contract, since neither
+ * [KnowledgeRetirement] nor [KnowledgeRestoration] produces one.
+ * [occurredAt] carries no default value, consistent with every other
+ * event timestamp in this file and in `MemoryCore.kt` (a data class must
+ * not silently read the system clock). [basis] is the disclosed,
+ * non-blank, free-text explanation of why this classification was
+ * assigned -- the same free-text-over-new-type choice this file's own
+ * [KnowledgePromotionDecision.Reject.reason] already makes, for the same
+ * reason: a promotion or revision's basis weighs several named factors
+ * together (Contract Design Version 2 §5), not a single structural rule
+ * a closed enum could represent without misrepresenting it as one.
  */
 data class KnowledgePromotion(
-    val knowledgeId: KnowledgeId,
+    override val knowledgeId: KnowledgeId,
     val evidenceReference: MemoryCoreRecordReference,
     val resultingState: EvidentialState,
-    val occurredAt: Instant,
-    val basis: String,
-) {
+    override val occurredAt: Instant,
+    override val basis: String,
+) : KnowledgeLifecycleEvent {
     init {
         require(basis.isNotBlank()) { "KnowledgePromotion.basis must not be blank" }
+    }
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 7.1. The
+ * [KnowledgeLifecycleEvent] variant recording that a [KnowledgeItem] was
+ * retired (`docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md`
+ * §5, §8). This type is a plain data holder only, exactly like
+ * [KnowledgePromotion] -- it defines no `execute` method, performs no
+ * transition itself, and this Unit does not implement the `ACTIVE` to
+ * `RETIRED` operation that would construct one; that operation is a
+ * later Unit 7 sub-unit's own, separately authorised responsibility.
+ *
+ * Deliberately carries **no** [resultingState] and **no** evidence or
+ * provenance reference: Scope Lock Clarification §5 and §8 are explicit
+ * that retirement "is a status change, never an evidential
+ * classification," and requires no evidence to justify it -- only a
+ * disclosed [basis]. Retirement does not delete, remove, or render
+ * inaccessible the retired [KnowledgeItem], its prior history, or its
+ * provenance (§8); this event is additive only, appended to
+ * [KnowledgeItem.history] alongside, never in place of, every event that
+ * preceded it (§6). It never implies historical erasure of any kind.
+ *
+ * [knowledgeId] identifies the retired [KnowledgeItem]. [occurredAt]
+ * carries no default value, for the same reason [KnowledgePromotion.occurredAt]
+ * does not. [basis] is the disclosed, non-blank, free-text explanation
+ * required by §8, mirroring every other disclosed basis in this file.
+ */
+data class KnowledgeRetirement(
+    override val knowledgeId: KnowledgeId,
+    override val occurredAt: Instant,
+    override val basis: String,
+) : KnowledgeLifecycleEvent {
+    init {
+        require(basis.isNotBlank()) { "KnowledgeRetirement.basis must not be blank" }
+    }
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 7.1. The
+ * [KnowledgeLifecycleEvent] variant recording that a retired
+ * [KnowledgeItem] was restored
+ * (`docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md` §5,
+ * §9). This type is a plain data holder only, exactly like
+ * [KnowledgePromotion] and [KnowledgeRetirement] -- it defines no
+ * `execute` method and performs no transition itself. This Unit does
+ * not implement restoration eligibility, evidence resolution, the
+ * qualifying-relationship requirement, or the non-resolution safety
+ * boundary Scope Lock Clarification §9 describes; those remain a later
+ * Unit 7 sub-unit's own, separately authorised responsibility. This type
+ * defines only the event shape those future rules will construct.
+ *
+ * [knowledgeId] identifies the restored [KnowledgeItem]. [evidenceReference]
+ * names the Memory Core evidence that re-establishes support, mirroring
+ * [KnowledgePromotion.evidenceReference]'s own already-established shape
+ * (§5: "a reference to the Memory Core evidence that re-establishes
+ * support"). [occurredAt] carries no default value, for the same reason
+ * every other event timestamp in this file does not. [basis] is the
+ * disclosed, non-blank, free-text explanation required by §9.
+ *
+ * This event does not, and cannot by itself, erase, alter, or reverse
+ * the [KnowledgeRetirement] event that preceded it -- that event remains
+ * permanently visible in [KnowledgeItem.history] (§6, §9); restoration is
+ * represented **only** by this new, appended event, never by removing or
+ * rewriting the retirement it follows.
+ */
+data class KnowledgeRestoration(
+    override val knowledgeId: KnowledgeId,
+    val evidenceReference: MemoryCoreRecordReference,
+    override val occurredAt: Instant,
+    override val basis: String,
+) : KnowledgeLifecycleEvent {
+    init {
+        require(basis.isNotBlank()) { "KnowledgeRestoration.basis must not be blank" }
     }
 }
 
@@ -576,6 +730,23 @@ data class KnowledgePromotion(
  * synchronised with this one
  * (`docs/governance/PROGRAMME_3_UNIT_4_SCOPE_LOCK_CLARIFICATION.md` §1).
  *
+ * **[history]'s element type, widened by Unit 7.1.** Originally
+ * `List<KnowledgePromotion>`; widened to a `List` of [KnowledgeLifecycleEvent]
+ * per `docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md` §5,
+ * which exercises exactly the latitude this Unit's own original KDoc
+ * already reserved to Unit 7 ("that guarantee is a future write-path
+ * behaviour (Unit 7's own responsibility)"). [history] remains a plain,
+ * read-only `List` -- ordered, but not itself append-only, mutation-
+ * preventing, or historically-preservative by any enforcement mechanism
+ * of its own; it can hold any mix, in any order, of [KnowledgePromotion],
+ * [KnowledgeRetirement], and [KnowledgeRestoration] values a caller
+ * constructs, since this Unit adds only the type shape, not a write path
+ * or an ordering rule (Scope Lock Clarification §§6, 10, both a later
+ * Unit 7 sub-unit's own responsibility). No lifecycle version is stored
+ * on this or any other field here -- Scope Lock Clarification §11 fixes
+ * the lifecycle version as `history`'s own length, derived, never
+ * independently stored.
+ *
  * No `init` block validates [evidenceReference], [provenanceReference],
  * [evidentialState], or [status] beyond their own types' construction-
  * time checks -- consistent with this task's own instruction that this
@@ -587,7 +758,7 @@ data class KnowledgeItem(
     val provenanceReference: ProvenanceReference,
     val evidentialState: EvidentialState,
     val status: KnowledgeItemStatus = KnowledgeItemStatus.ACTIVE,
-    val history: List<KnowledgePromotion> = emptyList(),
+    val history: List<KnowledgeLifecycleEvent> = emptyList(),
 )
 
 /**
