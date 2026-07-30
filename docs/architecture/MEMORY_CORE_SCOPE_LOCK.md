@@ -704,3 +704,204 @@ and CDR-003's guarantees are adopted here without addition or omission.
 ```
 AMENDMENT 1 — MEMORY RECORD COMPARISON — ADOPTED
 ```
+
+---
+
+## 19. Amendment 2 — Provenance Lookup by Identifier
+
+**Status.** This section is a governance amendment, added under the
+Parker Constitutional Remediation Programme, Phase 1, Amendment 2. It is
+additive only. It does not modify, reopen, or reinterpret Sections 1–18,
+including Section 18 (Amendment 1, frozen) and Section 10's own frozen
+retrieval scope. Per Constitutional Decision Record 004 ("Constitutional
+Classification of Provenance Identifier Resolution"), Provenance
+Identifier Resolution is a specialised constitutional capability within
+the existing **Identifier lookup** mode (Section 10, mode 1) — it is
+not an eighth retrieval mode. This amendment does not claim that mode 1
+already silently covered Provenance before this section existed; the
+repository evidence CDR-004 reviewed shows it did not. Instead, this
+amendment constitutionally **extends** mode 1's previously undocumented
+scope to newly include Provenance as a resolvable record kind, and
+supplies the guarantees that extension requires. Section 10's own text,
+and its "exactly seven retrieval modes" count and names, are unchanged
+by this extension — only mode 1's documented scope grows, through this
+section, never through any edit to Section 10 itself.
+
+### 19.1 Constitutional Purpose
+
+Every Entity, Document, Assertion, and Relationship record carries a
+mandatory Provenance reference (Section 7), and Provenance is "the
+contract this whole design treats as load-bearing" (`MEMORY_CORE_CONTRACT_DESIGN.md`
+§7). A caller that has already resolved one of those four record kinds
+therefore holds a bare `ProvenanceId` — but no existing operation
+resolves that identifier back to the Provenance record's own recorded
+content. `MEMORY_CORE_CONTRACT_DESIGN.md`
+§18's own Contract Summary records this directly: Provenance's read path
+today is "via referencing record" only. This gap makes auditability,
+traceability, record inspection, and deterministic reference resolution
+— all already-required properties of this design (Sections 11, 12;
+`MEMORY_CORE_CONTRACT_DESIGN.md` §12, "Audit behaviour," which already
+establishes that "a future reader reconstructs a record's full history
+by traversing its Relationships and reading its transition events") —
+incomplete in practice: a reader who has correctly traced a
+`Relationship` or amendment chain back to a `ProvenanceId` still cannot
+inspect what that Provenance record actually says. This
+amendment answers exactly one constitutional question: **given a
+`ProvenanceId`, what is the Provenance record it identifies, or the
+disclosed fact that none is resolvable?** It does not answer, and is
+not a substitute for, whether that Provenance supports promotion,
+independence, or any other evaluative judgment.
+
+### 19.2 Constitutional Guarantees
+
+Provenance Lookup by Identifier, in any implementation, shall guarantee:
+
+1. **Deterministic resolution** — the same identifier, against the same
+   stored state, resolves to the same result every time, mirroring
+   Section 11's existing determinism and repeatability guarantee.
+2. **No mutation** — lookup never alters the resolved Provenance record,
+   any record referencing it, or any other Memory Core state, consistent
+   with Section 12's immutability rules.
+3. **No evidential judgment** — lookup returns the Provenance record's
+   stored fields exactly as held; it does not interpret, validate, rank,
+   or judge the reliability of what it returns, consistent with Memory
+   Core never deciding what is true (`MEMORY_CORE_CONTRACT_DESIGN.md`
+   §2, §14).
+4. **No promotion or classification** — lookup is retrieval, not
+   evaluation; only Knowledge Memory weighs a resolved Provenance record
+   toward any promotion or classification decision (Section 5's
+   ownership statement).
+5. **No inference of truth** — resolving a Provenance record never
+   implies, by itself, that the claim it supports is true, consistent
+   with Assertion's own bounded truth-status (`MEMORY_CORE_CONTRACT_DESIGN.md`
+   §6).
+6. **No inference of independence or corroboration** — resolving two or
+   more Provenance records, including reading their `sourceIdentifier`
+   fields, never itself performs or implies Article XI's common-origin
+   determination; that check remains separate and mandatory, exactly as
+   Section 18's Guarantee 5 already establishes for Memory Record
+   Comparison.
+7. **Disclosed failure when the identifier cannot be resolved** — an
+   unknown identifier resolves to an explicit, disclosed not-found
+   outcome, never a fabricated, default, or inferred record, consistent
+   with `MEMORY_CORE_CONTRACT_DESIGN.md` §9's own established convention
+   for identifier-based resolution and §14's governing principle that an
+   unknown value is never fabricated.
+8. **Preservation of provenance ownership** — Memory Core remains the
+   sole owner and custodian of every Provenance record. Lookup discloses
+   the record's stored fields without altering them and without
+   transferring ownership, custodial responsibility, or evaluative
+   authority to the caller.
+9. **Technology independence** — these guarantees bind behaviour, not
+   technique; no indexing, storage, or lookup technology is named,
+   required, or precluded by this section.
+
+No guarantee beyond these nine is created by this section.
+
+### 19.3 Constitutional Boundaries
+
+Provenance Lookup by Identifier is not, and must never be conflated
+with:
+
+- **provenance search by criteria** — that remains mode 6
+  (Provenance-aware lookup), which searches other records *by*
+  provenance criteria; this amendment instead resolves a bare
+  `ProvenanceId` directly to *its own* record;
+- **semantic retrieval** — Section 10's existing, unrelated exclusion of
+  semantic retrieval is untouched; identifier lookup is exact-match,
+  structural resolution, the polar opposite of ranked or meaning-based
+  retrieval;
+- **Memory Record Comparison** (Section 18) — a distinct, frozen
+  capability; this amendment neither extends nor depends on it;
+- contradiction resolution;
+- truth determination;
+- confidence assignment;
+- evidential-state assignment;
+- promotion;
+- ranking;
+- scoring.
+
+### 19.4 Ownership
+
+Memory Core's existing, exclusive ownership of Provenance records
+(Section 5) is unchanged by this amendment. Lookup discloses a record
+Memory Core continues to hold and govern exclusively; it does not
+mutate that record, and it transfers no ownership, custodial
+responsibility, or evaluative authority to any caller.
+
+### 19.5 Permitted Consumers
+
+This amendment creates no new consumer class and restricts no existing
+one. Section 6 states without qualification that the Permission Boundary
+"applies to every operation `MemoryCore` and `MemoryRetrieval`
+expose... and every one of the seven retrieval modes," naming no
+per-mode consumer restriction anywhere in that boundary. Because this
+amendment extends mode 1 — one of the seven — rather than introducing a
+capability outside `MemoryRetrieval`'s surface, it is governed by that
+same, already-general Permission Boundary: available to whichever
+already-authorised caller Runtime approves, on the same terms as every
+other retrieval mode, no more and no less. This differs deliberately
+from Section 18's Memory-Record-Comparison-specific consumer
+restriction, since that capability was newly introduced outside
+`MemoryRetrieval`'s existing surface and required its own, narrower
+consumer statement; this amendment requires no equivalent restriction
+because Section 6 already supplies one, generally, for every retrieval
+mode.
+
+### 19.6 Failure Semantics
+
+At the constitutional level only, and stated as constitutional
+principles rather than presently-exhaustive behavioural cases:
+
+- **A known, resolvable identifier** resolves to its Provenance record.
+- **An unknown identifier** resolves to an explicit, disclosed not-found
+  outcome — never a fabricated, default, or inferred record. This is
+  the primary, presently-applicable failure case for a first
+  implementation of this capability.
+- **An identifier whose record is unavailable**, if this case ever
+  arises for a future implementation, must receive the same disclosed,
+  honest treatment as an unknown identifier — never silently
+  substituted, defaulted, or coerced into a resolvable result. This
+  guarantee is stated for future compatibility; it does not assert that
+  Provenance records currently have a path to unavailability distinct
+  from non-resolution, since Provenance is not among the record kinds
+  Section 11's shared lifecycle status governs.
+- **A malformed identifier**, if a future implementation ever admits one
+  reaching this capability at all, must be disclosed as
+  invalid input, distinctly from a well-formed but non-resolving
+  identifier — the two must never be conflated into a single,
+  undifferentiated not-found outcome. This guarantee is likewise stated
+  for future compatibility, since Memory Core's established identifier
+  pattern validates identifiers at construction, which may foreclose a
+  malformed identifier ever reaching this capability in practice.
+
+No exception, return type, status code, or API is defined by this
+section; only the required constitutional distinctions above are.
+
+### 19.7 Extensibility
+
+A future implementation of Provenance Lookup by Identifier may use any
+suitable persistence, indexing, or caching technology, provided every
+guarantee in Section 19.2 continues to hold. No database, storage
+engine, cache, index, or algorithm is named, required, or ruled out by
+this section.
+
+### 19.8 Constitutional Consistency Check
+
+This section has been checked against `MEMORY_CORE_SCOPE_LOCK.md`
+Sections 1–18 (including Section 10's "exactly seven retrieval modes"
+guarantee, preserved unchanged in count and name since this amendment
+extends mode 1's documented scope rather than adding an eighth mode or
+editing Section 10 itself, and Section 18, frozen and untouched),
+`MEMORY_CORE_CONTRACT_DESIGN.md` §§7, 9, 12, 14, and 18, the Remediation
+Roadmap, the Blocker Ownership Matrix, the Programme 3 Constitutional
+Audit, CDR-001, CDR-002, CDR-003, and Constitutional Decision Record 004.
+No inconsistency was found. This section's classification of Provenance
+Identifier Resolution as a specialised capability within mode 1 — never
+an eighth mode, never a claim that mode 1 already covered Provenance
+before this section existed — implements CDR-004's Model B
+determination directly.
+
+```
+AMENDMENT 2 — PROVENANCE LOOKUP BY IDENTIFIER — ADOPTED
+```
