@@ -923,3 +923,114 @@ sealed interface KnowledgeCandidateEvaluation {
 interface KnowledgeCandidateEvaluator {
     fun evaluate(candidate: KnowledgeCandidate): KnowledgeCandidateEvaluation
 }
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 7.2 (Knowledge
+ * Revision and Supersession Evaluation). The outcome of one
+ * [KnowledgeRevisionEvaluator] evaluation of one proposed revision of an
+ * existing [KnowledgeItem]
+ * (`docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md` §7,
+ * §15). A distinct, independent contract from [KnowledgeCandidateEvaluation]
+ * -- initial promotion (Unit 6) and revision (Unit 7.2) are separate,
+ * governed seams, never adapted into one another, exactly as the Unit 6
+ * Clarification already established for [KnowledgeCandidateEvaluation]
+ * relative to the legacy [KnowledgePromotionDecision].
+ *
+ * Represents only the three result outcomes this Unit is authorised to
+ * implement, out of Scope Lock Clarification §15's full six-outcome
+ * closed set: [Applied], [NotQualifyingRevision], and
+ * [StructurallyUnresolvable]. Stale-version conflict, restoration
+ * outcomes, and retirement outcomes are deliberately absent -- they
+ * depend on lifecycle sequence tracking, retirement, and restoration,
+ * none of which this Unit implements; a later Unit 7 sub-unit introduces
+ * them without altering the three cases here.
+ */
+sealed interface KnowledgeRevisionEvaluation {
+    /**
+     * The submitted evidence qualified as a revision (Section 7's
+     * Revision Qualification Gate) and was evaluated. [item] is the new,
+     * proposed [KnowledgeItem] value -- [KnowledgeItem.history] carries
+     * exactly one more entry than the [KnowledgeItem] this evaluation
+     * started from, and every prior entry is preserved unchanged, per
+     * Scope Lock Clarification §6's append-only, never-rewritten
+     * guarantee. [promotion] is the same, newly appended
+     * [KnowledgePromotion] value already present as the final element of
+     * [item]'s own [KnowledgeItem.history], surfaced here directly for a
+     * caller's convenience, mirroring [KnowledgeCandidateEvaluation.Promote]'s
+     * own identical shape. Construction only -- nothing implementing this
+     * type writes [item] or [promotion] anywhere; persistence remains a
+     * later, separately authorised responsibility.
+     */
+    data class Applied(
+        val item: KnowledgeItem,
+        val promotion: KnowledgePromotion,
+    ) : KnowledgeRevisionEvaluation
+
+    /**
+     * The submitted evidence resolved structurally, but no relationship
+     * or status transition authorised by Section 7's Revision
+     * Qualification Gate links it to the target [KnowledgeItem]'s
+     * already-cited evidence. No lifecycle event is appended and the
+     * existing [KnowledgeItem] is returned unchanged by the caller (this
+     * type carries no [KnowledgeItem] value, since none was produced).
+     * This is a structural qualification failure, never an evidential-
+     * sufficiency judgement -- Section 7 expressly disclaims any
+     * numerical materiality threshold, and this outcome must never be
+     * described as, or treated as, evidential insufficiency.
+     */
+    data class NotQualifyingRevision(
+        val basis: String,
+    ) : KnowledgeRevisionEvaluation {
+        init {
+            require(basis.isNotBlank()) { "KnowledgeRevisionEvaluation.NotQualifyingRevision.basis must not be blank" }
+        }
+    }
+
+    /**
+     * Either the target [KnowledgeItem]'s own already-cited evidence
+     * reference, or the newly submitted evidence reference, could not be
+     * resolved through [MemoryRetrieval] -- mirroring
+     * [KnowledgeCandidateEvaluation.Reject]'s own identical structural-
+     * prerequisite category. This evaluator does not, and structurally
+     * cannot, distinguish non-existence from an unauthorised access
+     * decision here, for the same reason [DefaultKnowledgeCandidateEvaluator]
+     * does not (Contract Design Version 2 Section 7).
+     */
+    data class StructurallyUnresolvable(
+        val basis: String,
+    ) : KnowledgeRevisionEvaluation {
+        init {
+            require(basis.isNotBlank()) { "KnowledgeRevisionEvaluation.StructurallyUnresolvable.basis must not be blank" }
+        }
+    }
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 7.2. The seam by
+ * which Knowledge Memory decides whether newly submitted Memory Core
+ * evidence qualifies as, and how it affects, a revision of an existing,
+ * already-promoted [KnowledgeItem]
+ * (`docs/governance/PROGRAMME_3_UNIT_7_SCOPE_LOCK_CLARIFICATION.md` §7).
+ * Structurally analogous to [KnowledgeCandidateEvaluator], but a distinct,
+ * independent seam -- initial promotion and revision are never adapted
+ * into one another.
+ *
+ * This interface performs no persistence, no compare-and-append, no
+ * lifecycle-sequence enforcement, and no retirement or restoration
+ * decision of its own -- see [DefaultKnowledgeRevisionEvaluator]'s own
+ * KDoc for the concrete qualification and classification rules one
+ * implementation applies. [occurredAt] is supplied by the caller, not
+ * read internally from the system clock, so that qualification and
+ * classification remain deterministic, testable pure functions of their
+ * own inputs -- a disclosed difference from [DefaultKnowledgeCandidateEvaluator],
+ * which does read the clock internally, since that class (unlike this
+ * one) is itself the sole authorised constructor of its own
+ * [KnowledgePromotion.occurredAt] value.
+ */
+interface KnowledgeRevisionEvaluator {
+    fun evaluate(
+        item: KnowledgeItem,
+        newEvidenceReference: MemoryCoreRecordReference,
+        occurredAt: Instant,
+    ): KnowledgeRevisionEvaluation
+}
