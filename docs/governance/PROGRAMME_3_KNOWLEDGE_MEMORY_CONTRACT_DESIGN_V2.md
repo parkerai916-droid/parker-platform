@@ -256,3 +256,170 @@ READY FOR FINAL ADVERSARIAL CONFIRMATION
 ```
 
 All eight required amendments are incorporated, each traced individually in Section 14 to the specific review finding it resolves, the section changed, the Article(s) satisfied, and the ambiguity removed. Section 15's regression review found no unresolved item among the original eight, and surfaced and closed one further gap (the confidence-absence handling in Amendment 2) that emerged only while drafting the fix itself — evidence this revision was genuinely re-examined, not merely asserted complete. Consistent with this Programme's own established discipline — that the author of a fix is not the right party to certify it — this document does not declare itself `READY FOR SCOPE LOCK` outright. It recommends a further, independent adversarial pass to confirm the eight resolutions actually hold under the same hostile reading the first review applied, and to assess the one knowingly-deferred item (Section 8's Reasoning Context "relevance" wording) on its own merits before Scope Lock begins.
+
+---
+
+## 16. Constitutional Remediation Programme — Phase 1 Amendment 5 (Explicit Request Clarification)
+
+**Status.** This section is a governance amendment, added under the
+Parker Constitutional Remediation Programme, Phase 1, Amendment 5. It is
+additive only. It does not modify, reopen, or reinterpret Sections 1–15
+or the Final Recommendation above, including this document's own,
+internal "Amendment 5" (Section 3, Retirement) — a distinct, unrelated,
+prior revision to this same document, using this document's own internal
+amendment-numbering scheme. To avoid any confusion between the two, this
+section is never referred to below as bare "Amendment 5" without the
+"Phase 1" qualifier, and the Remediation Programme's own Amendment 5 is
+this Section 16 alone.
+
+### 16.1 Constitutional Ambiguity
+
+Section 2's Knowledge Candidate row states that a Knowledge Candidate
+"carries a reference to existing Memory Core evidence and nothing else
+evidential — explicitly, a Knowledge Candidate carries no caller-settable
+confidence value and no caller-settable evidential-state value." This
+text is genuinely ambiguous between two readings: (a) "nothing else
+evidential" is exhaustively cashed out by the two named examples
+(confidence, evidential-state) — meaning only caller-asserted
+evidential-weight or evidential-classification content is excluded; or
+(b) "nothing else evidential" categorically excludes every field beyond
+the bare evidence reference, with confidence and evidential-state named
+only as the two most important instances. Until resolved, whether a
+Knowledge Candidate may lawfully carry an explicit-request indication —
+which its legacy predecessor, `CandidateMemory`, already did — cannot be
+determined.
+
+### 16.2 Constitutional Intent
+
+Reading (a) is the correct reading of existing constitutional intent,
+for three reasons drawn directly from repository governance:
+
+1. The sentence's own construction — a general clause followed by
+   "explicitly" and two named examples — introduces confidence and
+   evidential-state as the specific content being excluded, not as
+   illustrative instances of a broader, unstated category.
+2. The stated reason for the exclusion is that "Knowledge Memory
+   computes both itself" (Section 2) and that no subsystem may
+   "determine the final evidential status of their own outputs" (Article
+   XV). This reasoning applies to claims about evidential weight or
+   classification specifically. An explicit-request indication is not a
+   claim about evidential weight, confidence, or evidential-state — it
+   is a factual claim about the circumstances of submission (whether a
+   user directly asked Parker to remember something), architecturally
+   distinct from an evidential judgment in the same way Section 1
+   already distinguishes promotion (a durability-worthiness judgment)
+   from truth.
+3. Decisively: Section 5 itself names "explicit request" as one of the
+   six required promotion factors Knowledge Memory must weigh. Reading
+   (b) would make that named factor permanently unusable by
+   construction, since no Knowledge Candidate could ever carry the fact
+   Section 5 requires Knowledge Memory to weigh — an internal
+   contradiction between Section 2 and Section 5 that reading (a)
+   avoids entirely.
+4. The legacy `docs/architecture/MEMORY_CONTRACT_DESIGN.md` describes
+   the explicit-request flag as "architecturally different **evidence**
+   than Parker noticing a pattern on its own," which could superficially
+   be read as supporting reading (b). This reflects that document's own,
+   older terminology, predating the evidential-state taxonomy (Article
+   IV) this Programme later adopted, not Contract Design V2's own
+   controlled vocabulary. Contract Design V2 §5 itself draws the
+   relevant distinction: it labels the six named factors "promotion
+   criteria" and reserves the word "evidence" exclusively for the
+   underlying Memory Core record being evaluated against them — never
+   for the criteria themselves. Read against Contract Design V2's own,
+   current vocabulary, the legacy document's word choice does not
+   establish that explicit request is "evidential" within the meaning
+   of Section 2.
+
+This clarification changes no existing constitutional intent; it removes
+an ambiguity in wording that already, correctly, permitted an
+explicit-request indication.
+
+### 16.3 Constitutional Guarantees
+
+1. **Permitted, non-evidential field.** A Knowledge Candidate may carry
+   an indication of whether its submission was made in direct response
+   to an explicit user request. This is not "evidential" content within
+   the meaning of Section 2's existing exclusion, and carrying it does
+   not render a Knowledge Candidate malformed.
+2. **No evidential authority created.** An explicit-request indication
+   never contributes to, substitutes for, or overrides the confidence or
+   evidential-state values Knowledge Memory computes exclusively under
+   Sections 2 and 4. Knowledge Memory's exclusive authority over those
+   two values is entirely unchanged by this section.
+3. **No single-factor promotion.** The presence of an explicit-request
+   indication does not, by itself, determine promotion. It remains one
+   of the six factors Section 5's existing multi-factor, independence-
+   aware weighing discipline governs, subject to the same prohibition on
+   any single factor determining promotion absent an express, documented
+   governing-rule exception.
+4. **Honest absence.** Where a submission was not made in direct
+   response to an explicit request, or where this cannot be determined,
+   that fact must be represented honestly — never defaulted to "explicit
+   request" and never fabricated in either direction.
+5. **Technology independence.** No specific representation (a boolean, an
+   enumeration, a timestamped record, or otherwise) is named, required,
+   or precluded by this section; any representation satisfying the
+   guarantees above is permitted.
+
+### 16.4 Constitutional Boundaries
+
+An explicit-request indication does not:
+
+- constitute evidence of the truth of the underlying proposition;
+- contribute, numerically or otherwise, to a computed confidence value;
+- contribute to, or substitute for, an evidential-state classification;
+- by itself determine promotion (Section 5's multi-factor discipline
+  applies unchanged);
+- grant a caller any override authority over Knowledge Memory's own
+  computed values (Section 2's existing malformation rule for
+  caller-declared confidence or evidential-state remains entirely
+  unchanged and unaffected by this section).
+
+### 16.5 Ownership and Consumers
+
+Ownership is unchanged: the Knowledge Candidate contract slot belongs to
+Knowledge Memory, exactly as Section 2 already establishes; the value
+carried in that slot is supplied by whichever subsystem constructs the
+candidate on the submitter's behalf. The only authorised consumer of an
+explicit-request indication is Knowledge Memory's own promotion
+evaluator (Section 5) — the same consumer already established for the
+other five named promotion factors. No new consumer is authorised by
+this section. Where an explicit-request indication contributes to a
+promotion decision, the same promotion evaluator remains the party
+responsible for the promotion-basis disclosure Section 3 already
+requires — this section introduces no separate disclosure mechanism and
+does not alter Section 3's existing requirement in any way.
+
+### 16.6 Failure Semantics
+
+At the constitutional level only: where a submission's explicit-request
+status is genuinely unknown to the subsystem constructing the Knowledge
+Candidate, that uncertainty must be represented honestly, consistent
+with Guarantee 4 above. No exception, return type, status code, or API
+is defined by this section.
+
+### 16.7 Extensibility
+
+A future implementation of this indication may use any suitable
+representation, provided every guarantee in Section 16.3 continues to
+hold. No specific technology, data shape, or interface is named,
+required, or ruled out by this section.
+
+### 16.8 Constitutional Consistency Check
+
+This section has been checked against Sections 1–15 of this document
+(including this document's own internal Amendment 5, Section 3
+Retirement, confirmed unrelated and untouched), `docs/architecture/MEMORY_CORE_SCOPE_LOCK.md`
+(Sections 1–19, including Amendments 1 and 2, both frozen and unaffected),
+`docs/reviews/PROGRAMME_3_CONSTITUTIONAL_AUDIT.md`, `docs/reviews/PROGRAMME_3_BLOCKER_OWNERSHIP_MATRIX.md`,
+and `docs/governance/PROGRAMME_3_CONSTITUTIONAL_REMEDIATION_ROADMAP.md`.
+No inconsistency was found. This section resolves the ambiguity the
+Blocker Ownership Matrix and Remediation Roadmap both identified in
+Section 2, using the narrow-clarification pattern both documents
+recommended, without altering Section 2's own text or any other
+previously settled decision in this document.
+
+```
+PHASE 1 AMENDMENT 5 — EXPLICIT REQUEST CLARIFICATION — ADOPTED
+```
