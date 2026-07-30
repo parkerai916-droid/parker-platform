@@ -19,6 +19,17 @@ capability considered below is marked `IN SCOPE` or `OUT OF SCOPE`. There
 is no third category. "Future consideration" is not a classification
 this document uses anywhere.
 
+**Amended (Phase 1, Amendment 1 — Memory Record Comparison).** Section 18
+adds one new constitutional capability, Memory Record Comparison,
+following `docs/decisions/CDR-001_MEMORY_RECORD_COMPARISON_VS_SEMANTIC_RETRIEVAL.md`,
+`docs/decisions/CDR-002_CONSTITUTIONAL_INTERPRETATION_OF_COMPARISON.md`,
+and `docs/studies/CDR-003_COMPARISON_MODEL_EVALUATION.md`. This amendment
+is additive only — it does not alter, reopen, or reinterpret Sections
+1–17, including Section 10's own frozen exclusion of semantic retrieval,
+which CDR-001 and CDR-002 both found textually confined to a
+differently-purposed, caller-facing retrieval capability that Section 18
+does not touch and does not authorise.
+
 **Scope Lock Principle.** The first Memory Core implementation shall
 establish a truthful, governed system of record. It is not intended to
 become a complete knowledge system. Where a candidate capability is
@@ -524,4 +535,172 @@ boundary an implementation must build inside.
 
 ```
 READY FOR IMPLEMENTATION PLAN
+```
+
+---
+
+## 18. Amendment 1 — Memory Record Comparison
+
+**Status.** This section is a governance amendment, added under the
+Parker Constitutional Remediation Programme, Phase 1, Amendment 1. It is
+additive only. It does not modify, reopen, or reinterpret Sections 1–17.
+It is informed by, and adopts without modification, the model selected in
+`docs/studies/CDR-003_COMPARISON_MODEL_EVALUATION.md` ("Model B —
+Canonical Record Comparison"), following the ambiguity identified in
+`docs/decisions/CDR-001_MEMORY_RECORD_COMPARISON_VS_SEMANTIC_RETRIEVAL.md`
+and the interpretation reached in
+`docs/decisions/CDR-002_CONSTITUTIONAL_INTERPRETATION_OF_COMPARISON.md`.
+
+### 18.1 Constitutional Purpose
+
+Memory Record Comparison exists because two constitutional
+responsibilities already established elsewhere cannot be discharged
+without some way of relating a candidate record to Memory Core's
+existing population:
+
+- Contract Design V2 §5's promotion factors of **repetition** and
+  **frequency** require Knowledge Memory to determine whether a candidate
+  corresponds to something already present, and how often.
+- Article XI §2's independence requirement requires determining whether
+  two or more accounts derive from a common upstream source **before**
+  they may be treated as independent corroboration — repeated accounts
+  sharing an underlying source shall not be treated as independent
+  corroboration.
+
+Memory Record Comparison answers exactly one constitutional question:
+**given a candidate and Memory Core's existing records, what is the
+disclosed relationship between them?** It does not answer, and is not a
+substitute for the separate questions of whether a candidate should be
+promoted, how it should be classified, or whether it is true.
+
+### 18.2 Constitutional Guarantees
+
+Memory Record Comparison, in any implementation, shall guarantee all of
+the following, reproduced verbatim from CDR-003's "Constitutional
+Guarantees Model B Must Provide":
+
+1. **Determinism.** Given the same stored Memory Core state and the same
+   candidate, comparison shall yield the same result every time,
+   mirroring Memory Core Scope Lock §11's existing determinism and
+   repeatability guarantee.
+2. **No mutation.** Comparison shall never alter any Memory Core record,
+   provenance, or lifecycle status.
+3. **No promotion, no classification.** Comparison shall never itself
+   decide promotion or assign an evidential state; its output is one
+   input among several to Knowledge Memory's own, separately-governed,
+   multi-factor weighing (Contract Design V2 §5).
+4. **Disclosed basis.** Every comparison outcome that contributes to a
+   promotion or classification decision shall be disclosed in terms a
+   human can inspect, mirroring `KnowledgePromotion.basis`'s existing
+   discipline. A mechanism whose basis cannot be disclosed does not
+   satisfy this guarantee, regardless of technique.
+5. **Independence preserved.** Comparison shall never, by itself,
+   determine or imply independent corroboration. Article XI's own
+   common-origin/source-lineage test remains a separate, mandatory check
+   applied to whatever repetition comparison identifies, regardless of
+   mechanism.
+6. **Comparison is not contradiction resolution.** Comparison shall never
+   conflate content similarity with agreement. Contract Design V2 §3's
+   existing contradiction handling, via explicit `CONTRADICTS`/`DISPUTES`
+   relationships, remains entirely separate and is never superseded or
+   reinterpreted by a comparison outcome.
+7. **No ownership transfer.** Regardless of which mechanism satisfies
+   these guarantees, Knowledge Memory remains the sole party that weighs
+   comparison's output into a promotion or classification decision
+   (Article XV). No mechanism may itself assert an evidential judgment.
+8. **No technology commitment.** These guarantees bind behaviour, not
+   technique. Adopting or replacing a mechanism (structural, rule-based,
+   model-assisted, human-assisted) never requires amending these
+   guarantees themselves, and never requires reopening Memory Core Scope
+   Lock or Contract Design V2, provided the guarantees remain satisfied.
+9. **Disclosed asymmetry, never concealed.** Where a mechanism's own
+   internal process is not independently re-derivable by a human even
+   though its outcome is deterministic and disclosed, that asymmetry must
+   itself be disclosed, consistent with Article XIII's
+   transparency-of-uncertainty discipline — never presented as equivalent
+   to Model A's trivial verifiability.
+
+No guarantee beyond these nine is created by this section.
+
+**On the citation of Article XV in Guarantee 7.** Article XV's literal
+text ("Constitutional Separation of Reasoning and Representation")
+addresses reasoning providers specifically. Guarantee 7 applies its
+separation principle — that no mechanism may itself assert an evidential
+judgment in place of Knowledge Memory — to Memory Record Comparison
+mechanisms generally, including structural, rule-based, or
+persistence-layer mechanisms that are not reasoning providers in
+Article XV's own sense. This is a constitutional extension of Article
+XV's separation principle to a mechanism category Article XV does not
+itself name, not a literal application of Article XV's text, and is
+recorded here as such rather than as a direct quotation.
+
+### 18.3 Constitutional Boundaries
+
+Memory Record Comparison does not:
+
+- determine the truth of any record or candidate;
+- infer intent behind any record or candidate;
+- evaluate meaning, unless separately authorised by future governance —
+  and no such authorisation is granted by this section;
+- rank, score, or order records for a caller (that capability, if it is
+  ever authorised, is governed separately from and is not created by this
+  section);
+- assign confidence (Article XIV's confidence determination remains
+  wholly separate);
+- resolve conflicts between records (this remains contradiction handling,
+  per Guarantee 6 above).
+
+For the avoidance of doubt, the phrase "unless separately authorised by
+future governance" does not reopen, narrow, or reinterpret Section 10's
+existing, unrelated exclusion of semantic retrieval from Memory Core's
+seven retrieval modes. That exclusion remains in force, unmodified, and
+governs a different, caller-facing capability.
+
+### 18.4 Constitutional Extensibility
+
+A future implementation of Memory Record Comparison may use any
+technology — including, without limitation, exact-match logic, a
+persistence-layer query, a model-backed mechanism, or a human-in-the-loop
+mechanism — provided every guarantee in Section 18.2 continues to hold.
+No specific technology is named, required, or ruled out by this section.
+Changing the underlying technology in the future does not require
+amending this section, provided the guarantees continue to hold; if a
+future implementation cannot uphold all nine guarantees, it requires
+separate governance authorisation before it may proceed.
+
+### 18.5 Constitutional Consumers
+
+Memory Record Comparison's only authorised consumer is Knowledge Memory,
+consistent with Section 5's existing statement that Knowledge Memory
+owns evaluation and promotion decisions over Memory Core content. This
+section authorises no other consumer. Any future consumer requires
+separate governance authorisation.
+
+### 18.6 Non-Goals
+
+This section does not define, and no future implementation may treat it
+as authority for:
+
+- any algorithm, scoring function, or similarity metric;
+- semantic retrieval, embedding-based retrieval, or any caller-facing
+  ranked-retrieval capability;
+- any implementation interface, API, or Kotlin type;
+- any runtime behaviour, wiring, or permission check (Section 6's
+  permission boundary is unaffected).
+
+### 18.7 Constitutional Consistency Check
+
+This section has been checked against `MEMORY_CORE_SCOPE_LOCK.md`
+Sections 1–17 (including Section 10's semantic-retrieval exclusion and
+Section 5's ownership statement), `MEMORY_CONTRACT_DESIGN.md`'s
+"must not be foreclosed" passage, Contract Design V2 §5, CDR-001,
+CDR-002, and CDR-003. No inconsistency was found: Section 10's exclusion
+is confined, per CDR-001 and CDR-002, to a differently-purposed
+capability this section does not touch; Section 5's ownership statement
+is preserved by Guarantee 7; Contract Design V2 §5's repetition and
+frequency factors are the direct constitutional purpose of this section;
+and CDR-003's guarantees are adopted here without addition or omission.
+
+```
+AMENDMENT 1 — MEMORY RECORD COMPARISON — ADOPTED
 ```
