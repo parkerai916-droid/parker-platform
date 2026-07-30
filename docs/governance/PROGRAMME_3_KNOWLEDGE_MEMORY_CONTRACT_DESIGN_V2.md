@@ -420,6 +420,138 @@ Section 2, using the narrow-clarification pattern both documents
 recommended, without altering Section 2's own text or any other
 previously settled decision in this document.
 
+### 16.9 Non-Evidential Submission-Context Metadata — General Principle
+
+*(Extension, added under the Unit 6 Contract-Level Remediation Options
+Review.)* Section 16.2's reasoning — that "nothing else evidential"
+(Section 2) excludes only caller-asserted evidential-weight or
+evidential-classification content, not every field beyond the bare
+evidence reference — is a principle of general application, not one
+confined to the explicit-request indication alone. Stated generally: a
+Knowledge Candidate may carry narrowly scoped, non-evidential
+submission-context metadata where doing so is required to supply a
+promotion factor Section 5 already names, provided the metadata does not
+itself assert, embed, duplicate, or fabricate any evidential content.
+Specifically, no such metadata may:
+
+- embed a new evidential claim about the underlying proposition, distinct
+  from what Memory Core's own referenced record already states;
+- duplicate Memory Core evidence carried elsewhere (Section 2's existing
+  "reference, never a copy" principle applies identically to
+  submission-context metadata);
+- fabricate, assert, or imply a confidence figure, a provenance detail, a
+  corroboration or contradiction relationship, or an importance
+  judgment — each of these remains exclusively sourced from Memory Core
+  or from Knowledge Memory's own computation (Sections 2, 4, 5), never
+  from the submitter;
+- substitute for a Memory Core provenance reference, which remains
+  independently required (Section 2) regardless of any submission-context
+  metadata a Knowledge Candidate carries.
+
+Such metadata may affect how Knowledge Memory weighs or prioritises a
+candidate for evaluation; it never affects, and must never be treated as
+bearing on, whether the underlying proposition is factually correct, and
+it never permits any reasoning provider or other module to self-certify
+the truth or evidential status of its own output (Article XV). Article
+XV's literal text addresses reasoning providers specifically; its
+application here, to non-reasoning-provider submission-context metadata
+generally, is a constitutional extension of Article XV's separation
+principle, not a literal application of Article XV's own text, and is
+recorded here as such rather than as a direct quotation — mirroring
+`docs/architecture/MEMORY_CORE_SCOPE_LOCK.md` §18's Guarantee 7, which
+discloses the identical kind of extension on the same terms.
+
+**This general principle authorises no field beyond the explicit-request
+indication named in Section 16.3.** A future submission-context field, if
+ever proposed, requires its own disclosed treatment under this same
+principle — this section establishes the interpretive rule such fields
+would be tested against; it does not pre-authorise any of them.
+
+### 16.10 Multi-Factor Interaction Disclosure
+
+*(Extension.)* Consistent with Section 5's existing multi-factor
+requirement, and disclosed here rather than left implicit: of the six
+factors Section 5 names, only confidence (available solely for
+Assertion-kind Memory Core evidence, and only where recorded) and,
+following this Amendment, explicit request presently have any
+constitutionally authorised source reachable by a Knowledge Candidate
+submission. This section does not mandate that a future implementation
+combine exactly these two, nor does it foreclose repetition, frequency,
+or user importance becoming reachable later. It records, honestly, that
+where confidence is unavailable, an explicit-request indication alone is
+exactly one factor — and Section 5's prohibition on any single factor
+determining promotion or the resulting evidential-state classification
+applies to it precisely as it applies to every other named factor.
+Nothing in this Amendment relaxes that prohibition, and nothing in it
+licenses treating an absent or unavailable factor as satisfied.
+
+### 16.11 Deferred Factors, Unchanged
+
+*(Extension.)* This Amendment resolves only the ambiguity identified in
+Section 16.1. It does not, and may not be read to:
+
+- remove, narrow, or redefine repetition or frequency as promotion
+  factors (Section 5) — both remain named, and both remain dependent on a
+  Memory Core capability governed separately
+  (`docs/architecture/MEMORY_CORE_SCOPE_LOCK.md` §18, Amendment 1, already
+  adopted; its implementation remains Programme 2's own responsibility,
+  not addressed by this Amendment);
+- define, assign an owner to, or otherwise resolve "user importance" as a
+  promotion factor — it remains named in Section 5 and otherwise
+  unresolved;
+- redefine relevance, which Section 5 does not name as a
+  promotion-boundary factor and which remains, by existing and unaltered
+  design, a retrieval-time concern outside Knowledge Memory's promotion
+  boundary;
+- alter the common-origin determination Section 5 already requires before
+  repetition or frequency may contribute weight, or any other requirement
+  of Section 5's existing multi-factor discipline;
+- alter contradiction or corroboration semantics (Section 3, Section 5)
+  in any respect;
+- change Programme 2's (Memory Core's) own responsibilities, including
+  the two amendments already adopted at that layer;
+- perform, anticipate, or substitute for any part of Amendment 3's own,
+  separately governed process.
+
+### 16.12 No Post-Hoc Ratification
+
+*(Extension.)* This Amendment creates contract-level authorisation for a
+future, compliant implementation to carry an explicit-request indication
+on a Knowledge Candidate. It does not thereby approve, validate, or
+ratify any existing implementation. In particular, this Amendment:
+
+- does not approve `DefaultKnowledgeCandidateEvaluator` or any other
+  existing Knowledge Memory implementation as compliant with this
+  Contract Design;
+- does not validate unconditional promotion of a structurally resolved
+  candidate — Section 5's genuine promotion gate is unaffected and
+  unrelaxed by this Amendment;
+- does not validate assignment of a corroboration-based evidential-state
+  classification from a single factor — Section 5's existing prohibition,
+  restated in Section 16.10 above, is unaffected;
+- creates only the contract basis a future, separately governed
+  implementation correction may build against; whether and how that
+  correction is made remains outside this Amendment's own scope;
+- does not treat Unit 6, or any Knowledge Memory implementation, as
+  complete, and does not authorise any existing implementation to be
+  staged, committed, or otherwise relied upon as finished.
+
+### 16.13 Extended Constitutional Consistency Check
+
+*(Extension.)* Sections 16.9–16.12 have been checked against Sections
+1–15 and Sections 16.1–16.8 of this document (all unmodified by this
+extension), `docs/architecture/MEMORY_CORE_SCOPE_LOCK.md` (including
+Amendments 1 and 2, both frozen and unaffected), `docs/architecture/epistemic-integrity.md`
+(Articles XV, XI), `docs/governance/PROGRAMME_3_UNIT_6_SCOPE_LOCK_CLARIFICATION.md`
+(Amended, frozen and unaffected), `docs/reviews/PROGRAMME_3_UNIT_6_CONSTITUTIONAL_RECONCILIATION.md`,
+and `docs/reviews/PROGRAMME_3_KNOWLEDGE_PROMOTION_FACTOR_PROVENANCE.md`.
+No inconsistency was found. This extension narrows implementation freedom
+and forecloses post-hoc ratification; it relaxes no existing guarantee,
+and it authorises no field, mechanism, or consumer beyond what Sections
+16.1–16.8 already authorised for the explicit-request indication
+specifically.
+
 ```
 PHASE 1 AMENDMENT 5 — EXPLICIT REQUEST CLARIFICATION — ADOPTED
+PHASE 1 AMENDMENT 5 EXTENSION (16.9–16.13) — GENERAL METADATA PRINCIPLE, MULTI-FACTOR DISCLOSURE, DEFERRED-FACTOR PRESERVATION, NO-POST-HOC-RATIFICATION SAFEGUARD — ADOPTED
 ```
