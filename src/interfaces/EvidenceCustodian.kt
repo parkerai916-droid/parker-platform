@@ -288,16 +288,196 @@ sealed class EvidenceAcceptanceResult {
 }
 
 /**
- * The governed acceptance boundary itself. A single operation for this
- * Unit -- [accept] -- with [parker.core.runtime.DefaultEvidenceCustodian]
- * as its sole implementation. No implementation of this interface may
- * accept evidence implicitly, silently, or as a side effect of any other
- * operation (Contract Design Section 4's own "Accepting evidence into
- * custody" requirement, restated here as this interface's own contract).
+ * Evidence Custodian, Implementation Plan Phase 4 ("Retrieval interface
+ * behaviour"), Unit 3. Adds exactly what Unit 2's own closing KDoc
+ * deferred to this phase: [EvidenceRetrievalResult] and
+ * [EvidenceCustodian.retrieve] -- an authorised, observational read
+ * operation, gated the same way [EvidenceCustodian.accept] is gated
+ * (Scope Lock Section 7's own "Authorised read access confers no write,
+ * mutation, or replacement capability").
+ *
+ * ## What this Unit implements
+ *
+ * A second operation on the same [EvidenceCustodian] interface Unit 2
+ * introduced: given an already-existing [EvidenceArtifactId] and a
+ * requesting [PrincipalId], return the exact bytes [EvidenceCustodian.accept]
+ * persisted for that identifier -- or an explicit, non-exceptional
+ * indication that the request was not authorised, or that no artefact
+ * exists under that identifier. Reuses [EvidenceArtifactId] (Unit 1),
+ * `EvidenceArtifactStorage.read` (Unit 1, Phase 2, unmodified), and the
+ * existing [PermissionEngine] interface unmodified -- no new storage
+ * primitive, no new identity type, and no new Permission Engine contract
+ * is introduced anywhere in this Unit.
+ *
+ * ## Why no new storage abstraction is required
+ *
+ * `EvidenceArtifactStorage.read` already returns exactly what this
+ * operation needs to return -- the exact bytes written for an identifier,
+ * or `null` if none exist -- and already guarantees a freshly-allocated
+ * `ByteArray` on every call (Unit 1's own documented byte-ownership
+ * guarantee, verified by that Unit's own test suite). That method's KDoc
+ * disclaims only that it is *itself* "not the governed, caller-facing
+ * retrieval API" -- language identifying exactly the gap this Unit closes,
+ * not a gap in the read primitive's own behaviour. This Unit therefore adds
+ * a governed *wrapper* around an already-correct, already-tested read
+ * primitive, never a second way of reading bytes off disk.
+ *
+ * ## Why no Memory Core or provenance work is required
+ *
+ * The Implementation Plan's own Traceability table (Section 8) lists
+ * Provenance integration as Phase 5, sequenced strictly after this Phase
+ * (Phase 4) -- retrieval's own dependency row names only the Constitution's
+ * no-bypass principle and Contract Design Section 6.6/Scope Lock Section 7,
+ * neither of which mentions Memory Core. Contract Design Section 6.2 keeps
+ * Provenance exclusively Memory Core's own contract regardless; reading a
+ * custodied artefact's bytes back does not touch, require, or imply
+ * anything about whatever Provenance record Memory Core may separately
+ * hold for it.
+ *
+ * ## Why retrieval is observational only
+ *
+ * [parker.core.runtime.DefaultEvidenceCustodian.retrieve] calls exactly two
+ * methods: [PermissionEngine.evaluate] (itself read-only against Identity
+ * Service/policy state) and `EvidenceArtifactStorage.read` (Unit 1's own
+ * read-only primitive). No code path in this Unit calls
+ * `EvidenceArtifactStorage.write`; no identifier is minted -- the caller
+ * supplies an already-existing [EvidenceArtifactId], exactly as retrieval
+ * requires one to already exist rather than creating one; no field of
+ * [AcceptedEvidenceArtifact] or any other acceptance-side state is ever
+ * read, written, or referenced by this Unit's own retrieval path; and no
+ * Memory Core, Knowledge Memory, or provenance call appears anywhere in
+ * this Unit's implementation. [EvidenceRetrievalResult.Found] carries only
+ * the identifier the caller already supplied and the bytes
+ * `EvidenceArtifactStorage.read` already returned -- it asserts no new
+ * fact this Unit did not already have on hand from its own two calls.
+ *
+ * ## `EvidenceRetrievalResult`, mirroring `EvidenceAcceptanceResult`'s own
+ * non-exceptional-outcome shape, with one addition: a genuine storage
+ * fault still propagates as a thrown exception
+ *
+ * A denied Permission Engine decision remains an ordinary, expected
+ * outcome -- not a fault -- exactly as Unit 2 already established, so it
+ * is returned as [EvidenceRetrievalResult.Rejected], never thrown. A
+ * missing artefact ("authorised, but nothing exists under this identifier")
+ * is equally an ordinary, expected outcome, not a fault, so it is returned
+ * as [EvidenceRetrievalResult.NotFound], never thrown or conflated with
+ * [Rejected]. A genuine storage fault (`EvidenceArtifactStorageException`,
+ * any subtype -- for example `StorageIOFailure` or an `UnsafeIdentifier`
+ * raised by a corrupted or hand-edited identifier reaching storage) is a
+ * different kind of outcome, exactly as Unit 2 already distinguished for
+ * `accept`, and is deliberately not folded into this same result type: it
+ * propagates unchanged, uncaught, per this Unit's own "do not hide genuine
+ * storage failures as `NotFound`" instruction. No document reviewed for
+ * this Unit requires a different behaviour.
+ *
+ * ## One disclosed convention this Unit's own `retrieve` implementation
+ * depends on, without resolving how it gets wired in production
+ *
+ * [parker.core.runtime.DefaultEvidenceCustodian] constructs an
+ * `ExecutionRequest` naming a second fixed, well-known `ResourceId`
+ * (`"evidence-custodian-retrieval"`) and a second fixed proposed-action
+ * name (`"evidence.retrieve"`) -- distinct literal values from Unit 2's
+ * own acceptance conventions, defined once as named constants and never
+ * duplicated as a second literal anywhere else in this Unit's own code or
+ * tests. Neither is registered anywhere by this Unit -- no call to
+ * `ResourceRegistry.register` or an `ActionVocabulary` registration exists
+ * in this Unit's own code, since registering either is Implementation Plan
+ * Phase 10 ("Runtime integration") work, explicitly excluded from this
+ * Unit. A production [PermissionEngine] (`DefaultPermissionEngine` backed
+ * by `DefaultPermissionPolicy`) will resolve neither name to anything until
+ * that future Phase 10 Unit registers a Resource under this identifier and
+ * an `ActionVocabulary` entry mapping this action name to a resolvable
+ * `(PermissionAction, ResourceType)` pair -- until then, a real
+ * `DefaultPermissionPolicy` would deny every retrieval request through this
+ * path (its own documented "Unknown Action"/"Unknown Resource" ->
+ * `DENIED` behaviour), exactly the same safe, conservative failure mode
+ * Unit 2's own acceptance path is already in today, not a new or different
+ * risk this Unit introduces. This Unit's own tests exercise the
+ * *orchestration* (`FakePermissionEngine`, exactly as Unit 2's own tests
+ * already do) rather than a real policy, for the same reason.
+ */
+
+/**
+ * What [EvidenceCustodian.retrieve] returns -- an explicit, non-exceptional
+ * outcome for the two ordinary cases (denied, not found), with a genuine
+ * storage fault deliberately left outside this type and instead thrown
+ * (this file's own Unit 3 KDoc explains why).
+ */
+sealed class EvidenceRetrievalResult {
+
+    /**
+     * Retrieval was authorised and an artefact exists under
+     * [evidenceArtifactId]. [content] is exactly what
+     * [parker.core.runtime.DefaultEvidenceCustodian] received back from
+     * `EvidenceArtifactStorage.read` for this identifier -- no
+     * transformation, re-encoding, or modification of any kind.
+     *
+     * Not a `data class`, for the same reason [CandidateEvidenceArtifact]
+     * is not: a Kotlin `data class`'s auto-generated `equals`/`hashCode`
+     * would compare [content] by reference, not by value. [equals] and
+     * [hashCode] are overridden here to compare [content] structurally
+     * instead.
+     */
+    class Found(val evidenceArtifactId: EvidenceArtifactId, val content: ByteArray) : EvidenceRetrievalResult() {
+
+        override fun equals(other: Any?): Boolean =
+            other is Found && evidenceArtifactId == other.evidenceArtifactId && content.contentEquals(other.content)
+
+        override fun hashCode(): Int = 31 * evidenceArtifactId.hashCode() + content.contentHashCode()
+
+        override fun toString(): String =
+            "Found(evidenceArtifactId=$evidenceArtifactId, content=<${content.size} bytes>)"
+    }
+
+    /**
+     * Retrieval was authorised, but no artefact exists under
+     * [evidenceArtifactId] -- distinct from [Rejected] (an authorisation
+     * outcome) and from a thrown `EvidenceArtifactStorageException` (a
+     * genuine fault). Carries the identifier that was requested so a
+     * caller can correlate this result with its own request without this
+     * type needing to echo anything else about it.
+     */
+    data class NotFound(val evidenceArtifactId: EvidenceArtifactId) : EvidenceRetrievalResult()
+
+    /**
+     * Retrieval was not authorised. [reason] is a plain-language
+     * explanation, never a caller-facing policy justification this Unit
+     * has no basis to construct -- see
+     * [parker.core.runtime.DefaultEvidenceCustodian]'s own KDoc for exactly
+     * what it contains.
+     */
+    data class Rejected(val reason: String) : EvidenceRetrievalResult() {
+        init {
+            require(reason.isNotBlank()) { "EvidenceRetrievalResult.Rejected.reason must not be blank" }
+        }
+    }
+}
+
+/**
+ * The governed acceptance and retrieval boundary itself. Two operations on
+ * this interface so far -- [accept] (Unit 2, Phase 3) and [retrieve] (Unit
+ * 3, Phase 4) -- with [parker.core.runtime.DefaultEvidenceCustodian] as the
+ * sole implementation of both. No implementation of this interface may
+ * accept evidence, or grant read access to it, implicitly, silently, or as
+ * a side effect of any other operation (Contract Design Section 4's own
+ * "Accepting evidence into custody"/"Supporting authorised read access"
+ * requirements, restated here as this interface's own contract).
  */
 interface EvidenceCustodian {
     suspend fun accept(
         requestingPrincipalId: PrincipalId,
         candidate: CandidateEvidenceArtifact,
     ): EvidenceAcceptanceResult
+
+    /**
+     * Authorised, observational read access to a previously accepted
+     * artefact. Never mints or reassigns an [EvidenceArtifactId]; never
+     * alters acceptance state; never writes, replaces, deletes, promotes,
+     * classifies, hashes, or annotates anything (this file's own Unit 3
+     * KDoc, "Why retrieval is observational only").
+     */
+    suspend fun retrieve(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+    ): EvidenceRetrievalResult
 }

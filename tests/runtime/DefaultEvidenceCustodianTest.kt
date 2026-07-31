@@ -9,6 +9,7 @@ import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceArtifactStorage
 import parker.core.interfaces.EvidenceArtifactStorageException
+import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
@@ -25,17 +26,22 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Evidence Custodian, Implementation Plan Phase 3, Unit 2. Behavioural
- * tests of [DefaultEvidenceCustodian] -- the orchestration between
- * [parker.core.interfaces.PermissionEngine] and [EvidenceArtifactStorage],
- * exercised with [FakePermissionEngine] (already established by
- * [DefaultExecutionPipelineTest]) and [InMemoryEvidenceArtifactStorage]
- * (Unit 1). Deliberately does not re-prove anything
- * [InMemoryEvidenceArtifactStorageTest] / [FileSystemEvidenceArtifactStorageTest]
+ * Evidence Custodian, Implementation Plan Phase 3 (Unit 2) and Phase 4
+ * (Unit 3). Behavioural tests of [DefaultEvidenceCustodian] -- the
+ * orchestration between [parker.core.interfaces.PermissionEngine] and
+ * [EvidenceArtifactStorage], exercised with [FakePermissionEngine] (already
+ * established by [DefaultExecutionPipelineTest]) and
+ * [InMemoryEvidenceArtifactStorage] (Unit 1). Deliberately does not re-prove
+ * anything [InMemoryEvidenceArtifactStorageTest] / [FileSystemEvidenceArtifactStorageTest]
  * already prove about storage's own behaviour (duplicate rejection,
  * identifier safety, exact-byte round trip) -- this suite is about what
- * [DefaultEvidenceCustodian] itself adds: the permission gate, identifier
- * minting, and the candidate/accepted separation.
+ * [DefaultEvidenceCustodian] itself adds: for `accept` (Unit 2), the
+ * permission gate, identifier minting, and the candidate/accepted
+ * separation; for `retrieve` (Unit 3, added below), the permission gate
+ * occurring strictly before any storage read, the explicit
+ * Found/NotFound/Rejected distinction, storage-failure propagation, and
+ * the observational-only guarantees (no write, no minting, no identifier
+ * substitution).
  */
 class DefaultEvidenceCustodianTest {
 
@@ -276,25 +282,208 @@ class DefaultEvidenceCustodianTest {
 
         assertEquals(1, engine.evaluateCallCount)
     }
+
+    // --- Retrieval: approved cases ---
+
+    @Test
+    fun `an APPROVED retrieval returns the exact original bytes as Found`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        val evidenceArtifactId = EvidenceArtifactId("retrieval-artifact-1")
+        val content = "original evidence bytes".toByteArray()
+        storage.write(evidenceArtifactId, content)
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.APPROVED))
+
+        val result = custodian.retrieve(principalId, evidenceArtifactId)
+
+        val found = assertIs<EvidenceRetrievalResult.Found>(result)
+        assertEquals(evidenceArtifactId, found.evidenceArtifactId)
+        assertContentEquals(content, found.content)
+    }
+
+    @Test
+    fun `an APPROVED_WITH_CONFIRMATION retrieval is also allowed, consistent with Unit 2's acceptance behaviour`() =
+        runTest {
+            val storage = InMemoryEvidenceArtifactStorage()
+            val evidenceArtifactId = EvidenceArtifactId("retrieval-artifact-2")
+            storage.write(evidenceArtifactId, "content".toByteArray())
+            val custodian = DefaultEvidenceCustodian(
+                storage,
+                approvingEngine(PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION),
+            )
+
+            val result = custodian.retrieve(principalId, evidenceArtifactId)
+
+            assertIs<EvidenceRetrievalResult.Found>(result)
+        }
+
+    // --- Retrieval: rejected cases perform no storage read ---
+
+    @Test
+    fun `a DENIED retrieval decision is Rejected, and performs no storage read`() = runTest {
+        val storage = FakeEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.DENIED))
+
+        val result = custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+
+        assertIs<EvidenceRetrievalResult.Rejected>(result)
+        assertEquals(0, storage.readCallCount, "a denied retrieval must never reach storage.read")
+    }
+
+    @Test
+    fun `a DEFERRED retrieval decision is Rejected, and performs no storage read`() = runTest {
+        val storage = FakeEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.DEFERRED))
+
+        val result = custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+
+        assertIs<EvidenceRetrievalResult.Rejected>(result)
+        assertEquals(0, storage.readCallCount, "a deferred retrieval must never reach storage.read")
+    }
+
+    @Test
+    fun `a Rejected retrieval result carries a non-blank, informative reason`() = runTest {
+        val storage = FakeEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.DENIED))
+
+        val result = assertIs<EvidenceRetrievalResult.Rejected>(
+            custodian.retrieve(principalId, EvidenceArtifactId("some-artifact")),
+        )
+
+        assertTrue(result.reason.isNotBlank())
+        assertTrue(result.reason.contains(principalId.value), "reason should name the requesting principal")
+    }
+
+    // --- Retrieval: missing artefact ---
+
+    @Test
+    fun `an authorised retrieval for an identifier nothing was ever written under returns NotFound`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        val evidenceArtifactId = EvidenceArtifactId("never-written")
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.APPROVED))
+
+        val result = custodian.retrieve(principalId, evidenceArtifactId)
+
+        val notFound = assertIs<EvidenceRetrievalResult.NotFound>(result)
+        assertEquals(evidenceArtifactId, notFound.evidenceArtifactId)
+    }
+
+    // --- Retrieval: storage failure propagation ---
+
+    @Test
+    fun `a genuine storage failure on read propagates unchanged, is never reported as NotFound`() = runTest {
+        val storage = FakeEvidenceArtifactStorage(
+            readBehavior = { _ ->
+                throw EvidenceArtifactStorageException.StorageIOFailure(
+                    "simulated read I/O failure",
+                    RuntimeException("disk error"),
+                )
+            },
+        )
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.APPROVED))
+
+        assertFailsWith<EvidenceArtifactStorageException.StorageIOFailure> {
+            custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+        }
+    }
+
+    // --- Retrieval: byte immutability ---
+
+    @Test
+    fun `mutating Found's returned bytes does not affect a later retrieval of the same artefact`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        val evidenceArtifactId = EvidenceArtifactId("retrieval-artifact-mutation")
+        val original = "original".toByteArray()
+        storage.write(evidenceArtifactId, original)
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine())
+
+        val first = assertIs<EvidenceRetrievalResult.Found>(custodian.retrieve(principalId, evidenceArtifactId))
+        first.content[0] = 'X'.code.toByte()
+
+        val second = assertIs<EvidenceRetrievalResult.Found>(custodian.retrieve(principalId, evidenceArtifactId))
+        assertContentEquals(original, second.content)
+    }
+
+    // --- Retrieval: observational-only guarantees ---
+
+    @Test
+    fun `retrieving never calls storage write`() = runTest {
+        val storage = FakeEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine())
+
+        custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+
+        assertEquals(0, storage.writeCallCount, "retrieve must never call storage.write")
+    }
+
+    @Test
+    fun `retrieving does not mint a new identifier -- the returned identifier equals the requested one`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        val requestedId = EvidenceArtifactId("caller-supplied-identifier")
+        storage.write(requestedId, "content".toByteArray())
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine())
+
+        val result = assertIs<EvidenceRetrievalResult.Found>(custodian.retrieve(principalId, requestedId))
+
+        assertEquals(requestedId, result.evidenceArtifactId, "retrieve must echo back the exact identifier requested")
+    }
+
+    @Test
+    fun `retrieve requires an actual Permission Engine call -- it is not bypassed`() = runTest {
+        val engine = approvingEngine()
+        val storage = InMemoryEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, engine)
+
+        custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+
+        assertEquals(1, engine.evaluateCallCount)
+    }
+
+    @Test
+    fun `the permission gate occurs before the storage read -- a rejected request never touches storage`() = runTest {
+        val callOrder = mutableListOf<String>()
+        val storage = FakeEvidenceArtifactStorage(
+            readBehavior = {
+                callOrder.add("storage.read")
+                null
+            },
+        )
+        val engine = FakePermissionEngine { request ->
+            callOrder.add("permissionEngine.evaluate")
+            decision(request, PermissionDecisionOutcome.DENIED)
+        }
+        val custodian = DefaultEvidenceCustodian(storage, engine)
+
+        custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+
+        assertEquals(listOf("permissionEngine.evaluate"), callOrder, "storage must never be reached on denial")
+    }
 }
 
 /**
  * Test-only fake, mirroring [FakePermissionEngine]'s own lambda-configurable
  * shape. Delegates to a real [InMemoryEvidenceArtifactStorage] by default --
  * so tests that only care about call counting or read-back still get real
- * storage semantics -- but allows [write] to be overridden to simulate a
- * storage-layer fault without needing to reverse-engineer
- * [FileSystemEvidenceArtifactStorage]'s own real failure conditions
- * (permission bits, disk state) just to prove [DefaultEvidenceCustodian]
- * propagates them correctly.
+ * storage semantics -- but allows [write] and, as of Unit 3, [read] to be
+ * overridden to simulate a storage-layer fault without needing to
+ * reverse-engineer [FileSystemEvidenceArtifactStorage]'s own real failure
+ * conditions (permission bits, disk state) just to prove
+ * [DefaultEvidenceCustodian] propagates them correctly. [readCallCount],
+ * added alongside [readBehavior] for Unit 3, lets retrieval tests prove a
+ * denied/deferred decision never reaches storage at all -- the same
+ * "no-interaction" proof [writeCallCount] already gave Unit 2's own tests
+ * for acceptance.
  */
 class FakeEvidenceArtifactStorage(
     private val writeBehavior: (suspend (EvidenceArtifactId, ByteArray) -> Unit)? = null,
+    private val readBehavior: (suspend (EvidenceArtifactId) -> ByteArray?)? = null,
 ) : EvidenceArtifactStorage {
 
     private val delegate = InMemoryEvidenceArtifactStorage()
 
     var writeCallCount: Int = 0
+        private set
+
+    var readCallCount: Int = 0
         private set
 
     override suspend fun write(evidenceArtifactId: EvidenceArtifactId, content: ByteArray) {
@@ -306,5 +495,8 @@ class FakeEvidenceArtifactStorage(
         }
     }
 
-    override suspend fun read(evidenceArtifactId: EvidenceArtifactId): ByteArray? = delegate.read(evidenceArtifactId)
+    override suspend fun read(evidenceArtifactId: EvidenceArtifactId): ByteArray? {
+        readCallCount++
+        return if (readBehavior != null) readBehavior.invoke(evidenceArtifactId) else delegate.read(evidenceArtifactId)
+    }
 }
