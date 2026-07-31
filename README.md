@@ -168,6 +168,16 @@ Goal and planning path:
 - production composition of the concrete Planner and Task Manager runtimes
 - system identity registration for Planner Runtime and Task Manager Runtime
 
+Evidence custody and registration:
+
+- Evidence Custodian (technical custody subsystem, independent of Memory Core)
+- Evidence Identity (`EvidenceArtifactId`)
+- write-once `EvidenceArtifactStorage`
+- governed evidence acceptance (`DefaultEvidenceCustodian.accept`, Permission-Engine-gated)
+- governed evidence retrieval (`DefaultEvidenceCustodian.retrieve`, Permission-Engine-gated)
+- `EvidenceRegistrationCoordinator` — Runtime-layer orchestration of Evidence Custodian acceptance with Memory Core provenance and document registration, without either subsystem calling the other
+- derivative relationship support, verified by behavioural tests against the real Evidence Custodian, Memory Core, and Registration Coordinator implementations
+
 ## Implementation Maturity
 
 | Area | Status |
@@ -180,6 +190,7 @@ Goal and planning path:
 | Goal Routing | Complete |
 | Planner Integration | Complete |
 | Agent Execution | Controlled Submission Complete |
+| Evidence Custodian | Core capabilities complete (Phases 1–6 verified); Runtime Integration and later phases pending |
 | Workflow Engine | Planned |
 | Android Product | Planned |
 
@@ -332,13 +343,49 @@ An earlier single-phase design was found, during native verification, to risk a 
 
 ---
 
+## Milestone: Evidence Custodian — Custody, Registration, and Derivative Relationship Support
+
+Parker now includes a first-class Evidence Custodian subsystem — a peer of Memory Core, never a component of Memory Core or of any future Evidence Intelligence capability. The Evidence Custodian provides technical custody of preserved original evidence artefacts, governed by the same Trust Framework that governs every other executable action in this platform.
+
+Completed:
+
+- **Evidence Identity** — a stable, non-vacuous artefact identity (`EvidenceArtifactId`).
+- **Immutable Evidence Storage** — write-once artefact storage; an accepted artefact's content can never be overwritten or replaced.
+- **Governed Evidence Acceptance** — an artefact enters custody only following Permission Engine authorisation; nothing is accepted implicitly or as a side effect.
+- **Governed Evidence Retrieval** — read access to a custodied artefact is itself an authorised, observational-only proposal.
+- **Runtime Evidence Registration Coordinator** — a Runtime-layer coordinator sequencing Evidence Custodian acceptance with Memory Core's own provenance and document registration, so that Evidence Custodian and Memory Core remain fully independent: neither subsystem holds a reference to, or calls, the other.
+- **Derivative Relationship Support** — verified by behavioural tests: an original and a derivative artefact always receive distinct identities, distinct Provenance records, and distinct Document records, with traceability preserved solely through Memory Core's existing Provenance mechanism.
+
+```text
+Owner
+  ↓
+EvidenceCustodian.accept()
+  ↓
+Permission evaluation
+  ↓
+MemoryCore.createProvenance()
+  ↓
+Permission evaluation
+  ↓
+MemoryCore.registerDocument()
+  ↓
+Coordinated result
+```
+
+**Not yet complete:** the Evidence Registration Coordinator is not yet wired into Parker's production composition root (`ParkerRuntime`) — this is Runtime Integration, a later, separate governed unit. Deletion, Optimisation Safeguard enforcement, and end-to-end platform verification remain unimplemented.
+
+This milestone establishes Parker's constitutional evidence foundation. Original evidence is preserved immutably, governed through explicit authorization, registered independently of Memory Core, and verified to maintain traceable relationships while preserving subsystem independence.
+
+---
+
 ## Current Verified Baseline
 
 - **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
-- **Implementation status:** Controlled Agent Run Submission complete
-- **Latest completed unit:** Controlled Agent Run Submission
-- **Latest commit:** `991fca3` — `feat(runtime): implement approved two-phase agent run submission`
-- **Verification:** full native Gradle test suite passed
+- **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian core capabilities complete (Phases 1–6 verified), Runtime Integration and later phases pending
+- **Latest implementation unit:** Evidence Custodian — Runtime Evidence Registration Coordinator
+- **Latest verified milestone:** Evidence Custodian — Derivative Relationship Support (behavioural verification)
+- **Latest commit:** `4e657a9` — `feat: add evidence registration coordinator`
+- **Verification:** full native Gradle test suite passed — 1,150 tests, 0 failures
 - **Build result:** `BUILD SUCCESSFUL`
 - **Repository state:** `main` synchronized with `origin/main`; working tree clean
 
@@ -364,6 +411,7 @@ Still under development:
 - public SDK
 - security hardening
 - release packaging
+- Evidence Custodian Runtime Integration (wiring `EvidenceRegistrationCoordinator` into `ParkerRuntime`), Deletion workflow, and Optimisation Safeguard enforcement
 
 The production `AgentStepSource` used today, `DeterministicAgentStepSource`, is a deliberate, deterministic stand-in for a future Planner-backed step source, not tool execution driven by real planned Goals. A configured Agent Run may still terminate in `agent.failed` where no executable action mapping exists for its proposed action — an expected outcome for an unmapped action today, not a defect this milestone resolves.
 
@@ -667,10 +715,12 @@ The constitutional foundation is defined by:
 
 - **Architecture:** Constitutional Foundation complete and frozen
 - **Runtime Foundation:** Complete
-- **Sprint status:** Controlled Agent Run Submission complete
-- **Latest completed unit:** Controlled Agent Run Submission, implemented per the approved two-phase acceptance/execution design
-- **Latest production commit:** `991fca3`
+- **Sprint status:** Controlled Agent Run Submission complete; Evidence Custodian core capabilities complete (Phases 1–6 verified), Runtime Integration and later phases pending
+- **Latest implementation unit:** Evidence Custodian — Runtime Evidence Registration Coordinator
+- **Latest verified milestone:** Evidence Custodian — Derivative Relationship Support, verified by behavioural tests against the real Evidence Custodian, Memory Core, and Registration Coordinator implementations
+- **Latest production commit:** `4e657a9`
 - **Current focus:** production Tool execution from planned Goals, and broader Task lifecycle handling
+- **Remaining Evidence Custodian work includes:** Deletion workflow, Optimisation Safeguard enforcement, platform-wide verification, and Runtime Integration
 
 ---
 
@@ -680,6 +730,7 @@ Current verified baseline:
 
 ```text
 Native Gradle verification: BUILD SUCCESSFUL
+1,150 tests, 0 failures
 ```
 
 The complete test suite must pass before an implementation unit is accepted, committed, and pushed.
@@ -702,6 +753,8 @@ Implementation units are accepted only after:
 4. commit;
 5. push;
 6. clean working-tree confirmation.
+
+The current verified baseline includes dedicated behavioural verification for the Evidence Registration Coordinator and for Derivative Relationship Support — confirming that an original and a derivative artefact always receive distinct identities, with traceability preserved solely through Memory Core's own Provenance mechanism.
 
 ---
 
@@ -767,8 +820,8 @@ tools/
 | Item | Status |
 |---|---|
 | Architecture | Constitutional Foundation (Frozen) |
-| Implementation | Controlled Agent Run Submission complete |
-| Latest Commit | `991fca3` — `feat(runtime): implement approved two-phase agent run submission` |
+| Implementation | Controlled Agent Run Submission complete; Evidence Custodian core capabilities complete (Phases 1–6 verified), Runtime Integration and later phases pending |
+| Latest Commit | `4e657a9` — `feat: add evidence registration coordinator` |
 | Build Status | `BUILD SUCCESSFUL` |
 | Branch | `main` |
 | Repository | Clean • Synced with origin |
@@ -811,6 +864,25 @@ This does not make Agent Execution complete overall. The next unresolved boundar
 - workflow orchestration.
 
 That transition must continue to preserve the constitutional separation between cognition, trust, and execution.
+
+---
+
+### Evidence Custodian Programme
+
+Developed as a separate, parallel infrastructure programme, governed by its own Contract Design, Scope Lock, and Implementation Plan:
+
+1. Evidence Identity ✅
+2. Immutable Evidence Storage ✅
+3. Governed Evidence Acceptance ✅
+4. Governed Evidence Retrieval ✅
+5. Runtime Evidence Registration Coordinator ✅
+6. Derivative Relationship Support ✅ (verified by behavioural tests)
+7. Deletion workflow
+8. Optimisation Safeguard enforcement
+9. Platform-wide verification
+10. Runtime integration
+
+Evidence Custodian is not yet wired into `ParkerRuntime`'s production composition root — this remains a later, separate governed unit (item 10, above), exactly as controlled Tool execution from planned Goals remains this platform's own separate, unresolved boundary.
 
 ---
 
