@@ -1,5 +1,6 @@
 package parker.composition
 
+import java.nio.file.Files
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.InboundOwnerMessage
@@ -21,12 +22,17 @@ import kotlin.test.assertTrue
  */
 class ParkerRuntimeStartupAndShutdownTest {
 
+    // This file exercises lifecycle state only -- it never calls submitEvidence/retrieveEvidence/
+    // deleteEvidenceAsOwner, so these two paths are real, writable, unused locations, not exercised
+    // by any test below.
     private fun config(localTextChannelModuleId: String = "channel.local-text-lifecycle-test") = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by these tests
         modelName = "test-model",
         ownerPrincipalId = "user.owner-lifecycle-test",
         ownerDisplayName = "Test Owner",
         localTextChannelModuleId = localTextChannelModuleId,
+        evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
+        evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
     )
 
     @Test

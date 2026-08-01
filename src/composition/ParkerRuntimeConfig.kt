@@ -30,6 +30,19 @@ package parker.composition
  *   to `"channel.local-text"`, matching the value already used throughout
  *   this repository's own existing Local Text Channel tests
  *   (`ResponseDeliveryTest.kt`, `LocalTextChannelDeliverToolTest.kt`).
+ * @param evidenceStorageRootPath Evidence Custodian Runtime Integration
+ *   (Implementation Plan Phase 10). An already-existing, writable
+ *   directory, passed unchanged to `FileSystemEvidenceArtifactStorage`.
+ *   Required -- this composition root does not invent a default evidence
+ *   storage location, for the same reason [modelEndpointUrl] and
+ *   [ownerPrincipalId] are required: guessing one would mean silently
+ *   pointing production evidence storage at a location no one configured.
+ * @param evidenceDeletionAuditLogPath Evidence Custodian Runtime
+ *   Integration (Implementation Plan Phase 10). The exact file path
+ *   (not a directory) passed unchanged to `FileSystemEvidenceDeletionAudit`
+ *   -- its parent directory must already exist and be writable; the file
+ *   itself is created if missing. Required, for the same reason
+ *   [evidenceStorageRootPath] is required.
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -38,6 +51,8 @@ data class ParkerRuntimeConfig(
     val ownerPrincipalId: String,
     val ownerDisplayName: String = "Owner",
     val localTextChannelModuleId: String = "channel.local-text",
+    val evidenceStorageRootPath: String,
+    val evidenceDeletionAuditLogPath: String,
 )
 
 /**
@@ -63,6 +78,8 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OWNER_PRINCIPAL_ID = "PARKER_OWNER_PRINCIPAL_ID"
     const val KEY_OWNER_DISPLAY_NAME = "PARKER_OWNER_DISPLAY_NAME"
     const val KEY_LOCAL_TEXT_CHANNEL_MODULE_ID = "PARKER_LOCAL_TEXT_CHANNEL_MODULE_ID"
+    const val KEY_EVIDENCE_STORAGE_ROOT = "PARKER_EVIDENCE_STORAGE_ROOT"
+    const val KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH = "PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -90,6 +107,8 @@ object ParkerRuntimeConfigLoader {
             ownerDisplayName = environment[KEY_OWNER_DISPLAY_NAME]?.takeIf { it.isNotBlank() } ?: "Owner",
             localTextChannelModuleId = environment[KEY_LOCAL_TEXT_CHANNEL_MODULE_ID]?.takeIf { it.isNotBlank() }
                 ?: "channel.local-text",
+            evidenceStorageRootPath = requireKey(environment, KEY_EVIDENCE_STORAGE_ROOT),
+            evidenceDeletionAuditLogPath = requireKey(environment, KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH),
         )
     }
 

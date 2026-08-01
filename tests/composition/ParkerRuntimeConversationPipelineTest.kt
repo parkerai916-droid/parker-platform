@@ -1,5 +1,6 @@
 package parker.composition
 
+import java.nio.file.Files
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.CorrelationId
@@ -83,12 +84,17 @@ class ParkerRuntimeConversationPipelineTest {
     private fun startStub(responseFieldValue: String): StubModelServer =
         StubModelServer.start(responseFieldValue).also { server = it }
 
+    // This file exercises the conversation pipeline only -- it never calls submitEvidence/
+    // retrieveEvidence/deleteEvidenceAsOwner, so these two paths are real, writable, unused
+    // locations, not exercised by any test below.
     private fun configFor(stub: StubModelServer) = ParkerRuntimeConfig(
         modelEndpointUrl = stub.endpointUrl,
         modelName = "test-model",
         ownerPrincipalId = ownerPrincipalId,
         ownerDisplayName = "Test Owner",
         localTextChannelModuleId = channelModuleId,
+        evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
+        evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
     )
 
     private fun message(senderPrincipalId: String = ownerPrincipalId, text: String = "good morning parker") = InboundOwnerMessage(

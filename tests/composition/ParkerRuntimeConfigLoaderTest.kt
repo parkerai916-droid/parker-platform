@@ -1,5 +1,6 @@
 package parker.composition
 
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -21,6 +22,9 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.KEY_OWNER_PRINCIPAL_ID to "user.steven",
             ParkerRuntimeConfigLoader.KEY_OWNER_DISPLAY_NAME to "Steven",
             ParkerRuntimeConfigLoader.KEY_LOCAL_TEXT_CHANNEL_MODULE_ID to "channel.local-text-test",
+            ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT to Files.createTempDirectory("config-loader-test-evidence-storage").toString(),
+            ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH to
+                Files.createTempDirectory("config-loader-test-evidence-audit").resolve("audit.log").toString(),
         )
         val merged = base.toMutableMap()
         overrides.forEach { (key, value) ->
@@ -31,7 +35,8 @@ class ParkerRuntimeConfigLoaderTest {
 
     @Test
     fun `every key present loads exactly the supplied values`() {
-        val config = ParkerRuntimeConfigLoader.load(fullEnvironment())
+        val environment = fullEnvironment()
+        val config = ParkerRuntimeConfigLoader.load(environment)
 
         assertEquals("http://localhost:11434/api/generate", config.modelEndpointUrl)
         assertEquals("llama3", config.modelName)
@@ -39,6 +44,11 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals("user.steven", config.ownerPrincipalId)
         assertEquals("Steven", config.ownerDisplayName)
         assertEquals("channel.local-text-test", config.localTextChannelModuleId)
+        assertEquals(environment[ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT], config.evidenceStorageRootPath)
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH],
+            config.evidenceDeletionAuditLogPath,
+        )
     }
 
     @Test
@@ -66,6 +76,28 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.load(environment)
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_MODEL_ENDPOINT_URL, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_EVIDENCE_STORAGE_ROOT throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT to null))
+
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH to null),
+        )
+
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH, thrown.key)
     }
 
     @Test

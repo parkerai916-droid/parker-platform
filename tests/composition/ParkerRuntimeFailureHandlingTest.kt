@@ -1,5 +1,6 @@
 package parker.composition
 
+import java.nio.file.Files
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.CorrelationId
@@ -82,6 +83,8 @@ class ParkerRuntimeFailureHandlingTest {
             modelName = "test-model",
             ownerPrincipalId = ownerPrincipalId,
             localTextChannelModuleId = channelModuleId,
+            evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
+            evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
         )
         val logger = RecordingParkerLogger()
         val runtime = ParkerRuntime(config, logger)
@@ -107,6 +110,8 @@ class ParkerRuntimeFailureHandlingTest {
             modelTimeoutMs = 100L,
             ownerPrincipalId = ownerPrincipalId,
             localTextChannelModuleId = channelModuleId,
+            evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
+            evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
         )
         val logger = RecordingParkerLogger()
         val runtime = ParkerRuntime(config, logger)
@@ -130,6 +135,8 @@ class ParkerRuntimeFailureHandlingTest {
             modelName = "test-model",
             ownerPrincipalId = ownerPrincipalId,
             localTextChannelModuleId = channelModuleId,
+            evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
+            evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
         )
         val logger = RecordingParkerLogger()
         val runtime = ParkerRuntime(config, logger, throwingSink)

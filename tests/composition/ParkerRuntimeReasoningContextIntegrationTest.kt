@@ -1,5 +1,6 @@
 package parker.composition
 
+import java.nio.file.Files
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.CorrelationId
@@ -53,12 +54,17 @@ class ParkerRuntimeReasoningContextIntegrationTest {
     private fun startStub(responseFieldValue: String): StubModelServer =
         StubModelServer.start(responseFieldValue).also { server = it }
 
+    // This file exercises Reasoning Context assembly only -- it never calls submitEvidence/
+    // retrieveEvidence/deleteEvidenceAsOwner, so these two paths are real, writable, unused
+    // locations, not exercised by any test below.
     private fun configFor(stub: StubModelServer) = ParkerRuntimeConfig(
         modelEndpointUrl = stub.endpointUrl,
         modelName = "test-model",
         ownerPrincipalId = ownerPrincipalId,
         ownerDisplayName = ownerDisplayName,
         localTextChannelModuleId = channelModuleId,
+        evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
+        evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
     )
 
     private fun message(text: String = "good morning parker", correlationId: String = "corr-context-${System.nanoTime()}") = InboundOwnerMessage(

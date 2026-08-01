@@ -5,8 +5,10 @@ import kotlin.reflect.KClass
 import kotlin.reflect.full.declaredFunctions
 import kotlin.reflect.full.declaredMemberProperties
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import parker.composition.ParkerRuntime
 import parker.core.interfaces.EvidenceArtifactStorage
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceDeletionAudit
@@ -182,14 +184,27 @@ class EvidenceOptimisationSafeguardTest {
     }
 
     @Test
-    fun `OwnerEvidenceDeletionAuthority is held by no class anywhere -- it remains entirely unwired pending Phase 10`() {
+    fun `OwnerEvidenceDeletionAuthority is held by ParkerRuntime only, following Phase 10 Runtime Integration`() {
+        // Prior to Phase 10, this test asserted OwnerEvidenceDeletionAuthority was held by no
+        // class anywhere -- a true statement about this Unit's own scope at the time it was
+        // written. Implementation Plan Phase 10 has since wired it into the production composition
+        // root, deliberately and within its own explicitly authorised scope (Phase 7 Boundary
+        // Clarification Section 5: "only whatever component that later, separately governed unit
+        // designates as the owner-facing entry point may ever hold a reference to it"). A scope
+        // guard that starts asserting something false is not extra safety, it is a stale test that
+        // would block correctly-scoped, correctly-authorised work -- the same precedent
+        // EvidenceCustodianScopeTest's own revision history already established for `retrieve`.
+        // What this test now proves is the invariant Phase 10 actually requires: ParkerRuntime is
+        // the *only* holder -- no coordinator, reasoning provider, or module constructed anywhere
+        // in ParkerRuntime's own production graph ever receives this reference.
         val holders = scannedPackages.flatMap { classesInPackage(it) }.distinct()
             .filter { OwnerEvidenceDeletionAuthority::class in referencedTypes(it) }
 
-        assertTrue(
-            holders.isEmpty(),
-            "OwnerEvidenceDeletionAuthority must not be held by any class until Phase 10 (Runtime " +
-                "Integration) deliberately wires it -- found: ${holders.map { it.qualifiedName }}",
+        assertEquals(
+            setOf(ParkerRuntime::class),
+            holders.toSet(),
+            "OwnerEvidenceDeletionAuthority must be held by ParkerRuntime alone -- found: " +
+                holders.map { it.qualifiedName },
         )
     }
 

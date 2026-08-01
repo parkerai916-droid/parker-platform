@@ -1,5 +1,6 @@
 package parker.composition
 
+import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -9,14 +10,22 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
 import parker.core.interfaces.AgentPolicy
+import parker.core.interfaces.CandidateEvidenceArtifact
+import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
+import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.EvidenceCustodian
+import parker.core.interfaces.EvidenceDeletionResult
+import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeSource
+import parker.core.interfaces.MemoryCore
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.ModulePermissionRequirement
+import parker.core.interfaces.OwnerEvidenceDeletionAuthority
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionLevel
@@ -38,13 +47,19 @@ import parker.core.runtime.CommunicationConversationCoordinator
 import parker.core.runtime.ConversationOutcome
 import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.ConversationTurnReasoningCoordinator
+import parker.core.runtime.DefaultEvidenceCustodian
 import parker.core.runtime.DefaultExecutionPipeline
+import parker.core.runtime.DefaultOwnerEvidenceDeletionAuthority
 import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
 import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.DeterministicAgentStepSource
+import parker.core.runtime.EvidenceRegistrationCoordinator
+import parker.core.runtime.EvidenceRegistrationOutcome
+import parker.core.runtime.FileSystemEvidenceArtifactStorage
+import parker.core.runtime.FileSystemEvidenceDeletionAudit
 import parker.core.runtime.GoalPlanningHandoffCoordinator
 import parker.core.runtime.GoalPlanningHandoffOutcome
 import parker.core.runtime.InMemoryActionVocabulary
@@ -54,6 +69,7 @@ import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
 import parker.core.runtime.InMemoryKnowledgeStore
+import parker.core.runtime.InMemoryMemoryCore
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryPlannerRuntime
 import parker.core.runtime.InMemoryResourceRegistry
@@ -176,6 +192,19 @@ class ParkerRuntime(
     private lateinit var conversationReplyCoordinator: ConversationReplyCoordinator
     private lateinit var runtimeEventLogger: RuntimeEventLogger
 
+    // Evidence Custodian Runtime Integration (Implementation Plan Phase 10). evidenceCustodian
+    // and ownerEvidenceDeletionAuthority are held as their own narrow interface types, exactly
+    // mirroring the capability-narrowing precedent this field list already applies to
+    // conversationEngine (ConversationEngine, not the concrete InMemoryConversationEngine) --
+    // reinforcing, even within this trusted composition root, that these are two structurally
+    // separate capabilities (Phase 7 Boundary Clarification Section 3), never one. Neither field
+    // is ever passed to any other coordinator constructed in buildAndRegisterRuntimeGraph -- only
+    // this class's own submitEvidence/retrieveEvidence/deleteEvidenceAsOwner methods read them
+    // (Boundary Clarification Section 5).
+    private lateinit var evidenceCustodian: EvidenceCustodian
+    private lateinit var evidenceRegistrationCoordinator: EvidenceRegistrationCoordinator
+    private lateinit var ownerEvidenceDeletionAuthority: OwnerEvidenceDeletionAuthority
+
     /**
      * Runs the full construction and startup sequence exactly once. Throws
      * a [ParkerRuntimeException] subtype on any failure -- never silently
@@ -206,9 +235,23 @@ class ParkerRuntime(
      * system Principals (`system.parker`, `system.conversation-engine`,
      * `system.response-composer`) and the configured owner Principal;
      * (3a, Controlled Agent Run Submission) register the single,
-     * deterministic Agent Runtime Execution Boundary Resource; (4)
-     * register the `notify owner` and (3a's companion, Controlled Agent
-     * Run Submission) `start agent run` action-vocabulary entries; (5)
+     * deterministic Agent Runtime Execution Boundary Resource; (3b,
+     * Evidence Custodian Runtime Integration) register the five fixed
+     * Evidence Custodian/Memory Core/deletion Resources; (4)
+     * register the `notify owner`, (3a's companion, Controlled Agent
+     * Run Submission) `start agent run`, and (3b's companion, Evidence
+     * Custodian Runtime Integration) five Evidence Custodian
+     * action-vocabulary entries, and construct `DefaultPermissionPolicy`
+     * with the corresponding `PermissionPolicyRule`s for all of the
+     * above; (4a, Evidence Custodian Runtime Integration) construct
+     * `FileSystemEvidenceArtifactStorage`, `InMemoryMemoryCore` (this
+     * composition root's first production `MemoryCore` construction),
+     * `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`,
+     * `FileSystemEvidenceDeletionAudit`, and
+     * `DefaultOwnerEvidenceDeletionAuthority` -- the last of which is
+     * held only by this class's own `deleteEvidenceAsOwner`, never
+     * passed to any coordinator constructed below (Phase 7 Boundary
+     * Clarification Section 5); (5)
      * construct the Local Text Channel's `deliver` Tool, register+enable
      * its owning Module, and bind the Tool for invocation; (6) construct
      * the Reasoning Provider stack (real `LocalHttpModelInferenceClient`
@@ -333,6 +376,39 @@ class ParkerRuntime(
             )
         }
 
+        // Evidence Custodian Runtime Integration (Implementation Plan Phase 10): the five fixed,
+        // well-known Resources DefaultEvidenceCustodian, EvidenceRegistrationCoordinator, and
+        // DefaultOwnerEvidenceDeletionAuthority each already disclosed, unregistered, in their own
+        // KDoc since Phases 3, 4, 5/6, and 7 respectively. resourceType is chosen per that KDoc's
+        // own stated expectation (evidence.accept/retrieve -> DOCUMENT; the two Memory Core gates
+        // -> MEMORY, since they represent writing to the Memory Core substrate generically, not a
+        // Document specifically) -- a runtime-composition mapping decision the Contract Design and
+        // Implementation Plan both explicitly deferred to this phase, not a new constitutional one.
+        stage("Evidence Custodian resource registration") {
+            val now = clock()
+            listOf(
+                Triple(DefaultEvidenceCustodian.EVIDENCE_INTAKE_RESOURCE_ID, ResourceType.DOCUMENT, "Evidence Custodian Intake"),
+                Triple(DefaultEvidenceCustodian.EVIDENCE_RETRIEVAL_RESOURCE_ID, ResourceType.DOCUMENT, "Evidence Custodian Retrieval"),
+                Triple(EvidenceRegistrationCoordinator.MEMORY_CORE_PROVENANCE_RESOURCE_ID, ResourceType.MEMORY, "Memory Core Provenance Creation"),
+                Triple(EvidenceRegistrationCoordinator.MEMORY_CORE_DOCUMENT_REGISTRATION_RESOURCE_ID, ResourceType.MEMORY, "Memory Core Document Registration"),
+                Triple(DefaultOwnerEvidenceDeletionAuthority.EVIDENCE_DELETION_RESOURCE_ID, ResourceType.DOCUMENT, "Evidence Custodian Deletion"),
+            ).forEach { (resourceId, resourceType, displayName) ->
+                resourceRegistry.register(
+                    Resource(
+                        resourceId = resourceId,
+                        resourceType = resourceType,
+                        displayName = displayName,
+                        ownerPrincipalId = SYSTEM_PARKER_PRINCIPAL_ID,
+                        sensitivity = ResourceSensitivity.PUBLIC,
+                        lifecycleState = ResourceLifecycleState.REGISTERED,
+                        createdAt = now,
+                        updatedAt = now,
+                        source = "composition-root:evidence-custodian",
+                    ),
+                )
+            }
+        }
+
         stage("action vocabulary registration") {
             vocabulary.register(
                 ActionVocabularyEntry(
@@ -346,6 +422,42 @@ class ParkerRuntime(
                 ActionVocabularyEntry(
                     verbPhrase = AGENT_RUN_START_VERB_PHRASE,
                     mappings = setOf(ActionResourceMapping(PermissionAction.EXECUTE, ResourceType.AGENT)),
+                ),
+            )
+            // Evidence Custodian Runtime Integration (Implementation Plan Phase 10): the five
+            // action-vocabulary entries DefaultEvidenceCustodian, EvidenceRegistrationCoordinator,
+            // and DefaultOwnerEvidenceDeletionAuthority each already disclosed, unregistered, in
+            // their own KDoc. PermissionAction.DELETE already exists on the frozen PermissionAction
+            // enum; resourceType mirrors this same Resource registration's own DOCUMENT/MEMORY
+            // choice above.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DefaultEvidenceCustodian.ACCEPT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DefaultEvidenceCustodian.RETRIEVE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = EvidenceRegistrationCoordinator.CREATE_PROVENANCE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = EvidenceRegistrationCoordinator.REGISTER_DOCUMENT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DefaultOwnerEvidenceDeletionAuthority.DELETE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.DELETE, ResourceType.DOCUMENT)),
                 ),
             )
         }
@@ -374,6 +486,47 @@ class ParkerRuntime(
                     outcome = PermissionDecisionOutcome.APPROVED,
                     level = PermissionLevel.AUTOMATIC,
                 ),
+                // Evidence Custodian Runtime Integration (Implementation Plan Phase 10): the
+                // minimum required for evidence.accept/retrieve, the two Memory Core registration
+                // gates, and evidence.delete to be reachable at all -- the same "minimum required,
+                // narrow in what it grants" policy-content discipline already applied to the two
+                // rules above. AUTOMATIC, not APPROVED_WITH_CONFIRMATION, for all four: no
+                // confirmation-collection mechanism exists anywhere in this runtime, so that level
+                // would claim a step that does not actually happen (mirroring the Phase 7 Boundary
+                // Clarification's own identical reasoning for its audit-record design).
+                //
+                // DELETE/DOCUMENT's own owner-only guarantee is deliberately NOT enforced here --
+                // this flat (action, resourceType) policy mechanism has no per-principal matching
+                // capability at all (DefaultPermissionPolicy's own KDoc). Owner-scoping is enforced
+                // instead by call-site structure, exactly as Controlled Agent Run Submission's own
+                // EXECUTE/AGENT rule above already establishes this precedent: deleteEvidenceAsOwner
+                // (below) is the only production caller that can ever construct a delete-shaped
+                // ExecutionRequest at all (Phase 8's own structural proof), and it always supplies
+                // PrincipalId(config.ownerPrincipalId) itself -- never a caller-supplied principal.
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.MEMORY,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.DELETE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                ),
             ),
         )
         val permissionEngine = DefaultPermissionEngine(identityService, permissionPolicy)
@@ -384,6 +537,44 @@ class ParkerRuntime(
             toolRegistry,
             eventBus,
             toolInvocationBinding,
+        )
+
+        // Evidence Custodian Runtime Integration (Implementation Plan Phase 10). Constructed here,
+        // after permissionEngine, since DefaultEvidenceCustodian, EvidenceRegistrationCoordinator,
+        // and DefaultOwnerEvidenceDeletionAuthority all require it; construction order among these
+        // stateless-until-now collaborators is otherwise this composition root's own sequencing
+        // choice, per the Implementation Plan's own "an ordering choice is disclosed as a
+        // planning-level convenience, never as a new architectural decision" precedent.
+        //
+        // InMemoryMemoryCore is the first production construction of MemoryCore anywhere in this
+        // composition root -- InMemoryKnowledgeStore (Programme 3's own Knowledge layer, already
+        // constructed above) is a distinct interface and has never required a live MemoryCore
+        // instance. Plain InMemoryMemoryCore is used deliberately, not the EventPublishingMemoryCore
+        // decorator that already exists in this package (src/composition/EventPublishingMemoryCore.kt):
+        // wiring Memory Core's own event publication live for the first time is a separate decision
+        // this Unit does not make -- EvidenceRegistrationCoordinator only requires a MemoryCore, not
+        // an event-publishing one.
+        val evidenceArtifactStorage = stage("Evidence Custodian storage construction") {
+            FileSystemEvidenceArtifactStorage(Path.of(config.evidenceStorageRootPath))
+        }
+        val memoryCore: MemoryCore = InMemoryMemoryCore()
+        val defaultEvidenceCustodian = DefaultEvidenceCustodian(evidenceArtifactStorage, permissionEngine)
+        evidenceCustodian = defaultEvidenceCustodian
+        evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
+
+        // Phase 7 Boundary Clarification Section 3: DefaultOwnerEvidenceDeletionAuthority is a
+        // wholly separate class from DefaultEvidenceCustodian, sharing only evidenceArtifactStorage
+        // and permissionEngine -- never EvidenceCustodian, never MemoryCore. Its own reference
+        // (ownerEvidenceDeletionAuthority) is held by this class alone; no coordinator constructed
+        // anywhere in this method ever receives it (Boundary Clarification Section 5) -- only
+        // deleteEvidenceAsOwner, below, ever reads this field.
+        val evidenceDeletionAudit = stage("Evidence Custodian deletion audit construction") {
+            FileSystemEvidenceDeletionAudit(Path.of(config.evidenceDeletionAuditLogPath))
+        }
+        ownerEvidenceDeletionAuthority = DefaultOwnerEvidenceDeletionAuthority(
+            evidenceArtifactStorage,
+            permissionEngine,
+            evidenceDeletionAudit,
         )
 
         val deliverTool = stage("Local Text Channel deliver Tool construction") {
@@ -667,6 +858,101 @@ class ParkerRuntime(
             logger.error("Conversation pipeline fault (correlationId=${message.correlationId.value})", e)
             ParkerRuntimeOutcome.Failed(PipelineStage.UNKNOWN, e)
         }
+    }
+
+    /**
+     * Evidence Custodian Runtime Integration (Implementation Plan Phase 10).
+     * Governed acceptance and Memory Core registration for one evidence
+     * artefact, delegating unchanged to
+     * [EvidenceRegistrationCoordinator.register] -- this method adds no
+     * orchestration of its own beyond the [RuntimeLifecycleState.RUNNING]
+     * guard every production entry point on this class already requires.
+     * [EvidenceRegistrationCoordinator.register]'s own `correlationId`
+     * parameter is minted once, here, mirroring
+     * [GoalPlanningHandoffCoordinator]'s own `planningSessionIdFactory`
+     * convention -- there is no `InboundOwnerMessage`-equivalent wrapper
+     * for evidence submission to carry one in from a caller.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not
+     * [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun submitEvidence(
+        requestingPrincipalId: PrincipalId,
+        candidateEvidenceArtifact: CandidateEvidenceArtifact,
+        candidateProvenance: CandidateProvenance,
+        documentType: String,
+        documentIntegrityHash: String? = null,
+        documentMetadata: Map<String, String> = emptyMap(),
+    ): EvidenceRegistrationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Evidence submission received for registration (principal=${requestingPrincipalId.value})")
+        return evidenceRegistrationCoordinator.register(
+            requestingPrincipalId = requestingPrincipalId,
+            correlationId = UUID.randomUUID().toString(),
+            candidateEvidenceArtifact = candidateEvidenceArtifact,
+            candidateProvenance = candidateProvenance,
+            documentType = documentType,
+            documentIntegrityHash = documentIntegrityHash,
+            documentMetadata = documentMetadata,
+        )
+    }
+
+    /**
+     * Evidence Custodian Runtime Integration (Implementation Plan Phase 10).
+     * Governed, observational retrieval of a previously accepted evidence
+     * artefact, delegating unchanged to [EvidenceCustodian.retrieve].
+     * Accepts a caller-supplied [requestingPrincipalId], unlike
+     * [deleteEvidenceAsOwner] below -- the Permission Engine, not this
+     * method, is the intended gate for who may retrieve (Contract Design
+     * Section 6.3 anticipates a non-owner Evidence Intelligence consumer
+     * requesting authorised read access, "acting only as a consumer").
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not
+     * [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun retrieveEvidence(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+    ): EvidenceRetrievalResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Evidence retrieval requested (principal=${requestingPrincipalId.value})")
+        return evidenceCustodian.retrieve(requestingPrincipalId, evidenceArtifactId)
+    }
+
+    /**
+     * Evidence Custodian Runtime Integration (Implementation Plan Phase 10).
+     * The one production entry point capable of ending Evidence Custodian
+     * custody. Deliberately takes **no** `requestingPrincipalId` parameter
+     * -- every other production entry point on this class accepts a
+     * caller-supplied principal (see [retrieveEvidence]'s own KDoc for
+     * why), but CDR-006 and the Phase 7 Boundary Clarification (Section 3,
+     * Determination 3) require deletion specifically to be structurally,
+     * not merely policy-content, owner-only. This method always acts as
+     * `PrincipalId(config.ownerPrincipalId)` -- there is no parameter
+     * through which any caller of this method, internal or external,
+     * could substitute a different principal. Mirrors Controlled Agent Run
+     * Submission's own precedent: owner-scoping is enforced by call-site
+     * structure, "not by [the Permission] rule's own matching logic."
+     *
+     * [ownerEvidenceDeletionAuthority] is held by this class alone -- no
+     * coordinator, reasoning provider, or module constructed anywhere in
+     * [buildAndRegisterRuntimeGraph] ever receives a reference to it
+     * (Boundary Clarification Section 5); this method is the only
+     * reachable path to it in the entire production graph.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not
+     * [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun deleteEvidenceAsOwner(evidenceArtifactId: EvidenceArtifactId): EvidenceDeletionResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Evidence deletion requested by owner (evidenceArtifactId=${evidenceArtifactId.value})")
+        return ownerEvidenceDeletionAuthority.deleteAsOwner(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)
     }
 
     /**
