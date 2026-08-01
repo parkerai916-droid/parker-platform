@@ -89,6 +89,8 @@ An accepted Task Proposal no longer stops at queueing. The Task Manager Runtime 
 
 This is controlled submission and execution wired into the production path, not a general-purpose autonomous agent or a finished tool-execution surface — see "What Is Not Yet Complete" below.
 
+The Evidence Custodian programme has also reached production integration: governed acceptance, retrieval, Memory Core registration, owner-authorised deletion, and durable deletion audit are all now constructed and wired into the same production composition root, reachable through `ParkerRuntime.submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner` — see the Evidence Custodian milestone below.
+
 The current implementation has been developed through governance-first units under the Parker Engineering Standard (**PES-001**).
 
 ## Engineering Workflow
@@ -177,6 +179,10 @@ Evidence custody and registration:
 - governed evidence retrieval (`DefaultEvidenceCustodian.retrieve`, Permission-Engine-gated)
 - `EvidenceRegistrationCoordinator` — Runtime-layer orchestration of Evidence Custodian acceptance with Memory Core provenance and document registration, without either subsystem calling the other
 - derivative relationship support, verified by behavioural tests against the real Evidence Custodian, Memory Core, and Registration Coordinator implementations
+- owner-authorised evidence deletion (`OwnerEvidenceDeletionAuthority` / `DefaultOwnerEvidenceDeletionAuthority`) — a structurally separate capability from `EvidenceCustodian`, never exposed to reasoning providers or ordinary consumers
+- durable, append-only deletion audit (`EvidenceDeletionAudit` / `FileSystemEvidenceDeletionAudit`) — an `AUTHORISED` record durably precedes physical deletion; a `COMPLETED` record durably follows it; a caller can never observe a successful deletion without both
+- Constitutional Optimisation Safeguard enforcement, verified structurally: no class outside its one authorised holder can obtain a deletion-capable dependency, and no Evidence Custodian type declares a compact/optimise/prune/replace/discard operation
+- full production Runtime Integration — `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed and wired into `ParkerRuntime`, with their Resources, action-vocabulary entries, and permission rules registered, and reachable through `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`
 
 ## Implementation Maturity
 
@@ -190,7 +196,7 @@ Evidence custody and registration:
 | Goal Routing | Complete |
 | Planner Integration | Complete |
 | Agent Execution | Controlled Submission Complete |
-| Evidence Custodian | Core capabilities complete (Phases 1–6 verified); Runtime Integration and later phases pending |
+| Evidence Custodian | Complete (Phases 1–10; full native verification passed) |
 | Workflow Engine | Planned |
 | Android Product | Planned |
 
@@ -343,9 +349,9 @@ An earlier single-phase design was found, during native verification, to risk a 
 
 ---
 
-## Milestone: Evidence Custodian — Custody, Registration, and Derivative Relationship Support
+## Milestone: Evidence Custodian — Programme Complete
 
-Parker now includes a first-class Evidence Custodian subsystem — a peer of Memory Core, never a component of Memory Core or of any future Evidence Intelligence capability. The Evidence Custodian provides technical custody of preserved original evidence artefacts, governed by the same Trust Framework that governs every other executable action in this platform.
+Parker now includes a first-class Evidence Custodian subsystem — a peer of Memory Core, never a component of Memory Core or of any future Evidence Intelligence capability. The Evidence Custodian provides technical custody of preserved original evidence artefacts, governed by the same Trust Framework that governs every other executable action in this platform. All ten phases of the Evidence Custodian Implementation Plan are complete and wired into the production composition root.
 
 Completed:
 
@@ -355,6 +361,10 @@ Completed:
 - **Governed Evidence Retrieval** — read access to a custodied artefact is itself an authorised, observational-only proposal.
 - **Runtime Evidence Registration Coordinator** — a Runtime-layer coordinator sequencing Evidence Custodian acceptance with Memory Core's own provenance and document registration, so that Evidence Custodian and Memory Core remain fully independent: neither subsystem holds a reference to, or calls, the other.
 - **Derivative Relationship Support** — verified by behavioural tests: an original and a derivative artefact always receive distinct identities, distinct Provenance records, and distinct Document records, with traceability preserved solely through Memory Core's existing Provenance mechanism.
+- **Owner-Authorised Deletion** — the sole path by which Evidence Custodian custody ends. `OwnerEvidenceDeletionAuthority` is a structurally separate interface from `EvidenceCustodian`, implemented by a separate class (`DefaultOwnerEvidenceDeletionAuthority`) with no dependency on `EvidenceCustodian` or Memory Core; its own production entry point (`ParkerRuntime.deleteEvidenceAsOwner`) takes no caller-supplied principal at all, always acting as the configured owner.
+- **Deletion Audit** — a durable, append-only audit record precedes and follows every deletion: an `AUTHORISED` record must be durably confirmed before physical deletion is even attempted, and a `COMPLETED` record must be durably confirmed before a caller can ever observe a successful result.
+- **Optimisation Safeguard** — verified structurally, not merely by convention: no class outside its one authorised holder can obtain a reference to a deletion-capable dependency anywhere in the production or composition packages, and no Evidence Custodian type declares a compact, optimise, prune, replace, or discard operation of any kind.
+- **Runtime Integration** — `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed in `ParkerRuntime`'s production composition root via dependency injection, with their Resources, action-vocabulary entries, and permission rules registered, and reachable through three production entry points: `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`.
 
 ```text
 Owner
@@ -370,22 +380,40 @@ Permission evaluation
 MemoryCore.registerDocument()
   ↓
 Coordinated result
+
+Owner
+  ↓
+OwnerEvidenceDeletionAuthority.deleteAsOwner()
+  ↓
+Permission evaluation
+  ↓
+Durable AUTHORISED audit record
+  ↓
+EvidenceArtifactStorage.delete()
+  ↓
+Durable COMPLETED audit record
+  ↓
+Deleted
 ```
 
-**Not yet complete:** the Evidence Registration Coordinator is not yet wired into Parker's production composition root (`ParkerRuntime`) — this is Runtime Integration, a later, separate governed unit. Deletion, Optimisation Safeguard enforcement, and end-to-end platform verification remain unimplemented.
+This milestone completes Parker's constitutional evidence foundation. Original evidence is preserved immutably, governed through explicit authorisation, registered independently of Memory Core, deletable only through an owner-only, durably audited path, structurally protected against optimisation-motivated destruction, and fully wired into the production runtime — not merely proven correct in isolated tests.
 
-This milestone establishes Parker's constitutional evidence foundation. Original evidence is preserved immutably, governed through explicit authorization, registered independently of Memory Core, and verified to maintain traceable relationships while preserving subsystem independence.
+### Evidence Custodian Programme Status
+
+The Evidence Custodian programme is complete. Parker now provides constitutional evidence identity, immutable evidence storage, governed evidence acceptance, governed evidence retrieval, independent Memory Core registration, owner-authorised evidence deletion, durable append-only deletion audit, structural Optimisation Safeguards, and full production runtime integration — each governed by its own frozen Contract Design, Scope Lock, and Implementation Plan, and each verified against the real, wired production graph rather than isolated tests alone.
+
+This closes the constitutional Evidence Custodian layer. Any future evidence-related work — analysis, interpretation, OCR, comparison, or any other capability consuming custodied evidence — belongs to a higher-level capability such as Evidence Intelligence, governed separately and later, never to the Evidence Custodian itself.
 
 ---
 
 ## Current Verified Baseline
 
 - **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
-- **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian core capabilities complete (Phases 1–6 verified), Runtime Integration and later phases pending
-- **Latest implementation unit:** Evidence Custodian — Runtime Evidence Registration Coordinator
-- **Latest verified milestone:** Evidence Custodian — Derivative Relationship Support (behavioural verification)
-- **Latest commit:** `4e657a9` — `feat: add evidence registration coordinator`
-- **Verification:** full native Gradle test suite passed — 1,150 tests, 0 failures
+- **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10; Deletion, Optimisation Safeguard, and Runtime Integration all verified)
+- **Latest implementation unit:** Evidence Custodian — Runtime Integration
+- **Latest verified milestone:** Evidence Custodian — Programme Complete
+- **Latest commit:** `8f1cffd` — `feat: integrate Evidence Custodian into Parker runtime`
+- **Verification:** full native Gradle test suite passed — 1,191 tests, 0 failures
 - **Build result:** `BUILD SUCCESSFUL`
 - **Repository state:** `main` synchronized with `origin/main`; working tree clean
 
@@ -411,7 +439,6 @@ Still under development:
 - public SDK
 - security hardening
 - release packaging
-- Evidence Custodian Runtime Integration (wiring `EvidenceRegistrationCoordinator` into `ParkerRuntime`), Deletion workflow, and Optimisation Safeguard enforcement
 
 The production `AgentStepSource` used today, `DeterministicAgentStepSource`, is a deliberate, deterministic stand-in for a future Planner-backed step source, not tool execution driven by real planned Goals. A configured Agent Run may still terminate in `agent.failed` where no executable action mapping exists for its proposed action — an expected outcome for an unmapped action today, not a defect this milestone resolves.
 
@@ -715,12 +742,11 @@ The constitutional foundation is defined by:
 
 - **Architecture:** Constitutional Foundation complete and frozen
 - **Runtime Foundation:** Complete
-- **Sprint status:** Controlled Agent Run Submission complete; Evidence Custodian core capabilities complete (Phases 1–6 verified), Runtime Integration and later phases pending
-- **Latest implementation unit:** Evidence Custodian — Runtime Evidence Registration Coordinator
-- **Latest verified milestone:** Evidence Custodian — Derivative Relationship Support, verified by behavioural tests against the real Evidence Custodian, Memory Core, and Registration Coordinator implementations
-- **Latest production commit:** `4e657a9`
+- **Sprint status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10)
+- **Latest implementation unit:** Evidence Custodian — Runtime Integration
+- **Latest verified milestone:** Evidence Custodian — Programme Complete, verified by behavioural and structural tests against the real Evidence Custodian, Memory Core, deletion authority, and production composition root
+- **Latest production commit:** `8f1cffd`
 - **Current focus:** production Tool execution from planned Goals, and broader Task lifecycle handling
-- **Remaining Evidence Custodian work includes:** Deletion workflow, Optimisation Safeguard enforcement, platform-wide verification, and Runtime Integration
 
 ---
 
@@ -730,7 +756,7 @@ Current verified baseline:
 
 ```text
 Native Gradle verification: BUILD SUCCESSFUL
-1,150 tests, 0 failures
+1,191 tests, 0 failures
 ```
 
 The complete test suite must pass before an implementation unit is accepted, committed, and pushed.
@@ -754,7 +780,7 @@ Implementation units are accepted only after:
 5. push;
 6. clean working-tree confirmation.
 
-The current verified baseline includes dedicated behavioural verification for the Evidence Registration Coordinator and for Derivative Relationship Support — confirming that an original and a derivative artefact always receive distinct identities, with traceability preserved solely through Memory Core's own Provenance mechanism.
+The current verified baseline includes dedicated behavioural verification for the Evidence Registration Coordinator and for Derivative Relationship Support — confirming that an original and a derivative artefact always receive distinct identities, with traceability preserved solely through Memory Core's own Provenance mechanism — together with dedicated verification for owner-authorised deletion (including durable audit ordering under simulated failure), structural verification of the Constitutional Optimisation Safeguard, and end-to-end verification of the wired production composition root, exercised against real file-backed storage and a real permission graph rather than test fakes.
 
 ---
 
@@ -820,8 +846,8 @@ tools/
 | Item | Status |
 |---|---|
 | Architecture | Constitutional Foundation (Frozen) |
-| Implementation | Controlled Agent Run Submission complete; Evidence Custodian core capabilities complete (Phases 1–6 verified), Runtime Integration and later phases pending |
-| Latest Commit | `4e657a9` — `feat: add evidence registration coordinator` |
+| Implementation | Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10) |
+| Latest Commit | `8f1cffd` — `feat: integrate Evidence Custodian into Parker runtime` |
 | Build Status | `BUILD SUCCESSFUL` |
 | Branch | `main` |
 | Repository | Clean • Synced with origin |
@@ -877,12 +903,12 @@ Developed as a separate, parallel infrastructure programme, governed by its own 
 4. Governed Evidence Retrieval ✅
 5. Runtime Evidence Registration Coordinator ✅
 6. Derivative Relationship Support ✅ (verified by behavioural tests)
-7. Deletion workflow
-8. Optimisation Safeguard enforcement
-9. Platform-wide verification
-10. Runtime integration
+7. Deletion workflow ✅ (owner-only `OwnerEvidenceDeletionAuthority`, durably audited)
+8. Optimisation Safeguard enforcement ✅ (verified structurally, not by convention)
+9. Platform-wide verification ✅ (completed through cumulative native verification across Phases 7–10; full native Gradle suite passed with 1,191 tests, 0 failures, and 0 errors)
+10. Runtime integration ✅
 
-Evidence Custodian is not yet wired into `ParkerRuntime`'s production composition root — this remains a later, separate governed unit (item 10, above), exactly as controlled Tool execution from planned Goals remains this platform's own separate, unresolved boundary.
+Evidence Custodian is now fully wired into `ParkerRuntime`'s production composition root: `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed via dependency injection, their Resources/action-vocabulary/permission rules are registered, and the subsystem is reachable through `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`. Controlled Tool execution from planned Goals remains this platform's own separate, unresolved boundary — see "What Is Not Yet Complete," above.
 
 ---
 
