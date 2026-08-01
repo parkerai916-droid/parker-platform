@@ -2,13 +2,15 @@
 
 ## Status
 
-**Draft.** This record is not Accepted, not Canonical, and not Frozen. It
-has not yet undergone independent constitutional verification or Final
-Freeze Verification. No Kotlin is implemented, proposed, or changed.
-Neither `src/` nor `tests/` is touched. `docs/architecture/epistemic-integrity.md`,
+**Frozen.** This record has completed independent constitutional
+verification and Final Freeze Verification
+(`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`,
+1 August 2026) and is Accepted and Canonical. No Kotlin is implemented,
+proposed, or changed by this record. Neither `src/` nor `tests/` is
+touched by this record. `docs/architecture/epistemic-integrity.md`,
 `docs/architecture/MEMORY_CORE_CONTRACT_DESIGN.md`, and
-`docs/architecture/MEMORY_CORE_SCOPE_LOCK.md` are all unmodified by this
-record. Nothing is staged, committed, or pushed.
+`docs/architecture/MEMORY_CORE_SCOPE_LOCK.md` remain unmodified by this
+record. Nothing is staged, committed, or pushed by this record.
 
 ---
 
@@ -595,17 +597,21 @@ Evidence Intelligence programme or as a separate, first-class
 infrastructure subsystem — that question is resolved by the Evidence
 Artifact Contract Design.
 
-**Status:** Draft, incorporating the ownership clarification and the
-provisional-labels clarification approved on review; pending independent
-constitutional verification and Final Freeze Verification consistent
-with this Programme's established lifecycle.
+**Status:** Frozen, incorporating the ownership clarification and the
+provisional-labels clarification approved on review. Independent
+constitutional verification and Final Freeze Verification completed
+1 August 2026 (`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`),
+consistent with this Programme's established lifecycle.
 
-CDR-006 — WRITTEN TO REPOSITORY — PENDING INDEPENDENT CONSTITUTIONAL
-VERIFICATION AND FINAL FREEZE VERIFICATION
+CDR-006 — RATIFIED — INDEPENDENT CONSTITUTIONAL VERIFICATION AND FINAL
+FREEZE VERIFICATION COMPLETE
 
-Confirmed: no production code modified; no tests modified;
-`docs/architecture/MEMORY_CORE_CONTRACT_DESIGN.md` and
-`docs/architecture/MEMORY_CORE_SCOPE_LOCK.md` not modified; CDR-001
+Confirmed: no production code modified by this record; no tests
+modified by this record; `docs/architecture/MEMORY_CORE_CONTRACT_DESIGN.md`
+and `docs/architecture/MEMORY_CORE_SCOPE_LOCK.md` not modified; CDR-001
 through CDR-005 not modified; nothing staged; nothing committed; nothing
-pushed; Evidence Custodian Scope Lock not started; Evidence Intelligence
-implementation not started.
+pushed by this record. The Evidence Artifact Contract Design, Evidence
+Custodian Scope Lock, and Evidence Custodian Implementation Plan are
+each separately ratified per the same Final Freeze Review; Evidence
+Custodian implementation Phases 1–6 are complete and Phases 7–10 remain
+pending; Evidence Intelligence implementation has not started.

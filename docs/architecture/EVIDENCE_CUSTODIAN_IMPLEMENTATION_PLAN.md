@@ -9,6 +9,12 @@ No API, database schema, hashing algorithm, encryption choice, or
 storage technology is specified. Neither `src/` nor `tests/` is touched.
 Nothing is staged, committed, or pushed.
 
+**Ratification status:** Accepted and frozen following independent
+constitutional verification and Final Freeze Verification
+(`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`,
+1 August 2026). Phases 1–6 of Section 4's sequencing are implemented and
+verified; Phases 7–10 remain pending.
+
 **Normative inputs, frozen, not redefined:** `docs/architecture/parker-constitution.md`;
 `docs/architecture/epistemic-integrity.md` (Article IX, as amended);
 `docs/decisions/CDR-006_CONSTITUTIONAL_CLASSIFICATION_OF_ORIGINAL_EVIDENCE_CUSTODY_AND_IMMUTABILITY.md`;
@@ -341,13 +347,15 @@ when all of the following are objectively true:
 
 ## Final Recommendation
 
-This Implementation Plan is ready to be presented for review. If
-approved, it authorises engineering work to begin sequencing Phase 1
-(Foundational custody model) — it does not itself constitute that work,
-select any technology, or write any Kotlin.
+This Implementation Plan was presented for review and approved, per the
+Evidence Custodian CDR-006 Final Freeze Review
+(`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`,
+1 August 2026). It authorises engineering work sequencing Phases 1
+through 10 above — it does not itself constitute that work, select any
+technology, or write any Kotlin.
 
-EVIDENCE CUSTODIAN IMPLEMENTATION PLAN — WRITTEN TO REPOSITORY — PENDING
-CONSTITUTIONAL REVIEW
+EVIDENCE CUSTODIAN IMPLEMENTATION PLAN — ACCEPTED — INDEPENDENT
+CONSTITUTIONAL VERIFICATION COMPLETE
 
 Confirmed: no Kotlin implemented; no API, schema, storage technology,
 hashing algorithm, or encryption choice defined; Constitution, Article

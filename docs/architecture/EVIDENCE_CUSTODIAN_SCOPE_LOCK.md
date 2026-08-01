@@ -9,6 +9,11 @@ No API, database schema, hashing algorithm, or storage technology is
 specified. Neither `src/` nor `tests/` is touched. Nothing is staged,
 committed, or pushed.
 
+**Ratification status:** Accepted and frozen following independent
+constitutional verification and Final Freeze Verification
+(`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`,
+1 August 2026).
+
 **This document is binding.** It does not redefine any constitutional
 decision already made. `docs/decisions/CDR-006_CONSTITUTIONAL_CLASSIFICATION_OF_ORIGINAL_EVIDENCE_CUSTODY_AND_IMMUTABILITY.md`,
 `docs/architecture/EVIDENCE_ARTIFACT_CONTRACT_DESIGN.md`, and
@@ -299,16 +304,19 @@ Scope Lock, and Programme 3 Knowledge Memory governance.
 
 ## Final Recommendation
 
-This Scope Lock is ready to be presented for constitutional review. If
-approved, the next governance stage is an Evidence Custodian
-Implementation Plan — not begun, and not authorised to begin, by this
-document.
+This Scope Lock was presented for constitutional review and approved,
+per the Evidence Custodian CDR-006 Final Freeze Review
+(`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`,
+1 August 2026). The next governance stage, an Evidence Custodian
+Implementation Plan — not begun, nor authorised to begin, by this
+document itself — has since been separately drafted and ratified.
 
-EVIDENCE CUSTODIAN SCOPE LOCK — WRITTEN TO REPOSITORY — PENDING
-CONSTITUTIONAL REVIEW
+EVIDENCE CUSTODIAN SCOPE LOCK — ACCEPTED — INDEPENDENT CONSTITUTIONAL
+VERIFICATION COMPLETE
 
 Confirmed: no Kotlin implemented; no API, schema, or storage technology
 defined; Memory Core Contract Design and Scope Lock unmodified; Knowledge
 Memory governance unmodified; CDR-006, the Evidence Artifact Contract
 Design, and Article IX unmodified; nothing staged; nothing committed;
-nothing pushed; Implementation Plan not started.
+nothing pushed by this document. The Implementation Plan has since been
+separately drafted and ratified.

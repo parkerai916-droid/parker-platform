@@ -8,6 +8,11 @@ as a diff, or changed by this document. No API, database schema, hashing
 algorithm, or storage technology is specified. Neither `src/` nor
 `tests/` is touched. Nothing is staged, committed, or pushed.
 
+**Ratification status:** Accepted and frozen following independent
+constitutional verification and Final Freeze Verification
+(`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`,
+1 August 2026).
+
 This document accepts `docs/decisions/CDR-006_CONSTITUTIONAL_CLASSIFICATION_OF_ORIGINAL_EVIDENCE_CUSTODY_AND_IMMUTABILITY.md`
 ("CDR-006") as the controlling, already-decided constitutional basis for
 everything below and does not reopen it. CDR-006's Model B — Evidence
@@ -677,13 +682,16 @@ evidence remains, by this document's own definition, retained.
 
 ## Final Recommendation
 
-This Contract Design is ready to be presented for constitutional review.
-If accepted, the next governance stage is an Evidence Custodian Scope
-Lock, followed by an Implementation Plan — neither begun, and neither
-authorised to begin, by this document.
+This Contract Design was presented for constitutional review and
+accepted, per the Evidence Custodian CDR-006 Final Freeze Review
+(`docs/reviews/EVIDENCE_CUSTODIAN_CDR-006_FINAL_FREEZE_REVIEW.md`,
+1 August 2026). The next governance stages, an Evidence Custodian Scope
+Lock followed by an Implementation Plan — neither begun, nor authorised
+to begin, by this document itself — have since each been separately
+drafted and ratified.
 
-EVIDENCE ARTIFACT CONTRACT DESIGN (PHASE 1) — WRITTEN TO REPOSITORY —
-PENDING CONSTITUTIONAL REVIEW
+EVIDENCE ARTIFACT CONTRACT DESIGN (PHASE 1) — ACCEPTED — INDEPENDENT
+CONSTITUTIONAL VERIFICATION COMPLETE
 
 Confirmed: no Kotlin implemented; no API, schema, or storage technology
 defined; no lifecycle enum or implementation state defined; Memory Core
