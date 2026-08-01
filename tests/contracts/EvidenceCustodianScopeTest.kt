@@ -9,7 +9,9 @@ import kotlin.reflect.jvm.javaMethod
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import parker.core.runtime.DefaultEvidenceCustodian
 
 /**
  * Evidence Custodian, Implementation Plan Phase 3/4, Units 2-3. Structural
@@ -214,5 +216,91 @@ class EvidenceCustodianScopeTest {
                 )
             }
         }
+    }
+
+    // --- Implementation Plan Phase 7 ("Deletion workflow") -- Boundary Clarification Section 3 ---
+
+    @Test
+    fun `EvidenceCustodian still declares exactly accept and retrieve -- deletion was not added to it`() {
+        val declared = EvidenceCustodian::class.declaredFunctions
+
+        assertEquals(
+            setOf("accept", "retrieve"),
+            declared.map { it.name }.toSet(),
+            "EvidenceCustodian must remain exactly accept and retrieve -- deletion (Phase 7) is a " +
+                "structurally separate capability (OwnerEvidenceDeletionAuthority), never added to " +
+                "this interface -- found: ${declared.map { it.name }}",
+        )
+    }
+
+    @Test
+    fun `OwnerEvidenceDeletionAuthority and EvidenceCustodian are unrelated types`() {
+        assertFalse(
+            EvidenceCustodian::class.java.isAssignableFrom(OwnerEvidenceDeletionAuthority::class.java),
+            "OwnerEvidenceDeletionAuthority must not be a subtype of EvidenceCustodian",
+        )
+        assertFalse(
+            OwnerEvidenceDeletionAuthority::class.java.isAssignableFrom(EvidenceCustodian::class.java),
+            "EvidenceCustodian must not be a subtype of OwnerEvidenceDeletionAuthority",
+        )
+    }
+
+    @Test
+    fun `DefaultEvidenceCustodian does not implement OwnerEvidenceDeletionAuthority`() {
+        assertFalse(
+            OwnerEvidenceDeletionAuthority::class.java.isAssignableFrom(DefaultEvidenceCustodian::class.java),
+            "DefaultEvidenceCustodian must never also implement OwnerEvidenceDeletionAuthority -- " +
+                "deletion is a structurally separate capability, implemented by a separate class " +
+                "(Boundary Clarification Section 3)",
+        )
+    }
+
+    @Test
+    fun `OwnerEvidenceDeletionAuthority declares exactly one operation -- deleteAsOwner`() {
+        val declared = OwnerEvidenceDeletionAuthority::class.declaredFunctions
+
+        assertEquals(setOf("deleteAsOwner"), declared.map { it.name }.toSet())
+        assertEquals(1, declared.size, "no domain operation name may be declared more than once")
+    }
+
+    @Test
+    fun `deleteAsOwner has the expected public, suspend, abstract shape with no reason parameter`() {
+        val deleteAsOwner = OwnerEvidenceDeletionAuthority::class.declaredFunctions.single { it.name == "deleteAsOwner" }
+
+        assertEquals(KVisibility.PUBLIC, deleteAsOwner.visibility, "deleteAsOwner must be a public operation")
+        assertTrue(deleteAsOwner.isSuspend, "deleteAsOwner must be a suspend function -- Permission Engine evaluation is async")
+        assertAbstract(deleteAsOwner)
+
+        val valueParameters = deleteAsOwner.parameters.filter { it.kind == KParameter.Kind.VALUE }
+        assertEquals(
+            2,
+            valueParameters.size,
+            "deleteAsOwner must take exactly two value parameters -- no reason/justification " +
+                "parameter (Boundary Clarification Section 4)",
+        )
+        assertEquals(
+            PrincipalId::class,
+            valueParameters[0].type.classifier,
+            "deleteAsOwner's first parameter must be the requesting principal",
+        )
+        assertEquals(
+            EvidenceArtifactId::class,
+            valueParameters[1].type.classifier,
+            "deleteAsOwner's second parameter must be the target artefact's identifier",
+        )
+        assertEquals(
+            EvidenceDeletionResult::class,
+            deleteAsOwner.returnType.classifier,
+            "deleteAsOwner must return the sealed EvidenceDeletionResult",
+        )
+    }
+
+    @Test
+    fun `EvidenceDeletionAuditStage declares exactly AUTHORISED and COMPLETED -- no other value`() {
+        assertEquals(
+            setOf("AUTHORISED", "COMPLETED"),
+            EvidenceDeletionAuditStage.values().map { it.name }.toSet(),
+        )
+        assertEquals(2, EvidenceDeletionAuditStage.values().size, "no FAILED, REQUESTED, or NOT_FOUND stage may exist")
     }
 }

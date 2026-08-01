@@ -53,4 +53,16 @@ class InMemoryEvidenceArtifactStorage : EvidenceArtifactStorage {
 
         return mutex.withLock { store[evidenceArtifactId]?.copyOf() }
     }
+
+    /**
+     * Implementation Plan Phase 7 ("Deletion workflow"). [MutableMap.remove]
+     * already returns the removed value or `null`, giving exactly the
+     * `Boolean` this Unit's own [EvidenceArtifactStorage.delete] contract
+     * requires. No tombstone of any kind is retained.
+     */
+    override suspend fun delete(evidenceArtifactId: EvidenceArtifactId): Boolean {
+        EvidenceArtifactIdentifierSafety.requireSafe(evidenceArtifactId)
+
+        return mutex.withLock { store.remove(evidenceArtifactId) != null }
+    }
 }

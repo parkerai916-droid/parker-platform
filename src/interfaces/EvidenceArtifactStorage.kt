@@ -85,6 +85,35 @@ interface EvidenceArtifactStorage {
      * been safely written returns a clear error, not a misleading `null`.
      */
     suspend fun read(evidenceArtifactId: EvidenceArtifactId): ByteArray?
+
+    /**
+     * Evidence Custodian, Implementation Plan Phase 7 ("Deletion
+     * workflow"), governed by
+     * `docs/architecture/EVIDENCE_CUSTODIAN_PHASE_7_BOUNDARY_CLARIFICATION.md`
+     * ("the Boundary Clarification"). Physically removes content stored
+     * under [evidenceArtifactId], leaving no tombstone, marker, or
+     * retained copy of any kind (Boundary Clarification Determination 2)
+     * -- a subsequent [read] for the same identifier returns `null`,
+     * identical to an identifier that was never written at all.
+     *
+     * Returns `true` if content existed and was removed; `false` if
+     * nothing was stored under [evidenceArtifactId] -- deleting an absent
+     * identifier is an ordinary, non-exceptional outcome at this layer,
+     * never an error.
+     *
+     * Deliberately **not** gated -- exactly like [write] and [read],
+     * gating is one level up, on
+     * [parker.core.interfaces.OwnerEvidenceDeletionAuthority]
+     * (Boundary Clarification Section 3: "the storage layer never gates;
+     * gating happens one level up"). This method carries no permission
+     * check and no authorisation concept of any kind.
+     *
+     * Throws [EvidenceArtifactStorageException.UnsafeIdentifier] under
+     * the same condition [write] and [read] would. Throws
+     * [EvidenceArtifactStorageException.StorageIOFailure] for a genuine
+     * underlying I/O failure -- never silently converted to `false`.
+     */
+    suspend fun delete(evidenceArtifactId: EvidenceArtifactId): Boolean
 }
 
 /**

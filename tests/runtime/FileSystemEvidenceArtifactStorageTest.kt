@@ -36,6 +36,77 @@ class FileSystemEvidenceArtifactStorageTest {
 
     private fun id(value: String = "artifact-1") = EvidenceArtifactId(value)
 
+    // --- Deletion (Implementation Plan Phase 7) ---
+
+    @Test
+    fun `deleting an existing identifier removes the file and returns true`(@TempDir tempDir: Path) = runTest {
+        val storage = FileSystemEvidenceArtifactStorage(tempDir)
+        storage.write(id(), "content".toByteArray())
+
+        val result = storage.delete(id())
+
+        assertTrue(result)
+        assertNull(storage.read(id()))
+    }
+
+    @Test
+    fun `deleting removes the file from disk, leaving no tombstone`(@TempDir tempDir: Path) = runTest {
+        val storage = FileSystemEvidenceArtifactStorage(tempDir)
+        storage.write(id(), "content".toByteArray())
+
+        storage.delete(id())
+
+        val nonTempEntries = tempDir.listDirectoryEntries().filterNot { it.isDirectory() }
+        assertEquals(0, nonTempEntries.size, "no file, marker, or tombstone should remain after deletion")
+    }
+
+    @Test
+    fun `deleting an identifier that was never written returns false`(@TempDir tempDir: Path) = runTest {
+        val storage = FileSystemEvidenceArtifactStorage(tempDir)
+
+        assertEquals(false, storage.delete(id("never-written")))
+    }
+
+    @Test
+    fun `deleting an already-deleted identifier returns false the second time`(@TempDir tempDir: Path) = runTest {
+        val storage = FileSystemEvidenceArtifactStorage(tempDir)
+        storage.write(id(), "content".toByteArray())
+        storage.delete(id())
+
+        assertEquals(
+            false,
+            storage.delete(id()),
+            "repeated deletion produces false, never a tombstone-derived distinction (Determination 2)",
+        )
+    }
+
+    @Test
+    fun `an unsafe identifier is rejected on delete, identically to write and read`(@TempDir tempDir: Path) = runTest {
+        val storage = FileSystemEvidenceArtifactStorage(tempDir)
+
+        assertFailsWith<EvidenceArtifactStorageException.UnsafeIdentifier> {
+            storage.delete(id("../escaped"))
+        }
+    }
+
+    @Test
+    fun `a delete-time I-O failure throws StorageIOFailure, not a silent false`(@TempDir tempDir: Path) = runTest {
+        val storage = FileSystemEvidenceArtifactStorage(tempDir)
+        storage.write(id(), "content".toByteArray())
+        val madeReadOnly = tempDir.toFile().setWritable(false)
+        assumeTrue(
+            madeReadOnly && !Files.isWritable(tempDir),
+            "this platform/test-runner did not honour the read-only permission change -- skipping " +
+                "rather than reporting a false failure",
+        )
+
+        assertFailsWith<EvidenceArtifactStorageException.StorageIOFailure> {
+            storage.delete(id())
+        }
+
+        tempDir.toFile().setWritable(true) // restore, so JUnit's own @TempDir cleanup can delete it
+    }
+
     // --- First write succeeds ---
 
     @Test

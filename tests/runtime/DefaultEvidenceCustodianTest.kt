@@ -476,6 +476,7 @@ class DefaultEvidenceCustodianTest {
 class FakeEvidenceArtifactStorage(
     private val writeBehavior: (suspend (EvidenceArtifactId, ByteArray) -> Unit)? = null,
     private val readBehavior: (suspend (EvidenceArtifactId) -> ByteArray?)? = null,
+    private val deleteBehavior: (suspend (EvidenceArtifactId) -> Boolean)? = null,
 ) : EvidenceArtifactStorage {
 
     private val delegate = InMemoryEvidenceArtifactStorage()
@@ -484,6 +485,9 @@ class FakeEvidenceArtifactStorage(
         private set
 
     var readCallCount: Int = 0
+        private set
+
+    var deleteCallCount: Int = 0
         private set
 
     override suspend fun write(evidenceArtifactId: EvidenceArtifactId, content: ByteArray) {
@@ -498,5 +502,19 @@ class FakeEvidenceArtifactStorage(
     override suspend fun read(evidenceArtifactId: EvidenceArtifactId): ByteArray? {
         readCallCount++
         return if (readBehavior != null) readBehavior.invoke(evidenceArtifactId) else delegate.read(evidenceArtifactId)
+    }
+
+    /**
+     * Implementation Plan Phase 7 addition -- required once
+     * [EvidenceArtifactStorage] gained [EvidenceArtifactStorage.delete],
+     * mirroring [writeBehavior]/[readBehavior]'s own established shape
+     * exactly. Not exercised by any [DefaultEvidenceCustodianTest] case
+     * above -- [DefaultEvidenceCustodian] itself gained no `delete`
+     * operation (Boundary Clarification Section 3) -- but this class
+     * must still implement the interface completely to compile.
+     */
+    override suspend fun delete(evidenceArtifactId: EvidenceArtifactId): Boolean {
+        deleteCallCount++
+        return if (deleteBehavior != null) deleteBehavior.invoke(evidenceArtifactId) else delegate.delete(evidenceArtifactId)
     }
 }

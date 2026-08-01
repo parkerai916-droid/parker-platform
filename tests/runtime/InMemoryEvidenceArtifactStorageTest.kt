@@ -30,6 +30,48 @@ class InMemoryEvidenceArtifactStorageTest {
 
     private fun id(value: String = "artifact-1") = EvidenceArtifactId(value)
 
+    // --- Deletion (Implementation Plan Phase 7) ---
+
+    @Test
+    fun `deleting an existing identifier removes it and returns true`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        storage.write(id(), "content".toByteArray())
+
+        val result = storage.delete(id())
+
+        assertTrue(result)
+        assertNull(storage.read(id()))
+    }
+
+    @Test
+    fun `deleting an identifier that was never written returns false`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+
+        assertEquals(false, storage.delete(id("never-written")))
+    }
+
+    @Test
+    fun `deleting an already-deleted identifier returns false the second time`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        storage.write(id(), "content".toByteArray())
+        storage.delete(id())
+
+        assertEquals(
+            false,
+            storage.delete(id()),
+            "repeated deletion produces false, never a tombstone-derived distinction (Determination 2)",
+        )
+    }
+
+    @Test
+    fun `an unsafe identifier is rejected on delete, identically to write and read`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+
+        assertFailsWith<EvidenceArtifactStorageException.UnsafeIdentifier> {
+            storage.delete(id("../escaped"))
+        }
+    }
+
     @Test
     fun `a first write for a fresh identifier succeeds and is readable back`() = runTest {
         val storage = InMemoryEvidenceArtifactStorage()

@@ -192,6 +192,32 @@ class FileSystemEvidenceArtifactStorage(storageRoot: Path) : EvidenceArtifactSto
     }
 
     /**
+     * Implementation Plan Phase 7 ("Deletion workflow"). [Files.deleteIfExists]
+     * already returns exactly the `Boolean` this Unit's own
+     * [EvidenceArtifactStorage.delete] contract requires (`true` if a
+     * file existed and was removed, `false` if nothing was present) and
+     * throws [IOException] for a genuine failure -- no additional
+     * existence check or temp-file staging is needed for a single,
+     * irreversible file removal, unlike [write]'s own atomic
+     * create-then-move strategy.
+     */
+    override suspend fun delete(evidenceArtifactId: EvidenceArtifactId): Boolean {
+        EvidenceArtifactIdentifierSafety.requireSafe(evidenceArtifactId)
+        val targetPath = resolveTargetPath(evidenceArtifactId)
+
+        return mutex.withLock {
+            try {
+                Files.deleteIfExists(targetPath)
+            } catch (e: IOException) {
+                throw EvidenceArtifactStorageException.StorageIOFailure(
+                    "Failed to delete evidence artifact content for identifier '${evidenceArtifactId.value}'",
+                    e,
+                )
+            }
+        }
+    }
+
+    /**
      * Writes [content] to [tempFile] and forces it to durable storage
      * ([FileChannel.force]) before returning -- the concrete step that
      * makes the "temporary file" half of this Unit's crash-protection

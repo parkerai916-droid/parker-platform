@@ -481,3 +481,81 @@ interface EvidenceCustodian {
         evidenceArtifactId: EvidenceArtifactId,
     ): EvidenceRetrievalResult
 }
+
+/**
+ * Evidence Custodian, Implementation Plan Phase 7 ("Deletion workflow").
+ * Governed in full by
+ * `docs/architecture/EVIDENCE_CUSTODIAN_PHASE_7_BOUNDARY_CLARIFICATION.md`
+ * ("the Boundary Clarification"), which this Unit implements exactly --
+ * no responsibility, exclusion, or ordering rule beyond what that
+ * document already fixed. See the Boundary Clarification's own Sections
+ * 3-7 for the full rationale; this file's KDoc restates only what is
+ * specific to the types themselves.
+ *
+ * ## Deliberately not part of [EvidenceCustodian] (Boundary Clarification
+ * Section 3, Determination 3)
+ *
+ * [EvidenceCustodian] is unchanged by this Unit -- it still declares
+ * exactly `accept` and `retrieve`. Deletion is not "an ordinary
+ * operation available through the general Evidence Custodian capability
+ * used by routine consumers": anything holding only an
+ * [EvidenceCustodian]-typed reference (a retrieval caller, a future
+ * acceptance caller) has no way to reach deletion, because the type
+ * itself does not offer it. [OwnerEvidenceDeletionAuthority] is a wholly
+ * separate interface, implemented by a separate class
+ * ([parker.core.runtime.DefaultOwnerEvidenceDeletionAuthority]), never
+ * by [parker.core.runtime.DefaultEvidenceCustodian].
+ */
+sealed class EvidenceDeletionResult {
+
+    /**
+     * Deletion was authorised, physically completed, and durably audited
+     * -- returned only once both a durable `AUTHORISED` and a durable
+     * `COMPLETED` [parker.core.interfaces.EvidenceDeletionAuditRecord]
+     * exist (Boundary Clarification Section 6). A caller can never
+     * observe [Deleted] for an attempt whose completion was not itself
+     * durably recorded.
+     */
+    data class Deleted(val evidenceArtifactId: EvidenceArtifactId) : EvidenceDeletionResult()
+
+    /**
+     * Deletion was authorised, but nothing was present under
+     * [evidenceArtifactId] -- covers both "never existed" and
+     * "already deleted" identically (Determination 2: no tombstone
+     * distinguishes the two).
+     */
+    data class NotFound(val evidenceArtifactId: EvidenceArtifactId) : EvidenceDeletionResult()
+
+    /**
+     * Deletion was not authorised. [reason] is a plain-language
+     * explanation, mirroring [EvidenceAcceptanceResult.Rejected]'s own
+     * convention exactly.
+     */
+    data class Rejected(val reason: String) : EvidenceDeletionResult() {
+        init {
+            require(reason.isNotBlank()) { "EvidenceDeletionResult.Rejected.reason must not be blank" }
+        }
+    }
+}
+
+/**
+ * The governed, structurally owner-only deletion boundary. Declares
+ * exactly one operation, and that operation carries no `reason`/
+ * `justification` parameter of any kind -- there is no code path by
+ * which a caller can label a deletion "optimisation," "cleanup," or
+ * "storage pressure" and have it processed differently from an ordinary
+ * authorised request (Boundary Clarification Section 4, "no `reason`
+ * parameter anywhere in `deleteAsOwner`'s own signature"). Which
+ * component in a future production runtime is ever given a reference to
+ * an implementation of this interface is deliberately not decided here
+ * -- that is Implementation Plan Phase 10 ("Runtime integration") work
+ * (Boundary Clarification Section 5); this Unit's own obligation is only
+ * to make the type narrow enough that Phase 10 has no choice but to wire
+ * it narrowly.
+ */
+interface OwnerEvidenceDeletionAuthority {
+    suspend fun deleteAsOwner(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+    ): EvidenceDeletionResult
+}
