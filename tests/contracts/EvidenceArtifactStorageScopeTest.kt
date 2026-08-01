@@ -1,6 +1,8 @@
 package parker.core.interfaces
 
+import kotlin.reflect.full.declaredFunctions
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
@@ -33,5 +35,21 @@ class EvidenceArtifactStorageScopeTest {
     @Test
     fun `no EvidenceArtifact record type exists anywhere in the repository`() {
         assertFailsWith<ClassNotFoundException> { Class.forName("parker.core.interfaces.EvidenceArtifact") }
+    }
+
+    // --- Implementation Plan Phase 8 ("Optimisation Safeguard Enforcement") ---
+
+    @Test
+    fun `EvidenceArtifactStorage declares exactly write, read, and delete -- nothing more`() {
+        val declared = EvidenceArtifactStorage::class.declaredFunctions
+
+        assertEquals(
+            setOf("write", "read", "delete"),
+            declared.map { it.name }.toSet(),
+            "EvidenceArtifactStorage must declare exactly write, read, and delete -- no compact, " +
+                "optimise, prune, replace, or discard operation may exist at this layer " +
+                "(Constitutional Optimisation Safeguard) -- found: ${declared.map { it.name }}",
+        )
+        assertEquals(3, declared.size, "no operation name may be declared more than once")
     }
 }
