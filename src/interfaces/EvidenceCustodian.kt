@@ -440,13 +440,23 @@ sealed class EvidenceRetrievalResult {
     data class NotFound(val evidenceArtifactId: EvidenceArtifactId) : EvidenceRetrievalResult()
 
     /**
-     * Retrieval was not authorised. [reason] is a plain-language
-     * explanation, never a caller-facing policy justification this Unit
-     * has no basis to construct -- see
-     * [parker.core.runtime.DefaultEvidenceCustodian]'s own KDoc for exactly
-     * what it contains.
+     * Retrieval was not authorised. Carries the identifier that was
+     * requested -- exactly as [Found] and [NotFound] already do -- so a
+     * denied outcome remains individually identifiable and externally
+     * disclosable alongside any other outcome from the same or a
+     * different invocation, per Evidence Artifact Contract Design §6.3's
+     * own "every retrieval outcome preserves the identity of the artefact
+     * requested, including a denied one" requirement. [evidenceArtifactId]
+     * echoes only the identifier the requesting caller already supplied to
+     * make this request -- it grants no access to the artefact, discloses
+     * no evidence content, and creates no custody, retrieval, deletion,
+     * acceptance, storage, or ownership authority of any kind (Contract
+     * Design §6.3). [reason] is a plain-language explanation, never a
+     * caller-facing policy justification this Unit has no basis to
+     * construct -- see [parker.core.runtime.DefaultEvidenceCustodian]'s
+     * own KDoc for exactly what it contains.
      */
-    data class Rejected(val reason: String) : EvidenceRetrievalResult() {
+    data class Rejected(val evidenceArtifactId: EvidenceArtifactId, val reason: String) : EvidenceRetrievalResult() {
         init {
             require(reason.isNotBlank()) { "EvidenceRetrievalResult.Rejected.reason must not be blank" }
         }

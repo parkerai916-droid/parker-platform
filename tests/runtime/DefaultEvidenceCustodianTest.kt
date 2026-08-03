@@ -322,10 +322,12 @@ class DefaultEvidenceCustodianTest {
     fun `a DENIED retrieval decision is Rejected, and performs no storage read`() = runTest {
         val storage = FakeEvidenceArtifactStorage()
         val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.DENIED))
+        val evidenceArtifactId = EvidenceArtifactId("some-artifact")
 
-        val result = custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+        val result = custodian.retrieve(principalId, evidenceArtifactId)
 
-        assertIs<EvidenceRetrievalResult.Rejected>(result)
+        val rejected = assertIs<EvidenceRetrievalResult.Rejected>(result)
+        assertEquals(evidenceArtifactId, rejected.evidenceArtifactId, "Rejected must echo the exact identifier requested")
         assertEquals(0, storage.readCallCount, "a denied retrieval must never reach storage.read")
     }
 
@@ -333,10 +335,12 @@ class DefaultEvidenceCustodianTest {
     fun `a DEFERRED retrieval decision is Rejected, and performs no storage read`() = runTest {
         val storage = FakeEvidenceArtifactStorage()
         val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.DEFERRED))
+        val evidenceArtifactId = EvidenceArtifactId("some-artifact")
 
-        val result = custodian.retrieve(principalId, EvidenceArtifactId("some-artifact"))
+        val result = custodian.retrieve(principalId, evidenceArtifactId)
 
-        assertIs<EvidenceRetrievalResult.Rejected>(result)
+        val rejected = assertIs<EvidenceRetrievalResult.Rejected>(result)
+        assertEquals(evidenceArtifactId, rejected.evidenceArtifactId, "Rejected must echo the exact identifier requested")
         assertEquals(0, storage.readCallCount, "a deferred retrieval must never reach storage.read")
     }
 
@@ -351,6 +355,20 @@ class DefaultEvidenceCustodianTest {
 
         assertTrue(result.reason.isNotBlank())
         assertTrue(result.reason.contains(principalId.value), "reason should name the requesting principal")
+    }
+
+    @Test
+    fun `a Rejected retrieval result carries the exact identifier that was requested, alongside the reason`() = runTest {
+        val storage = FakeEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.DENIED))
+        val evidenceArtifactId = EvidenceArtifactId("artifact-under-review")
+
+        val result = assertIs<EvidenceRetrievalResult.Rejected>(
+            custodian.retrieve(principalId, evidenceArtifactId),
+        )
+
+        assertEquals(evidenceArtifactId, result.evidenceArtifactId)
+        assertTrue(result.reason.isNotBlank())
     }
 
     // --- Retrieval: missing artefact ---

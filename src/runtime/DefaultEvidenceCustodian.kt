@@ -165,6 +165,7 @@ class DefaultEvidenceCustodian(
             decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
         ) {
             return EvidenceRetrievalResult.Rejected(
+                evidenceArtifactId,
                 "Permission Engine did not authorise evidence retrieval for principal " +
                     "'${requestingPrincipalId.value}' (decision=${decision.decision})",
             )
