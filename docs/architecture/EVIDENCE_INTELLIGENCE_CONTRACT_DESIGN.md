@@ -294,7 +294,7 @@ prefer composition, prefer references, avoid duplication, avoid
 wrappers, avoid mirrors, avoid shadow models, avoid introducing new
 authority, and give every public object exactly one constitutional
 owner — Evidence Intelligence's own public model is deliberately thin.
-It introduces exactly **two** new public types and reuses everything
+It introduces exactly **three** new public types and reuses everything
 else.
 
 **New types, owned by Evidence Intelligence:**
@@ -316,6 +316,55 @@ else.
   references to existing, already-governed identifiers (§4, §5) —
   never a new record shape and never a new identifier or provenance
   type.
+- **A closed, two-case selector type**, carried solely as the payload of
+  `EvidenceAnalysisResult`'s own "Candidate record produced" category
+  (§5). Owned by Evidence Intelligence for the same reason as the two
+  types above: no existing type represents "exactly one of these two
+  existing candidate kinds, and only one," and none of Memory Core's own
+  contracts offers a shared classification `CandidateAssertion` and
+  `CandidateRelationship` both already satisfy. This type is frozen to
+  the following properties, none of which any future revision may
+  weaken:
+
+  1. Behaviour-free — no operation beyond the ordinary structural
+     operations (equality, textual representation, copying) any plain
+     value already has; no operation that itself performs an
+     acceptance, persistence, retrieval, reasoning, or any other
+     domain act.
+  2. Closed to exactly two cases — one selecting an existing,
+     unmodified `CandidateAssertion`, one selecting an existing,
+     unmodified `CandidateRelationship` — never a third case without a
+     further amendment to this document.
+  3. Owns no data beyond the one selected candidate value — no field
+     beyond the single wrapped `CandidateAssertion` or
+     `CandidateRelationship`.
+  4. Introduces no fifth `EvidenceAnalysisResult` category —
+     `EvidenceAnalysisResult` remains sealed with exactly four direct
+     variants (§5); this type is not one of them, only the payload of
+     one.
+  5. Creates no acceptance, persistence, retrieval, reasoning,
+     confidence, evidential-state, or ownership authority of its own —
+     a pure selection mechanism; every one of those responsibilities
+     remains exactly where §1, §2, §6, and §12 already assign it,
+     never to Evidence Intelligence.
+  6. Does not modify `CandidateAssertion` or `CandidateRelationship` —
+     both remain reused, unmodified (§12); this type only references
+     them, never extends, subclasses, or amends either.
+  7. Is not a generic, reusable union mechanism — closed to these two
+     named, existing types specifically, never a type-parameterised
+     abstraction usable for any other pair of types.
+  8. Owned exclusively by Evidence Intelligence. No other subsystem is
+     authorised to adopt, produce, extend, or depend upon this type for
+     any purpose outside consuming the already-authorised "Candidate
+     record produced" result. Its public visibility creates no reusable
+     utility role, ownership interest, authority, or independent
+     dependency entitlement. Its sole purpose is realising this
+     document's own §5 content requirement for "Candidate record
+     produced."
+
+  No Kotlin name, method signature, or package is defined for this type
+  — exactly as this document defines no Kotlin design for any of its
+  other types (§2, above).
 
 **No other new public type is introduced.** In particular, this
 document does **not** define:
@@ -348,6 +397,7 @@ below states each type this document's own model touches and its owner:
 | --- | --- | --- |
 | `EvidenceAnalysisRequest` | Evidence Intelligence (new) | Defines |
 | `EvidenceAnalysisResult` | Evidence Intelligence (new) | Defines |
+| The "Candidate record produced" payload selector (§3, above; name not assigned by this document) | Evidence Intelligence (new) | Defines |
 | `EvidenceArtifactId`, `CandidateEvidenceArtifact` | Evidence Custodian | Reuses, unmodified |
 | `Assertion`, `CandidateAssertion`, `Relationship`, `CandidateRelationship` | Memory Core | Reuses, unmodified |
 | `Provenance`, `CandidateProvenance` | Memory Core | Reuses, unmodified |
@@ -1190,7 +1240,7 @@ A direct self-check against the design rules governing this document,
 performed once here rather than asserted without demonstration:
 
 **Prefer reuse; prefer composition; prefer references; avoid
-duplication.** §3's table shows two new types against ten reused,
+duplication.** §3's table shows three new types against ten reused,
 unmodified ones; every candidate output (§5) carries an existing type by
 reference, never a copy.
 
@@ -1222,7 +1272,7 @@ an ambiguous or shared owner.
 ## Final Recommendation
 
 This Contract Design defines Evidence Intelligence's software contract
-exactly as CDR-007 governs it: two new public types, one new public
+exactly as CDR-007 governs it: three new public types, one new public
 interface, zero new platform subsystems, zero amendments to any existing
 contract, and every analytical output traced to one of CDR-007's own
 four permitted categories with an unambiguous accepting subsystem and

@@ -140,7 +140,22 @@ discovered to be genuinely needed).
 | Any dependency on `EvidenceCustodian.accept`, `MemoryCore`'s public write interface, or Knowledge Memory's Knowledge Submission interface | Contract Design §12 ("Evidence Intelligence holds no dependency on any acceptance interface") |
 | A Permission Engine dependency of Evidence Intelligence's own | Contract Design §12 ("Evidence Intelligence holds no dependency on the Permission Engine of its own"); §2 ("Authorise its own actions") |
 | A bespoke comparison-result type, or a comparison mechanism not reconciled with Model B | Contract Design §7 |
-| A fourth `EvidenceAnalysisResult` variant, a partial-result wrapper type, or any new sealed shape | Contract Design §11 — restated here explicitly: partial completion (§2 above) is represented through the existing non-empty result list and existing failure-signalling mechanism, never a new type |
+| A fifth `EvidenceAnalysisResult` category, a new failure-result taxonomy, a partial-result wrapper, an alternate output taxonomy, or any new sealed or closed shape that competes with, expands, or stands beside the frozen four-category `EvidenceAnalysisResult` taxonomy | Contract Design §11 — restated here explicitly: partial completion (§2 above) is represented through the existing non-empty result list and existing failure-signalling mechanism, never a new type |
+
+**Clarification: this exclusion does not prohibit the single selector
+type the Contract Design now authorises (§3 of the Contract Design, as
+amended; §4 below).** That type is not an output category — it competes
+with, expands, or stands beside nothing `EvidenceAnalysisResult` itself
+classifies; it is not a failure taxonomy — it signals no implementation-
+level fault of any kind; it is not a partial-result mechanism — it
+carries no notion of partial or incomplete analysis. It exists solely as
+the payload selector inside the already-authorised "Candidate record
+produced" category, choosing between the two existing candidate kinds
+that category's own content requirement already names. The exclusion
+above remains binding, without exception, against every alternate
+output taxonomy, failure taxonomy, and partial-result mechanism it
+already named; this clarification narrows nothing about what it
+excludes, only confirms what it was never intended to reach.
 
 ---
 
@@ -164,10 +179,53 @@ Evidence Intelligence, §3):**
   Contract Design).
 - **`EvidenceAnalysisResult`** — the sealed output shape, exactly four
   variants (§5 of the Contract Design).
+- **A closed, two-case selector type** — carried solely as the payload
+  of `EvidenceAnalysisResult`'s own "Candidate record produced"
+  category (§3 of the Contract Design, as amended). Frozen, without
+  exception:
+  - owned exclusively by Evidence Intelligence;
+  - behaviour-free — no operation beyond the ordinary structural
+    operations any plain value already has;
+  - closed to exactly two cases — an existing, unmodified
+    `CandidateAssertion`, or an existing, unmodified
+    `CandidateRelationship` — never a third case without a further
+    Contract Design amendment;
+  - owns no data beyond the one selected candidate value;
+  - introduces no fifth `EvidenceAnalysisResult` category —
+    `EvidenceAnalysisResult` (immediately above) remains exactly four
+    variants;
+  - creates no acceptance, persistence, retrieval, reasoning,
+    confidence, evidential-state, provenance, or ownership authority
+    of its own;
+  - does not modify `CandidateAssertion` or `CandidateRelationship` —
+    both remain reused, unmodified, exactly as this section's own
+    reused-dependency table above already fixes;
+  - is not a generic union abstraction, reusable for any other pair of
+    types;
+  - may be used only as the payload of the already-authorised
+    "Candidate record produced" result: no other output category may
+    use it, and no subsystem may adopt, produce, extend, or depend
+    upon it for any purpose unrelated to that one category. Legitimate
+    `EvidenceAnalysisResult` consumers — including the separate
+    acceptance coordinator (§6 below), which already dispatches each
+    "Candidate record produced" value to Memory Core's own write
+    interface — may inspect this selector solely to determine which
+    existing candidate it carries, in order to dispatch that candidate
+    through the frozen acceptance sequence; that consumption grants no
+    ownership, no authority, no extension right, and no independent
+    dependency entitlement over the selector itself;
+  - creates no independent dependency entitlement for any other
+    subsystem — its public visibility confers no reusable role, no
+    ownership interest, and no authority beyond this one, narrow
+    purpose.
+
+  No Kotlin name, package, method, or interface is assigned to this
+  type by this document, exactly as none is assigned to the two types
+  above.
 - **`EvidenceIntelligence`** — the single public interface, one
   operation, request in, result list out (§10 of the Contract Design).
 
-No fourth new public type or interface is authorised. These three are
+No fifth new public type or interface is authorised. These four are
 the entire new public surface this implementation may create.
 
 **Frozen, without exception: no additional public contract of any kind
@@ -240,6 +298,7 @@ in this implementation.**
 | --- | --- | --- |
 | `EvidenceAnalysisRequest` | Evidence Intelligence | Defines; owns permanently |
 | `EvidenceAnalysisResult` | Evidence Intelligence | Defines; owns permanently |
+| The "Candidate record produced" payload selector (§4, above) | Evidence Intelligence | Defines; owns permanently; behaviour-free; used only as the payload selector for the "Candidate record produced" category; no independent authority or reusable utility role |
 | `EvidenceArtifactId`, `CandidateEvidenceArtifact` | Evidence Custodian | Reused, unmodified; ownership of a produced `CandidateEvidenceArtifact` transfers to Evidence Custodian on acceptance, never before, never retained after |
 | `Assertion`, `CandidateAssertion`, `Relationship`, `CandidateRelationship` | Memory Core | Reused, unmodified; ownership of a produced candidate transfers to Memory Core on acceptance, never before, never retained after |
 | `Provenance`, `CandidateProvenance` | Memory Core | Reused, unmodified; Evidence Intelligence never constructs a parallel or mirrored provenance mechanism, at claim level or otherwise (§8 of the Contract Design) |
@@ -755,7 +814,7 @@ FROZEN
 
 Confirmed: no Kotlin implemented; no API, schema, or storage technology
 defined; no new interface, repository, service, or public type
-introduced beyond the three the Contract Design already authorised
+introduced beyond the four the Contract Design already authorised
 (§4 above); CDR-001 through CDR-007 not modified; the Contract Design,
 Memory Core Contract Design and Scope Lock, Evidence Artifact Contract
 Design and Scope Lock, Programme 3 Knowledge Memory Contract Design V2,

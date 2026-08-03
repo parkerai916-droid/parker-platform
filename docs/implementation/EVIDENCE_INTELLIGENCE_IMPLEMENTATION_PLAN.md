@@ -292,7 +292,7 @@ Lock (§4) already requires.
 
 Described architecturally, by responsibility only. **No Kotlin name,
 method signature, package, or source-file is defined for any of the
-five below.** Item 4's own implementation *shape* — concrete or
+six below.** Item 5's own implementation *shape* — concrete or
 interface-backed, its exact dependencies, its input, its outcome
 representation, and its ordering guarantee — is frozen in full in §8
 Unit 7, completing a decision the Scope Lock (§6, §10) explicitly left
@@ -319,7 +319,19 @@ of scope (§11, below) regardless.
    candidate derivative artefact, candidate Memory Core record, or
    Knowledge Candidate — never a fifth category, never a caller-visible
    confidence or evidential-state field (Contract Design §3, §5).
-4. **The Evidence Intelligence acceptance coordinator.** A separate,
+4. **The payload selector for "Candidate record produced."** A closed,
+   two-case value shape, carried solely as that category's own payload
+   (Contract Design §3, as amended; Scope Lock §4, as amended).
+   Responsibility: select exactly one of an existing, unmodified
+   `CandidateAssertion` or an existing, unmodified `CandidateRelationship`
+   — never a third case, and no data beyond the one selected candidate.
+   Behaviour-free; grants no acceptance, persistence, retrieval,
+   reasoning, confidence, evidential-state, provenance, or ownership
+   authority of its own; does not modify either candidate type it
+   selects; is not a generic union abstraction reusable for any other
+   pair of types; creates no independent dependency entitlement for any
+   other subsystem (Scope Lock §4, §5, as amended).
+5. **The Evidence Intelligence acceptance coordinator.** A separate,
    composition-level mechanism, structurally outside Evidence
    Intelligence — **concrete, non-interface-backed** (justified in full
    in §8 Unit 7). Responsibility: consume the result list the Evidence
@@ -335,7 +347,7 @@ of scope (§11, below) regardless.
    evidential-state authority; cannot bypass Permission Engine
    evaluation; invokes no interface beyond the three named; retains no
    candidate after dispatch (Scope Lock §6, in full; §8 Unit 7, below).
-5. **The invocation-gating decision point.** Not a class or a
+6. **The invocation-gating decision point.** Not a class or a
    component in its own right — a governance requirement that whatever
    composes Evidence Intelligence into the running system evaluates a
    dedicated Permission Engine proposal class, `PermissionAction.EXECUTE`
@@ -347,12 +359,16 @@ of scope (§11, below) regardless.
    held and evaluated by the composing caller, never by Evidence
    Intelligence's own code (Scope Lock §6, step 0; §7; §11).
 
-No sixth new component is introduced anywhere in this plan. Neither
-item 4 nor item 5 is a new public platform subsystem: item 4 is
-composition-level wiring between three already-governed interfaces
-(mirroring `EvidenceRegistrationCoordinator`'s own precedent, §5,
-above), and item 5 is a new *pairing* of two pre-existing enum values,
-never a new enum value, new interface, or new authority.
+No seventh new component is introduced anywhere in this plan. Item 4
+(immediately above) is the one new public type this plan's own
+correction adds — already authorised by name and frozen property list
+by the amended Contract Design (§3) and Scope Lock (§4, §5), not newly
+decided by this plan. Neither item 5 nor item 6 is a new public
+platform subsystem: item 5 is composition-level wiring between three
+already-governed interfaces (mirroring `EvidenceRegistrationCoordinator`'s
+own precedent, §5, above), and item 6 is a new *pairing* of two
+pre-existing enum values, never a new enum value, new interface, or new
+authority.
 
 ---
 
@@ -367,8 +383,9 @@ hides a verification gap, or reordered so that a later unit's guarantee
 is assumed rather than demonstrated.
 
 1. **Input/output shape foundation** — establishes the analysis-request
-   and analysis-result shapes (§6, items 2–3). Depends on nothing below
-   this plan; depends only on the existing types §5 lists.
+   shape, the analysis-result shape, and the payload selector for
+   "Candidate record produced" (§6, items 2–4). Depends on nothing
+   below this plan; depends only on the existing types §5 lists.
 2. **Governed input resolution** — establishes read-only resolution of
    custodied-evidence and Memory-Core references. Depends on Unit 1.
 3. **Reasoning Provider orchestration** — establishes optional, internal
@@ -388,12 +405,12 @@ is assumed rather than demonstrated.
    complete** (§8 Unit 5, Unit 6, below).
 6. **Invocation permission gating** — establishes the dedicated
    Permission Engine proposal class evaluation preceding every call to
-   Unit 5's own operation (§6, item 5). Depends on Unit 5 existing to be
+   Unit 5's own operation (§6, item 6). Depends on Unit 5 existing to be
    gated; otherwise independent of Units 1–4. **Production reachability
    of Unit 5 is gated on this unit's own completion** (immediately
    above; §8 Unit 6, below).
 7. **The Evidence Intelligence acceptance coordinator** — establishes
-   the composition-level sequencing mechanism (§6, item 4) that
+   the composition-level sequencing mechanism (§6, item 5) that
    consumes Unit 5's own output. Depends on Unit 5's result shape
    (Unit 1); does not depend on Unit 6.
 8. **Runtime composition and full verification** — wires Units 1–7 into
@@ -415,24 +432,66 @@ sequence appear shorter than it is.
 
 ### Unit 1 — Input/Output Shape Foundation
 
-- **Purpose.** Establish the two new, already-authorised public shapes
-  — the analysis request and the analysis result — as the sole new
-  public surface besides the operation itself (Contract Design §3).
+- **Purpose.** Establish the three new, already-authorised public
+  shapes — the analysis request, the analysis result, and the closed,
+  two-case payload selector for the result's "Candidate record
+  produced" category — as the sole new public surface besides the
+  operation itself (Contract Design §3, as amended; Scope Lock §4, as
+  amended).
 - **Responsibilities.** Bundle existing-type references only (no
   content copies); represent exactly four output categories, one per
   value; structurally exclude any caller-declared confidence or
-  evidential-state field on either shape.
+  evidential-state field on any of the three shapes. **The payload
+  selector.** Closed to exactly two cases — an existing, unmodified
+  `CandidateAssertion`, or an existing, unmodified `CandidateRelationship`
+  — never a third; owns no data beyond the one selected candidate
+  value; used only as the payload of the "Candidate record produced"
+  category, never elsewhere; grants no acceptance, persistence,
+  retrieval, reasoning, confidence, evidential-state, provenance, or
+  ownership authority of its own; does not modify either candidate type
+  it selects; is not a generic union abstraction reusable for any other
+  pair of types; creates no independent dependency entitlement for any
+  other subsystem (Contract Design §3, as amended; Scope Lock §4, §5,
+  as amended). **Claim-level traceability, without a separate claim
+  type (resolving the earlier `AnalyticalClaim` misstep).** No separate
+  public claim type is introduced. Each material analytical claim is
+  represented as its own `TransientOutput` value, carrying one
+  non-blank prose string and one or more governed references, using
+  only the existing `EvidenceArtifactId` and/or `RelationshipEndpoint`
+  types (Contract Design §5's own claim-level traceability
+  requirement). A single invocation may return multiple `TransientOutput`
+  values in one `EvidenceAnalysisResult` list to represent multiple,
+  independently traceable claims — never one `TransientOutput`
+  internally bundling several claims, and never a claim carrying no
+  governed reference at all.
 - **Dependencies.** `EvidenceArtifactId`, Memory-Core-addressable
   reference shapes, `ReasoningContext`, `PrincipalId`,
   `CandidateEvidenceArtifact`, `CandidateAssertion`,
   `CandidateRelationship`, `KnowledgeCandidate` (§5, above) — read-only
   reuse only.
-- **Verification goals.** No field on either shape is reachable that
-  could carry a confidence or evidential-state value; the result shape
-  cannot represent a fifth output category.
-- **Completion criteria.** Both shapes exist, carry only existing-type
-  references, and no code path anywhere can construct a caller-declared
-  confidence or evidential-state value on either.
+- **Verification goals.** No field on any of the three shapes is
+  reachable that could carry a confidence or evidential-state value;
+  the result shape cannot represent a fifth output category; the
+  payload selector cannot represent a third case beyond
+  `CandidateAssertion` and `CandidateRelationship`; no public type named
+  `AnalyticalClaim`, or any other dedicated claim type, exists anywhere
+  in the compiled repository; every `TransientOutput` value carries at
+  least one governed reference; the payload selector is not, and cannot
+  be used as, a general-purpose union mechanism for any pair of types
+  other than the two it is closed to.
+- **Completion criteria.** All three shapes exist, carry only
+  existing-type references, and no code path anywhere can construct a
+  caller-declared confidence or evidential-state value on any of them.
+  Exactly four public runtime types exist across the full programme
+  once all units are complete (`EvidenceAnalysisRequest`,
+  `EvidenceAnalysisResult`, and the payload selector — all three from
+  this Unit — plus `EvidenceIntelligence`, defined by Unit 5) — never a
+  fifth. `EvidenceAnalysisResult` remains exactly four categories. The
+  payload selector remains exactly two cases. No separate
+  `AnalyticalClaim` public type, or any other new sealed or closed
+  shape competing with, expanding, or standing beside
+  `EvidenceAnalysisResult`'s own four-category taxonomy, exists
+  anywhere in the compiled repository.
 
 ### Unit 2 — Governed Input Resolution
 
@@ -689,8 +748,9 @@ sequence appear shorter than it is.
   and `CommunicationConversationCoordinator` (§5, above): no new public
   contract type, no new domain concept beyond what it sequences, no
   state beyond its constructor-injected dependencies. An interface here
-  would itself be the new public type the Scope Lock's own "no fourth
-  new public type or interface" freeze (§4) already excludes. A future
+  would itself be the new public type the Scope Lock's own "no fifth
+  new public type or interface" freeze (§4, as amended) already
+  excludes. A future
   need to depend on this behaviour abstractly is a later Contract
   Design question, not one resolved by promoting this class now.
 - **Exact existing contracts it depends on.** `EvidenceCustodian.accept`;
@@ -703,8 +763,9 @@ sequence appear shorter than it is.
   invocation — never a reconstructed, filtered, re-ordered, or
   otherwise reinterpreted copy.
 - **The outcome it returns.** Not a new public type (Scope Lock §4's
-  own "no fourth new public type" freeze applies to this Unit as much
-  as to Evidence Intelligence's own model). For each candidate in the
+  own "no fifth new public type" freeze, as amended, applies to this
+  Unit as much as to Evidence Intelligence's own model). For each
+  candidate in the
   input list, the coordinator dispatches to the one acceptance
   interface that candidate's own kind already names (§6, above), and
   the observable outcome for that candidate is exactly whichever of
@@ -875,10 +936,14 @@ when all of the following are objectively true:
    Intelligence operation, the acceptance coordinator, or either new
    public shape, to any of the items the Scope Lock (§4, §9) and
    Contract Design (§12, §15) name as excluded.
-9. Every transient output with more than one material analytical claim
-   carries a distinct, resolvable governed reference per claim, and
-   distinguishes extracted content, observed content, inferred
-   analytical conclusions, and model-generated explanatory language.
+9. Every material analytical claim is represented as its own
+   `TransientOutput` value, carrying one non-blank prose string and one
+   or more governed references (`EvidenceArtifactId` and/or
+   `RelationshipEndpoint`) — never one `TransientOutput` internally
+   bundling several claims, and never a claim carrying no governed
+   reference; each `TransientOutput` distinguishes extracted content,
+   observed content, inferred analytical conclusions, and
+   model-generated explanatory language within its own single claim.
 10. Every candidate derivative artefact resulting from transcription
     distinguishes verbatim transcription, normalised transcription, and
     inferred reconstruction wherever more than one applies.
@@ -898,6 +963,20 @@ when all of the following are objectively true:
     directly or indirectly.
 15. No new constitutional decision has been made in the course of
     implementation without a corresponding governance record.
+16. Exactly four public runtime types exist across the full programme
+    — `EvidenceAnalysisRequest`, `EvidenceAnalysisResult`, the payload
+    selector for "Candidate record produced" (§6, item 4, above), and
+    `EvidenceIntelligence` (§8 Unit 5) — never a fifth.
+    `EvidenceAnalysisResult` remains exactly four categories; the
+    payload selector remains exactly two cases (`CandidateAssertion`,
+    `CandidateRelationship`); no separate `AnalyticalClaim` public
+    type, or any other dedicated claim type, exists anywhere in the
+    compiled repository; every `TransientOutput` value is
+    independently traceable to its own governed reference(s), never
+    relying on a claim collection or wrapper type of any kind; and no
+    fifth `EvidenceAnalysisResult` category, general-purpose union
+    type, or other new sealed or closed shape competing with the
+    frozen four-category taxonomy exists anywhere.
 
 ---
 
@@ -942,12 +1021,18 @@ none widened:
   — held only by the acceptance coordinator, never by Evidence
   Intelligence itself.
 - A Permission Engine dependency of Evidence Intelligence's own (the
-  invocation gate, §6 item 5 above, is held by the composing caller,
+  invocation gate, §6 item 6 above, is held by the composing caller,
   never by Evidence Intelligence).
 - A bespoke comparison-result type, or a comparison mechanism not
   reconciled with Model B.
-- A fourth `EvidenceAnalysisResult` variant, a partial-result wrapper
-  type, or any new sealed shape.
+- A fifth `EvidenceAnalysisResult` category, a new failure-result
+  taxonomy, a partial-result wrapper, an alternate output taxonomy, or
+  any new sealed or closed shape that competes with, expands, or stands
+  beside the frozen four-category `EvidenceAnalysisResult` taxonomy
+  (Scope Lock §3, as amended). This exclusion does not reach the
+  payload selector authorised above (§6, item 4) — it is not an output
+  category, not a failure taxonomy, and not a partial-result mechanism;
+  it exists solely as "Candidate record produced"'s own payload.
 - Any storage technology, file system, database, or object store.
 - Any hashing algorithm, integrity-verification scheme, or cryptographic
   method.
