@@ -51,16 +51,31 @@ fun main(args: Array<String>) = runBlocking {
     // ConsoleParkerLogger's own default (LogLevel.INFO) and is used for nothing beyond reporting
     // a config-load failure, which always logs at ERROR (always shown regardless of threshold).
     val bootstrapLogger = ConsoleParkerLogger("main")
+    val environment = System.getenv()
     val interactive = "--interactive" in args
 
     val config = try {
-        ParkerRuntimeConfigLoader.load(System.getenv())
+        ParkerRuntimeConfigLoader.load(environment)
     } catch (e: ParkerRuntimeException) {
         bootstrapLogger.error("Parker Runtime configuration invalid", e)
         exitProcess(1)
     }
 
-    val logger = ConsoleParkerLogger("main", minLevel = config.logLevel)
+    // Interactive-console refinement task: PARKER_LOG_LEVEL's own default is mode-sensitive
+    // (see resolveEffectiveLogLevel's own KDoc, and ParkerRuntimeConfig.logLevel's) --
+    // ParkerRuntimeConfigLoader validated whatever was actually present in `environment` (or
+    // produced its own INFO default), but only this call decides whether that value or a
+    // mode-sensitive default is what the real logger actually uses.
+    val effectiveLogLevel = resolveEffectiveLogLevel(environment, interactive, config.logLevel)
+
+    // Spinner/log collision avoidance (interactive-console refinement task): shared with the
+    // logger below and, in the interactive branch only, with runInteractiveConsole -- inert
+    // (clearIfActive is a no-op) unless withSpinner actually activates it, which only ever
+    // happens from inside runInteractiveConsole's own loop. Constructing and wiring it
+    // unconditionally costs nothing and has no observable effect in headless mode, since nothing
+    // in the headless path ever calls SpinnerLineGuard.activate.
+    val spinnerLineGuard = SpinnerLineGuard()
+    val logger = ConsoleParkerLogger("main", minLevel = effectiveLogLevel, spinnerLineGuard = spinnerLineGuard)
 
     // Interactive mode's own OwnerNotificationSink prints only the delivered reply text, with a
     // fixed, stable prefix -- no formatting framework, no change to how a reply is produced or
@@ -111,6 +126,7 @@ fun main(args: Array<String>) = runBlocking {
     )
 
     if (interactive) {
+        printInteractiveBanner(config.modelName) { line -> println(line) }
         runInteractiveConsole(
             channelId = ModuleId(config.localTextChannelModuleId),
             ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
@@ -119,9 +135,43 @@ fun main(args: Array<String>) = runBlocking {
             submit = runtime::submitOwnerMessage,
             beginNotificationBuffering = interactiveNotificationSink::beginBuffering,
             endNotificationBufferingAndFlush = interactiveNotificationSink::endBufferingAndFlush,
+            spinnerLineGuard = spinnerLineGuard,
         )
         exitProcess(0)
     } else {
         shutdownComplete.await()
+    }
+}
+
+/**
+ * Resolves `PARKER_LOG_LEVEL`'s own *default*, which is mode-sensitive
+ * (`WARN` for `--interactive`'s owner-facing terminal, `INFO` for the
+ * headless/detached service) -- `ParkerRuntimeConfigLoader` itself has no
+ * notion of "interactive" (see `ParkerRuntimeConfig.logLevel`'s own
+ * KDoc), so this composition-boundary function is where that
+ * mode-awareness lives.
+ *
+ * An explicitly-set `PARKER_LOG_LEVEL` (present and non-blank in
+ * [environment]) always wins, regardless of [interactive] --
+ * [configuredLogLevel] (already validated by `ParkerRuntimeConfigLoader.load`)
+ * is returned unchanged in that case. Only the *default* -- when the key
+ * is absent or blank -- is mode-sensitive.
+ *
+ * `internal`, not `private`, purely so `tests/composition` (a friend
+ * source set of `src/composition` per this module's own Gradle
+ * configuration -- the same visibility precedent `ParkerRuntime.kt`'s own
+ * top-level `stage` function already established) can exercise this exact
+ * decision directly, without invoking [main] itself.
+ */
+internal fun resolveEffectiveLogLevel(
+    environment: Map<String, String>,
+    interactive: Boolean,
+    configuredLogLevel: LogLevel,
+): LogLevel {
+    val explicitlySet = environment[ParkerRuntimeConfigLoader.KEY_LOG_LEVEL]?.isNotBlank() == true
+    return when {
+        explicitlySet -> configuredLogLevel
+        interactive -> LogLevel.WARN
+        else -> LogLevel.INFO
     }
 }

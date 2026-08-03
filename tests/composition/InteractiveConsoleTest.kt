@@ -125,7 +125,11 @@ class InteractiveConsoleTest {
 
         assertTrue(writtenLines.none { "hello" in it })
         assertTrue(writtenLines.any { it.startsWith("[eof]") })
-        assertEquals(1, writtenLines.size)
+        // Beyond the "You:" prompts (once before the read, once after the message finishes) and
+        // the terminal "[eof]" line, Delivered must not print any result-specific line of its
+        // own -- the reply itself is printed by the OwnerNotificationSink, not by this function.
+        val nonPromptLines = writtenLines.filterNot { it == "You:" || it.startsWith("[eof]") }
+        assertTrue(nonPromptLines.isEmpty(), "Delivered must not print any additional result-specific line")
     }
 
     @Test
@@ -300,7 +304,11 @@ class InteractiveConsoleTest {
         )
 
         val lastSpinnerIndex = events.indexOfLast { it.startsWith("SPINNER:") }
-        val resultIndex = events.indexOfFirst { it.startsWith("RESULT:") }
+        // Targets the specific outcome line, not "the first RESULT:-tagged write of any kind" --
+        // the initial "You:" prompt is also RESULT:-tagged (writeLine is the same channel) and is
+        // written before the spinner ever starts, so a generic indexOfFirst("RESULT:") would
+        // match that instead of the actual line under test here.
+        val resultIndex = events.indexOf("RESULT:[not accepted] sender does not resolve")
         assertTrue(lastSpinnerIndex >= 0, "expected at least the clear-line spinner write")
         assertTrue(resultIndex >= 0, "expected the [not accepted] result line")
         assertTrue(lastSpinnerIndex < resultIndex, "the spinner's last write must precede the result line")
@@ -550,5 +558,209 @@ class InteractiveConsoleTest {
         sink.endBufferingAndFlush()
 
         assertEquals(listOf("one", "two"), notifications)
+    }
+
+    // --- Interactive console refinement: banner, "You:" prompts, spinner/log collision guard ---
+
+    @Test
+    fun `printInteractiveBanner writes the banner exactly once, including the configured model name`() {
+        val writtenLines = mutableListOf<String>()
+
+        printInteractiveBanner("qwen2.5-coder:7b", writtenLines::add)
+
+        assertEquals(1, writtenLines.count { it == "Parker" })
+        assertEquals(1, writtenLines.count { it == "Local governed AI runtime" })
+        assertEquals(1, writtenLines.count { it == "Model: qwen2.5-coder:7b" })
+        assertEquals(1, writtenLines.count { it == "Type Ctrl+C to exit." })
+    }
+
+    @Test
+    fun `printInteractiveBanner never mentions an endpoint URL, a PARKER_ environment variable, an evidence path, or a principal id`() {
+        val writtenLines = mutableListOf<String>()
+
+        printInteractiveBanner("qwen2.5-coder:7b", writtenLines::add)
+
+        val banner = writtenLines.joinToString("\n")
+        assertFalse("http" in banner, "banner must not expose an endpoint URL")
+        assertFalse("PARKER_" in banner, "banner must not expose an environment variable name")
+        assertFalse("/data" in banner, "banner must not expose an evidence storage/audit path")
+        assertFalse("user." in banner, "banner must not expose an internal PrincipalId")
+    }
+
+    @Test
+    fun `You appears before the first input is read`() = runTest {
+        val writtenLines = mutableListOf<String>()
+
+        runInteractiveConsole(
+            channelId = channelId,
+            ownerPrincipalId = ownerPrincipalId,
+            readLine = linesThenEof(),
+            writeLine = writtenLines::add,
+            submit = { ParkerRuntimeOutcome.Delivered(sampleExecutionResult()) },
+            clock = { fixedInstant },
+        )
+
+        assertEquals("You:", writtenLines.first())
+    }
+
+    @Test
+    fun `a fresh You appears after a completed reply, ready for the next message`() = runTest {
+        val writtenLines = mutableListOf<String>()
+
+        runInteractiveConsole(
+            channelId = channelId,
+            ownerPrincipalId = ownerPrincipalId,
+            readLine = linesThenEof("hello"),
+            writeLine = writtenLines::add,
+            submit = { ParkerRuntimeOutcome.Delivered(sampleExecutionResult()) },
+            clock = { fixedInstant },
+        )
+
+        // One "You:" before the read that produced "hello", one more once that message finished
+        // processing -- before the loop goes on to read again and (successfully) detect EOF.
+        assertEquals(2, writtenLines.count { it == "You:" })
+        val secondYouIndex = writtenLines.lastIndexOf("You:")
+        val eofIndex = writtenLines.indexOfFirst { it.startsWith("[eof]") }
+        assertTrue(secondYouIndex < eofIndex, "the second You: must appear before EOF is even attempted")
+    }
+
+    @Test
+    fun `no You prompt is printed after EOF`() = runTest {
+        val writtenLines = mutableListOf<String>()
+
+        runInteractiveConsole(
+            channelId = channelId,
+            ownerPrincipalId = ownerPrincipalId,
+            readLine = linesThenEof(),
+            writeLine = writtenLines::add,
+            submit = { ParkerRuntimeOutcome.Delivered(sampleExecutionResult()) },
+            clock = { fixedInstant },
+        )
+
+        assertEquals("[eof] input closed, shutting down", writtenLines.last())
+    }
+
+    @Test
+    fun `no You prompt is printed after NotRunning (runtime shutting down)`() = runTest {
+        val writtenLines = mutableListOf<String>()
+
+        runInteractiveConsole(
+            channelId = channelId,
+            ownerPrincipalId = ownerPrincipalId,
+            readLine = linesThenEof("hello", "this should never be read"),
+            writeLine = writtenLines::add,
+            submit = { throw ParkerRuntimeException.NotRunning(RuntimeLifecycleState.STOPPING) },
+            clock = { fixedInstant },
+        )
+
+        assertEquals("[stopped] runtime is shutting down", writtenLines.last())
+    }
+
+    @Test
+    fun `SpinnerLineGuard clearIfActive invokes the registered clear action only while activated`() {
+        val guard = SpinnerLineGuard()
+        var clearCalls = 0
+
+        guard.clearIfActive()
+        assertEquals(0, clearCalls, "clearIfActive before any activate() must be a no-op")
+
+        guard.activate { clearCalls++ }
+        guard.clearIfActive()
+        guard.clearIfActive()
+        assertEquals(2, clearCalls)
+
+        guard.deactivate()
+        guard.clearIfActive()
+        assertEquals(2, clearCalls, "clearIfActive after deactivate() must be a no-op again")
+    }
+
+    @Test
+    fun `the spinnerLineGuard is armed only while the spinner itself is animating`() = runTest {
+        val guard = SpinnerLineGuard()
+        val spinnerFrames = mutableListOf<String>()
+        val outcomeDeferred = CompletableDeferred<ParkerRuntimeOutcome>()
+
+        val job = launch {
+            runInteractiveConsole(
+                channelId = channelId,
+                ownerPrincipalId = ownerPrincipalId,
+                readLine = linesThenEof("hello"),
+                writeLine = {},
+                submit = { outcomeDeferred.await() },
+                clock = { fixedInstant },
+                spinnerOutput = spinnerFrames::add,
+                spinnerLineGuard = guard,
+            )
+        }
+
+        advanceTimeBy(250)
+        runCurrent()
+        val framesBeforeProbe = spinnerFrames.size
+        guard.clearIfActive()
+        assertEquals(
+            framesBeforeProbe + 1,
+            spinnerFrames.size,
+            "expected the guard's own registered clear action to fire while the spinner is active",
+        )
+
+        outcomeDeferred.complete(ParkerRuntimeOutcome.Delivered(sampleExecutionResult()))
+        job.join()
+
+        val framesAfterCompletion = spinnerFrames.size
+        guard.clearIfActive()
+        assertEquals(
+            framesAfterCompletion,
+            spinnerFrames.size,
+            "the guard must be disarmed once the spinner itself has stopped",
+        )
+    }
+
+    @Test
+    fun `a WARN log emitted through a shared spinnerLineGuard clears the spinner line without corrupting it`() = runTest {
+        val guard = SpinnerLineGuard()
+        val spinnerFrames = mutableListOf<String>()
+        val logErrCapture = java.io.ByteArrayOutputStream()
+        val originalErr = System.err
+        System.setErr(java.io.PrintStream(logErrCapture))
+        try {
+            val logger = ConsoleParkerLogger(
+                "test-component",
+                minLevel = LogLevel.WARN,
+                clock = { fixedInstant },
+                spinnerLineGuard = guard,
+            )
+            val outcomeDeferred = CompletableDeferred<ParkerRuntimeOutcome>()
+
+            val job = launch {
+                runInteractiveConsole(
+                    channelId = channelId,
+                    ownerPrincipalId = ownerPrincipalId,
+                    readLine = linesThenEof("hello"),
+                    writeLine = {},
+                    submit = {
+                        // Simulates a real permission/execution WARN event firing mid-submission,
+                        // while the spinner is still active.
+                        logger.warn("Execution denied (eventType=permission.denied)")
+                        outcomeDeferred.await()
+                    },
+                    clock = { fixedInstant },
+                    spinnerOutput = spinnerFrames::add,
+                    spinnerLineGuard = guard,
+                )
+            }
+
+            advanceTimeBy(250)
+            runCurrent()
+            outcomeDeferred.complete(ParkerRuntimeOutcome.Delivered(sampleExecutionResult()))
+            job.join()
+
+            // The WARN log itself reached stderr, and the spinner's own line was cleared (via the
+            // shared guard) as part of emitting it -- at least one extra clear-shaped write beyond
+            // the spinner's own final clear-on-completion must be present.
+            assertTrue(logErrCapture.toString().contains("Execution denied"))
+            assertTrue(spinnerFrames.count { it.none { c -> c.isLetter() } } >= 2)
+        } finally {
+            System.setErr(originalErr)
+        }
     }
 }

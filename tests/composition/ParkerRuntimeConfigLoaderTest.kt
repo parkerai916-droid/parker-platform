@@ -157,4 +157,50 @@ class ParkerRuntimeConfigLoaderTest {
         val missingEverything = emptyMap<String, String>()
         assertFailsWith<ParkerRuntimeException> { ParkerRuntimeConfigLoader.load(missingEverything) }
     }
+
+    @Test
+    fun `PARKER_LOG_LEVEL absent defaults to INFO`() {
+        val environment = fullEnvironment()
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(LogLevel.INFO, config.logLevel)
+    }
+
+    @Test
+    fun `a blank PARKER_LOG_LEVEL also defaults to INFO`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_LOG_LEVEL to "   "))
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(LogLevel.INFO, config.logLevel)
+    }
+
+    @Test
+    fun `an explicit PARKER_LOG_LEVEL of DEBUG loads LogLevel DEBUG`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_LOG_LEVEL to "DEBUG"))
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(LogLevel.DEBUG, config.logLevel)
+    }
+
+    @Test
+    fun `an explicit PARKER_LOG_LEVEL of OFF loads LogLevel OFF`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_LOG_LEVEL to "OFF"))
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(LogLevel.OFF, config.logLevel)
+    }
+
+    @Test
+    fun `an invalid PARKER_LOG_LEVEL throws InvalidConfiguration naming that key, not a silent fallback`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_LOG_LEVEL to "VERBOSE"))
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_LOG_LEVEL, thrown.key)
+    }
 }

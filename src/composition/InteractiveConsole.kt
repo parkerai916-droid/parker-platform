@@ -88,6 +88,24 @@ import parker.core.runtime.GoalPlanningHandoffOutcome
  * until this function's own flush call -- which is always after the
  * spinner line is already gone. See [BufferingOwnerNotificationSink]'s own
  * KDoc for the buffering mechanism itself.
+ *
+ * **`You:` prompts.** Written via [writeLine], exactly like every other
+ * status line -- once before the loop's first [readLine] call, and once
+ * more after each message finishes processing (any [ParkerRuntimeOutcome]
+ * variant), immediately before looping back for the next [readLine].
+ * Deliberately **not** written after EOF, after the [ParkerRuntimeException.NotRunning]
+ * catch, or after any other exception propagates out -- in every one of
+ * those cases this function is already returning (or throwing) without
+ * reaching the loop's own end, so no further prompt is ever printed once
+ * input can no longer be accepted. The one-time startup banner
+ * ([printInteractiveBanner]) is a deliberately separate function, called
+ * by [Main.kt] before this one, not folded in here -- so callers/tests
+ * that have nothing to do with the banner are unaffected by it.
+ *
+ * **[spinnerLineGuard] (optional).** Forwarded, unchanged, to
+ * [withSpinner] -- see [SpinnerLineGuard]'s own KDoc. `null` (the
+ * default) preserves this function's own prior behaviour exactly: no
+ * guard, no collision handling attempted.
  */
 suspend fun runInteractiveConsole(
     channelId: ModuleId,
@@ -101,7 +119,10 @@ suspend fun runInteractiveConsole(
     spinnerFrameDelayMillis: Long = SPINNER_FRAME_DELAY_MILLIS,
     beginNotificationBuffering: suspend () -> Unit = {},
     endNotificationBufferingAndFlush: suspend () -> Unit = {},
+    spinnerLineGuard: SpinnerLineGuard? = null,
 ) {
+    writeLine("You:")
+
     while (true) {
         val line = readLine() ?: run {
             writeLine("[eof] input closed, shutting down")
@@ -120,7 +141,7 @@ suspend fun runInteractiveConsole(
         val outcome = try {
             beginNotificationBuffering()
             try {
-                withSpinner(spinnerEnabled, spinnerOutput, spinnerFrameDelayMillis) {
+                withSpinner(spinnerEnabled, spinnerOutput, spinnerFrameDelayMillis, spinnerLineGuard) {
                     submit(message)
                 }
             } finally {
@@ -150,7 +171,29 @@ suspend fun runInteractiveConsole(
                 writeLine("[planned] ${planningSessionResult::class.simpleName}")
             }
         }
+
+        writeLine("You:")
     }
+}
+
+/**
+ * Parker's one-time interactive startup banner -- called by [Main.kt]
+ * exactly once, immediately after [ParkerRuntime.start] succeeds and
+ * before [runInteractiveConsole] begins its own loop. Deliberately a
+ * separate function, not folded into [runInteractiveConsole] itself, so
+ * every existing [runInteractiveConsole] caller/test that has nothing to
+ * do with the banner is unaffected by its own parameter list.
+ *
+ * Prints [modelName] and nothing else configuration-shaped -- never the
+ * model endpoint URL, any secret, any `PARKER_*` environment variable
+ * name or value, any evidence storage/audit path, or any internal
+ * [PrincipalId] -- per this Unit's own disclosure constraint.
+ */
+fun printInteractiveBanner(modelName: String, writeLine: (String) -> Unit) {
+    writeLine("Parker")
+    writeLine("Local governed AI runtime")
+    writeLine("Model: $modelName")
+    writeLine("Type Ctrl+C to exit.")
 }
 
 /**
@@ -270,24 +313,41 @@ private fun defaultSpinnerOutput(text: String) {
  * `delay` suspends on (`advanceTimeBy`/`runCurrent`), so real wall-clock
  * time is never spent in tests without a second injected function adding
  * an unused extra seam.
+ *
+ * **[spinnerLineGuard] is armed for exactly this call's own duration.**
+ * [SpinnerLineGuard.activate] is called with an action that clears this
+ * exact spinner's own line ([output]`(SPINNER_CLEAR_LINE)`), immediately
+ * before the spinner's child coroutine is even launched, and
+ * [SpinnerLineGuard.deactivate] is called in an outer `finally` -- so a
+ * `ConsoleParkerLogger` sharing the same guard clears this spinner's line
+ * before printing any log emitted for this call's own duration, and never
+ * does so once this call has already finished (whether normally or via
+ * cancellation/exception). `null` skips registration entirely -- no
+ * guard, no behaviour change from before this parameter existed.
  */
 private suspend fun <T> withSpinner(
     enabled: Boolean,
     output: (String) -> Unit,
     frameDelayMillis: Long,
+    spinnerLineGuard: SpinnerLineGuard?,
     block: suspend () -> T,
 ): T {
     if (!enabled) return block()
 
-    return coroutineScope {
-        val spinnerJob = launch { runSpinnerFrames(output, frameDelayMillis) }
-        try {
-            block()
-        } finally {
-            spinnerJob.cancel()
-            spinnerJob.join()
-            output(SPINNER_CLEAR_LINE)
+    spinnerLineGuard?.activate { output(SPINNER_CLEAR_LINE) }
+    return try {
+        coroutineScope {
+            val spinnerJob = launch { runSpinnerFrames(output, frameDelayMillis) }
+            try {
+                block()
+            } finally {
+                spinnerJob.cancel()
+                spinnerJob.join()
+                output(SPINNER_CLEAR_LINE)
+            }
         }
+    } finally {
+        spinnerLineGuard?.deactivate()
     }
 }
 

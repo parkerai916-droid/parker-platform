@@ -43,6 +43,19 @@ package parker.composition
  *   -- its parent directory must already exist and be writable; the file
  *   itself is created if missing. Required, for the same reason
  *   [evidenceStorageRootPath] is required.
+ * @param logLevel Console display threshold, eventually passed to
+ *   `ConsoleParkerLogger`'s own `minLevel` constructor parameter -- a
+ *   presentation-layer filter only, never a decision about which events
+ *   `RuntimeEventLogger` itself produces (those are unconditional; see
+ *   `ConsoleParkerLogger`'s own KDoc). Optional, defaults to
+ *   [LogLevel.INFO] here -- this loader has no notion of "interactive"
+ *   (it only ever sees an environment map), so this is its own single,
+ *   mode-agnostic default. `Main.kt`'s own `resolveEffectiveLogLevel`
+ *   resolves the actual, mode-sensitive default (`WARN` for
+ *   `--interactive`, `INFO` headless) separately, using this value only
+ *   when `PARKER_LOG_LEVEL` was genuinely absent/blank *and* an
+ *   explicitly-set value (this field, when the key was present) always
+ *   wins regardless of mode.
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -53,6 +66,7 @@ data class ParkerRuntimeConfig(
     val localTextChannelModuleId: String = "channel.local-text",
     val evidenceStorageRootPath: String,
     val evidenceDeletionAuditLogPath: String,
+    val logLevel: LogLevel = LogLevel.INFO,
 )
 
 /**
@@ -80,6 +94,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_LOCAL_TEXT_CHANNEL_MODULE_ID = "PARKER_LOCAL_TEXT_CHANNEL_MODULE_ID"
     const val KEY_EVIDENCE_STORAGE_ROOT = "PARKER_EVIDENCE_STORAGE_ROOT"
     const val KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH = "PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH"
+    const val KEY_LOG_LEVEL = "PARKER_LOG_LEVEL"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -99,6 +114,20 @@ object ParkerRuntimeConfigLoader {
             )
         }
 
+        val logLevelRaw = environment[KEY_LOG_LEVEL]?.takeIf { it.isNotBlank() }
+        val logLevel = if (logLevelRaw == null) {
+            LogLevel.INFO
+        } else {
+            try {
+                LogLevel.valueOf(logLevelRaw.trim().uppercase())
+            } catch (e: IllegalArgumentException) {
+                throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_LOG_LEVEL,
+                    "must be one of DEBUG, INFO, WARN, ERROR, OFF; was '$logLevelRaw'",
+                )
+            }
+        }
+
         return ParkerRuntimeConfig(
             modelEndpointUrl = requireKey(environment, KEY_MODEL_ENDPOINT_URL),
             modelName = requireKey(environment, KEY_MODEL_NAME),
@@ -109,6 +138,7 @@ object ParkerRuntimeConfigLoader {
                 ?: "channel.local-text",
             evidenceStorageRootPath = requireKey(environment, KEY_EVIDENCE_STORAGE_ROOT),
             evidenceDeletionAuditLogPath = requireKey(environment, KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH),
+            logLevel = logLevel,
         )
     }
 
