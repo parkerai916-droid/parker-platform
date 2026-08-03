@@ -21,7 +21,17 @@ import kotlin.test.assertTrue
 class ReasoningPromptBuilderTest {
 
     private val instruction = "Respond with exactly one of the following prefixes: GOAL:, REPLY:, or " +
-        "NOACTION, followed by your response text. Use NOACTION alone, with no " +
+        "NOACTION, followed by your response text.\n\n" +
+        "Use REPLY: for greetings; questions; conversational statements that reasonably " +
+        "invite a response; requests for information, explanation, clarification, or " +
+        "discussion; and acknowledgements where a useful direct response is " +
+        "appropriate.\n\n" +
+        "Use GOAL: only when the owner is asking you to carry out work that requires " +
+        "planning, execution, tools, later action, or multiple coordinated steps.\n\n" +
+        "Use NOACTION only when no response and no action is appropriate. Do not use " +
+        "NOACTION merely because the message is short, casual, or lacks an explicit " +
+        "question.\n\n" +
+        "Output only one tagged result and no other text. Use NOACTION alone, with no " +
         "text after it."
 
     private fun turn(text: String) = Turn(
@@ -97,5 +107,59 @@ class ReasoningPromptBuilderTest {
         val t = turn("repeat me")
 
         assertEquals(builder.buildPrompt(t, context), builder.buildPrompt(t, context))
+    }
+
+    @Test
+    fun `the prompt instructs REPLY for greetings and questions`() {
+        val builder = DefaultReasoningPromptBuilder()
+
+        val prompt = builder.buildPrompt(turn("hello"), ReasoningContext(emptyList()))
+
+        assertTrue(prompt.contains("Use REPLY: for greetings; questions;"))
+        assertTrue(
+            prompt.contains(
+                "requests for information, explanation, clarification, or discussion",
+            ),
+        )
+        assertTrue(prompt.contains("acknowledgements where a useful direct response is appropriate"))
+    }
+
+    @Test
+    fun `the prompt restricts GOAL to work requiring planning, execution, tools, later action, or multiple steps`() {
+        val builder = DefaultReasoningPromptBuilder()
+
+        val prompt = builder.buildPrompt(turn("book me a dentist appointment"), ReasoningContext(emptyList()))
+
+        assertTrue(
+            prompt.contains(
+                "Use GOAL: only when the owner is asking you to carry out work that requires " +
+                    "planning, execution, tools, later action, or multiple coordinated steps.",
+            ),
+        )
+    }
+
+    @Test
+    fun `the prompt restricts NOACTION and explicitly forbids using it merely for short or casual input`() {
+        val builder = DefaultReasoningPromptBuilder()
+
+        val prompt = builder.buildPrompt(turn("hi"), ReasoningContext(emptyList()))
+
+        assertTrue(prompt.contains("Use NOACTION only when no response and no action is appropriate."))
+        assertTrue(
+            prompt.contains(
+                "Do not use NOACTION merely because the message is short, casual, or lacks an " +
+                    "explicit question.",
+            ),
+        )
+    }
+
+    @Test
+    fun `the prompt states the exact output-format instruction -- one tagged result, no other text`() {
+        val builder = DefaultReasoningPromptBuilder()
+
+        val prompt = builder.buildPrompt(turn("hi"), ReasoningContext(emptyList()))
+
+        assertTrue(prompt.contains("Output only one tagged result and no other text."))
+        assertTrue(prompt.contains("Use NOACTION alone, with no text after it."))
     }
 }

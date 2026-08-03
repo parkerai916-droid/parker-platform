@@ -2,10 +2,21 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     kotlin("jvm") version "1.9.24"
+    application
 }
 
 group = "parker"
 version = "0.8.0-runtime-complete"
+
+// Launcher (production OS process entry point, src/composition/Main.kt):
+// the built-in `application` plugin, no new external dependency, gives
+// `./gradlew run`/`installDist` -- the latter is what Dockerfile builds
+// against. mainClass names the top-level `fun main()` Kotlin compiles to
+// `parker.composition.MainKt`.
+application {
+    mainClass.set("parker.composition.MainKt")
+    applicationName = "parker"
+}
 
 repositories {
     mavenCentral()

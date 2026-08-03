@@ -1,0 +1,29 @@
+# Build artefacts
+.gradle/
+build/
+out/
+dist/
+tmp/
+*.log
+
+# Git bundles (repository archives, not build inputs)
+*.bundle
+
+# Version control
+.git/
+.gitignore
+
+# Development-environment files
+.idea/
+.vscode/
+*.iml
+local.properties
+.DS_Store
+Thumbs.db
+
+# Secrets -- never sent as Docker build context
+*.env
+.env
+secrets.*
+*.keystore
+*.jks
