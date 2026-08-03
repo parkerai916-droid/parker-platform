@@ -47,24 +47,36 @@ import parker.core.interfaces.PrincipalId
  * code `0`, never a second, independent shutdown implementation.
  */
 fun main(args: Array<String>) = runBlocking {
-    val logger = ConsoleParkerLogger("main")
+    // Config hasn't loaded yet, so its own logLevel isn't known -- this bootstrap logger uses
+    // ConsoleParkerLogger's own default (LogLevel.INFO) and is used for nothing beyond reporting
+    // a config-load failure, which always logs at ERROR (always shown regardless of threshold).
+    val bootstrapLogger = ConsoleParkerLogger("main")
     val interactive = "--interactive" in args
 
     val config = try {
         ParkerRuntimeConfigLoader.load(System.getenv())
     } catch (e: ParkerRuntimeException) {
-        logger.error("Parker Runtime configuration invalid", e)
+        bootstrapLogger.error("Parker Runtime configuration invalid", e)
         exitProcess(1)
     }
+
+    val logger = ConsoleParkerLogger("main", minLevel = config.logLevel)
 
     // Interactive mode's own OwnerNotificationSink prints only the delivered reply text, with a
     // fixed, stable prefix -- no formatting framework, no change to how a reply is produced or
     // delivered (LocalTextChannelDeliverTool/ResponseDelivery/ExecutionPipeline are all
     // untouched); this is the same extension seam headless mode already defaults through
-    // (LoggingOwnerNotificationSink), just a different sink. Headless mode passes no third
-    // argument at all, so it keeps ParkerRuntime's own default unchanged.
+    // (LoggingOwnerNotificationSink), just a different sink. Wrapped in
+    // BufferingOwnerNotificationSink so runInteractiveConsole can hold a reply back until its own
+    // spinner has already been cleared (see that class's own KDoc) -- constructing it costs
+    // nothing and has no effect unless it's actually passed to ParkerRuntime below, which only
+    // happens in the interactive branch. Headless mode passes no third argument at all, so it
+    // keeps ParkerRuntime's own default (LoggingOwnerNotificationSink) completely unchanged.
+    val interactiveNotificationSink = BufferingOwnerNotificationSink(
+        OwnerNotificationSink { text -> println("Parker: $text") },
+    )
     val runtime = if (interactive) {
-        ParkerRuntime(config, logger, OwnerNotificationSink { text -> println("Parker: $text") })
+        ParkerRuntime(config, logger, interactiveNotificationSink)
     } else {
         ParkerRuntime(config, logger)
     }
@@ -105,6 +117,8 @@ fun main(args: Array<String>) = runBlocking {
             readLine = ::readlnOrNull,
             writeLine = { line -> println(line) },
             submit = runtime::submitOwnerMessage,
+            beginNotificationBuffering = interactiveNotificationSink::beginBuffering,
+            endNotificationBufferingAndFlush = interactiveNotificationSink::endBufferingAndFlush,
         )
         exitProcess(0)
     } else {
