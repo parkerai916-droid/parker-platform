@@ -392,6 +392,31 @@ exception:
   authorisation remain exclusively the Custodian's; no future Evidence
   Intelligence design may be built to perform any of them directly,
   even where doing so would appear more efficient.
+- **Every retrieval outcome preserves the identity of the artefact
+  requested, including a denied one.** Whatever the Custodian returns in
+  response to a request naming a specific artefact identifies that
+  artefact throughout: a successful, authorised read returns the
+  requested identifier together with the retrieved content; an
+  authorised request for an identifier nothing exists under returns the
+  requested identifier alone; and a denied request returns the requested
+  identifier together with the existing plain-language reason for
+  denial. Retrieval remains exactly the three outcomes already governed
+  above (a successful read, an authorised request for a nonexistent
+  artefact, and a denial), and this creates no batch-retrieval contract
+  of any kind — a request still concerns exactly one artefact
+  identifier.
+- **The identifier accompanying a denied outcome carries no new
+  constitutional weight of its own.** It identifies only the artefact
+  whose retrieval was denied, and it echoes an identifier the requesting
+  caller already supplied to make the request — disclosing nothing the
+  caller did not already possess. It grants no access to the artefact
+  and discloses no evidence content of any kind; it changes no
+  Permission Engine decision — the request remains denied, exactly as
+  before; and it creates no custody, retrieval, deletion, acceptance,
+  storage, or ownership authority of any kind, for Evidence Intelligence
+  or any other consumer. This introduces no alternate retrieval
+  taxonomy, and nothing about the successful-read or nonexistent-artefact
+  outcome changes.
 - **Membership in a later, broader programme grouping, if the repository
   is ever organised that way, does not collapse this boundary.** Should
   a future document choose to group the Evidence Custodian and Evidence
