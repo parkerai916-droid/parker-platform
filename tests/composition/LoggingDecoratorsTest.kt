@@ -12,6 +12,7 @@ import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderRequest
 import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 import parker.core.interfaces.Turn
 import parker.core.interfaces.TurnId
 import parker.core.interfaces.ConversationId
@@ -97,11 +98,13 @@ class LoggingDecoratorsTest {
     // ================= LoggingReasoningProvider =================
 
     private fun turnRequest(): ReasoningProviderRequest = ReasoningProviderRequest(
-        turn = Turn(
-            turnId = TurnId("turn-1"),
-            conversationId = ConversationId("conv-1"),
-            message = message(),
-            receivedAt = fixedTimestamp,
+        subject = ReasoningSubject.OfTurn(
+            Turn(
+                turnId = TurnId("turn-1"),
+                conversationId = ConversationId("conv-1"),
+                message = message(),
+                receivedAt = fixedTimestamp,
+            ),
         ),
         reasoningContext = ReasoningContext(emptyList()),
     )

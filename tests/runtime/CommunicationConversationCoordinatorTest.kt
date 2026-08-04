@@ -13,6 +13,7 @@ import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 import parker.core.interfaces.Turn
 import parker.core.interfaces.TurnId
 import java.time.Instant
@@ -102,7 +103,7 @@ class CommunicationConversationCoordinatorTest {
         assertEquals(1, communicationIntake.submitInboundMessageCallCount)
         assertEquals(1, reasoningProvider.reasonCallCount)
         assertEquals(context, reasoningProvider.lastRequest?.reasoningContext)
-        assertEquals(fixedConversationId, reasoningProvider.lastRequest?.turn?.conversationId)
+        assertEquals(fixedConversationId, (reasoningProvider.lastRequest?.subject as? ReasoningSubject.OfTurn)?.turn?.conversationId)
     }
 
     @Test
@@ -164,7 +165,7 @@ class CommunicationConversationCoordinatorTest {
 
         coordinator.submitAndReason(originalMessage, ReasoningContext(emptyList()), fixedConversationId)
 
-        val turnMessage = reasoningProvider.lastRequest?.turn?.message
+        val turnMessage = (reasoningProvider.lastRequest?.subject as? ReasoningSubject.OfTurn)?.turn?.message
         assertEquals(acceptedMessage, turnMessage)
         assertNotEquals(originalMessage, turnMessage)
     }
@@ -234,7 +235,7 @@ class CommunicationConversationCoordinatorTest {
     fun `two independent invocations for different owners never observably interact`() = runTest {
         val communicationIntake = FakeCommunicationIntake { msg -> CommunicationIntakeDisposition.Accepted(msg.correlationId, msg) }
         val reasoningProvider = FakeReasoningProvider { request ->
-            if (request.turn.message.text == "first") {
+            if ((request.subject as ReasoningSubject.OfTurn).turn.message.text == "first") {
                 ReasoningProviderResponse.Reply("first reply")
             } else {
                 ReasoningProviderResponse.Reply("second reply")

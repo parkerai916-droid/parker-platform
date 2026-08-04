@@ -32,6 +32,7 @@ import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 import parker.core.interfaces.RequestId
 import parker.core.interfaces.Resource
 import parker.core.interfaces.ResourceId
@@ -373,7 +374,7 @@ class ConversationReplyCoordinatorTest {
     fun `call counts across sequential calls increment only on their own applicable branch`() = runTest {
         val f = fixture(
             reasoningProvider = FakeReasoningProvider { request ->
-                when (request.turn.message.text) {
+                when ((request.subject as ReasoningSubject.OfTurn).turn.message.text) {
                     "goal" -> ReasoningProviderResponse.Goal("some goal")
                     "noaction" -> ReasoningProviderResponse.NoAction
                     else -> ReasoningProviderResponse.Reply("a reply")

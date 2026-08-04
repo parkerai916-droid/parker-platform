@@ -8,9 +8,11 @@ import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderRequest
 import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 import parker.core.interfaces.Turn
 import parker.core.interfaces.TurnId
 import java.time.Instant
@@ -44,7 +46,7 @@ class ModelReasoningProviderTest {
     )
 
     private fun request(context: ReasoningContext = ReasoningContext(emptyList())) =
-        ReasoningProviderRequest(turn = turn(), reasoningContext = context)
+        ReasoningProviderRequest(subject = ReasoningSubject.OfTurn(turn()), reasoningContext = context)
 
     @Test
     fun `reason calls buildPrompt with the request's exact turn and reasoningContext`() = runTest {
@@ -58,8 +60,25 @@ class ModelReasoningProviderTest {
         provider.reason(req)
 
         assertEquals(1, promptBuilder.buildPromptCallCount)
-        assertEquals(req.turn, promptBuilder.lastTurn)
+        assertEquals((req.subject as ReasoningSubject.OfTurn).turn, promptBuilder.lastTurn)
         assertEquals(context, promptBuilder.lastReasoningContext)
+    }
+
+    @Test
+    fun `reason throws UnsupportedOperationException for ReasoningSubject OfEvidenceAnalysisRequest, and buildPrompt is never called`() = runTest {
+        val promptBuilder = FakeReasoningPromptBuilder { _, _ -> "built prompt" }
+        val inferenceClient = FakeModelInferenceClient { "REPLY:ok" }
+        val responseParser = FakeReasoningResponseParser { ReasoningProviderResponse.Reply("ok") }
+        val provider = ModelReasoningProvider(promptBuilder, inferenceClient, responseParser)
+        val analysisRequest = ReasoningProviderRequest(
+            subject = ReasoningSubject.OfEvidenceAnalysisRequest(
+                EvidenceAnalysisRequest(analysisKind = "comparison", requestingPrincipalId = parker.core.interfaces.PrincipalId("user-1")),
+            ),
+            reasoningContext = ReasoningContext(emptyList()),
+        )
+
+        assertFailsWith<UnsupportedOperationException> { provider.reason(analysisRequest) }
+        assertEquals(0, promptBuilder.buildPromptCallCount)
     }
 
     @Test

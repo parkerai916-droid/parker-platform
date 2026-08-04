@@ -7,6 +7,7 @@ import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProvider
 import parker.core.interfaces.ReasoningProviderRequest
 import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 
 /**
  * Sequences [ConversationEngine.submitTurn] followed by [ReasoningProvider.reason]
@@ -55,7 +56,7 @@ class ConversationTurnReasoningCoordinator(
         val disposition = conversationEngine.submitTurn(message, conversationId)
 
         val request = ReasoningProviderRequest(
-            turn = disposition.turn,
+            subject = ReasoningSubject.OfTurn(disposition.turn),
             reasoningContext = reasoningContext,
         )
 

@@ -4,6 +4,7 @@ import kotlinx.coroutines.withTimeout
 import parker.core.interfaces.ReasoningProvider
 import parker.core.interfaces.ReasoningProviderRequest
 import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 
 /**
  * Model-Backed ReasoningProvider (Sprint 9), implementing exactly what
@@ -16,10 +17,22 @@ import parker.core.interfaces.ReasoningProviderResponse
  *
  * ```
  * reason(request)
- *     1. prompt = promptBuilder.buildPrompt(request.turn, request.reasoningContext)
- *     2. raw    = withTimeout(timeoutMs) { modelInferenceClient.infer(prompt) }
- *     3. return responseParser.parse(raw)
+ *     1. turn   = (request.subject as ReasoningSubject.OfTurn).turn
+ *     2. prompt = promptBuilder.buildPrompt(turn, request.reasoningContext)
+ *     3. raw    = withTimeout(timeoutMs) { modelInferenceClient.infer(prompt) }
+ *     4. return responseParser.parse(raw)
  * ```
+ *
+ * **Amendment 1 (ReasoningSubject).** `request.turn` no longer exists;
+ * `request.subject` is now a closed, two-case
+ * [parker.core.interfaces.ReasoningSubject]. This class supports only
+ * [ReasoningSubject.OfTurn] -- its own three-collaborator design was
+ * never scoped to interpret [ReasoningSubject.OfEvidenceAnalysisRequest],
+ * and inventing that interpretation is outside this class's own,
+ * already-frozen scope. Receiving that case is a genuine
+ * implementation-level inability to reason, signalled by throwing,
+ * exactly as the Reasoning Provider Contract Design's own Section 3
+ * already allows ("an inability to reason at all").
  *
  * Holds only its three collaborators and [timeoutMs] as fields -- no
  * cache of any prior Turn, prompt, or response (Review Section 5). No
@@ -50,7 +63,13 @@ class ModelReasoningProvider(
 ) : ReasoningProvider {
 
     override suspend fun reason(request: ReasoningProviderRequest): ReasoningProviderResponse {
-        val prompt = promptBuilder.buildPrompt(request.turn, request.reasoningContext)
+        val turn = when (val subject = request.subject) {
+            is ReasoningSubject.OfTurn -> subject.turn
+            is ReasoningSubject.OfEvidenceAnalysisRequest -> throw UnsupportedOperationException(
+                "ModelReasoningProvider does not support ReasoningSubject.OfEvidenceAnalysisRequest",
+            )
+        }
+        val prompt = promptBuilder.buildPrompt(turn, request.reasoningContext)
         val raw = withTimeout(timeoutMs) { modelInferenceClient.infer(prompt) }
         return responseParser.parse(raw)
     }

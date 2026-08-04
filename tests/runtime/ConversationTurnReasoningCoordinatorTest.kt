@@ -9,6 +9,7 @@ import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -93,7 +94,7 @@ class ConversationTurnReasoningCoordinatorTest {
         val goal = assertIs<ReasoningProviderResponse.Goal>(response)
         assertEquals("book a flight", goal.text)
         assertEquals(1, reasoningProvider.reasonCallCount)
-        assertEquals(expectedDisposition.turn, reasoningProvider.lastRequest?.turn)
+        assertEquals(expectedDisposition.turn, (reasoningProvider.lastRequest?.subject as? ReasoningSubject.OfTurn)?.turn)
         assertEquals(context, reasoningProvider.lastRequest?.reasoningContext)
     }
 
@@ -138,8 +139,9 @@ class ConversationTurnReasoningCoordinatorTest {
 
         coordinator.submitTurnAndReason(inbound, ReasoningContext(emptyList()), fixedConversationId)
 
-        assertEquals(expectedDisposition.turn.turnId, reasoningProvider.lastRequest?.turn?.turnId)
-        assertEquals(expectedDisposition.turn.conversationId, reasoningProvider.lastRequest?.turn?.conversationId)
+        val lastTurn = (reasoningProvider.lastRequest?.subject as? ReasoningSubject.OfTurn)?.turn
+        assertEquals(expectedDisposition.turn.turnId, lastTurn?.turnId)
+        assertEquals(expectedDisposition.turn.conversationId, lastTurn?.conversationId)
     }
 
     // --- Sprint 11 Unit 5: the exact supplied ConversationId reaches submitTurn, never re-resolved ---

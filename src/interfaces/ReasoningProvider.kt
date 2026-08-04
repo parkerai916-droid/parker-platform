@@ -16,6 +16,13 @@ package parker.core.interfaces
  * provider implementation -- Contract Design Section 9 (Deferred Items)
  * explicitly defers provider implementations, prompt construction, model
  * selection, and routing to later, separate work.
+ *
+ * **Amendment 1 (ReasoningSubject).** `ReasoningProviderRequest.turn: Turn`
+ * is replaced by `subject: ReasoningSubject`, a closed, two-case sealed
+ * selector (`OfTurn`, `OfEvidenceAnalysisRequest`), implementing exactly
+ * `REASONING_PROVIDER_CONTRACT_DESIGN.md`'s own Amendment 1. `Turn`,
+ * `ReasoningContext`, `ReasoningProviderResponse`, and the
+ * [ReasoningProvider] interface itself are unmodified by this amendment.
  */
 
 /**
@@ -40,17 +47,70 @@ data class ReasoningContext(val entries: List<String>) {
 }
 
 /**
+ * Contract Design Section 2, **Amendment 1** (`REASONING_PROVIDER_CONTRACT_DESIGN.md`,
+ * Amendment 1 -- ReasoningSubject): a closed, two-case sealed selector,
+ * generalising [ReasoningProviderRequest]'s own subject to the
+ * caller-agnostic reasoning subject `reasoning-context.md`'s own
+ * constitutional-tier authority already defines ("a task"), while
+ * leaving [Turn] itself, and Conversation Engine's exclusive
+ * construction of it, completely unmodified.
+ *
+ * Frozen properties, none of which any future revision may weaken:
+ * behaviour-free (no operation beyond ordinary structural operations);
+ * closed to exactly these two cases -- [OfTurn], [OfEvidenceAnalysisRequest]
+ * -- never a third without a further Contract Design amendment; owns no
+ * data beyond the one selected subject value; introduces no new
+ * responsibility to [ReasoningProvider] itself; grants no acceptance,
+ * persistence, retrieval, reasoning, confidence, evidential-state,
+ * ownership, or authorisation authority of its own; does not modify
+ * [Turn] or [EvidenceAnalysisRequest] -- both remain reused, unmodified;
+ * is not a generic, reusable union mechanism; creates no independent
+ * dependency entitlement for any other subsystem. Owned by the
+ * Reasoning Provider Contract Design -- never by Conversation Engine,
+ * never by Evidence Intelligence, and never left ownerless.
+ */
+sealed class ReasoningSubject {
+
+    /**
+     * Wraps [Turn] unchanged (`CONVERSATION_ENGINE_CONTRACT_DESIGN.md`
+     * Section 2). Conversation Engine remains the only component that
+     * ever constructs a [Turn]; this case only references an
+     * already-constructed one.
+     */
+    data class OfTurn(val turn: Turn) : ReasoningSubject()
+
+    /**
+     * Wraps [EvidenceAnalysisRequest] unchanged
+     * (`EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md` Section 4), reused
+     * exactly as CDR-007 already authorises Evidence Intelligence to
+     * orchestrate [ReasoningProvider] "as internal analytical
+     * mechanisms." `EvidenceAnalysisRequest` remains owned by Evidence
+     * Intelligence; this case only references it.
+     */
+    data class OfEvidenceAnalysisRequest(val request: EvidenceAnalysisRequest) : ReasoningSubject()
+}
+
+/**
  * Contract Design Section 2: the minimal request object passed to
  * [ReasoningProvider.reason] -- exactly two fields, deliberately excluding
  * any correlation or caller-Principal field (Contract Design Section 2:
  * the Reasoning Provider is a pure callee and has no need to know who is
  * calling it or why).
  *
- * @param turn The Turn to reason about, as produced by [ConversationEngine.submitTurn].
- * @param reasoningContext The already-assembled context for this Turn.
+ * @param subject **Amendment 1.** The reasoning subject, one of
+ *   [ReasoningSubject]'s two closed cases -- replaces the original
+ *   `turn: Turn` field.
+ * @param reasoningContext The already-assembled context for this
+ *   invocation. **Amendment 1 invariant:** this top-level field is the
+ *   sole [ReasoningContext] value [ReasoningProvider.reason] ever
+ *   consults, for every case of [subject], including
+ *   [ReasoningSubject.OfEvidenceAnalysisRequest] -- whatever value
+ *   `EvidenceAnalysisRequest.reasoningContext` carries internally, for
+ *   Evidence Intelligence's own purposes, is not read, merged, or
+ *   otherwise given any effect on this invocation.
  */
 data class ReasoningProviderRequest(
-    val turn: Turn,
+    val subject: ReasoningSubject,
     val reasoningContext: ReasoningContext,
 )
 

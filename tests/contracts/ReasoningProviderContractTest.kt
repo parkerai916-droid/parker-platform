@@ -2,8 +2,10 @@ package parker.core.interfaces
 
 import java.time.Instant
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /**
  * Sprint 7, Stage 3 Implementation Unit acceptance test
@@ -46,13 +48,57 @@ class ReasoningProviderContractTest {
     // --- ReasoningProviderRequest ---
 
     @Test
-    fun `ReasoningProviderRequest holds exactly the supplied Turn and ReasoningContext`() {
+    fun `ReasoningProviderRequest holds exactly the supplied subject and ReasoningContext`() {
         val request = ReasoningProviderRequest(
-            turn = turn(),
+            subject = ReasoningSubject.OfTurn(turn()),
             reasoningContext = ReasoningContext(listOf("context entry")),
         )
 
         assertIs<ReasoningProviderRequest>(request)
+    }
+
+    // --- ReasoningSubject (Amendment 1) ---
+
+    @Test
+    fun `ReasoningSubject OfTurn wraps the supplied Turn unchanged`() {
+        val theTurn = turn()
+
+        val subject = ReasoningSubject.OfTurn(theTurn)
+
+        assertEquals(theTurn, subject.turn)
+    }
+
+    @Test
+    fun `ReasoningSubject OfEvidenceAnalysisRequest wraps the supplied EvidenceAnalysisRequest unchanged`() {
+        val request = EvidenceAnalysisRequest(
+            analysisKind = "comparison",
+            requestingPrincipalId = PrincipalId("user-1"),
+        )
+
+        val subject = ReasoningSubject.OfEvidenceAnalysisRequest(request)
+
+        assertEquals(request, subject.request)
+    }
+
+    @Test
+    fun `a ReasoningSubject holds exactly one of OfTurn or OfEvidenceAnalysisRequest, never both`() {
+        val subjects: List<ReasoningSubject> = listOf(
+            ReasoningSubject.OfTurn(turn()),
+            ReasoningSubject.OfEvidenceAnalysisRequest(
+                EvidenceAnalysisRequest(analysisKind = "extraction", requestingPrincipalId = PrincipalId("user-1")),
+            ),
+        )
+
+        for (subject in subjects) {
+            // Assigned to a val, not merely a statement: Kotlin enforces exhaustiveness
+            // here, so a future third ReasoningSubject case fails to compile rather than
+            // silently skipping verification.
+            val caseName: String = when (subject) {
+                is ReasoningSubject.OfTurn -> "OfTurn"
+                is ReasoningSubject.OfEvidenceAnalysisRequest -> "OfEvidenceAnalysisRequest"
+            }
+            assertTrue(caseName == "OfTurn" || caseName == "OfEvidenceAnalysisRequest")
+        }
     }
 
     // --- Goal ---
