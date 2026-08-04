@@ -329,3 +329,36 @@ sealed class EvidenceAnalysisResult {
         val knowledgeCandidate: KnowledgeCandidate,
     ) : EvidenceAnalysisResult()
 }
+
+/**
+ * Evidence Intelligence, Implementation Unit 5 ("The Evidence Intelligence
+ * Operation"). Governed in full by
+ * `docs/implementation/EVIDENCE_INTELLIGENCE_IMPLEMENTATION_PLAN.md`
+ * ("the Implementation Plan"), §8 Unit 5, and by
+ * `docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_5_PLANNING_AND_BOUNDARY_REVIEW.md`
+ * ("the Planning Review"), whose Verdict A -- Governance Sufficient --
+ * authorised this Unit to begin.
+ *
+ * The single public interface Contract Design §10 authorises -- the
+ * fourth and final new public runtime type this whole Programme
+ * introduces (alongside [EvidenceAnalysisRequest], [EvidenceAnalysisResult],
+ * and [CandidateMemoryCoreRecord]).
+ *
+ * **One operation.** Given an [EvidenceAnalysisRequest], return a list of
+ * [EvidenceAnalysisResult] values -- zero, one, or many. "Its
+ * responsibility ends there" (Contract Design §10): this operation does
+ * not accept output into any downstream subsystem, does not evaluate any
+ * permission of its own, and does not persist anything. No invocation
+ * protocol is specified.
+ *
+ * **What this Unit deliberately does not implement**, per the Planning
+ * Review's own Boundary Review: Unit 6 (invocation permission gating --
+ * held by whichever composing caller invokes this operation, never by
+ * this operation itself); Unit 7 (the acceptance coordinator -- a
+ * structurally separate, later mechanism); Unit 8 (runtime composition);
+ * any specific analysis kind's own internal algorithm (Contract Design,
+ * Out of Scope; Scope Lock §3).
+ */
+interface EvidenceIntelligence {
+    suspend fun analyse(request: EvidenceAnalysisRequest): List<EvidenceAnalysisResult>
+}

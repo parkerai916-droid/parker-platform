@@ -328,8 +328,14 @@ class EvidenceIntelligenceTest {
     }
 
     @Test
-    fun `no EvidenceIntelligence operation interface exists yet -- it remains Unit 5's own responsibility`() {
-        assertFailsWith<ClassNotFoundException> { Class.forName("parker.core.interfaces.EvidenceIntelligence") }
+    fun `EvidenceIntelligence -- the fourth and final authorised public runtime type -- now exists, with exactly one operation`() {
+        // Unit 5 ("The Evidence Intelligence Operation") is now authorised and implemented --
+        // see docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_5_PLANNING_AND_BOUNDARY_REVIEW.md (Verdict A).
+        val evidenceIntelligenceClass = Class.forName("parker.core.interfaces.EvidenceIntelligence")
+
+        assertTrue(evidenceIntelligenceClass.isInterface)
+        assertEquals(1, evidenceIntelligenceClass.declaredMethods.size)
+        assertEquals("analyse", evidenceIntelligenceClass.declaredMethods.single().name)
     }
 
     // ================= No acceptance behaviour, no retrieval behaviour, no later-Unit component =================

@@ -166,8 +166,20 @@ class EvidenceCustodianScopeTest {
     }
 
     @Test
-    fun `no EvidenceIntelligence type exists anywhere in the repository`() {
-        assertFailsWith<ClassNotFoundException> { Class.forName("parker.core.interfaces.EvidenceIntelligence") }
+    fun `DefaultEvidenceCustodian holds no dependency on EvidenceIntelligence`() {
+        // Evidence Intelligence is now authorised and implemented (Unit 5 --
+        // docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_5_PLANNING_AND_BOUNDARY_REVIEW.md,
+        // Verdict A), so asserting the type does not exist anywhere is now false --
+        // exactly the "stale test that would block correctly-scoped, correctly-authorised
+        // work" this file's own revision history (above) already warns against. The
+        // real, still-true invariant this test guards is the dependency direction:
+        // Evidence Custodian never depends on, references, or is constructed with
+        // Evidence Intelligence -- checked structurally, not by the type's mere absence.
+        val constructorParameterTypeNames = DefaultEvidenceCustodian::class.java.declaredConstructors
+            .flatMap { it.parameterTypes.toList() }
+            .map { it.simpleName }
+
+        assertTrue(constructorParameterTypeNames.none { it == "EvidenceIntelligence" })
     }
 
     @Test
