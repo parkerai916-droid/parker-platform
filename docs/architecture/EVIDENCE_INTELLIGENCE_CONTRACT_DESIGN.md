@@ -14,6 +14,31 @@ Implementation Plan are accordingly authorised to begin as the next
 governance stage, but neither is begun by this document itself. Nothing
 is staged, committed, or pushed.
 
+### Amendment 1 — ReasoningSubject Integration
+
+This document is amended by Amendment 1, which brings this Contract
+Design current with Reasoning Provider Contract Design Amendment 1
+(`docs/architecture/REASONING_PROVIDER_CONTRACT_DESIGN.md`):
+`ReasoningProviderRequest` now carries `subject: ReasoningSubject` in
+place of `turn: Turn`. Evidence Intelligence's own orchestration of
+`ReasoningProvider` (§1, §12, below) proceeds via
+`ReasoningSubject.OfEvidenceAnalysisRequest`, wrapping this document's
+own, already-frozen `EvidenceAnalysisRequest` unmodified.
+`ReasoningSubject` is owned by the Reasoning Provider Contract Design,
+not by Evidence Intelligence, and Evidence Intelligence reuses it
+unmodified, exactly as it already reuses `ReasoningProvider`,
+`ReasoningProviderResponse`, and `ReasoningContext`. This amendment
+introduces no new Evidence-Intelligence-owned public type, no new
+responsibility, no new ownership, and no new dependency — Evidence
+Intelligence's own public type count, dependency table, and CDR-007's
+classification are all unaffected; Conversation Engine's own exclusive
+ownership of `Turn` and `Conversation` is likewise unaffected. Amendment
+1's own scope was fixed in advance by
+`docs/reviews/EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN_AMENDMENT_1_PROPOSAL.md`;
+every paragraph below marked "Amendment 1" implements exactly what that
+proposal identified, and no other paragraph in this document is altered
+by it.
+
 This document accepts `docs/decisions/CDR-007_CONSTITUTIONAL_CLASSIFICATION_OF_EVIDENCE_INTELLIGENCE.md`
 ("CDR-007") — Accepted, Canonical, and Frozen — as the controlling,
 already-decided constitutional basis for everything below, and does not
@@ -74,10 +99,15 @@ No. 1, all 19 Articles); `docs/decisions/CDR-001` through `CDR-007`;
 `docs/architecture/EVIDENCE_CUSTODIAN_IMPLEMENTATION_PLAN.md`;
 `docs/architecture/EVIDENCE_CUSTODIAN_PHASE_7_BOUNDARY_CLARIFICATION.md`;
 `docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`; and
-`docs/architecture/REASONING_PROVIDER_CONTRACT_DESIGN.md`. It does not
-reopen, re-argue, or narrow any decision in any of those documents. Every
-section below traces to a specific, named source; nothing below is
-invented where an existing contract already answers the question.
+`docs/architecture/REASONING_PROVIDER_CONTRACT_DESIGN.md` (as amended,
+Amendment 1: `docs/reviews/REASONING_PROVIDER_CONTRACT_DESIGN_AMENDMENT_PROPOSAL.md`,
+`docs/reviews/REASONINGSUBJECT_CONTRACT_DESIGN_STUDY.md`,
+`docs/reviews/REASONING_PROVIDER_CONTRACT_DESIGN_AMENDMENT_1_INDEPENDENT_REVIEW.md`,
+and `docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_3_CONSTITUTIONAL_DECISION_MEMORANDUM.md`).
+It does not reopen, re-argue, or narrow any decision in any of those
+documents. Every section below traces to a specific, named source;
+nothing below is invented where an existing contract already answers the
+question.
 
 **Governing sources, by section:**
 
@@ -105,7 +135,9 @@ invented where an existing contract already answers the question.
   cross (§2, §6, §9, §12).
 - **`REASONING_PROVIDER_CONTRACT_DESIGN.md`** — controlling for the
   Reasoning Provider shapes this document reuses when Evidence
-  Intelligence internally orchestrates one (§3, §4, §12).
+  Intelligence internally orchestrates one (§3, §4, §12), as amended by
+  Amendment 1 (ReasoningSubject) — §3, §4, §12 each updated accordingly,
+  below.
 
 ---
 
@@ -385,7 +417,7 @@ document does **not** define:
   Intelligence's own model touches at all);
 - a new reasoning-invocation type (`ReasoningProvider`,
   `ReasoningProviderRequest`, `ReasoningProviderResponse`,
-  `ReasoningContext`, all reused unchanged, §12);
+  `ReasoningContext`, `ReasoningSubject`, all reused unchanged, §12);
 - a comparison-specific type of any kind (§7 — the canonical comparison
   model belongs to Memory Core, per CDR-003, and is referenced, not
   reimplemented, here).
@@ -404,7 +436,7 @@ below states each type this document's own model touches and its owner:
 | `Document`, `CandidateDocument` | Memory Core | Reuses, unmodified |
 | `KnowledgeCandidate`, `KnowledgeItem` | Knowledge Memory | Reuses (`KnowledgeCandidate` only), never touches `KnowledgeItem` |
 | `EvidentialState` | Knowledge Memory | Never referenced by Evidence Intelligence's own model at all |
-| `ReasoningProvider`, `ReasoningProviderRequest`, `ReasoningProviderResponse`, `ReasoningContext` | Reasoning Provider Contract Design | Reuses, unmodified, as an orchestrated dependency |
+| `ReasoningProvider`, `ReasoningProviderRequest`, `ReasoningProviderResponse`, `ReasoningContext`, `ReasoningSubject` | Reasoning Provider Contract Design | Reuses, as amended by Reasoning Provider Contract Design Amendment 1 (`ReasoningProviderRequest.subject: ReasoningSubject`, orchestrated via `ReasoningSubject.OfEvidenceAnalysisRequest`) — unmodified *by Evidence Intelligence*, as an orchestrated dependency |
 | `PrincipalId` | Existing platform identifier | Reuses, unmodified, for audit purposes only |
 
 ## 4. Inputs
@@ -431,7 +463,16 @@ governed Parker artefact, never raw, unmanaged data**:
   unchanged), supplied only when this analysis internally invokes one or
   more Reasoning Providers. Its assembly remains, exactly as the
   Reasoning Provider Contract Design already discloses, an unassigned
-  responsibility this document does not resolve.
+  responsibility this document does not resolve. **Amendment 1.** Where
+  this analysis internally invokes a `ReasoningProvider` via
+  `ReasoningSubject.OfEvidenceAnalysisRequest` (Reasoning Provider
+  Contract Design, Amendment 1), that invocation's own top-level
+  `ReasoningProviderRequest.reasoningContext` — not this field — is the
+  sole context `ReasoningProvider.reason` consults, per that document's
+  own frozen invariant. This field retains its existing meaning and
+  ownership within Evidence Intelligence's own analysis, independent of
+  that invocation; it is not modified, merged, or otherwise redefined by
+  this amendment.
 - **An open analysis classification.** A non-blank `analysisKind`
   string, open and non-enumerated, mirroring `Entity.entityType`'s and
   `Document.documentType`'s own "open, not closed" convention (Memory
@@ -944,7 +985,7 @@ contracts. **No new platform subsystem is introduced by this document.**
 | --- | --- | --- | --- |
 | `EvidenceCustodian.retrieve` | Evidence Intelligence → Evidence Custodian | Read-only access to custodied originals and derivatives | Evidence Artifact Contract Design, implemented |
 | `MemoryRetrieval` | Evidence Intelligence → Memory Core | Read-only access to registered Memory Core records | Memory Core Contract Design |
-| `ReasoningProvider` (zero or more) | Evidence Intelligence → Reasoning Provider(s) | Internal analytical mechanism, orchestrated, never itself | Reasoning Provider Contract Design |
+| `ReasoningProvider` (zero or more) | Evidence Intelligence → Reasoning Provider(s) | Internal analytical mechanism, orchestrated, never itself (as amended, Amendment 1: invoked via `ReasoningSubject.OfEvidenceAnalysisRequest`, wrapping `EvidenceAnalysisRequest` unmodified) | Reasoning Provider Contract Design |
 
 **Evidence Intelligence holds no dependency on any acceptance
 interface.** `EvidenceCustodian.accept`, `MemoryCore`'s public write
@@ -1023,8 +1064,13 @@ pairing is, or is not, required.
   judged against them by Knowledge Memory — Evidence Intelligence's own
   model never constructs, holds, or references either directly.
 - `ReasoningProvider`, `ReasoningProviderRequest`,
-  `ReasoningProviderResponse`, `ReasoningContext` — the Reasoning
-  Provider's own contract, unmodified and unbroadened.
+  `ReasoningProviderResponse`, `ReasoningContext`, `ReasoningSubject` —
+  the Reasoning Provider's own contract; `ReasoningProviderRequest` now
+  amended (Amendment 1) to carry `subject: ReasoningSubject`;
+  `ReasoningProvider`, `ReasoningProviderResponse`, and `ReasoningContext`
+  remain unbroadened; none modified *by Evidence Intelligence*, which
+  reuses `ReasoningSubject` unmodified via its own
+  `OfEvidenceAnalysisRequest` case.
 - `PrincipalId` — an existing platform identifier, reused for audit
   purposes only.
 - CDR-001/002/003's canonical comparison model (Model B) — reused by
@@ -1273,8 +1319,12 @@ an ambiguous or shared owner.
 
 This Contract Design defines Evidence Intelligence's software contract
 exactly as CDR-007 governs it: three new public types, one new public
-interface, zero new platform subsystems, zero amendments to any existing
-contract, and every analytical output traced to one of CDR-007's own
+interface, zero new platform subsystems, no amendment to any existing
+contract introduced *by this document* — Reasoning Provider Contract
+Design has separately been amended by its own governing document
+(Amendment 1: `docs/architecture/REASONING_PROVIDER_CONTRACT_DESIGN.md`),
+and Evidence Intelligence reuses that already-amended contract unchanged
+— and every analytical output traced to one of CDR-007's own
 four permitted categories with an unambiguous accepting subsystem and
 ownership-transfer rule. Following the Independent Contract Design
 Review's four corrections, this document now maintains a single,
@@ -1301,7 +1351,9 @@ SCOPE LOCK
 
 Confirmed: no Kotlin implemented; no API, schema, or storage technology
 defined; CDR-001 through CDR-007 not modified; Memory Core Contract
-Design, Evidence Artifact Contract Design, Programme 3 Knowledge Memory
-Contract Design V2, and Reasoning Provider Contract Design not modified;
-nothing staged; nothing committed; nothing pushed; Evidence Intelligence
-Scope Lock not started.
+Design, Evidence Artifact Contract Design, and Programme 3 Knowledge
+Memory Contract Design V2 not modified; the Reasoning Provider Contract
+Design, already amended by its own Amendment 1, is reused here unchanged
+— this document introduces no further amendment to it; nothing staged;
+nothing committed; nothing pushed; Evidence Intelligence Scope Lock not
+started.
