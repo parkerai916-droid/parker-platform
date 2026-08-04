@@ -234,7 +234,11 @@ own output:**
   be judged against them by Knowledge Memory; never constructed, held,
   or referenced directly by Evidence Intelligence's own model.
 - `ReasoningProviderRequest`, `ReasoningProviderResponse`,
-  `ReasoningContext` (Reasoning Provider Contract Design).
+  `ReasoningContext`, `ReasoningSubject` (Reasoning Provider Contract
+  Design, Amendment 1) — Evidence Intelligence's own `EvidenceAnalysisRequest`
+  (§5, above) is the payload carried by `ReasoningSubject.OfEvidenceAnalysisRequest`,
+  reused unmodified; `ReasoningSubject` itself remains owned by the
+  Reasoning Provider Contract Design, never by Evidence Intelligence.
 - `PrincipalId` (existing platform identifier), for audit purposes
   only.
 - CDR-001/002/003's canonical comparison model (Model B) — reused by
@@ -568,12 +572,22 @@ sequence appear shorter than it is.
 - **Purpose.** Establish Evidence Intelligence as an orchestrating
   caller of zero or more existing Reasoning Providers, never a
   Reasoning Provider itself.
-- **Responsibilities.** Invoke an existing `ReasoningProvider` via its
-  own, unmodified request/response contract; treat each invocation as a
-  pure, stateless callee with no obligations beyond what the Reasoning
-  Provider Contract Design already defines.
+- **Responsibilities.** Invoke an existing `ReasoningProvider` by
+  constructing a `ReasoningProviderRequest` whose `subject` is
+  `ReasoningSubject.OfEvidenceAnalysisRequest`, wrapping this Programme's
+  own, unmodified `EvidenceAnalysisRequest` (Reasoning Provider Contract
+  Design, Amendment 1); treat each invocation as a pure, stateless callee
+  with no obligations beyond what the Reasoning Provider Contract Design
+  already defines. The top-level `ReasoningProviderRequest.reasoningContext`
+  — not `EvidenceAnalysisRequest.reasoningContext` — is the sole context
+  each invocation supplies to `ReasoningProvider.reason`, per that
+  document's own frozen invariant; `EvidenceAnalysisRequest.reasoningContext`
+  retains its existing meaning and ownership within Evidence
+  Intelligence's own analysis (Evidence Intelligence Contract Design
+  §4), unaffected by this.
 - **Dependencies.** Unit 1; `ReasoningProvider`,
-  `ReasoningProviderRequest`, `ReasoningProviderResponse`.
+  `ReasoningProviderRequest`, `ReasoningProviderResponse`,
+  `ReasoningSubject`.
 - **Verification goals.** No class fulfilling the Evidence Intelligence
   operation itself implements `ReasoningProvider`; no `ReasoningProvider`
   implementation retains a reference back to Evidence Intelligence.
