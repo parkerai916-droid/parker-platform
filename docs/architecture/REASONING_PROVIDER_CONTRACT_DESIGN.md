@@ -10,6 +10,33 @@ No prompt template, token limit, streaming behaviour, provider selection
 mechanism, retry policy, network protocol, local/remote execution
 decision, model identifier, or provider implementation is introduced.
 
+### Amendment 1 — ReasoningSubject
+
+**Pending acceptance.** This amendment remains pending until Independent
+Constitutional Review and governance acceptance are complete; it is not
+yet applied. This document is amended by Amendment 1, which replaces the
+`turn: Turn` field on `ReasoningProviderRequest` (Section 2) with a
+closed, two-case sealed selector, `ReasoningSubject`, so that a second,
+already-authorised caller — Evidence Intelligence — may supply a
+reasoning subject of its own without depending on Conversation Engine.
+Amendment 1 implements the constitutional interpretation recorded in
+`docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_3_CONSTITUTIONAL_DECISION_MEMORANDUM.md`
+(the Memorandum): that `reasoning-context.md`, not `Turn`, is the
+constitutional authority governing what a reasoning provider reasons
+over, and that `Turn` is Conversation Engine's own first concrete
+instantiation of that authority, not its universal shape. Amendment 1's
+own scope was fixed in advance by
+`docs/reviews/REASONING_PROVIDER_CONTRACT_DESIGN_AMENDMENT_PROPOSAL.md`
+and `docs/reviews/REASONINGSUBJECT_CONTRACT_DESIGN_STUDY.md`; every
+paragraph below marked "Amendment 1" implements exactly what those two
+documents identified, and no other paragraph in this document is
+altered by it. `Turn`, `Conversation`, and `ConversationEngine`'s
+exclusive construction of both remain entirely unchanged
+(`CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` Section 12); Evidence
+Intelligence continues to reuse the `ReasoningProvider` interface
+exactly as CDR-007 already authorises, with no new dependency on
+Conversation Engine.
+
 ### Why this unit exists
 
 `docs/architecture/REASONING_PROVIDER_ARCHITECTURE.md` received Stage 1
@@ -134,9 +161,10 @@ re-derived differently here:
 | Candidate | Determination |
 | --- | --- |
 | `ReasoningProvider` (interface) | **Include.** The one public contract `19-conversation-engine.md` Section 13 Item 6 and `CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 8 both require to exist. |
-| `ReasoningProviderRequest` | **Include.** The minimal input a Reasoning Provider needs — see Section 2. |
+| `ReasoningProviderRequest` | **Include.** The minimal input a Reasoning Provider needs — see Section 2. **Amendment 1:** carries `subject: ReasoningSubject` in place of `turn: Turn`. |
 | `ReasoningProviderResponse` | **Include, as a three-variant sealed type** (`Goal`, `Reply`, `NoAction`) — see Section 3, Section 10. |
 | `ReasoningContext` | **Include, as a new, deliberately minimal type** — not a reuse, despite the name's prior appearance in `reasoning-context.md`; no field-level shape for it exists anywhere in this repository before this document. See Section 2, Section 10. |
+| `ReasoningSubject` | **Include, Amendment 1.** A closed, two-case sealed selector (`OfTurn`, `OfEvidenceAnalysisRequest`), generalising this document's own request shape to the caller-agnostic reasoning subject `reasoning-context.md`'s own constitutional-tier authority already defines ("a task"), reconciling this document's field-level shape with that authority. See Section 2. |
 | A failure/error variant on `ReasoningProviderResponse` | **Exclude — reinforced by, not merely undecided by, Stage 1.** `REASONING_PROVIDER_ARCHITECTURE.md` names no failure model of its own, but `19-conversation-engine.md` Section 11 already assigns failure-surfacing to the calling component, not the Reasoning Provider's own response shape. Implementation-level faults remain expressible outside this sealed type (Section 3). See Status, Section 9. |
 | A confidence/score field | **Exclude.** No concrete consumer; would risk being mistaken for an authorisation signal, contrary to the Constitutional Boundaries above. |
 | A correlation/echo-back identifier on the response | **Exclude.** The request/response shape below is a single call and its single result; nothing requires re-matching a response to a request across a gap. If a future, separately-scoped invocation mechanism (Architecture Section 14 Item 1) requires one, it is added additively then. |
@@ -144,13 +172,16 @@ re-derived differently here:
 | A separate `ReasoningProviderRuntime` wrapper interface | **Exclude — one interface suffices.** See Section 1. |
 | A `ReasoningProviderRegistry` | **Exclude.** Already excluded at the architecture level (Architecture Section 13); this document does not reopen it. |
 
-Net result: **four new contracts** (`ReasoningProvider`,
+Net result: **five new contracts** (`ReasoningProvider`,
 `ReasoningProviderRequest`, `ReasoningProviderResponse`,
-`ReasoningContext`), **five existing contracts reused unchanged**
-(`ConversationId`, `TurnId`, `Turn`, `PrincipalId`, `CorrelationId` — the
-last three transitively, via `Turn`), **zero modified**, and **one
-genuine architectural gap disclosed rather than papered over** (no
-failure model).
+`ReasoningContext`, `ReasoningSubject` — the last added by Amendment 1),
+**six existing contracts reused unchanged** (`ConversationId`, `TurnId`,
+`Turn`, `PrincipalId`, `CorrelationId` — three of them transitively, via
+`Turn` — and, since Amendment 1, `EvidenceAnalysisRequest`, reused via
+`ReasoningSubject.OfEvidenceAnalysisRequest`), **one modified**
+(`ReasoningProviderRequest`, Amendment 1: `turn: Turn` replaced by
+`subject: ReasoningSubject`), and **one genuine architectural gap
+disclosed rather than papered over** (no failure model).
 
 ---
 
@@ -186,16 +217,113 @@ response type):
 The minimal input a Reasoning Provider needs, reusing existing shapes
 wherever one already exists:
 
-- **`turn: Turn`** — reused unchanged
-  (`CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 2). Carries
-  `turnId`, `conversationId`, and `message: InboundOwnerMessage` (which
-  itself carries `senderPrincipalId`, `text`, `correlationId`, and
-  `timestamp`) as one already-defined bundle. This document does not
-  duplicate any of `Turn`'s own fields as separate top-level fields on
-  the request — restating this document's own instruction not to
-  duplicate existing contracts, and mirroring
-  `CONVERSATION_ENGINE_CONTRACT_DESIGN.md`'s identical discipline of
-  embedding an already-shaped type rather than re-deriving its fields.
+- **`subject: ReasoningSubject`** — **Amendment 1.** Replaces the
+  original `turn: Turn` field with a closed, two-case sealed selector,
+  generalising this document's own request shape to the caller-agnostic
+  reasoning subject `reasoning-context.md`'s own constitutional-tier
+  authority already defines ("a task"), while leaving `Turn` itself, and
+  Conversation Engine's exclusive construction of it, completely
+  unmodified (`CONVERSATION_CONTINUITY_CONTRACT_DESIGN.md` Section 12).
+  `ReasoningSubject`'s two cases:
+
+  - **`OfTurn(turn: Turn)`** — reused unchanged
+    (`CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 2). Carries
+    `turnId`, `conversationId`, and `message: InboundOwnerMessage`
+    (which itself carries `senderPrincipalId`, `text`, `correlationId`,
+    and `timestamp`) as one already-defined bundle. This document does
+    not duplicate any of `Turn`'s own fields as separate top-level
+    fields on this case — restating this document's own instruction not
+    to duplicate existing contracts, and mirroring
+    `CONVERSATION_ENGINE_CONTRACT_DESIGN.md`'s identical discipline of
+    embedding an already-shaped type rather than re-deriving its
+    fields.
+  - **`OfEvidenceAnalysisRequest(request: EvidenceAnalysisRequest)`** —
+    reused unchanged (`EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md`
+    Section 4; `src/interfaces/EvidenceIntelligence.kt`). Carries
+    Evidence Intelligence's own already-governed evidence-artefact
+    references, Memory Core references, analysis classification, and
+    requesting principal, as one already-defined bundle — reused
+    exactly as CDR-007 already authorises Evidence Intelligence to
+    orchestrate `ReasoningProvider` "as internal analytical
+    mechanisms."
+
+  **Relationship to `EvidenceAnalysisRequest.reasoningContext`
+  (Amendment 1, correction).** `EvidenceAnalysisRequest`
+  (`EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md` Section 4) carries its own
+  optional `reasoningContext` field, reachable, once wrapped in
+  `OfEvidenceAnalysisRequest`, alongside this request's own top-level
+  `reasoningContext` field (immediately below). This document does not
+  modify `EvidenceAnalysisRequest`, and introduces no third context of
+  any kind — it fixes only which of the two already-existing fields
+  this request's own invocation uses: **this request's own top-level
+  `reasoningContext` field (immediately below) is the sole
+  `ReasoningContext` value `ReasoningProvider.reason` ever consults, for
+  every case of `subject`, including `OfEvidenceAnalysisRequest`.**
+  Whatever value `EvidenceAnalysisRequest.reasoningContext` carries
+  internally, for Evidence Intelligence's own purposes, is not read, not
+  merged, not compared, and not otherwise given any effect on this
+  invocation. This eliminates precedence (the top-level field always
+  governs), duplication and conflict (the nested field is never
+  consulted, so it cannot disagree with anything), enrichment (no
+  merge occurs), and omission (the top-level field is already mandatory
+  on this request, so the invocation's context is always defined
+  regardless of whether the nested field is present, absent, or
+  differs).
+
+  **Frozen properties (Amendment 1; restated from**
+  **`docs/reviews/REASONINGSUBJECT_CONTRACT_DESIGN_STUDY.md`), none of**
+  **which any future revision may weaken:**
+
+  1. Behaviour-free — no operation beyond the ordinary structural
+     operations (equality, textual representation, copying) any plain
+     value already has; no operation that performs reasoning,
+     invocation, translation, or any other domain act.
+  2. Closed to exactly these two cases — `OfTurn`,
+     `OfEvidenceAnalysisRequest` — never a third without a further
+     amendment to this document.
+  3. Owns no data beyond the one selected subject value — no field
+     beyond the single wrapped value in either case.
+  4. Introduces no new responsibility to `ReasoningProvider` itself —
+     `ReasoningProvider.reason`'s own signature and pure-callee status
+     (Section 7) are unchanged; this type only supplies the shape this
+     field needs to compile a caller-agnostic request, since Kotlin has
+     no union type.
+  5. Grants no acceptance, persistence, retrieval, reasoning,
+     confidence, evidential-state, provenance, ownership, or
+     authorisation authority of its own — a pure selection mechanism;
+     every one of those responsibilities remains exactly where existing
+     governance already assigns it.
+  6. Does not modify `Turn` or `EvidenceAnalysisRequest` — both remain
+     reused, unmodified; this type only references them, never extends,
+     subclasses, or amends either.
+  7. Is not a generic, reusable union mechanism — closed to these two
+     named, existing types specifically, never a type-parameterised
+     abstraction usable for any other pair of types.
+  8. Creates no independent dependency entitlement for any other
+     subsystem. A `ReasoningProvider` implementation, or any
+     composition-level caller, may inspect a value of this type solely
+     to determine which existing subject it carries, in order to
+     interpret that subject appropriately — that consumption grants no
+     ownership, authority, extension right, or independent dependency
+     entitlement over this type itself.
+
+  **Explicit exclusions (Amendment 1, correction; restated from**
+  **`docs/reviews/REASONINGSUBJECT_CONTRACT_DESIGN_STUDY.md` Section 5):**
+  `ReasoningSubject` is **not a registry** — it holds no discovery or
+  lookup mechanism of any kind and is not, and does not become,
+  `ReasoningProviderRegistry`, already excluded at the Architecture
+  tier. It is **not a router** — it does not decide which
+  `ReasoningProvider` implementation handles a given case, and performs
+  no dispatch of any kind. It is **not a provider selector** — it never
+  chooses, ranks, or filters among multiple configured `ReasoningProvider`
+  implementations; that question (Architecture Section 14 Item 3)
+  remains open and unaffected. It is **not a workflow model** — it
+  carries no state, no sequence, and no multi-step lifecycle of its
+  own.
+
+  Owned by this Contract Design, exactly as `ReasoningProviderRequest`
+  itself already is — never by Conversation Engine, never by Evidence
+  Intelligence, and never left ownerless.
 - **`reasoningContext: ReasoningContext`** — a **new** type this
   document introduces (Section 10; not a reuse — see the Minimalism
   Review). The already-assembled working set
@@ -285,7 +413,8 @@ conventionally expected of three independent nullable fields.
 | --- | --- | --- |
 | `TurnId` | `Turn.turnId` (transitively) | Already field-shaped, `CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 2. |
 | `ConversationId` | `Turn.conversationId` (transitively) | Same. |
-| `Turn` | `ReasoningProviderRequest.turn` (directly) | Same; embedding it whole avoids duplicating its own fields (Section 2). |
+| `Turn` | `ReasoningProviderRequest.subject`, via `ReasoningSubject.OfTurn` (Amendment 1) | Same; embedding it whole avoids duplicating its own fields (Section 2). |
+| `EvidenceAnalysisRequest` | `ReasoningProviderRequest.subject`, via `ReasoningSubject.OfEvidenceAnalysisRequest` (Amendment 1) | Already field-shaped, `EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md` Section 4; owned by Evidence Intelligence, reused here unmodified (Section 2). |
 | `InboundOwnerMessage` | `Turn.message` (transitively) | Already field-shaped, `COMMUNICATION_CONTRACT_DESIGN.md` Section 2. |
 | `PrincipalId` | `Turn.message.senderPrincipalId` (transitively) | Already field-shaped, `src/contracts/Identifiers.kt`. |
 | `CorrelationId` | `Turn.message.correlationId` (transitively) | Already field-shaped, `COMMUNICATION_CONTRACT_DESIGN.md` Section 4. |
@@ -332,8 +461,8 @@ restating `REASONING_PROVIDER_ARCHITECTURE.md` Section 7 now mapped onto
 Section 1's one operation:
 
 1. **Invocation.** A caller constructs a `ReasoningProviderRequest` (a
-   `Turn` plus an already-assembled `ReasoningContext`) and calls
-   `ReasoningProvider.reason`.
+   `ReasoningSubject` — Amendment 1 — plus an already-assembled
+   `ReasoningContext`) and calls `ReasoningProvider.reason`.
 2. **Interpretation.** Entirely opaque to this contract — restating
    Architecture Section 7 Step 2 and Section 4: unconstrained by, and
    invisible to, anything this document defines.
@@ -363,9 +492,12 @@ not merely a stated rule: neither `ReasoningProviderRequest` nor
 `ReasoningProviderResponse` references `PlannerRuntime`, `AgentRuntime`,
 `TaskManagerRuntime`, `MemoryStore`, `WorldModel`, `ExecutionPipeline`,
 `PermissionEngine`, `ToolRegistry`, or `ModuleRegistry`, anywhere, at any
-depth (`Turn` and its own transitively-embedded types were already
+depth. `Turn` and its own transitively-embedded types were already
 verified free of any such dependency by
-`CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 7).
+`CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 7; `EvidenceAnalysisRequest`
+and its own transitively-embedded types (Amendment 1) are equally free of
+any such dependency, per `EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md`
+Section 12's own identical verification.
 
 Restating `REASONING_PROVIDER_ARCHITECTURE.md` Section 6 and the task's
 own explicit list, now made concrete against this contract:
@@ -494,7 +626,8 @@ where excluded — expanding the Summary above:
 | Candidate | Included? | Reason |
 | --- | --- | --- |
 | `ReasoningProvider` (one-operation interface) | **Yes** | Minimum surface `19-conversation-engine.md` Section 13 Item 6 requires to exist. |
-| `ReasoningProviderRequest` (`turn` + `reasoningContext`) | **Yes** | Minimum input Architecture Section 2 names: a Turn's content and an assembled Reasoning Context. Two fields, both either reused or newly minimal. |
+| `ReasoningProviderRequest` (`subject` + `reasoningContext`) | **Yes** | Minimum input Architecture Section 2 names: a reasoning subject's content and an assembled Reasoning Context. Two fields — `subject` amended by Amendment 1 to a closed sealed selector, `reasoningContext` unchanged. |
+| `ReasoningSubject` (`OfTurn` / `OfEvidenceAnalysisRequest`) | **Yes, Amendment 1** | Generalises the single-caller `turn: Turn` field this document originally froze into a closed, two-case selector, reconciling this document's own field-level shape with `reasoning-context.md`'s constitutional-tier "task"-scoped generality (`docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_3_CONSTITUTIONAL_DECISION_MEMORANDUM.md`). |
 | `ReasoningProviderResponse` (sealed, `Goal`/`Reply`/`NoAction`) | **Yes** | Directly mirrors Architecture Section 2's own three-way framing; no fourth outcome is architecturally named. |
 | `ReasoningContext` (opaque list of prose entries) | **Yes, minimally** | Required for `ReasoningProviderRequest` to be definable at all; kept to the absolute minimum shape that carries meaning without assuming model-specific structure (Section 2). |
 | A `ReasoningProviderResponse.Failed` variant | **No** | Not authorised by Stage 1 Architecture, and reinforced rather than merely left open: `19-conversation-engine.md` Section 11 already assigns failure-surfacing to the calling component, not this response shape (Section 9). Implementation-level faulting remains available outside this sealed type (Section 3) — this exclusion is the largest in this review, but does not leave failure unrepresentable. |
@@ -505,17 +638,20 @@ where excluded — expanding the Summary above:
 | A `ReasoningProviderRuntime` wrapper interface | **No** | One interface suffices (Section 1); no session or multi-step lifecycle exists for it to wrap. |
 | A `ReasoningProviderRegistry` | **No** | Already excluded at the architecture level (Architecture Section 13); no concrete need demonstrated here either. |
 
-Net result, restated from the Summary: **four new contracts, five
-existing contracts reused unchanged (three of them transitively via
-`Turn`), zero modified, one architectural gap disclosed rather than
-papered over.**
+Net result, restated from the Summary: **five new contracts (Amendment 1
+adds `ReasoningSubject`), six existing contracts reused unchanged (three
+of them transitively via `Turn`; a fourth, `EvidenceAnalysisRequest`, via
+`ReasoningSubject.OfEvidenceAnalysisRequest`, since Amendment 1), one
+modified (`ReasoningProviderRequest`), one architectural gap disclosed
+rather than papered over.**
 
 ## 11. Self-Traceability Review
 
 | Contract | Traced to Reasoning Provider Architecture | Traced to Conversation Engine Architecture / Contract Design | Traced to Parker Constitution | Traced to PES-001 |
 | --- | --- | --- | --- | --- |
 | `ReasoningProvider` (interface) | Section 1 (Purpose), Section 6 (pure callee) | `19-conversation-engine.md` Section 13 Item 6 | "Cognition proposes" | Stage 2A: "states whether a separate 'Runtime' wrapper interface is needed" |
-| `ReasoningProviderRequest` | Section 2 (Responsibilities: "given a Turn's content... and an already-assembled Reasoning Context") | `Turn` (`CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 2) | — | Stage 2A: "minimum required set of public contracts" |
+| `ReasoningProviderRequest` | Section 2 (Responsibilities: "given a Turn's content... and an already-assembled Reasoning Context") | `Turn` (`CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 2), via `ReasoningSubject.OfTurn` since Amendment 1 | — | Stage 2A: "minimum required set of public contracts" |
+| `ReasoningSubject` (Amendment 1) | Section 2 (Amendment 1: closed selector generalising the request's subject) | `Turn` (`CONVERSATION_ENGINE_CONTRACT_DESIGN.md` Section 2); `EvidenceAnalysisRequest` (`EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md` Section 4) | — (traced instead to `reasoning-context.md`'s constitutional tier: "a task," not a Turn) | Stage 2A amendment: resolves the outstanding constitutional question `docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_3_CONSTITUTIONAL_DECISION_MEMORANDUM.md` settles, against already-approved architecture |
 | `ReasoningProviderResponse` (`Goal`/`Reply`/`NoAction`) | Section 2 ("either a goal worth planning, a direct reply worth sending, or a determination that neither is warranted") | `PlanningRequest.goal`, `OutboundParkerResponse.text` (both reused, unmodified) | "Reasoning providers may propose. They may not authorize or execute." | Stage 2A: field-level contract for an approved architecture's named responsibility |
 | `ReasoningContext` | Section 10 ("Relationship to Memory, World Model, and Reasoning Context") | `reasoning-context.md` (concept origin, no prior shape) | — | Stage 2A: "explicitly stating what is required... and why" |
 | Ownership boundaries (Section 5) | Section 4 (no persistent Parker-modelled state) | — | — | Stage 1's "ownership" requirement, made concrete |
@@ -533,17 +669,20 @@ to answer rather than inventing an answer (Section 9).
 ## Conclusion
 
 **This document gives the Reasoning Provider a settled Stage 2A Contract
-Design: one public interface (`ReasoningProvider`, one operation), four
-new field-level types (`ReasoningProviderRequest`,
-`ReasoningProviderResponse` with its three variants, and the
-deliberately minimal `ReasoningContext`), five existing contracts reused
-unchanged (three of them transitively via `Turn`), ownership, lifecycle,
-and runtime boundaries all made concrete and, in the runtime case,
-structurally verifiable rather than merely asserted, eight contract
-invariants, eleven deferred items each with a stated reason, a
-Minimalism Review accounting for every candidate this document's own
-brief named, and a Self-Traceability Review connecting every element
-back to its authorising source.**
+Design, as amended by Amendment 1 (ReasoningSubject): one public
+interface (`ReasoningProvider`, one operation), five new field-level
+types (`ReasoningProviderRequest` — amended, Amendment 1 —
+`ReasoningProviderResponse` with its three variants, the deliberately
+minimal `ReasoningContext`, and `ReasoningSubject`, Amendment 1's
+closed, two-case selector), six existing contracts reused unchanged
+(three of them transitively via `Turn`; a fourth,
+`EvidenceAnalysisRequest`, via `ReasoningSubject.OfEvidenceAnalysisRequest`,
+since Amendment 1), ownership, lifecycle, and runtime boundaries all
+made concrete and, in the runtime case, structurally verifiable rather
+than merely asserted, eight contract invariants, eleven deferred items
+each with a stated reason, a Minimalism Review accounting for every
+candidate this document's own brief named, and a Self-Traceability
+Review connecting every element back to its authorising source.**
 
 **One finding is surfaced, not silently resolved: `REASONING_PROVIDER_ARCHITECTURE.md`
 has no failure model of its own for the Reasoning Provider, so this
@@ -584,3 +723,10 @@ document deliberately leaves for a future Architecture amendment.
 - `src/interfaces/CommunicationIntake.kt`
 - `src/contracts/PlanDecision.kt`
 - `docs/architecture/IMPLEMENTATION_GAPS.md` (#53)
+- `docs/decisions/CDR-007_CONSTITUTIONAL_CLASSIFICATION_OF_EVIDENCE_INTELLIGENCE.md` (Amendment 1)
+- `docs/architecture/EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md` (Amendment 1)
+- `docs/architecture/EVIDENCE_INTELLIGENCE_SCOPE_LOCK.md` (Amendment 1)
+- `docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_3_CONSTITUTIONAL_DECISION_MEMORANDUM.md` (Amendment 1)
+- `docs/reviews/REASONING_PROVIDER_CONTRACT_DESIGN_AMENDMENT_PROPOSAL.md` (Amendment 1)
+- `docs/reviews/REASONINGSUBJECT_CONTRACT_DESIGN_STUDY.md` (Amendment 1)
+- `src/interfaces/EvidenceIntelligence.kt` (Amendment 1)
