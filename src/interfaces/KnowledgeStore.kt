@@ -1132,3 +1132,99 @@ interface KnowledgeRetirementEvaluator {
         occurredAt: Instant,
     ): KnowledgeRetirementEvaluation
 }
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 8 (Knowledge
+ * Submission). The outcome of one [KnowledgeSubmission.submit] call --
+ * see `docs/governance/PROGRAMME_3_UNIT_8_SCOPE_LOCK_CLARIFICATION.md`
+ * ("the Unit 8 Clarification"), §9, for the full constitutional reasoning
+ * this type implements exactly and nothing more.
+ *
+ * Three outcomes, not two and not four, per the Unit 8 Clarification's own
+ * binding determination:
+ *
+ * - [NotAuthorised] -- Evaluation B (the submission-act permission check,
+ *   `docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md`
+ *   §7, Amendment 8) did not approve. This is never, and must never be
+ *   read as, a judgement on the candidate's own evidential merit -- it
+ *   says nothing about whether the candidate would have been promoted,
+ *   only that the submission act itself was not authorised (Unit 8
+ *   Clarification §9: "denial reflects nothing about the candidate's
+ *   evidential merit").
+ * - [Declined] -- Evaluation B approved, [KnowledgeCandidateEvaluator]
+ *   was invoked, and it returned [KnowledgeCandidateEvaluation.Reject].
+ *   [Declined.basis] carries that rejection's own
+ *   [KnowledgeCandidateEvaluation.Reject.basis] unchanged -- this type
+ *   never re-authors, re-classifies, or supplements the evaluator's own
+ *   disclosed reasoning.
+ * - [Promoted] -- Evaluation B approved, the evaluator returned
+ *   [KnowledgeCandidateEvaluation.Promote], and the resulting
+ *   [KnowledgeItem] (whose own [KnowledgeItem.history] already carries
+ *   [promotion] as its sole entry at this point) was durably persisted.
+ *   [item] and [promotion] are exactly the evaluator's own two `Promote`
+ *   fields, surfaced unchanged -- this type constructs neither.
+ *
+ * Deliberately not a superset of, rename of, or replacement for
+ * [KnowledgeCandidateEvaluation] -- that type remains Unit 6's own,
+ * closed, two-outcome contract, unmodified and unreopened by this Unit
+ * (Unit 8 Clarification §9: "does not authorise altering
+ * `KnowledgeCandidateEvaluation`... to accommodate [a permission
+ * denial]"). [KnowledgeSubmissionDisposition] is a distinct,
+ * narrower-scoped, caller-facing contract belonging exclusively to the
+ * Knowledge Submission boundary; [KnowledgeCandidateEvaluator] itself
+ * never constructs, returns, or references it.
+ */
+sealed interface KnowledgeSubmissionDisposition {
+
+    data class Promoted(
+        val item: KnowledgeItem,
+        val promotion: KnowledgePromotion,
+    ) : KnowledgeSubmissionDisposition
+
+    data class Declined(
+        val basis: String,
+    ) : KnowledgeSubmissionDisposition {
+        init {
+            require(basis.isNotBlank()) { "KnowledgeSubmissionDisposition.Declined.basis must not be blank" }
+        }
+    }
+
+    data class NotAuthorised(
+        val reason: String,
+    ) : KnowledgeSubmissionDisposition {
+        init {
+            require(reason.isNotBlank()) { "KnowledgeSubmissionDisposition.NotAuthorised.reason must not be blank" }
+        }
+    }
+}
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 8. Knowledge
+ * Memory's single public write boundary for the constitutional
+ * [KnowledgeCandidate] path -- see
+ * `docs/governance/PROGRAMME_3_UNIT_8_SCOPE_LOCK_CLARIFICATION.md`, in
+ * full, for the constitutional reasoning this interface's one operation
+ * implements. Not a rename, adapter, or evolution of legacy
+ * [KnowledgeStore.remember] -- the two remain separate, non-overlapping
+ * seams (`docs/governance/PROGRAMME_3_UNIT_5_SCOPE_LOCK_CLARIFICATION.md`
+ * §1, §3), and this interface neither calls nor depends on [KnowledgeStore]
+ * in any way.
+ *
+ * One operation only. [submit] performs Evaluation B, invokes
+ * [KnowledgeCandidateEvaluator] exactly once on approval, and persists
+ * only a successful promotion -- see the default implementation
+ * (`src/runtime/DefaultKnowledgeSubmission.kt`) for the concrete
+ * sequencing. This interface itself expresses no evaluation policy, no
+ * promotion criteria, no lifecycle operation, no retrieval capability,
+ * and no storage mechanic of any kind -- every one of those remains
+ * exactly where existing, closed governance already placed it.
+ *
+ * [requestingPrincipalId] is a required, explicit parameter -- never
+ * carried on [KnowledgeCandidate] itself, and never assumed from ambient
+ * context (Unit 8 Clarification §6) -- mirroring [MemoryCore]'s,
+ * [MemoryRetrieval]'s, and [EvidenceCustodian]'s own identical,
+ * already-established treatment of caller identity.
+ */
+interface KnowledgeSubmission {
+    suspend fun submit(requestingPrincipalId: PrincipalId, candidate: KnowledgeCandidate): KnowledgeSubmissionDisposition
+}
