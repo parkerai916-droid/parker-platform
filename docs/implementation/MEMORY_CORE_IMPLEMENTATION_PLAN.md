@@ -536,3 +536,67 @@ or public contract is introduced anywhere in this plan.
 ```
 READY FOR IMPLEMENTATION
 ```
+
+---
+
+## 17. Unit 10 Acceptance Tracking
+
+**Implemented, pending Steve's own native verification (compilation, test
+run, commit, push).** Not claimed as compiled or passing by the
+implementing session — per this repository's own discipline, only Steve
+performs that verification.
+
+- **New files:** `src/composition/PermissionGatedMemoryCore.kt`,
+  `src/composition/PermissionFilteredMemoryRetrieval.kt`,
+  `tests/composition/PermissionGatedMemoryCoreTest.kt`,
+  `tests/composition/PermissionFilteredMemoryRetrievalTest.kt`.
+- **`src/composition/ParkerRuntime.kt`: comment-only change, corrected
+  after review.** An earlier pass constructed
+  `EventPublishingMemoryCore`/`PermissionGatedMemoryCore`/
+  `PermissionFilteredMemoryRetrieval` live in this file, but every
+  resulting local `val` had no reader anywhere in the running system (no
+  consumer exists yet) -- flagged by the compiler itself
+  ("variable ... is never used" for the latter two) and corrected by
+  removing that construction rather than retaining dead objects or
+  suppressing the warning. `ParkerRuntime.kt`'s only change is now an
+  expanded comment recording that Unit 10's two decorators are fully
+  implemented and independently verified (below) but not yet composed
+  into the live runtime graph -- exactly the same dormant-but-unwired
+  state `EventPublishingMemoryCore` (Unit 9) itself has already sat in
+  since its own construction. `EvidenceRegistrationCoordinator`'s own
+  existing `MemoryCore` dependency is untouched; live composition of
+  either new decorator, and constructing any Evidence Intelligence or
+  Knowledge Memory consumer of `PermissionFilteredMemoryRetrieval`,
+  remains deferred to whichever future unit introduces their first real
+  consumer.
+- **Governance followed, not invented:** `MEMORY_CORE_CONTRACT_DESIGN_ERRATA_004.md`
+  (an already-adopted interface amendment this session found already
+  reflected in `MemoryCore`/`MemoryRetrieval`/`InMemoryMemoryCore`/
+  `EventPublishingMemoryCore`'s own current signatures) settles every
+  question this Unit's own Section 7/11 prose left ambiguous: the frozen
+  composition order (`PermissionGatedMemoryCore` wraps
+  `EventPublishingMemoryCore` wraps `InMemoryMemoryCore`;
+  `PermissionFilteredMemoryRetrieval` wraps `InMemoryMemoryCore` directly),
+  the resource representation (`targetResources` always `emptyList()`,
+  never a disclosed `ResourceId`), and write-side denial semantics (a
+  thrown `MemoryCoreWriteDeniedException`, not a returned sealed result --
+  superseding this Section's own earlier Section 11 prose, which Errata
+  004 explicitly corrects). No new governance document was drafted; no
+  `MemoryCore`/`MemoryRetrieval`/`PermissionEngine` contract was modified.
+- **Disclosed, expected consequence, once composed (not yet the case
+  today):** were either decorator composed with the existing, shared
+  `permissionEngine`, every operation routed through it would be denied
+  unconditionally (Errata 004 Section 7's own disclosed reasoning -- the
+  production `DefaultPermissionPolicy`'s `ResourceRegistry`-based
+  resolution can never approve a check whose `targetResources` is empty).
+  Supplying a dedicated policy able to decide these checks without a
+  resolved target Resource remains a distinct, future Runtime-composition
+  decision, not part of this Unit.
+- **Test-fixture correction:** two `PermissionFilteredMemoryRetrievalTest.kt`
+  tests (`findByMetadata`, `findByProvenance`) originally constructed a
+  `MetadataLookupQuery`/`ProvenanceLookupQuery` that violated that query
+  type's own construction-time validation (`metadataFilter` empty;
+  no `sourceType`/`creator`/`contentNature`/`sensitivity` supplied) --
+  an invalid test fixture, not a decorator or contract defect. Corrected
+  in the tests only; `PermissionFilteredMemoryRetrieval.kt` was never
+  reached by either failure and was not changed.
