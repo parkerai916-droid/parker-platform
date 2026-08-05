@@ -852,6 +852,32 @@ sequence appear shorter than it is.
   three-outcome representation, and its statelessness are each
   demonstrated, not merely asserted.
 
+*Acceptance-tracking note (added after the fact, not part of this unit's
+original purpose/responsibilities/dependency/verification text above,
+which is unchanged).* `EvidenceIntelligenceAcceptanceCoordinator`
+(`src/runtime/EvidenceIntelligenceAcceptanceCoordinator.kt`) implements
+this Unit against the now-satisfied Programme 3 Unit 8 dependency
+(`docs/reviews/PROGRAMME_4_UNIT_7_DEPENDENCY_RECORD.md`). Its four
+constructor dependencies are exactly `EvidenceCustodian`, `MemoryCore`,
+`KnowledgeSubmission`, and `PermissionEngine`; it holds its own
+`PermissionEngine` reference solely for the `CandidateRecordProduced`
+leg, using a new, disclosed-but-unregistered resource/action pair
+(`EvidenceIntelligenceAcceptanceCoordinator.MEMORY_CORE_ACCEPTANCE_RESOURCE_ID`/
+`ACCEPT_MEMORY_CORE_CANDIDATE_ACTION_NAME`), distinct from
+`EvidenceRegistrationCoordinator`'s own pair. `EvidenceCustodian.accept`
+and `KnowledgeSubmission.submit` are invoked unchanged, both already
+self-gating; neither is re-evaluated by this class. The per-candidate
+outcome representation is an internal, non-public sealed type
+(`EvidenceIntelligenceAcceptanceOutcome`, with `CandidateMemoryCoreRecordResult`
+as its Memory-Core-write payload selector), reusing `EvidenceAcceptanceResult`
+and `KnowledgeSubmissionDisposition` unchanged, adding only the one case
+neither existing public type can express -- a Memory Core write denied by
+this class's own Permission Engine decision. Tests added:
+`tests/runtime/EvidenceIntelligenceAcceptanceCoordinatorTest.kt`. Runtime
+composition (registering this coordinator, Unit 5, and Unit 6 into
+`ParkerRuntime`) remains Unit 8's own, separately governed responsibility,
+not begun here.
+
 ### Unit 8 — Runtime Composition and Full Verification
 
 - **Purpose.** Wire Units 1–7 into Parker's own composition root, and
