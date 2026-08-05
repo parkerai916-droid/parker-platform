@@ -163,3 +163,26 @@ Each step depends only on steps already completed (Section 3's own dependency li
 **Ready to begin implementation.**
 
 Every unit in Section 3 traces to a specific Scope Lock deliverable (§5) and constitutional obligation (§6); the one deliberately new sequencing decision this plan makes — isolating the rename as its own, first, zero-behaviour-change unit — directly serves the planning principle of minimising migration risk while keeping Parker buildable throughout. No unit depends on undelivered work from a later Programme, and Section 9 names every item explicitly excluded to prevent scope creep. No completion criterion in Section 8 is subjective. This plan introduces no architecture, no contract, and no constitutional decision beyond what `PROGRAMME_3_KNOWLEDGE_MEMORY_SCOPE_LOCK.md` and `PROGRAMME_3_KNOWLEDGE_MEMORY_CONTRACT_DESIGN_V2.md` already froze.
+
+---
+
+## Tracking Note (added after the fact — not part of the plan above, which is unchanged)
+
+Programme 4, Evidence Intelligence, Unit 8 ("Runtime Composition") now
+composes Knowledge Submission specifically:
+`DefaultKnowledgeCandidateEvaluator`, `DefaultKnowledgeSubmission`, and one
+long-lived `InMemoryKnowledgeItemPersistence`, into `ParkerRuntime.kt`
+(`src/composition/`), with the `WRITE`/`MEMORY` permission mapping for
+`DefaultKnowledgeSubmission`'s own disclosed Resource/action registered
+against the shared `ResourceRegistry`/`ActionVocabulary`. This satisfies
+the Knowledge Submission portion of runtime reachability only.
+
+This is **not** this document's own Unit 8 ("permission-boundary wiring")
+or Unit 10 ("composition wiring and full regression/acceptance
+verification") — neither is marked complete by this note. Knowledge
+Query, Knowledge Result, Knowledge Retrieval (this plan's own Unit 9),
+the full migration away from the legacy `MemoryStore` flat-field shape,
+and this plan's own dedicated acceptance checklist (Unit 10) remain
+entirely distinct, separately scoped, and not begun by Programme 4 Unit
+8's work. Promoted `KnowledgeItem`s are, today, durable but unexposed —
+no retrieval path onto them exists anywhere in the composed runtime.

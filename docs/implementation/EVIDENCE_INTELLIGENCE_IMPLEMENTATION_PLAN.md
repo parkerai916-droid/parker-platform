@@ -1214,3 +1214,70 @@ production code touched; no Constitutional Decision Record created;
 Unit 1 not begun by this document; the Unit 2 verification gate (§8
 Unit 2; §9; §10, item 13, above) stands as a mandatory, binding stop
 condition on all implementation that follows.
+
+---
+
+## 14. Unit 8 Acceptance Tracking
+
+*(Added after the fact, not part of §7/§8's original purpose/
+responsibilities/dependency/verification text, which is unchanged.)*
+
+`ParkerRuntime.kt` (`src/composition/`) now composes Units 1–7 additively,
+and adds one new production entry point, `analyseEvidence(requestingPrincipalId,
+request)`, mirroring `submitEvidence`/`retrieveEvidence`/`deleteEvidenceAsOwner`'s
+own existing style exactly. Unit 5 (`DefaultEvidenceIntelligence`) and Unit
+6 (`EvidenceIntelligenceInvocationGate`) are composed and registered
+together, never separately — `analyseEvidence` evaluates Unit 6's own
+proposal class first, via the shared `PermissionEngine`, and calls
+`EvidenceIntelligence.analyse` only on `APPROVED`/`APPROVED_WITH_CONFIRMATION`.
+Its returned list is passed unchanged, in order, to Unit 7's
+`EvidenceIntelligenceAcceptanceCoordinator.dispatch`, using the same
+explicit `requestingPrincipalId`. No conversation-path code (`submitOwnerMessage`
+and everything it calls) references any Evidence Intelligence type —
+confirmed both by dependency-reachability review and by a dedicated
+regression test.
+
+**Shared dependencies, not parallel ones.** The single existing
+`InMemoryMemoryCore`, `DefaultEvidenceCustodian`, `PermissionEngine`, and
+`ReasoningProvider` instances are reused unchanged. One
+`PermissionFilteredMemoryRetrieval` (Programme 2, Memory Core Runtime
+Composition Unit 10 — implemented and independently verified, until now
+unwired) is composed, wrapping the existing `InMemoryMemoryCore`, and is
+the one instance both `EvidenceIntelligenceInputResolver` and
+`DefaultKnowledgeCandidateEvaluator` receive. `PermissionGatedMemoryCore`
+is **not** constructed: `EvidenceRegistrationCoordinator` and
+`EvidenceIntelligenceAcceptanceCoordinator` each already gate their own
+Memory Core writes internally, so wrapping either's raw `MemoryCore`
+dependency in it would double-gate an already-gated call — no genuine
+consumer for it exists in this runtime graph.
+
+**Permission registration.** Three previously disclosed-but-unregistered
+conventions are now registered against the shared `ResourceRegistry`/
+`ActionVocabulary`: Unit 6's invocation gate (`EXECUTE`/`DOCUMENT` — a
+genuinely new policy rule was added, since no rule previously existed for
+this pair), Unit 7's Memory Core acceptance gate, and Programme 3 Unit
+8's Knowledge Submission gate (both `WRITE`/`MEMORY` — already an
+`APPROVED` rule; only their own Resource/`ActionVocabulary` entries were
+new). `PermissionFilteredMemoryRetrieval`'s own retrieval actions are
+**deliberately left unregistered**: `MEMORY_CORE_CONTRACT_DESIGN_ERRATA_004.md`
+§7 already establishes that `targetResources` is always empty for a
+Memory Core retrieval check, so no Resource registration could ever let
+the existing `ResourceRegistry`-based policy resolution approve one.
+Memory Core retrieval through this runtime therefore remains genuinely
+fail-closed today, confirmed by a dedicated integration test seeding a
+real Memory Core record directly and showing it is still denied through
+the governed path — not merely asserted.
+
+**New composition-local type.** `EvidenceIntelligenceInvocationOutcome`
+(`src/composition/EvidenceIntelligenceInvocationOutcome.kt`), mirroring
+`ParkerRuntimeOutcome`'s own precedent, distinguishes exactly
+`NotAuthorised` and `Completed`. It does not count against Evidence
+Intelligence's own four-type public ceiling — the same footing
+`EvidenceIntelligenceInvocationGate` and `EvidenceIntelligenceAcceptanceCoordinator`
+already occupy. `Completed`'s own constructor and property are `internal`
+(narrower than the sealed type itself, which must be `public` to be a
+public method's return type) because it carries
+`EvidenceIntelligenceAcceptanceCoordinator`'s own `internal`
+`EvidenceIntelligenceAcceptanceOutcome` list unchanged.
+
+Tests added: `tests/composition/ParkerRuntimeEvidenceIntelligenceCompositionTest.kt`.

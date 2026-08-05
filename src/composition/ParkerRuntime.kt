@@ -14,12 +14,15 @@ import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
+import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceDeletionResult
+import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeSource
+import parker.core.interfaces.KnowledgeSubmission
 import parker.core.interfaces.MemoryCore
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
@@ -28,6 +31,7 @@ import parker.core.interfaces.ModulePermissionRequirement
 import parker.core.interfaces.OwnerEvidenceDeletionAuthority
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
+import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PermissionLevel
 import parker.core.interfaces.PlanningSessionResult
 import parker.core.interfaces.Principal
@@ -48,7 +52,10 @@ import parker.core.runtime.ConversationOutcome
 import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultEvidenceCustodian
+import parker.core.runtime.DefaultEvidenceIntelligence
 import parker.core.runtime.DefaultExecutionPipeline
+import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
+import parker.core.runtime.DefaultKnowledgeSubmission
 import parker.core.runtime.DefaultOwnerEvidenceDeletionAuthority
 import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
@@ -56,6 +63,10 @@ import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.DeterministicAgentStepSource
+import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
+import parker.core.runtime.EvidenceIntelligenceInputResolver
+import parker.core.runtime.EvidenceIntelligenceInvocationGate
+import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
@@ -68,6 +79,7 @@ import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
+import parker.core.runtime.InMemoryKnowledgeItemPersistence
 import parker.core.runtime.InMemoryKnowledgeStore
 import parker.core.runtime.InMemoryMemoryCore
 import parker.core.runtime.InMemoryModuleRegistry
@@ -204,6 +216,18 @@ class ParkerRuntime(
     private lateinit var evidenceCustodian: EvidenceCustodian
     private lateinit var evidenceRegistrationCoordinator: EvidenceRegistrationCoordinator
     private lateinit var ownerEvidenceDeletionAuthority: OwnerEvidenceDeletionAuthority
+
+    // Programme 4, Evidence Intelligence, Unit 8 ("Runtime Composition"). permissionEngine is
+    // promoted from a construction-local val (used throughout buildAndRegisterRuntimeGraph
+    // already) to a field only because analyseEvidence, below, is the first production entry
+    // point that must evaluate a permission decision directly, rather than delegating to a
+    // coordinator that already holds its own reference -- the same single, shared instance,
+    // never a second one. evidenceIntelligence is held as its own narrow public interface type
+    // (mirroring evidenceCustodian's own precedent, above); evidenceIntelligenceAcceptanceCoordinator
+    // remains its concrete, internal type, since Unit 7 authorises no public interface for it.
+    private lateinit var permissionEngine: PermissionEngine
+    private lateinit var evidenceIntelligence: EvidenceIntelligence
+    private lateinit var evidenceIntelligenceAcceptanceCoordinator: EvidenceIntelligenceAcceptanceCoordinator
 
     /**
      * Runs the full construction and startup sequence exactly once. Throws
@@ -527,9 +551,21 @@ class ParkerRuntime(
                     outcome = PermissionDecisionOutcome.APPROVED,
                     level = PermissionLevel.AUTOMATIC,
                 ),
+                // Programme 4, Evidence Intelligence, Unit 8: the invocation-gating proposal class
+                // (Implementation Plan Section 8 Unit 6) -- a genuinely new (action, resourceType)
+                // pair for this policy (EXECUTE/AGENT above governs a structurally distinct domain
+                // act, Controlled Agent Run Submission; DOCUMENT above governs WRITE/READ/DELETE,
+                // never previously EXECUTE). AUTOMATIC, not APPROVED_WITH_CONFIRMATION, mirroring
+                // every other rule's own "no confirmation-collection mechanism exists" reasoning.
+                PermissionPolicyRule(
+                    action = PermissionAction.EXECUTE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                ),
             ),
         )
-        val permissionEngine = DefaultPermissionEngine(identityService, permissionPolicy)
+        permissionEngine = DefaultPermissionEngine(identityService, permissionPolicy)
         val executionPipeline = DefaultExecutionPipeline(
             resourceRegistry,
             actionMapper,
@@ -551,13 +587,22 @@ class ParkerRuntime(
         // constructed above) is a distinct interface and has never required a live MemoryCore
         // instance. Plain InMemoryMemoryCore is used deliberately, not the EventPublishingMemoryCore
         // decorator that already exists in this package (src/composition/EventPublishingMemoryCore.kt):
-        // wiring Memory Core's own event publication live for the first time is a separate decision
-        // this Unit does not make -- EvidenceRegistrationCoordinator only requires a MemoryCore, not
-        // an event-publishing one.
+        // wiring Memory Core's own event publication live for the first time remains a separate
+        // decision this Unit does not make -- EvidenceRegistrationCoordinator only requires a
+        // MemoryCore, not an event-publishing one. PermissionGatedMemoryCore (also already
+        // implemented and independently verified, Programme 2) likewise remains unconstructed here:
+        // EvidenceRegistrationCoordinator (below) and EvidenceIntelligenceAcceptanceCoordinator
+        // (Programme 4 Unit 8, further below) each already gate their own MemoryCore writes
+        // internally, so wrapping either's raw memoryCore dependency in PermissionGatedMemoryCore
+        // would double-gate an already-gated call; no genuine consumer for it exists in this graph.
+        // inMemoryMemoryCore itself, however, now has its first genuine reader beyond memoryCore:
+        // Programme 4 Unit 8's shared PermissionFilteredMemoryRetrieval (below) wraps this exact
+        // instance directly -- one Memory Core, never a parallel one.
         val evidenceArtifactStorage = stage("Evidence Custodian storage construction") {
             FileSystemEvidenceArtifactStorage(Path.of(config.evidenceStorageRootPath))
         }
-        val memoryCore: MemoryCore = InMemoryMemoryCore()
+        val inMemoryMemoryCore = InMemoryMemoryCore()
+        val memoryCore: MemoryCore = inMemoryMemoryCore
         val defaultEvidenceCustodian = DefaultEvidenceCustodian(evidenceArtifactStorage, permissionEngine)
         evidenceCustodian = defaultEvidenceCustodian
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
@@ -667,6 +712,114 @@ class ParkerRuntime(
             goalPlanningHandoffCoordinator,
         )
         runtimeEventLogger = RuntimeEventLogger(eventBus, logger, SYSTEM_PARKER_PRINCIPAL_ID)
+
+        // Programme 4, Evidence Intelligence, Unit 8 ("Runtime Composition and Full
+        // Verification", Implementation Plan Section 8 Unit 8). Wires Units 1-7 -- already
+        // implemented and independently verified in isolation -- into this composition root,
+        // reusing every shared dependency Section 5 of the Implementation Plan already fixes
+        // (inMemoryMemoryCore, defaultEvidenceCustodian, permissionEngine, reasoningProvider);
+        // none is duplicated. analyseEvidence, below, is the sole production entry point:
+        // neither this block nor any other code path attaches Evidence Intelligence to
+        // submitOwnerMessage or any conversation path, and no background analysis is started.
+        //
+        // permissionFilteredMemoryRetrieval is the one shared PermissionFilteredMemoryRetrieval
+        // (Programme 2, already implemented, until now unwired) that both
+        // EvidenceIntelligenceInputResolver and DefaultKnowledgeCandidateEvaluator receive --
+        // never a second instance, and inMemoryMemoryCore is never exposed to either as a raw
+        // MemoryRetrieval. Its own memory.retrieve/memory.retrieve_document actions are
+        // deliberately left unregistered below (Errata 004 Section 7): targetResources is always
+        // empty for a Memory Core retrieval check, so no Resource registration could ever let
+        // DefaultPermissionPolicy's ResourceRegistry-based resolution approve one -- Memory
+        // Retrieval therefore remains genuinely, honestly fail-closed through this runtime, not
+        // merely in isolated unit tests.
+        val permissionFilteredMemoryRetrieval = PermissionFilteredMemoryRetrieval(inMemoryMemoryCore, permissionEngine)
+
+        // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"). One
+        // long-lived InMemoryKnowledgeItemPersistence for the lifetime of this ParkerRuntime --
+        // never recreated per invocation, never exposed for retrieval (Knowledge Memory's own
+        // read boundary onto Memory Core remains a distinct, not-yet-built unit, per
+        // docs/implementation/PROGRAMME_3_KNOWLEDGE_MEMORY_IMPLEMENTATION_PLAN.md).
+        val knowledgeItemPersistence = InMemoryKnowledgeItemPersistence()
+        val knowledgeCandidateEvaluator = DefaultKnowledgeCandidateEvaluator(permissionFilteredMemoryRetrieval)
+        val knowledgeSubmission: KnowledgeSubmission = DefaultKnowledgeSubmission(
+            knowledgeCandidateEvaluator,
+            knowledgeItemPersistence,
+            permissionEngine,
+        )
+
+        val evidenceIntelligenceInputResolver = EvidenceIntelligenceInputResolver(defaultEvidenceCustodian, permissionFilteredMemoryRetrieval)
+        val evidenceIntelligenceReasoningCoordinator = EvidenceIntelligenceReasoningCoordinator(reasoningProvider)
+        evidenceIntelligence = DefaultEvidenceIntelligence(evidenceIntelligenceInputResolver, evidenceIntelligenceReasoningCoordinator)
+
+        // The existing raw memoryCore, not a PermissionGatedMemoryCore wrapper: this coordinator
+        // already gates its own CandidateRecordProduced dispatch internally (its own
+        // permissionEngine, MEMORY_CORE_ACCEPTANCE_RESOURCE_ID/ACCEPT_MEMORY_CORE_CANDIDATE_ACTION_NAME),
+        // exactly as EvidenceRegistrationCoordinator (above) already does for its own two MemoryCore
+        // calls -- wrapping memoryCore here would double-gate an already-gated write.
+        evidenceIntelligenceAcceptanceCoordinator = EvidenceIntelligenceAcceptanceCoordinator(
+            defaultEvidenceCustodian,
+            memoryCore,
+            knowledgeSubmission,
+            permissionEngine,
+        )
+
+        // Resource/ActionVocabulary registration for the three disclosed-but-previously-
+        // unregistered conventions this graph now makes reachable: Unit 6's invocation gate
+        // (EXECUTE/DOCUMENT, a genuinely new pair for this policy, registered above), Unit 7's
+        // Memory Core acceptance gate, and Programme 3 Unit 8's Knowledge Submission gate (both
+        // WRITE/MEMORY -- already an APPROVED rule above; only their own Resource/ActionVocabulary
+        // registration is new here). Mirrors the Evidence Custodian resource/action registration
+        // above exactly, in shape and discipline.
+        stage("Evidence Intelligence resource registration") {
+            val now = clock()
+            listOf(
+                Triple(
+                    EvidenceIntelligenceInvocationGate.EVIDENCE_INTELLIGENCE_INVOCATION_RESOURCE_ID,
+                    ResourceType.DOCUMENT,
+                    "Evidence Intelligence Invocation",
+                ),
+                Triple(
+                    EvidenceIntelligenceAcceptanceCoordinator.MEMORY_CORE_ACCEPTANCE_RESOURCE_ID,
+                    ResourceType.MEMORY,
+                    "Evidence Intelligence Memory Core Acceptance",
+                ),
+                Triple(DefaultKnowledgeSubmission.KNOWLEDGE_SUBMISSION_RESOURCE_ID, ResourceType.MEMORY, "Knowledge Submission"),
+            ).forEach { (resourceId, resourceType, displayName) ->
+                resourceRegistry.register(
+                    Resource(
+                        resourceId = resourceId,
+                        resourceType = resourceType,
+                        displayName = displayName,
+                        ownerPrincipalId = SYSTEM_PARKER_PRINCIPAL_ID,
+                        sensitivity = ResourceSensitivity.PUBLIC,
+                        lifecycleState = ResourceLifecycleState.REGISTERED,
+                        createdAt = now,
+                        updatedAt = now,
+                        source = "composition-root:evidence-intelligence",
+                    ),
+                )
+            }
+        }
+        stage("Evidence Intelligence action vocabulary registration") {
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = EvidenceIntelligenceInvocationGate.ANALYSE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.EXECUTE, ResourceType.DOCUMENT)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = EvidenceIntelligenceAcceptanceCoordinator.ACCEPT_MEMORY_CORE_CANDIDATE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DefaultKnowledgeSubmission.SUBMIT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
+                ),
+            )
+        }
     }
 
     private suspend fun registerSystemIdentities(identityService: InMemoryIdentityService) {
@@ -953,6 +1106,65 @@ class ParkerRuntime(
         }
         logger.info("Evidence deletion requested by owner (evidenceArtifactId=${evidenceArtifactId.value})")
         return ownerEvidenceDeletionAuthority.deleteAsOwner(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)
+    }
+
+    /**
+     * Programme 4, Evidence Intelligence, Unit 8 ("Runtime Composition"). The sole production
+     * entry point through which Evidence Intelligence may be invoked -- **explicit invocation
+     * only** (Implementation Plan Section 3: "Autonomous or self-initiated analysis" is out of
+     * scope). Never called by [submitOwnerMessage], the interactive console, or any other
+     * conversation-path code; [request] must already be fully constructed by the caller -- this
+     * method performs no document parsing, retrieval, or candidate construction of its own.
+     *
+     * **Sequence, exactly as Scope Lock Section 6 fixes it:**
+     * 1. Evaluates Unit 6's own invocation-gating proposal class
+     *    ([EvidenceIntelligenceInvocationGate.buildExecutionRequest]) via the shared
+     *    [permissionEngine], using [requestingPrincipalId] -- never [request]'s own embedded
+     *    `requestingPrincipalId` field, which [EvidenceIntelligence.analyse] reads for its own,
+     *    separate audit purpose.
+     * 2. On any outcome other than `APPROVED`/`APPROVED_WITH_CONFIRMATION`, returns
+     *    [EvidenceIntelligenceInvocationOutcome.NotAuthorised] immediately -- [evidenceIntelligence]
+     *    is never called.
+     * 3. On approval, calls [EvidenceIntelligence.analyse] exactly once.
+     * 4. Passes its returned list, completely unchanged and in the same order, to
+     *    [EvidenceIntelligenceAcceptanceCoordinator.dispatch], using the same
+     *    [requestingPrincipalId] used for the gate above.
+     * 5. Returns [EvidenceIntelligenceInvocationOutcome.Completed], carrying that dispatch's own
+     *    returned list, unchanged.
+     *
+     * No retry, and no exception handling of any kind beyond the [RuntimeLifecycleState.RUNNING]
+     * guard every production entry point on this class already requires -- a genuine fault from
+     * [permissionEngine], [evidenceIntelligence], or [evidenceIntelligenceAcceptanceCoordinator]
+     * propagates unchanged out of this method.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun analyseEvidence(
+        requestingPrincipalId: PrincipalId,
+        request: EvidenceAnalysisRequest,
+    ): EvidenceIntelligenceInvocationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+
+        val decision = permissionEngine.evaluate(EvidenceIntelligenceInvocationGate.buildExecutionRequest(requestingPrincipalId))
+        if (decision.decision != PermissionDecisionOutcome.APPROVED &&
+            decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
+        ) {
+            logger.info(
+                "Evidence Intelligence invocation not authorised (principal=${requestingPrincipalId.value}, " +
+                    "decision=${decision.decision})",
+            )
+            return EvidenceIntelligenceInvocationOutcome.NotAuthorised(
+                "Permission Engine did not authorise Evidence Intelligence invocation for principal " +
+                    "'${requestingPrincipalId.value}' (decision=${decision.decision})",
+            )
+        }
+
+        logger.info("Evidence Intelligence invocation authorised (principal=${requestingPrincipalId.value})")
+        val results = evidenceIntelligence.analyse(request)
+        val acceptanceOutcomes = evidenceIntelligenceAcceptanceCoordinator.dispatch(requestingPrincipalId, results)
+        return EvidenceIntelligenceInvocationOutcome.Completed(acceptanceOutcomes)
     }
 
     /**
