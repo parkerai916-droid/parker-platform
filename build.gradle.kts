@@ -25,6 +25,16 @@ repositories {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 
+    // Evidence Processing (Searchable PDF), Implementation Unit 2 ("Apache Tika Adapter").
+    // Verified against Maven Central during the Implementation Plan's own planning pass
+    // (docs/architecture/EVIDENCE_PROCESSING_SEARCHABLE_PDF_IMPLEMENTATION_PLAN.md, Section 5) --
+    // this repository's first third-party (non-kotlinx) production dependency. The scoped
+    // PDF-only parser module, not the full tika-parsers-standard-package bundle, and deliberately
+    // excluding tika-parser-ocr-module (never added, anywhere) -- OCR is structurally
+    // unreachable, not merely unconfigured (Boundary Clarification Determination 2).
+    implementation("org.apache.tika:tika-core:3.3.1")
+    implementation("org.apache.tika:tika-parser-pdf-module:3.3.1")
+
     testImplementation(kotlin("test-junit5"))
     testImplementation(kotlin("reflect"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")

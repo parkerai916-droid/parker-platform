@@ -736,3 +736,67 @@ Evidence Custodian Implementation Plan, Memory Core's own contracts,
 `EvidenceRegistrationCoordinator`, and the paused Evidence Intelligence
 Contract Design all unmodified by this document; nothing staged; nothing
 committed; nothing pushed.
+
+---
+
+## Acceptance Tracking
+
+*(Added after the fact, not part of this Plan's own original Sections
+1-10 above, which are unchanged.)*
+
+**Units 1-4B implemented, pending Steven's own native verification
+(compilation, full test run, real-world corpus proof, staging, commit,
+push).** Not claimed as compiled or passing by the implementing session —
+per this repository's own discipline, only Steven performs that
+verification. Units 5 (Production Composition), 6 (Verification), and 7
+(Real-World Operational Proof) are **not begun** by this pass — this
+programme explicitly ends before runtime integration, per this task's own
+instruction; `ParkerRuntime.kt`, `ParkerRuntimeConfig.kt`, `Main.kt`, and
+Docker configuration are all unmodified.
+
+- **Unit 1 (Extraction Contracts):** `src/interfaces/EvidenceExtractor.kt`
+  -- `EvidenceExtractor`, `ExtractionOutcome` (four variants: `Extracted`,
+  `RequiresOcr`, `Unsupported`, `Malformed`), `ExtractionResult`,
+  `ExtractionIdentity`, `EmbeddedResourceObservation`. No digest field, no
+  confidence field, matching Scope Lock Section 6 exactly.
+- **Unit 2 (Apache Tika Adapter):** `build.gradle.kts` gained
+  `org.apache.tika:tika-core:3.3.1` and
+  `org.apache.tika:tika-parser-pdf-module:3.3.1` -- this repository's
+  first third-party production dependency. `src/runtime/TikaEvidenceExtractor.kt`
+  is the sole implementation of `EvidenceExtractor` and the only file
+  permitted to import `org.apache.tika.*`, confirmed by a structural
+  reflection test and a source-scan test across all of `src/`. Invokes
+  `PDFParser` explicitly (never `AutoDetectParser`), never invokes OCR
+  (`tika-parser-ocr-module` is not a dependency anywhere), and performs no
+  network communication. `tests/fixtures/synthetic-searchable.pdf` (a
+  hand-constructed, minimal, valid single-page PDF, ~600 bytes) is
+  committed for deterministic CI; `tests/fixtures/local/` (gitignored) is
+  reserved for Unit 7's own real-world corpus.
+- **Unit 3 (Human Review Registry):** `src/interfaces/DerivativeReview.kt`
+  -- `DerivativeReviewState` (four values), `DerivativeReviewRecord`,
+  `DerivativeReviewRegistry`. `src/runtime/InMemoryDerivativeReviewRegistry.kt`
+  -- append-only, mutex-guarded, with `DerivativeReviewTransitions`
+  enforcing the fixed transition graph (mirroring
+  `MemoryCoreLifecycleTransitions`'s own precedent exactly): `null` only
+  to `PENDING_REVIEW`; `PENDING_REVIEW` only to `APPROVED`/`REJECTED`/`NEEDS_CORRECTION`;
+  all three terminal thereafter, including rejecting `NEEDS_CORRECTION` ->
+  `PENDING_REVIEW` on the same identifier.
+- **Units 4A/4B (Coordinator):** `src/runtime/EvidenceExtractionCoordinator.kt`
+  -- `EvidenceExtractionCoordinator` (five dependencies exactly:
+  `EvidenceCustodian`, `MemoryRetrieval`, `EvidenceExtractor`,
+  `EvidenceRegistrationCoordinator`, `DerivativeReviewRegistry`; no
+  `PermissionEngine` reference), `EvidenceExtractionOutcome` (ten
+  variants), `IntegrityVerificationOutcome` (three variants). Implements
+  the full nine-step sequence Boundary Clarification Section 7 fixes.
+  `EvidenceRegistrationCoordinator` itself is unmodified and reused
+  exactly as an existing caller would use it.
+- **Disclosed action-name convention:** `EvidenceExtractionCoordinator.EXTRACT_ACTION_NAME`
+  (`"evidence.extract"`), a companion-object constant, not registered
+  anywhere by this pass (Scope Lock Section 8) -- a future Unit 5
+  registers it, together with the review-approval action this pass does
+  not name (no prior operation corresponds to it yet).
+- **Tests added:** `tests/contracts/EvidenceExtractorScopeTest.kt`,
+  `tests/contracts/DerivativeReviewScopeTest.kt`,
+  `tests/runtime/TikaEvidenceExtractorTest.kt`,
+  `tests/runtime/InMemoryDerivativeReviewRegistryTest.kt`,
+  `tests/runtime/EvidenceExtractionCoordinatorTest.kt`.
