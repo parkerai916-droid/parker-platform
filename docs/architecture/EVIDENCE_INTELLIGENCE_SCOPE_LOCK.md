@@ -27,6 +27,17 @@ distinct permission-relevant domain act — are decided in this version
 draft of this document deferred both; the Contract Design does not
 permit that, since it assigned both to this governance stage by name.
 
+### Amendment 2 — OCR Mechanism Dependency (Mirrored)
+
+This document is amended by Amendment 2, mirroring the Contract Design's
+own Amendment 2 exactly, as this document's own §4 requires ("Exactly
+which public contracts may be depended upon is frozen at precisely the
+Contract Design's own §12 table — no more, no less"): the identical
+fourth dependency row the Contract Design's own §12 now carries is added
+below (§4). No other paragraph in this document is altered by it.
+Amendment 2's own scope was fixed in advance by
+`docs/reviews/EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN_OCR_MECHANISM_AMENDMENT_PROPOSAL.md`.
+
 **This document is binding, now that it has been accepted.** It does not redesign, and
 does not revisit, any constitutional decision already made.
 `docs/decisions/CDR-007_CONSTITUTIONAL_CLASSIFICATION_OF_EVIDENCE_INTELLIGENCE.md`
@@ -123,7 +134,7 @@ discovered to be genuinely needed).
 | A document ingestion pipeline, or any acceptance of raw, uncustodied evidence bytes | Contract Design §4 ("Never accepted as input, by design") |
 | A user interface of any kind | No interface, output, or responsibility anywhere in the Contract Design is presentation-shaped; §10 defines exactly one request-in/results-out operation |
 | Android or any client/mobile-layer work | Not named, authorised, or implied anywhere in the Contract Design; entirely outside CDR-007's own subsystem classification |
-| Planning, or any dependency on Planner Runtime | Not named in Contract Design §12's dependency table; the three-row table is exhaustive |
+| Planning, or any dependency on Planner Runtime | Not named in Contract Design §12's dependency table; that table (four rows, following Amendment 2) remains exhaustive |
 | Execution, or any dependency on Execution Pipeline | Not named in Contract Design §12's dependency table; "Orchestrate downstream acceptance" is an explicit non-responsibility (§2) |
 | Autonomous or self-initiated analysis | Contract Design §10: the one operation Evidence Intelligence exposes takes an explicit, caller-supplied `EvidenceAnalysisRequest` (§4) and returns; nothing in the Contract Design authorises Evidence Intelligence to decide, on its own initiative, what or when to analyse |
 | Agent or Agent Runtime changes | Not named in Contract Design §12's dependency table; no relationship of any kind is described anywhere |
@@ -171,6 +182,7 @@ precisely the Contract Design's own §12 table — no more, no less.**
 | `EvidenceCustodian.retrieve` | Evidence Intelligence → Evidence Custodian | Read-only access to custodied originals and derivatives | Evidence Artifact Contract Design |
 | `MemoryRetrieval` | Evidence Intelligence → Memory Core | Read-only access to registered Memory Core records | Memory Core Contract Design |
 | `ReasoningProvider` (zero or more) | Evidence Intelligence → Reasoning Provider(s) | Internal analytical mechanism, orchestrated, never itself | Reasoning Provider Contract Design |
+| An OCR mechanism (zero or one) | Evidence Intelligence → OCR mechanism | Internal analytical mechanism, orchestrated, never itself, invoked only when an analysis's own input requires image-to-text interpretation (**Amendment 2**); never a truth authority, never a constitutional classifier, and never itself capable of assigning `EvidentialState` or determining what its own output means | Not yet governed — authorised in principle by Amendment 2; its own concrete contract remains a future, separate Contract Design's responsibility |
 
 **New contracts already authorised by the Contract Design (owned by
 Evidence Intelligence, §3):**

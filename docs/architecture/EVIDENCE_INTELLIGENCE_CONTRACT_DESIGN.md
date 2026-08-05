@@ -39,6 +39,82 @@ every paragraph below marked "Amendment 1" implements exactly what that
 proposal identified, and no other paragraph in this document is altered
 by it.
 
+### Amendment 2 — OCR Mechanism Dependency
+
+This document is amended by Amendment 2, which authorises a concrete OCR
+mechanism as a fourth Evidence Intelligence dependency (§12, below),
+structurally parallel to the existing `ReasoningProvider` row, so that
+`EvidenceIntelligence.analyse` may internally invoke it exactly as
+CDR-007 and this document's own §1 Responsibilities already say Evidence
+Intelligence is responsible for doing ("an OCR transcription" is already
+named there as an example of "Producing candidate derivative
+artefacts"). This amendment introduces no new `EvidenceAnalysisResult`
+variant, no new public type, no new responsibility, and no change to
+acceptance orchestration — it is a narrow dependency-list correction,
+not a redesign.
+
+Evidence Intelligence gains ownership of nothing new by this amendment;
+it becomes a consumer of a new dependency edge, exactly as it already is
+for `ReasoningProvider`. A future, separate OCR mechanism Contract
+Design — not drafted, not begun, and not named by this amendment — will
+own the OCR mechanism's own concrete contract, mirroring exactly how the
+Reasoning Provider Contract Design owns `ReasoningProvider`. Evidence
+Custodian retains exclusive ownership of any accepted OCR-transcription
+artefact after acceptance, unchanged. No ownership change is made to
+`EvidenceArtifactId`, `CandidateEvidenceArtifact`, `Provenance`, or any
+Memory Core or Knowledge Memory type. CDR-006's own classification of
+original evidence custody and immutability is unaffected and unreopened
+by this amendment. Evidence Processing's own ownership of OCR detection
+— the `RequiresOcr` disclosure `EvidenceExtractionCoordinator.extract`
+already produces — is likewise unaffected; this amendment touches no
+Evidence Processing governance document.
+
+This dependency remains, and can only ever be authorised as, a
+mechanical, orchestrated mechanism — exactly the same standing
+`ReasoningProvider` already has: no parser, no OCR engine, and no
+external library this dependency may eventually name ever possesses
+authority over truth, is a constitutional classifier, or is capable of
+assigning `EvidentialState` or determining what its own output means.
+
+**This amendment does not authorise, and no future reader should treat
+it as having authorised:** OCR implementation; OCR provider selection;
+OCR runtime composition; OCR orchestration (including who consumes
+Evidence Processing's own `RequiresOcr` disclosure); or the future OCR
+mechanism Contract Design itself. Two further questions remain
+separately, individually unresolved, neither one collapsed into the
+other or into "orchestration" generally: **owner control and
+authorisation for any machine-triggered OCR invocation** — an open
+question against Constitutional Test 1, not decided by this amendment
+and not decided by anything it relies upon; and **permission gating and
+disposition of OCR output rejected during output-quality validation** —
+whether such a rejection requires its own disclosed
+`PermissionAction`/`ResourceType` pairing, distinct from ordinary
+analytical judgment, is not decided by this amendment. Each of these,
+and the output-validation mechanism itself, remains future governance,
+to be produced separately, at the appropriate governance stage.
+
+CDR-006 and CDR-007 each performed a subsystem-tier constitutional
+classification — deciding that Evidence Custodian, and then Evidence
+Intelligence, exist at all as first-class, peer subsystems (CDR-007
+§1). The OCR mechanism this amendment authorises is not a peer
+subsystem of that kind; it is a capability-level dependency *within*
+the existing Evidence Intelligence subsystem, constitutionally
+analogous in tier to `ReasoningProvider` — which itself required no CDR
+of its own to be authorised as a dependency (§12, below). This mirrors
+the Constitution's own "Parker owns authority. Modules provide
+capability" principle (Core Principles): a module, including a
+reasoning provider, a tool integration, or a future extension, supplies
+capability to an already-classified subsystem without itself becoming a
+new subsystem. On this basis, no operative CDR-007 decision changes,
+and no constitutional-tier document changes; this remains a Contract
+Design evolution only, of the same tier and character as Amendment 1.
+Amendment 2's own scope was
+fixed in advance by
+`docs/reviews/EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN_OCR_MECHANISM_AMENDMENT_PROPOSAL.md`;
+every paragraph below marked "Amendment 2" implements exactly what that
+proposal identified, and no other paragraph in this document is altered
+by it.
+
 This document accepts `docs/decisions/CDR-007_CONSTITUTIONAL_CLASSIFICATION_OF_EVIDENCE_INTELLIGENCE.md`
 ("CDR-007") — Accepted, Canonical, and Frozen — as the controlling,
 already-decided constitutional basis for everything below, and does not
@@ -979,13 +1055,15 @@ spectrum, and must never be silently collapsed into either.
 ## 12. Dependency Model
 
 Every dependency below already exists in this repository's governed
-contracts. **No new platform subsystem is introduced by this document.**
+contracts, or is authorised by name below as a new, narrowly-scoped
+platform dependency (**Amendment 2**, OCR mechanism).
 
 | Dependency | Direction | Purpose | Already exists in |
 | --- | --- | --- | --- |
 | `EvidenceCustodian.retrieve` | Evidence Intelligence → Evidence Custodian | Read-only access to custodied originals and derivatives | Evidence Artifact Contract Design, implemented |
 | `MemoryRetrieval` | Evidence Intelligence → Memory Core | Read-only access to registered Memory Core records | Memory Core Contract Design |
 | `ReasoningProvider` (zero or more) | Evidence Intelligence → Reasoning Provider(s) | Internal analytical mechanism, orchestrated, never itself (as amended, Amendment 1: invoked via `ReasoningSubject.OfEvidenceAnalysisRequest`, wrapping `EvidenceAnalysisRequest` unmodified) | Reasoning Provider Contract Design |
+| An OCR mechanism (zero or one) | Evidence Intelligence → OCR mechanism | Internal analytical mechanism, orchestrated, never itself, invoked only when an analysis's own input requires image-to-text interpretation (**Amendment 2**); never a truth authority, never a constitutional classifier, and never itself capable of assigning `EvidentialState` or determining what its own output means | Not yet governed — authorised in principle by Amendment 2; its own concrete contract remains a future, separate Contract Design's responsibility |
 
 **Evidence Intelligence holds no dependency on any acceptance
 interface.** `EvidenceCustodian.accept`, `MemoryCore`'s public write
@@ -1319,8 +1397,11 @@ an ambiguous or shared owner.
 
 This Contract Design defines Evidence Intelligence's software contract
 exactly as CDR-007 governs it: three new public types, one new public
-interface, zero new platform subsystems, no amendment to any existing
-contract introduced *by this document* — Reasoning Provider Contract
+interface, zero new first-class or peer platform subsystems — Amendment
+2 (Status, above) authorises one additional capability-level dependency
+inside the existing Evidence Intelligence subsystem, never a subsystem
+of its own — no amendment to any existing contract introduced *by this
+document* — Reasoning Provider Contract
 Design has separately been amended by its own governing document
 (Amendment 1: `docs/architecture/REASONING_PROVIDER_CONTRACT_DESIGN.md`),
 and Evidence Intelligence reuses that already-amended contract unchanged
