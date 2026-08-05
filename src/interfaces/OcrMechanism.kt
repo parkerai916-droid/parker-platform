@@ -187,6 +187,65 @@ data class OcrRecognitionIdentity(
 }
 
 /**
+ * One portion of a recognition's own [OcrRecognitionResult.recognisedText]
+ * -- the finer granularity Implementation Plan Unit 6 adds to Unit 1's
+ * shape, authorised exactly, and only, by two already-frozen elaborations
+ * of existing Contract Design Section 5 categories, never a new output
+ * category: "recognised text, optionally organised at page-aligned
+ * granularity... an elaboration of 'recognised text,' not a new category"
+ * (Scope Lock Section 6); and "or, where more than one [fidelity]
+ * applies within a single recognition, which portions are which" (Contract
+ * Design Section 5), itself restating Evidence Intelligence Contract
+ * Design Section 5's own "the output must make which of the three it is --
+ * or which portions are which, where more than one applies within the
+ * same artefact -- apparent."
+ *
+ * **Document-level versus portion-level text, without duplication
+ * ambiguity.** [OcrRecognitionResult.recognisedText] always remains the
+ * complete, document-level text on its own, exactly as Unit 1 fixed it --
+ * present and non-blank regardless of whether any segment exists.
+ * [OcrRecognitionResult.segments], when non-empty, is this Unit's own
+ * additional, finer-grained view of that same recognition, for a reader
+ * that needs page or per-portion fidelity detail; it is never a second,
+ * independent source of text a reader must reconcile against
+ * [OcrRecognitionResult.recognisedText] to avoid double-counting. Byte-
+ * for-byte concatenation consistency between the two is a construction-
+ * time concern for whatever produces a real [OcrRecognitionResult] --
+ * this Unit fixes only the shape, not that judgement.
+ *
+ * **What this type is not.** No bounding box, coordinate, heading, table,
+ * or other document-structure concept is represented here, and none may
+ * be added under this Unit -- that layout-semantic territory belongs
+ * exclusively to a future, separately governed structured-document
+ * capability, never to the OCR mechanism (Implementation Plan Section 14,
+ * "do not introduce layout semantics belonging to Docling or a future
+ * structured-document model").
+ *
+ * @param text This portion's own recognised text. Never blank.
+ * @param fidelity This portion's own fidelity -- may differ from a
+ *   neighbouring segment's, and from [OcrRecognitionResult.fidelity]'s own
+ *   document-level value, exactly the "portions... where more than one
+ *   applies within a single recognition" case this Unit exists to make
+ *   discoverable.
+ * @param pageNumber The one-based page this portion belongs to, where
+ *   known. `null` when this portion is not tied to a specific page (for
+ *   example, fidelity-level segmentation without page-level detail from a
+ *   future concrete provider). Never zero or negative.
+ */
+data class OcrRecognitionSegment(
+    val text: String,
+    val fidelity: TranscriptionFidelity,
+    val pageNumber: Int? = null,
+) {
+    init {
+        require(text.isNotBlank()) { "OcrRecognitionSegment.text must not be blank" }
+        pageNumber?.let {
+            require(it >= 1) { "OcrRecognitionSegment.pageNumber must be at least 1 when present -- page numbering is one-based" }
+        }
+    }
+}
+
+/**
  * A successful recognition's own disclosure -- exactly the four
  * categories Contract Design Section 5 fixes (recognised text, fidelity
  * disclosure, identity disclosure, working confidence signal), never a
@@ -197,12 +256,15 @@ data class OcrRecognitionIdentity(
  * caller uses to decide whether, and how, to produce one.
  *
  * @param recognisedText The text a human reader would recognise in the
- *   supplied image content. Page-aligned representation, where the
- *   request's own page scope supports it, is deferred to Implementation
- *   Plan Unit 6's own refinement of this shape -- this Unit fixes only
- *   that the recognised text itself is present and non-blank.
- * @param fidelity Which of [TranscriptionFidelity]'s three categories
- *   this recognition represents.
+ *   supplied image content -- the complete, document-level text, present
+ *   and non-blank regardless of whether [segments] is populated.
+ * @param fidelity Which of [TranscriptionFidelity]'s three categories this
+ *   recognition represents as a whole. Remains a single, required value
+ *   exactly as Unit 1 fixed it -- when [segments] carries differing
+ *   per-portion fidelity values, each segment's own [OcrRecognitionSegment.fidelity]
+ *   is authoritative for its own portion, and this field is understood to
+ *   describe the recognition's own dominant or primary fidelity, a
+ *   construction-time judgement this shape does not itself compute.
  * @param identity The structured, reproducibility record for this
  *   recognition.
  * @param confidence A working, transient confidence signal, where
@@ -215,7 +277,21 @@ data class OcrRecognitionIdentity(
  * @param warnings Any non-fatal condition observed during recognition.
  *   An empty list means genuinely no warnings, mirroring
  *   [ExtractionResult.warnings]'s own "explicit, never silently omitted"
- *   convention.
+ *   convention. Order is preserved, never sorted or deduplicated.
+ * @param segments This recognition's own optional, finer-grained
+ *   breakdown -- page-aligned, per-portion-fidelity, or both, exactly the
+ *   granularity the request's own page scope and the recognition's own
+ *   fidelity mix support. Empty when no finer granularity is available or
+ *   needed; [recognisedText] and [fidelity] alone remain fully meaningful
+ *   in that case, exactly as they were before this Unit (Implementation
+ *   Plan Unit 6: "optionally page-aligned"; Scope Lock Section 6: "an
+ *   elaboration... not a new category"). Where any segment carries a
+ *   [OcrRecognitionSegment.pageNumber], page numbers must appear in
+ *   non-decreasing order across the list -- multiple segments may share
+ *   one page (for example, two differently-fidelity portions of the same
+ *   page), but no later segment may name an earlier page than one already
+ *   seen, preserving page order and preventing invalid page numbering
+ *   (Implementation Plan Unit 6's own page-alignment requirements).
  */
 data class OcrRecognitionResult(
     val recognisedText: String,
@@ -224,11 +300,16 @@ data class OcrRecognitionResult(
     val confidence: Double? = null,
     val recognisedAt: Instant,
     val warnings: List<String> = emptyList(),
+    val segments: List<OcrRecognitionSegment> = emptyList(),
 ) {
     init {
         require(recognisedText.isNotBlank()) { "OcrRecognitionResult.recognisedText must not be blank" }
         confidence?.let {
             require(it in 0.0..1.0) { "OcrRecognitionResult.confidence must fall within 0.0..1.0" }
+        }
+        val pageNumbers = segments.mapNotNull { it.pageNumber }
+        require(pageNumbers == pageNumbers.sorted()) {
+            "OcrRecognitionResult.segments must carry non-decreasing page numbers across the list -- found: $pageNumbers"
         }
     }
 }
