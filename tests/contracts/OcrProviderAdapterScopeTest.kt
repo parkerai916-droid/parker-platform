@@ -124,13 +124,21 @@ class OcrProviderAdapterScopeTest {
     }
 
     @Test
-    fun `no concrete class implementing OcrProviderAdapter exists anywhere in src`() {
+    fun `no concrete class implements OcrProviderAdapter anywhere in src -- a property or parameter of that type is not an implementation`() {
         val srcRoot = java.io.File("src")
         check(srcRoot.exists()) { "src/ directory not found from working directory ${java.io.File(".").absolutePath}" }
 
+        // Matches a `class`/`object` declaration whose own supertype list names OcrProviderAdapter --
+        // e.g. `class Foo(...) : OcrProviderAdapter` or `object Foo : OcrProviderAdapter`. Deliberately
+        // does not match a mere property or constructor parameter of type OcrProviderAdapter (for example
+        // `class OcrExecutionSequencer(private val adapter: OcrProviderAdapter) : OcrMechanism`, which
+        // Implementation Plan Unit 3 explicitly authorises) -- the primary-constructor parameter list, if
+        // any, is consumed by the optional group below and excluded from the supertype match that follows.
+        val implementsPattern = Regex("""\b(?:class|object)\s+\w+(?:\([^)]*\))?\s*:\s*[\w<>,\s]*\bOcrProviderAdapter\b""")
+
         val offendingFiles = srcRoot.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
-            .filter { file -> file.readText().contains(": OcrProviderAdapter") || file.readText().contains(", OcrProviderAdapter") }
+            .filter { file -> implementsPattern.containsMatchIn(file.readText()) }
             .map { it.path }
             .toList()
 
