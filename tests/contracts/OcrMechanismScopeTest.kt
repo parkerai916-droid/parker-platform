@@ -48,16 +48,22 @@ class OcrMechanismScopeTest {
     }
 
     @Test
-    fun `OcrRecognitionOutcome has exactly two top-level variants -- Recognised and Failed, structurally distinguishable`() {
+    fun `OcrRecognitionOutcome has exactly nine top-level variants -- Recognised, Failed, and Implementation Plan Unit 7's own seven distinctions -- structurally distinguishable, no eighth`() {
         val subclasses = OcrRecognitionOutcome::class.sealedSubclasses
 
+        // Originally asserted exactly {Recognised, Failed} at Unit 1, when Scope Lock Section 10's own seven
+        // constitutional distinctions were still Implementation Plan Unit 7's own, later, concrete-representation
+        // responsibility. Implementation Plan Unit 7 has now claimed that responsibility by name -- this assertion
+        // is updated to the new, still-exhaustive set its own governing text authorises, and no further.
         assertEquals(
-            setOf("Recognised", "Failed"),
+            setOf(
+                "Recognised", "Failed", "NotAuthorised", "UnsupportedOrInaccessibleInput", "NoRecognisableContent",
+                "PartialOrDegradedOutput", "ValidationRejection", "ProcessingOrDependencyFailure", "GenuineImplementationFault",
+            ),
             subclasses.map { it.simpleName }.toSet(),
-            "OcrRecognitionOutcome must have exactly Recognised and Failed -- Scope Lock Section 10's own seven " +
-                "constitutional distinctions are Implementation Plan Unit 7's own, later, concrete-representation " +
-                "responsibility. Neither an enum, a code, a category-name field, nor a per-kind subclass may be " +
-                "introduced by this Unit -- found: ${subclasses.map { it.simpleName }}",
+            "OcrRecognitionOutcome must have exactly these nine variants -- Recognised, Failed (Unit 1's own, kept " +
+                "as a compatibility wrapper), and Implementation Plan Unit 7's own seven non-collapsible " +
+                "distinctions, no eighth -- found: ${subclasses.map { it.simpleName }}",
         )
 
         val recognised = OcrRecognitionOutcome.Recognised(
@@ -91,30 +97,26 @@ class OcrMechanismScopeTest {
     }
 
     @Test
-    fun `none of Scope Lock Section 10's seven distinction labels appears anywhere in the public outcome contract`() {
-        val forbiddenLabelFragments = listOf(
-            "notauthorised", "unsupported", "inaccessible", "norecognisable", "partial", "degraded",
-            "validationrejected", "processingordependency", "implementationfault", "kind", "code", "category",
-        )
+    fun `no distinction is represented as a code or category field -- each is its own structurally distinct type, and no field anywhere is named kind, code, or category`() {
+        // Originally asserted that none of Scope Lock Section 10's seven distinction labels appeared anywhere in
+        // the public outcome contract at all, since that concrete representation was still Implementation Plan
+        // Unit 7's own, later responsibility. Implementation Plan Unit 7 has now lawfully introduced exactly those
+        // seven labels as type names (verified by the exhaustive nine-variant test above); what remains forbidden,
+        // unchanged, is representing any distinction as a coded or category-shaped *field* rather than its own
+        // type -- Scope Lock Section 10 never authorised an enum, a code, or a category field at any tier.
+        val forbiddenFieldFragments = listOf("kind", "code", "category")
 
-        val outcomeTypes = listOf(
-            OcrRecognitionOutcome::class,
-            OcrRecognitionOutcome.Recognised::class,
-            OcrRecognitionOutcome.Failed::class,
-        )
-        val allNames = outcomeTypes.flatMap { type ->
-            listOf(type.simpleName?.lowercase().orEmpty()) +
-                type.declaredMemberProperties.map { it.name.lowercase() }
-        }
+        val outcomeTypes = listOf(OcrRecognitionOutcome::class) + OcrRecognitionOutcome::class.sealedSubclasses
+        val allFieldNames = outcomeTypes.flatMap { type -> type.declaredMemberProperties.map { it.name.lowercase() } }
 
-        allNames.forEach { name ->
-            forbiddenLabelFragments.forEach { forbidden ->
+        allFieldNames.forEach { name ->
+            forbiddenFieldFragments.forEach { forbidden ->
                 assertFalse(
                     name.contains(forbidden),
-                    "No type or field name in OcrRecognitionOutcome's own public contract may name one of Scope " +
-                        "Lock Section 10's seven distinctions, a taxonomy code, or a category -- found '$name' " +
-                        "containing '$forbidden'. That representation remains Implementation Plan Unit 7's own, " +
-                        "later responsibility.",
+                    "No field name anywhere in OcrRecognitionOutcome's own public contract may be a 'kind', 'code', " +
+                        "or 'category' field -- Scope Lock Section 10 requires each distinction to be its own " +
+                        "structurally distinct type, never a coded or category-shaped field -- found '$name' " +
+                        "containing '$forbidden'.",
                 )
             }
         }

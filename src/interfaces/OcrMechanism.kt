@@ -315,46 +315,64 @@ data class OcrRecognitionResult(
 }
 
 /**
- * The sealed outcome of one [OcrMechanism.recognise] call -- exactly two
- * variants, success or failure, distinguishable from one another and
- * from a thrown exception (mirroring [ExtractionOutcome]'s own "no
- * default/empty result standing in for a genuine failure" discipline).
+ * The sealed outcome of one [OcrMechanism.recognise] call -- success
+ * ([Recognised]), the original Unit 1 generic failure shape ([Failed],
+ * kept unchanged as a compatibility wrapper), and, as of Implementation
+ * Plan Unit 7, one concrete subclass per each of Scope Lock Section 10's
+ * seven non-collapsible constitutional distinctions.
  *
- * **This is the smallest lawful Unit 1 shape, not a finished failure
- * model.** Scope Lock Section 10 is explicit and binding: "it freezes no
- * exhaustive, named, coded, or enum-like list of failure categories,"
- * and "the concrete taxonomy, naming, and representation of these
- * distinctions remain future governance or implementation work -- a
- * future Implementation Plan's own responsibility." Implementation Plan
- * Unit 7's own Purpose claims that responsibility by name: "the first
- * tier at which Scope Lock Section 10 permits" concrete representation.
- * An earlier revision of this file replaced seven bespoke sealed
- * subclasses with a seven-value enum, reasoning that reusing the Scope
- * Lock's own labels avoided "inventing" a taxonomy -- that reasoning was
- * itself mistaken: an enum is, definitionally, exactly the "enum-like...
- * list of failure categories" Scope Lock Section 10 refuses to freeze,
- * regardless of whose label vocabulary it borrows. This Unit therefore
- * introduces no enum, no code, no category-name vocabulary, and no
- * closed list of failure kinds of any shape -- only that a recognition
- * either succeeds ([Recognised]) or fails ([Failed]), carrying nothing
- * more than an honest, non-blank technical explanation.
+ * **Unit 1's own history, preserved for context.** This class originally
+ * carried only [Recognised] and [Failed] -- the smallest lawful shape
+ * Scope Lock Section 10 permitted before a future unit claimed the
+ * concrete-taxonomy responsibility by name. An earlier revision of this
+ * file replaced seven bespoke sealed subclasses with a seven-value enum,
+ * reasoning that reusing the Scope Lock's own labels avoided "inventing"
+ * a taxonomy -- that reasoning was itself mistaken: an enum is,
+ * definitionally, exactly the "enum-like... list of failure categories"
+ * Scope Lock Section 10 refused to freeze at that tier, regardless of
+ * whose label vocabulary it borrowed. [Failed] itself never discharged
+ * Section 10's non-collapse requirement -- every [Failed] value looked
+ * identical regardless of which distinction actually occurred.
  *
- * **[Failed] does not itself satisfy Scope Lock Section 10's
- * non-collapse requirement, and must never be treated as though it
- * does.** Scope Lock Section 10 remains binding that a future
- * implementation "must not collapse" its seven named constitutional
- * distinctions (not authorised; unsupported or inaccessible input; no
- * recognisable content; partial or technically degraded output;
- * validation rejection; processing or dependency failure; genuine
- * implementation fault) into one another. That obligation is not
- * discharged by this Unit's own [Failed] shape -- every [Failed] value
- * looks identical regardless of which of the seven distinctions actually
- * occurred, and no caller, test, or future unit may treat that
- * indistinguishability as evidence the non-collapse requirement is
- * already met. Implementation Plan Unit 7 remains the first, and only,
- * tier authorised to give those seven distinctions their concrete
- * representation; no downstream code written under this Unit may assume,
- * encode, or rely upon any particular one of them existing yet.
+ * **Implementation Plan Unit 7 now claims that responsibility.** Its own
+ * Purpose is explicit: "Design the concrete representation of the Scope
+ * Lock's seven non-collapsible failure distinctions -- the first tier at
+ * which Scope Lock Section 10 permits this." The seven sibling subclasses
+ * below -- [NotAuthorised], [UnsupportedOrInaccessibleInput],
+ * [NoRecognisableContent], [PartialOrDegradedOutput],
+ * [ValidationRejection], [ProcessingOrDependencyFailure], and
+ * [GenuineImplementationFault] -- are that representation, one type per
+ * distinction, none collapsed into another or into [Failed].
+ *
+ * **[Failed] remains, unmodified, as a compatibility wrapper.** Unit 7's
+ * own Files-expected-to-change field authorises extending Unit 1's own
+ * failure shape, not replacing it -- and every Unit 1-6 call site
+ * constructing `OcrRecognitionOutcome.Failed(reason)` directly, or
+ * matching `is Failed`/reading `.reason`, must keep compiling and
+ * passing unchanged (Implementation Plan Unit 7's own "whether the change
+ * can remain source-compatible with Units 1-6" question, answered here:
+ * yes, by addition only). [Failed] therefore continues to mean exactly
+ * what it always meant -- an honest, non-blank technical explanation,
+ * undifferentiated among the seven distinctions -- for any caller that
+ * has not adopted the more specific Unit 7 types below.
+ *
+ * **Responsibility tiers, restated from Scope Lock Section 10.** Three of
+ * the seven distinctions belong to the OCR mechanism's own operational
+ * implementation and are freely producible by a provider adapter or the
+ * sequencer: [UnsupportedOrInaccessibleInput], [ProcessingOrDependencyFailure],
+ * [GenuineImplementationFault]. Two are the mechanism's own honest
+ * technical disclosure, also producible now, but never itself a judgement
+ * about whether the disclosed recognition is worth using downstream --
+ * that judgement remains Evidence Intelligence's own, later, exclusively
+ * (Scope Lock Section 11): [NoRecognisableContent], [PartialOrDegradedOutput].
+ * Two are reserved, included here only "for completeness of the taxonomy"
+ * (Implementation Plan Unit 7's own Constitutional constraints) and are
+ * never constructed by any code path in Units 1-7: [NotAuthorised] (an
+ * orchestration-layer outcome -- the OCR mechanism holds no Permission
+ * Engine reference and never itself evaluates or reports it) and
+ * [ValidationRejection] (Parker-owned output-quality judgement, Scope
+ * Lock Section 11 -- this Unit implements no validation policy, threshold,
+ * or mechanism of any kind).
  */
 sealed class OcrRecognitionOutcome {
 
@@ -364,14 +382,151 @@ sealed class OcrRecognitionOutcome {
     /**
      * A failed recognition attempt, carrying only an honest, non-blank
      * technical explanation of what went wrong -- no failure kind, code,
-     * or category of any shape. Implementation Plan Unit 7 owns replacing
-     * or extending this shape with the first concrete representation of
-     * Scope Lock Section 10's own seven, still-binding, non-collapsible
-     * distinctions.
+     * or category of any shape. Preserved unchanged from Unit 1 as a
+     * compatibility wrapper (see this sealed class's own KDoc); a caller
+     * with no need to distinguish among Scope Lock Section 10's seven
+     * distinctions may still use this shape exactly as before. It does
+     * not, itself, satisfy Section 10's non-collapse requirement --
+     * `Failed` values remain indistinguishable from one another by
+     * distinction, by design, since undifferentiated disclosure is
+     * precisely what this variant is for.
      */
     data class Failed(val reason: String) : OcrRecognitionOutcome() {
         init {
             require(reason.isNotBlank()) { "OcrRecognitionOutcome.Failed.reason must not be blank" }
+        }
+    }
+
+    /**
+     * Scope Lock Section 10's first constitutional distinction: "an
+     * orchestration outcome, never reached by the mechanism itself...
+     * denial stops before any dependency is invoked; the OCR mechanism
+     * holds no Permission Engine reference of its own... and never itself
+     * evaluates or reports this outcome." Represented here only "for
+     * completeness of the taxonomy" (Implementation Plan Unit 7's own
+     * Constitutional constraints) -- **no code path in Units 1-7 ever
+     * constructs this value.** It exists so a future orchestration layer
+     * has a lawful, already-reviewed shape to report denial with, without
+     * this Unit adding a Permission Engine dependency, wiring a permission
+     * check, or having any adapter manufacture a denial of its own.
+     */
+    data class NotAuthorised(val reason: String) : OcrRecognitionOutcome() {
+        init {
+            require(reason.isNotBlank()) { "OcrRecognitionOutcome.NotAuthorised.reason must not be blank" }
+        }
+    }
+
+    /**
+     * Scope Lock Section 10's second constitutional distinction: "the OCR
+     * mechanism's own operational concern (Contract Design Section 6,
+     * 'operational/mechanical failure'), disclosed honestly, never
+     * silently substituted with a fabricated result." Produced by a
+     * provider adapter when the supplied content itself cannot be
+     * processed -- for example, an undecodable or unrecognised media
+     * type -- distinct from every other operational or disclosure
+     * condition below.
+     */
+    data class UnsupportedOrInaccessibleInput(val reason: String) : OcrRecognitionOutcome() {
+        init {
+            require(reason.isNotBlank()) { "OcrRecognitionOutcome.UnsupportedOrInaccessibleInput.reason must not be blank" }
+        }
+    }
+
+    /**
+     * Scope Lock Section 10's third constitutional distinction: "disclosed
+     * by the OCR mechanism honestly (Contract Design Section 6); whether
+     * that disclosure means the recognition is worth producing as a
+     * candidate at all is Evidence Intelligence's own analytical
+     * judgement, never the mechanism's own decision." Produced when
+     * recognition completed without error but found nothing recognisable
+     * in the supplied content -- an honest technical fact, not itself a
+     * decision that the input was worthless.
+     */
+    data class NoRecognisableContent(val reason: String) : OcrRecognitionOutcome() {
+        init {
+            require(reason.isNotBlank()) { "OcrRecognitionOutcome.NoRecognisableContent.reason must not be blank" }
+        }
+    }
+
+    /**
+     * Scope Lock Section 10's fourth constitutional distinction: "the
+     * same disclosure/judgement split as [NoRecognisableContent]: the
+     * mechanism discloses what it could and could not recognise;
+     * Evidence Intelligence's own analysis decides what that means for
+     * the result it produces." Carries the actual, usable [partialResult]
+     * exactly as recognised -- never discarded, and never silently
+     * promoted to an ordinary [Recognised] as though nothing were
+     * degraded (Implementation Plan Unit 7: "do not silently discard
+     * usable partial recognition," "do not silently promote degraded
+     * output to fully successful recognition"). Structurally distinct
+     * from plain success precisely so a caller can tell, without
+     * inspecting [OcrRecognitionResult.warnings] prose, that this
+     * recognition needs more scrutiny than an ordinary [Recognised].
+     *
+     * @param partialResult The partial or degraded recognition actually
+     *   produced, in full -- the same shape a clean [Recognised] would
+     *   carry, preserved rather than discarded.
+     * @param reason An honest, non-blank technical description of what
+     *   is missing or degraded.
+     */
+    data class PartialOrDegradedOutput(val partialResult: OcrRecognitionResult, val reason: String) : OcrRecognitionOutcome() {
+        init {
+            require(reason.isNotBlank()) { "OcrRecognitionOutcome.PartialOrDegradedOutput.reason must not be blank" }
+        }
+    }
+
+    /**
+     * Scope Lock Section 10's fifth constitutional distinction:
+     * "Parker-owned output-quality judgement (Section 11, above), never
+     * the mechanism's own determination and never an orchestration-layer
+     * authorisation failure; a distinct outcome from 'not authorised.'"
+     * Represented here only "for completeness of the taxonomy"
+     * (Implementation Plan Unit 7's own Constitutional constraints) --
+     * **no code path in Units 1-7 ever constructs this value.** This Unit
+     * implements no validation policy, threshold, or mechanism of any
+     * kind (Scope Lock Section 11); this shape exists only so a future,
+     * separately governed Parker-owned validation step has an
+     * already-reviewed, structurally distinct place to report rejection,
+     * never confusable with [ProcessingOrDependencyFailure] or any other
+     * operational condition the OCR mechanism itself produces.
+     */
+    data class ValidationRejection(val reason: String) : OcrRecognitionOutcome() {
+        init {
+            require(reason.isNotBlank()) { "OcrRecognitionOutcome.ValidationRejection.reason must not be blank" }
+        }
+    }
+
+    /**
+     * Scope Lock Section 10's sixth constitutional distinction: "the OCR
+     * mechanism's own operational concern (Contract Design Section 6),
+     * covering conditions such as a resource limit being exceeded (Scope
+     * Lock Section 15) or a required processing step being unavailable,
+     * disclosed rather than silently retried or masked." Distinct from
+     * [GenuineImplementationFault]: this is an anticipated operational
+     * limitation, not an unexpected defect.
+     */
+    data class ProcessingOrDependencyFailure(val reason: String) : OcrRecognitionOutcome() {
+        init {
+            require(reason.isNotBlank()) { "OcrRecognitionOutcome.ProcessingOrDependencyFailure.reason must not be blank" }
+        }
+    }
+
+    /**
+     * Scope Lock Section 10's seventh constitutional distinction: "the OCR
+     * mechanism's own operational concern (Contract Design Section 6),
+     * distinct from every expected operational condition above." For a
+     * provider adapter that chooses to represent a fault as a disclosed
+     * outcome rather than letting it propagate as a thrown exception --
+     * this variant does not change, and is never required by, Unit 3's
+     * own existing fault-propagation discipline (no `try`/`catch` in
+     * [parker.core.runtime.OcrExecutionSequencer]; a genuine, unexpected
+     * fault an adapter throws still propagates unchanged). This shape is
+     * for a fault an adapter has already caught and chosen to disclose,
+     * never a substitute for propagation.
+     */
+    data class GenuineImplementationFault(val reason: String) : OcrRecognitionOutcome() {
+        init {
+            require(reason.isNotBlank()) { "OcrRecognitionOutcome.GenuineImplementationFault.reason must not be blank" }
         }
     }
 }
