@@ -1297,31 +1297,124 @@ data class KnowledgeRetrievalQuery(
  * One [KnowledgeItem] disclosed by a [KnowledgeRetrievalResult], paired
  * with its own mandatory staleness disclosure (Contract Design Version 2
  * §3, §6, Amendment 7; the Unit 9 Contract Design §2's own "never
- * optional, never inferred from its own absence" requirement). [stale] is
- * a non-nullable `Boolean` specifically because a nullable representation
- * would itself violate that requirement -- an absent value is not a
- * representable state of this field at all. This Unit does not implement
- * the staleness-detection mechanism that would compute [stale]'s own
- * value for a genuine retrieval call (Unit 9 Implementation Plan, Unit
- * 9.3) -- this type declares only the shape.
+ * optional, never inferred from its own absence" requirement). [staleness]
+ * is non-nullable specifically because a nullable representation would
+ * itself violate that requirement -- an absent value is not a
+ * representable state of this field at all.
  *
- * **Contract status of [stale]'s own `Boolean` representation.** This is
- * Unit 9.1's own current representation, not a declared-final one: Unit
- * 9.3 (Unit 9 Implementation Plan) remains authorised to widen or replace
- * it -- for example, to also disclose a reason or a computed-at instant
- * -- if its own drafting finds a binary signal insufficient to satisfy
- * the Unit 9 Contract Design's own staleness-disclosure guarantee.
- * Neither this Unit nor the Contract Design commits to `Boolean` as
- * permanent. Any such widening or replacement is, from this Unit's own
- * perspective, a breaking change to an already-shipped public field --
- * it requires its own explicit, disclosed contract amendment when it
- * happens, never a silent implementation-time drift introduced without
- * one.
+ * **[staleness]'s element type, widened by Unit 9.3.** Originally
+ * `stale: Boolean` (Unit 9.1's own original shape, declared before Unit
+ * 9.3's own staleness-detection mechanism existed to compute it) -- a
+ * non-nullable `Boolean` for exactly the same "an absent value is not
+ * representable" reasoning above, and at the time thought sufficient,
+ * since Unit 9.1's own scope declared only the shape and implemented no
+ * staleness-detection mechanism of its own (Unit 9 Implementation Plan,
+ * Unit 9.3). Widened to [staleness] ([StalenessDisclosure]) below,
+ * because Unit 9.3's own Independent
+ * Constitutional Review (`docs/reviews/PROGRAMME_3_UNIT_9_3_STALENESS_DISCLOSURE_INDEPENDENT_CONSTITUTIONAL_REVIEW.md`)
+ * found a binary signal genuinely insufficient: Contract Design Version 2
+ * §3 (Amendment 7) defines staleness as a *confirmed* condition ("the
+ * underlying evidence's status changes... before Knowledge Memory has
+ * re-evaluated"), never an inferred one, and no mechanism available to
+ * Knowledge Retrieval -- forbidden from querying Memory Core (Unit 9
+ * Contract Design §3) -- can confirm that condition either way for any
+ * item. A `Boolean` forces every item into a confident-looking `true` or
+ * `false` regardless, which for the common case (a recently classified
+ * item whose evidence may already have changed) silently discloses
+ * `false` -- an unconfirmed claim of freshness presented with the same
+ * certainty a genuine confirmation would carry, precisely the "an unknown
+ * value is never fabricated, defaulted, or inferred without a disclosed
+ * inference step" failure this repository's own governing principle
+ * (restated for Knowledge Memory's own durable layer by the Unit 9
+ * Contract Design's own Context section) exists to prevent, and precisely
+ * what Article XIII's "uncertainty... must never be concealed" forbids.
+ * [StalenessDisclosure] replaces that false confidence with an honestly
+ * bounded signal instead. See [StalenessDisclosure]'s own KDoc for the
+ * full account of what each of its four values means and who may assign
+ * it.
  */
 data class KnowledgeResultEntry(
     val item: KnowledgeItem,
-    val stale: Boolean,
+    val staleness: StalenessDisclosure,
 )
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 9.3 (Staleness
+ * Disclosure). What a [KnowledgeResultEntry] discloses about whether its
+ * own [KnowledgeItem]'s classification remains current, per Contract
+ * Design Version 2 §3 (Amendment 7)'s own governing definition: staleness
+ * is *confirmed* only by comparing the underlying Memory Core evidence's
+ * current status against its status when the classification was last
+ * computed -- a comparison no mechanism available to Knowledge Retrieval
+ * can lawfully perform, since doing so would require exactly the Memory
+ * Core query Knowledge Retrieval is structurally forbidden from making
+ * (Unit 9 Contract Design §3).
+ *
+ * Four values, in two disclosed groups:
+ *
+ * - [CONFIRMED_CURRENT] and [CONFIRMED_STALE] represent the two outcomes
+ *   Contract Design Version 2 §3 itself actually defines. **Neither is
+ *   ever assigned by any mechanism this Programme has built as of Unit
+ *   9.3** -- both are reserved for a future, genuinely Memory-Core-aware
+ *   mechanism (for example, one subscribing to Memory Core's own
+ *   published events, the "continuous monitoring" direction the Unit 9
+ *   Implementation Plan's own Unit 9.3 entry names but does not require),
+ *   should one ever be authorised. Reserving them now means that future
+ *   mechanism can be introduced without a second breaking change to this
+ *   type.
+ * - [POSSIBLY_STALE] and [INDETERMINATE] are the two values Unit 9.3's
+ *   own age-based mechanism (`DefaultKnowledgeRetrieval`) actually
+ *   assigns, and are explicitly, honestly distinct from the two values
+ *   above: neither claims to confirm anything about the underlying
+ *   evidence's own status. [POSSIBLY_STALE] discloses only that an
+ *   unusually long time has elapsed since the classification was last
+ *   computed, without re-confirmation -- a true, honestly-held fact about
+ *   elapsed time, offered as a reason a caller might choose to re-verify,
+ *   never as a claim that the evidence actually changed.
+ *   [INDETERMINATE] discloses that this class has no basis, in either
+ *   direction, to say anything about the item's own currency -- the
+ *   honest default for every item its own age-based signal does not
+ *   distinguish as [POSSIBLY_STALE]. Critically, [INDETERMINATE] is
+ *   deliberately *not* a claim of freshness -- it replaces what an
+ *   age-based `Boolean` `false` would have silently implied, without
+ *   implying anything in its place.
+ */
+enum class StalenessDisclosure {
+    /**
+     * Reserved. A future, genuinely Memory-Core-aware mechanism has
+     * confirmed the underlying evidence's own status has not changed
+     * since this classification was last computed. Never assigned by any
+     * mechanism this Programme has built as of Unit 9.3.
+     */
+    CONFIRMED_CURRENT,
+
+    /**
+     * Reserved. A future, genuinely Memory-Core-aware mechanism has
+     * confirmed the underlying evidence's own status has changed since
+     * this classification was last computed, per Contract Design Version
+     * 2 §3's own governing definition of staleness. Never assigned by any
+     * mechanism this Programme has built as of Unit 9.3.
+     */
+    CONFIRMED_STALE,
+
+    /**
+     * An unusually long time has elapsed since this classification was
+     * last computed, with no re-evaluation since -- Unit 9.3's own
+     * disclosed, honest, age-based signal. Not a claim that the
+     * underlying evidence's own status has changed; only that this
+     * classification has gone unusually long without re-confirmation, and
+     * may warrant it.
+     */
+    POSSIBLY_STALE,
+
+    /**
+     * This class has no basis, in either direction, to disclose whether
+     * the item remains current. The honest default for any item Unit
+     * 9.3's own age-based signal does not distinguish as
+     * [POSSIBLY_STALE] -- deliberately not a claim of freshness.
+     */
+    INDETERMINATE,
+}
 
 /**
  * What [KnowledgeRetrieval.retrieve] returns on a successful, authorised

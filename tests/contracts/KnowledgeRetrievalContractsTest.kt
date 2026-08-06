@@ -115,20 +115,31 @@ class KnowledgeRetrievalContractsTest {
 
     @Test
     fun `KnowledgeResultEntry carries its item and staleness disclosure unchanged`() {
-        val entry = KnowledgeResultEntry(item = knowledgeItem, stale = true)
+        val entry = KnowledgeResultEntry(item = knowledgeItem, staleness = StalenessDisclosure.POSSIBLY_STALE)
 
         assertEquals(knowledgeItem, entry.item)
-        assertTrue(entry.stale)
+        assertEquals(StalenessDisclosure.POSSIBLY_STALE, entry.staleness)
     }
 
     @Test
-    fun `KnowledgeResultEntry stale is a non-nullable Boolean -- always present, never absent`() {
-        val staleProperty = KnowledgeResultEntry::class.declaredMemberProperties.single { it.name == "stale" }
+    fun `KnowledgeResultEntry staleness is a non-nullable StalenessDisclosure -- always present, never absent`() {
+        val stalenessProperty = KnowledgeResultEntry::class.declaredMemberProperties.single { it.name == "staleness" }
 
-        assertEquals(Boolean::class, staleProperty.returnType.classifier)
+        assertEquals(StalenessDisclosure::class, stalenessProperty.returnType.classifier)
         assertFalse(
-            staleProperty.returnType.isMarkedNullable,
-            "stale must be non-nullable -- an absent staleness disclosure is not a representable state",
+            stalenessProperty.returnType.isMarkedNullable,
+            "staleness must be non-nullable -- an absent staleness disclosure is not a representable state",
+        )
+    }
+
+    @Test
+    fun `StalenessDisclosure is closed to exactly four variants -- two reserved, two assignable by Unit 9-3's own mechanism`() {
+        val variantNames = StalenessDisclosure::class.java.enumConstants.map { it.name }.toSet()
+
+        assertEquals(
+            setOf("CONFIRMED_CURRENT", "CONFIRMED_STALE", "POSSIBLY_STALE", "INDETERMINATE"),
+            variantNames,
+            "StalenessDisclosure must declare exactly these four values -- found: $variantNames",
         )
     }
 
@@ -143,10 +154,10 @@ class KnowledgeRetrievalContractsTest {
 
     @Test
     fun `a KnowledgeRetrievalResult preserves entry order exactly as given, with no re-ordering`() {
-        val first = KnowledgeResultEntry(item = knowledgeItem, stale = false)
+        val first = KnowledgeResultEntry(item = knowledgeItem, staleness = StalenessDisclosure.INDETERMINATE)
         val second = KnowledgeResultEntry(
             item = knowledgeItem.copy(knowledgeId = KnowledgeId("item-2")),
-            stale = true,
+            staleness = StalenessDisclosure.POSSIBLY_STALE,
         )
 
         val result = KnowledgeRetrievalResult(entries = listOf(first, second))
