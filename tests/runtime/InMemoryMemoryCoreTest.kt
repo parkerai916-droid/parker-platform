@@ -33,6 +33,8 @@ import parker.core.interfaces.RelationshipEndpoint
 import parker.core.interfaces.RelationshipId
 import parker.core.interfaces.RelationshipTraversalDirection
 import parker.core.interfaces.RelationshipTraversalQuery
+import kotlin.reflect.KVisibility
+import kotlin.reflect.full.declaredFunctions
 import kotlin.reflect.full.memberProperties
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -713,5 +715,147 @@ class InMemoryMemoryCoreTest {
 
         assertNull(provenance.creatorPrincipalId)
         assertNull(entity.relatedPrincipalId)
+    }
+
+    // ================= Memory Core Durability, Implementation Unit 4: restore* functions =================
+
+    @Test
+    fun `restoreProvenance preserves the original identifier exactly, minting nothing -- confirmed via a dependent restoreEntity call`() = runTest {
+        val core = InMemoryMemoryCore()
+        val originalProvenance = Provenance(
+            provenanceId = ProvenanceId("provenance-restored-1"),
+            sourceIdentifier = "conversation-turn-9",
+            sourceType = "conversation",
+            acquisitionTime = Instant.parse("2025-01-01T00:00:00Z"),
+            ingestionTime = Instant.parse("2025-01-01T00:00:01Z"),
+            contentNature = ContentNature.ORIGINAL,
+        )
+
+        core.restoreProvenance(originalProvenance)
+
+        // MemoryRetrieval exposes no direct getProvenance method (Version 1's own already-established
+        // shape, unmodified by this Unit -- Provenance is reached only via a referencing record's own
+        // provenanceId). Confirming the restored Provenance is genuinely stored, under its own original
+        // identifier, is done here the same way InMemoryMemoryCore itself would confirm it internally:
+        // a dependent restoreEntity call referencing originalProvenance.provenanceId must succeed,
+        // which it can only do if requireExistingProvenance finds that exact identifier already present.
+        val dependentEntity = Entity(
+            entityId = EntityId("entity-depends-on-restored-provenance"),
+            entityType = "person",
+            primaryLabel = "Depends On Restored Provenance",
+            provenanceId = originalProvenance.provenanceId,
+            createdAt = Instant.parse("2025-01-01T00:00:02Z"),
+        )
+        core.restoreEntity(dependentEntity)
+
+        assertEquals(dependentEntity, core.getEntity(principal, dependentEntity.entityId))
+    }
+
+    @Test
+    fun `restoreEntity preserves the original identifier, createdAt, and provenance reference exactly, minting nothing`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = candidateProvenance().let { candidate ->
+            Provenance(
+                provenanceId = ProvenanceId("provenance-restored-2"),
+                sourceIdentifier = candidate.sourceIdentifier,
+                sourceType = candidate.sourceType,
+                acquisitionTime = candidate.acquisitionTime,
+                ingestionTime = Instant.parse("2025-01-01T00:00:01Z"),
+                contentNature = candidate.contentNature,
+            )
+        }
+        core.restoreProvenance(provenance)
+        val originalEntity = Entity(
+            entityId = EntityId("entity-restored-1"),
+            entityType = "person",
+            primaryLabel = "Restored Person",
+            provenanceId = provenance.provenanceId,
+            createdAt = Instant.parse("2025-01-01T00:00:02Z"),
+            status = MemoryCoreRecordStatus.DISPUTED,
+        )
+
+        core.restoreEntity(originalEntity)
+        val fetched = core.getEntity(principal, originalEntity.entityId)
+
+        assertEquals(originalEntity, fetched)
+        assertEquals(EntityId("entity-restored-1"), fetched?.entityId, "restoreEntity must never mint a replacement identifier")
+    }
+
+    @Test
+    fun `restoreEntity rejects a broken provenance reference`() = runTest {
+        val core = InMemoryMemoryCore()
+        val orphanEntity = Entity(
+            entityId = EntityId("entity-orphan"),
+            entityType = "person",
+            primaryLabel = "Orphan",
+            provenanceId = ProvenanceId("provenance-does-not-exist"),
+            createdAt = Instant.parse("2025-01-01T00:00:00Z"),
+        )
+
+        assertFailsWith<IllegalArgumentException> { core.restoreEntity(orphanEntity) }
+    }
+
+    @Test
+    fun `restoreRelationship rejects a broken Memory-Core-owned endpoint reference`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        val orphanRelationship = Relationship(
+            relationshipId = RelationshipId("relationship-orphan"),
+            relationshipType = Relationship.SUPPORTS,
+            fromEndpoint = RelationshipEndpoint(RelationshipEndpoint.ENTITY, "entity-does-not-exist"),
+            toEndpoint = RelationshipEndpoint(RelationshipEndpoint.ENTITY, "entity-also-does-not-exist"),
+            directional = true,
+            provenanceId = provenance.provenanceId,
+            createdAt = Instant.parse("2025-01-01T00:00:00Z"),
+        )
+
+        assertFailsWith<IllegalArgumentException> { core.restoreRelationship(orphanRelationship) }
+    }
+
+    @Test
+    fun `restoring the same record twice with identical content is accepted idempotently`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        val entity = Entity(
+            entityId = EntityId("entity-idempotent"),
+            entityType = "person",
+            primaryLabel = "Idempotent",
+            provenanceId = provenance.provenanceId,
+            createdAt = Instant.parse("2025-01-01T00:00:00Z"),
+        )
+
+        core.restoreEntity(entity)
+        core.restoreEntity(entity) // identical content, second restoration -- must not throw
+
+        assertEquals(entity, core.getEntity(principal, entity.entityId))
+    }
+
+    @Test
+    fun `restoring the same identifier with different content is rejected as corruption`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        val original = Entity(
+            entityId = EntityId("entity-conflict"),
+            entityType = "person",
+            primaryLabel = "Original Label",
+            provenanceId = provenance.provenanceId,
+            createdAt = Instant.parse("2025-01-01T00:00:00Z"),
+        )
+        val conflicting = original.copy(primaryLabel = "Different Label")
+
+        core.restoreEntity(original)
+
+        assertFailsWith<IllegalStateException> { core.restoreEntity(conflicting) }
+    }
+
+    @Test
+    fun `restore functions on InMemoryMemoryCore are internal, never public API surface`() {
+        val restoreFunctionNames = setOf("restoreProvenance", "restoreEntity", "restoreDocument", "restoreAssertion", "restoreRelationship")
+        val declaredInternal = InMemoryMemoryCore::class.declaredFunctions
+            .filter { it.name in restoreFunctionNames }
+            .all { it.visibility == KVisibility.INTERNAL }
+
+        assertEquals(restoreFunctionNames.size, InMemoryMemoryCore::class.declaredFunctions.count { it.name in restoreFunctionNames })
+        assertTrue(declaredInternal, "every restore* function must be internal, never public")
     }
 }

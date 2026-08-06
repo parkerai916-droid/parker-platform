@@ -290,6 +290,143 @@ class InMemoryMemoryCore : MemoryCore, MemoryRetrieval {
         }
     }
 
+    // ================= Restore behaviour (Memory Core Durability, Implementation Unit 4) =================
+
+    /**
+     * Memory Core Durability, Implementation Unit 4 (Replay and Startup
+     * Recovery). Five internal-only restoration functions -- one per
+     * creatable record kind -- added as a strictly additive extension to
+     * this class, authorised by
+     * `docs/implementation/MEMORY_CORE_DURABILITY_IMPLEMENTATION_PLAN.md`'s
+     * own Section 5 ("Design Resolution -- Identifier Restoration Without
+     * Public-Contract Reuse"). **No existing method's signature,
+     * behaviour, or semantics changes anywhere in this class.** [restoreProvenance],
+     * [restoreEntity], [restoreDocument], [restoreAssertion], and
+     * [restoreRelationship] are `internal`, not `public` -- unreachable
+     * through [MemoryCore] or [MemoryRetrieval], and callable only by code
+     * elsewhere in this same module (`MemoryCoreRecovery`, this Unit's own
+     * new orchestration; this Unit's own test file) -- mirroring
+     * [MemoryCoreLifecycleTransitions]'s own established precedent
+     * exactly: kept `internal`, not `private`, "solely so
+     * `InMemoryMemoryCoreTest.kt` can exercise [isValidTransition]
+     * directly across every pair this table defines, rather than only
+     * indirectly through" the public write surface.
+     *
+     * ## Why a separate function, not reuse of `create*`
+     *
+     * Each `create*` operation mints a fresh identifier internally
+     * (`"kind-${nextKindSequence++}"`) -- calling one during replay would
+     * mint a *new* identifier for what is actually the *restoration* of an
+     * already-existing one, immediately violating identifier stability
+     * across a restart. Each restore function instead accepts the
+     * already-complete domain record (carrying its own original
+     * identifier, timestamp, provenance reference, and initial status
+     * exactly as first recorded) and stores it directly -- no identifier
+     * is minted, no sequence counter is advanced (identifier-counter
+     * restoration is Implementation Unit 5's own, separate, later
+     * responsibility, per the Implementation Plan's own Section 5).
+     *
+     * ## Referential integrity, re-enforced during restore -- not skipped
+     *
+     * Each restore function (aside from [restoreProvenance], which -- like
+     * [createProvenance] -- has no provenance reference of its own to
+     * check) re-runs the exact same [requireExistingProvenance]/
+     * [requireResolvableEndpoint] checks its own `create*` counterpart
+     * already performs, now validated against whatever this restoration
+     * pass has already restored -- the direct mechanism satisfying the
+     * Durability Contract Design's own Section 6: "referential-integrity
+     * validation is required during recovery, not optional."
+     *
+     * ## Repeated identical records are accepted idempotently; conflicting
+     * duplicates are rejected
+     *
+     * Each function checks whether a record already occupies the incoming
+     * identifier. If one does and is byte-for-byte identical to the
+     * incoming record, the call returns normally without altering
+     * anything -- the Durability Contract Design's own Section 6
+     * "repeated durable record handling" requirement ("must be recognised
+     * and idempotently skipped during replay, never treated as a second,
+     * conflicting record"). If one exists and differs, this is genuine
+     * corruption -- a [check] failure (`IllegalStateException`), never
+     * silently overwritten and never silently ignored.
+     *
+     * ## No permission evaluation, exactly like every `create*` operation
+     *
+     * None of these functions holds, constructs, or references a
+     * `PermissionEngine` -- identical to every other operation this class
+     * already implements (this class's own top-level KDoc: "no permission
+     * evaluation or owner-authority check"). Restoration authority is
+     * assumed to have already been established by the fact that this
+     * content was previously, lawfully durably committed in the first
+     * place -- replaying it is not a new write requiring a new permission
+     * decision.
+     */
+    internal suspend fun restoreProvenance(provenance: Provenance) = mutex.withLock {
+        val existing = provenanceStore[provenance.provenanceId]
+        if (existing != null) {
+            check(existing == provenance) {
+                "Cannot restore Provenance '${provenance.provenanceId.value}': an existing record with " +
+                    "different content already occupies this identifier"
+            }
+            return@withLock
+        }
+        provenanceStore[provenance.provenanceId] = provenance
+    }
+
+    internal suspend fun restoreEntity(entity: Entity) = mutex.withLock {
+        val existing = entityStore[entity.entityId]
+        if (existing != null) {
+            check(existing == entity) {
+                "Cannot restore Entity '${entity.entityId.value}': an existing record with different " +
+                    "content already occupies this identifier"
+            }
+            return@withLock
+        }
+        requireExistingProvenance(entity.provenanceId)
+        entityStore[entity.entityId] = entity
+    }
+
+    internal suspend fun restoreDocument(document: Document) = mutex.withLock {
+        val existing = documentStore[document.documentId]
+        if (existing != null) {
+            check(existing == document) {
+                "Cannot restore Document '${document.documentId.value}': an existing record with different " +
+                    "content already occupies this identifier"
+            }
+            return@withLock
+        }
+        requireExistingProvenance(document.provenanceId)
+        documentStore[document.documentId] = document
+    }
+
+    internal suspend fun restoreAssertion(assertion: Assertion) = mutex.withLock {
+        val existing = assertionStore[assertion.assertionId]
+        if (existing != null) {
+            check(existing == assertion) {
+                "Cannot restore Assertion '${assertion.assertionId.value}': an existing record with " +
+                    "different content already occupies this identifier"
+            }
+            return@withLock
+        }
+        requireExistingProvenance(assertion.provenanceId)
+        assertionStore[assertion.assertionId] = assertion
+    }
+
+    internal suspend fun restoreRelationship(relationship: Relationship) = mutex.withLock {
+        val existing = relationshipStore[relationship.relationshipId]
+        if (existing != null) {
+            check(existing == relationship) {
+                "Cannot restore Relationship '${relationship.relationshipId.value}': an existing record " +
+                    "with different content already occupies this identifier"
+            }
+            return@withLock
+        }
+        requireExistingProvenance(relationship.provenanceId)
+        requireResolvableEndpoint(relationship.fromEndpoint)
+        requireResolvableEndpoint(relationship.toEndpoint)
+        relationshipStore[relationship.relationshipId] = relationship
+    }
+
     // ================= Retrieval behaviour =================
 
     override suspend fun getEntity(requestingPrincipalId: PrincipalId, entityId: EntityId): Entity? =
