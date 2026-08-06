@@ -1228,3 +1228,205 @@ sealed interface KnowledgeSubmissionDisposition {
 interface KnowledgeSubmission {
     suspend fun submit(requestingPrincipalId: PrincipalId, candidate: KnowledgeCandidate): KnowledgeSubmissionDisposition
 }
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 9.1 (Knowledge Query
+ * and Knowledge Result Contracts). Declares the public request and
+ * response shapes `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_CONTRACT_DESIGN.md`
+ * ("the Unit 9 Contract Design") §4 fixes at the properties level, and
+ * the [KnowledgeRetrieval] interface itself -- see
+ * `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_IMPLEMENTATION_PLAN.md`
+ * §4, Unit 9.1, for this Unit's own objective, dependencies, and
+ * verification requirements. This Unit implements no query execution, no
+ * filtering, no ordering rule, no staleness-detection mechanism, no
+ * permission enforcement, and no runtime composition -- every type below
+ * is a plain, immutable data holder or an unimplemented interface
+ * declaration, exactly like every other contract-tier Unit in this file
+ * before its own concrete implementation existed ([KnowledgeSubmission]
+ * before `DefaultKnowledgeSubmission`, [KnowledgeCandidateEvaluator]
+ * before `DefaultKnowledgeCandidateEvaluator`).
+ *
+ * ## Why [KnowledgeRetrievalQuery], not a reuse of legacy [KnowledgeQuery]
+ *
+ * Contract Design Version 2 §2 lists "Knowledge Query" as "Belongs...
+ * Unchanged from Version 1" -- read, as [KnowledgeItem] and
+ * [KnowledgeCandidate] both already establish for their own, identically
+ * worded table rows, as the *concept* belonging unchanged, not as a
+ * literal reuse of the existing Kotlin declaration. Reusing legacy
+ * [KnowledgeQuery] here is structurally impossible in any case: its own
+ * return path ([KnowledgeStore.retrieve]: `List<KnowledgeRecord>`) answers
+ * with the legacy, flat [KnowledgeRecord] shape, never the V2
+ * evidential-state/provenance/staleness-bearing [KnowledgeItem] shape the
+ * Unit 9 Contract Design's own Knowledge Result requires -- the same
+ * reasoning `docs/governance/PROGRAMME_3_UNIT_5_SCOPE_LOCK_CLARIFICATION.md`
+ * §1 already gives for [KnowledgeCandidate] being distinct from legacy
+ * [CandidateKnowledge].
+ *
+ * [requestingPrincipalId] is deliberately **not** a field on
+ * [KnowledgeRetrievalQuery] -- the Unit 9 Contract Design §4's own
+ * "retrieval interface" bullet fixes the requesting principal as a
+ * separate parameter to the retrieval operation itself, mirroring
+ * [KnowledgeSubmission.submit]'s own identical, already-established
+ * treatment (Errata 004; the Unit 8 Clarification §6), never carried on
+ * the payload type. [correlationId] is required per the Unit 9 Contract
+ * Design §4's own explicit addition: "a Knowledge Query must additionally
+ * be capable of carrying an explicit correlation identifier... explicit,
+ * never ambient." [relevance] and [maximumResults] mirror legacy
+ * [KnowledgeQuery]'s own already-proven, structural-matching-only field
+ * shape -- reused here as the minimal, precedented representation of
+ * "caller-supplied structural matching criteria," per the Unit 9 Contract
+ * Design §4's own "nothing else" limit; no ranking instruction, semantic
+ * hint, or permission assertion field is added. [category] is
+ * deliberately omitted -- Contract Design Version 2 never names it as a
+ * V2-tier retrieval concept, and this Unit adds no field beyond what the
+ * Contract Design's own text requires.
+ */
+data class KnowledgeRetrievalQuery(
+    val relevance: String,
+    val correlationId: String,
+    val maximumResults: Int,
+) {
+    init {
+        require(relevance.isNotBlank()) { "KnowledgeRetrievalQuery.relevance must not be blank" }
+        require(correlationId.isNotBlank()) { "KnowledgeRetrievalQuery.correlationId must not be blank" }
+        require(maximumResults >= 1) { "KnowledgeRetrievalQuery.maximumResults must be at least 1, was $maximumResults" }
+    }
+}
+
+/**
+ * One [KnowledgeItem] disclosed by a [KnowledgeRetrievalResult], paired
+ * with its own mandatory staleness disclosure (Contract Design Version 2
+ * §3, §6, Amendment 7; the Unit 9 Contract Design §2's own "never
+ * optional, never inferred from its own absence" requirement). [stale] is
+ * a non-nullable `Boolean` specifically because a nullable representation
+ * would itself violate that requirement -- an absent value is not a
+ * representable state of this field at all. This Unit does not implement
+ * the staleness-detection mechanism that would compute [stale]'s own
+ * value for a genuine retrieval call (Unit 9 Implementation Plan, Unit
+ * 9.3) -- this type declares only the shape.
+ *
+ * **Contract status of [stale]'s own `Boolean` representation.** This is
+ * Unit 9.1's own current representation, not a declared-final one: Unit
+ * 9.3 (Unit 9 Implementation Plan) remains authorised to widen or replace
+ * it -- for example, to also disclose a reason or a computed-at instant
+ * -- if its own drafting finds a binary signal insufficient to satisfy
+ * the Unit 9 Contract Design's own staleness-disclosure guarantee.
+ * Neither this Unit nor the Contract Design commits to `Boolean` as
+ * permanent. Any such widening or replacement is, from this Unit's own
+ * perspective, a breaking change to an already-shipped public field --
+ * it requires its own explicit, disclosed contract amendment when it
+ * happens, never a silent implementation-time drift introduced without
+ * one.
+ */
+data class KnowledgeResultEntry(
+    val item: KnowledgeItem,
+    val stale: Boolean,
+)
+
+/**
+ * What [KnowledgeRetrieval.retrieve] returns on a successful, authorised
+ * query -- the Unit 9 Contract Design §4's own "Knowledge Result" bundle:
+ * zero or more [KnowledgeResultEntry] values, each already carrying its
+ * own [KnowledgeItem] (whose own [KnowledgeItem.evidentialState] and
+ * [KnowledgeItem.provenanceReference] fields already satisfy the Contract
+ * Design's own "evidential-state disclosures... provenance references"
+ * requirement without this type duplicating either) and its own mandatory
+ * staleness disclosure. An empty [entries] list is a valid, successful
+ * result (Contract Design §4: "a call that finds nothing matching returns
+ * an empty, valid Knowledge Result -- never an error") -- never confused
+ * with [KnowledgeRetrievalDisposition.NotAuthorised], since the two are
+ * distinct sealed variants (see [KnowledgeRetrievalDisposition]), not
+ * distinguished by list emptiness. [entries] is a plain, ordinary `List`
+ * -- this Unit implements no ordering rule, deduplication, or truncation
+ * logic of its own (Unit 9 Implementation Plan, Unit 9.2); whatever order
+ * a future retrieval engine produces is preserved by this type exactly as
+ * received, never re-ordered by construction.
+ */
+data class KnowledgeRetrievalResult(
+    val entries: List<KnowledgeResultEntry>,
+)
+
+/**
+ * The outcome of one [KnowledgeRetrieval.retrieve] call. Two variants,
+ * not five: the Unit 9 Contract Design §9's own Error Model names five
+ * distinguishable outcomes, but only two require a sealed-type variant
+ * here, mirroring exactly how `DefaultKnowledgeSubmission` and
+ * `InMemoryMemoryCore` already express the other three:
+ *
+ * - **Invalid query** is prevented by [KnowledgeRetrievalQuery]'s own
+ *   construction-time validation -- a malformed query is already
+ *   impossible to construct through the public contract, a compile-time
+ *   guarantee, mirroring [KnowledgeSubmission]'s own identical structural
+ *   admissibility reasoning (the Unit 8 Clarification §8, step 2). No
+ *   runtime "invalid query" case exists for this type to represent.
+ * - **Unavailable data** and **implementation failure** are genuine
+ *   infrastructure faults, never returned values -- they propagate as
+ *   thrown exceptions, mirroring `InMemoryMemoryCore`'s and
+ *   `DefaultKnowledgeSubmission`'s own shared "no `try`/`catch`, faults
+ *   propagate unchanged" discipline (Unit 9 Contract Design §9). Adding a
+ *   variant for either here would misrepresent a genuine fault as an
+ *   ordinary, expected outcome.
+ * - [NotAuthorised] and [Retrieved] are the two remaining outcomes, and
+ *   the only two this type declares -- **empty** and **non-empty**
+ *   results are both [Retrieved], distinguished only by
+ *   [KnowledgeRetrievalResult.entries]'s own list contents, never by a
+ *   separate disposition variant (Contract Design §4: an empty result is
+ *   "never confusable with a permission denial").
+ *
+ * This is a distinct, narrower-scoped contract belonging exclusively to
+ * the Knowledge Retrieval boundary -- it is never a superset of, rename
+ * of, or replacement for [KnowledgeSubmissionDisposition], mirroring that
+ * type's own identical relationship to [KnowledgeCandidateEvaluation].
+ *
+ * **Contract status of this two-variant shape.** This is a deliberate,
+ * authorised Unit 9.1 representation, reasoned above -- it is not
+ * declared constitutionally immutable, and this Unit does not claim it
+ * is the only shape the Unit 9 Contract Design's own Error Model could
+ * ever be represented by. Any future addition of a third variant, or any
+ * other change to this type's own outcome representation, requires its
+ * own explicit, disclosed contract amendment or later authorised
+ * governance step -- never a silent extension introduced merely because
+ * Kotlin's own sealed-interface mechanism permits another subclass to be
+ * added. No later Unit may treat that technical possibility as
+ * governance authority to do so.
+ */
+sealed interface KnowledgeRetrievalDisposition {
+
+    data class Retrieved(
+        val result: KnowledgeRetrievalResult,
+    ) : KnowledgeRetrievalDisposition
+
+    data class NotAuthorised(
+        val reason: String,
+    ) : KnowledgeRetrievalDisposition {
+        init {
+            require(reason.isNotBlank()) { "KnowledgeRetrievalDisposition.NotAuthorised.reason must not be blank" }
+        }
+    }
+}
+
+/**
+ * Knowledge Memory's single public read boundary for the constitutional
+ * [KnowledgeItem] model -- see the Unit 9 Contract Design and the adopted
+ * `docs/governance/PROGRAMME_3_UNIT_9_SCOPE_LOCK_CLARIFICATION.md` for the
+ * full constitutional reasoning this interface's one operation will
+ * eventually be gated by. This Unit declares the contract only; no class
+ * implements it yet -- query execution, filtering, ordering, staleness
+ * computation, and permission enforcement are each a later, separately
+ * authorised Unit (Unit 9 Implementation Plan, Units 9.2 through 9.5),
+ * mirroring exactly how [KnowledgeSubmission] existed as a pure contract
+ * before `DefaultKnowledgeSubmission` was built.
+ *
+ * [requestingPrincipalId] is a required, explicit parameter -- never
+ * carried on [KnowledgeRetrievalQuery] itself, and never assumed from
+ * ambient context, mirroring [KnowledgeSubmission.submit]'s own identical
+ * treatment (Unit 9 Contract Design §5).
+ *
+ * This interface performs no write of any kind, no Memory Core query of
+ * its own, no lifecycle transition, and no Reasoning Context composition
+ * -- every one of those remains exactly where existing, closed governance
+ * already placed it (Unit 9 Contract Design §1, §3).
+ */
+interface KnowledgeRetrieval {
+    suspend fun retrieve(requestingPrincipalId: PrincipalId, query: KnowledgeRetrievalQuery): KnowledgeRetrievalDisposition
+}
