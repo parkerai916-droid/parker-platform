@@ -39,10 +39,25 @@ import parker.core.interfaces.KnowledgeItem
  *   evidence reference.
  * - [find] exists so this Unit's own tests can observe whether persistence
  *   occurred, and so a later unit may reuse this seam without inventing a
- *   second one. It is not a retrieval capability of any kind in the
- *   constitutional sense -- Unit 9's own Knowledge Query/Knowledge Result
- *   surface remains entirely separate, unauthorised, and unbegun by this
- *   Unit.
+ *   second one. On its own, it was not a retrieval capability of any kind
+ *   in the constitutional sense -- Unit 9's own Knowledge Query/Knowledge
+ *   Result surface was, at the time this Unit was written, entirely
+ *   separate, unauthorised, and unbegun.
+ * - [findAll], added by Programme 3, Knowledge Memory, Implementation
+ *   Unit 9.2 (Deterministic Retrieval Engine, `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_IMPLEMENTATION_PLAN.md`
+ *   §4), is the minimal enumeration capability that Unit's own retrieval
+ *   engine requires and this seam did not previously expose -- structural
+ *   query execution against Knowledge Memory's own held state (the Unit 9
+ *   Contract Design §2) is impossible without some way to iterate every
+ *   currently stored [KnowledgeItem]. This remains a purely internal,
+ *   non-constitutional addition to an already-internal seam: it adds no
+ *   new public contract, does not appear in `src/interfaces/`, and does
+ *   not alter [store] or [find]'s own existing behaviour in any way.
+ *   Returned in the same insertion order [InMemoryKnowledgeItemPersistence]'s
+ *   own backing map already, natively preserves -- this is the one
+ *   disclosed, deterministic ordering guarantee Unit 9.2's own retrieval
+ *   engine relies upon (Unit 9 Contract Design §8), not an ordering this
+ *   method computes or sorts by itself.
  *
  * No transaction technology, database choice, or file format is decided
  * here (Unit 8 Clarification §10) -- this Unit selects only an in-memory
@@ -52,6 +67,7 @@ import parker.core.interfaces.KnowledgeItem
 internal interface KnowledgeItemPersistence {
     suspend fun store(item: KnowledgeItem): KnowledgeItem
     suspend fun find(knowledgeId: KnowledgeId): KnowledgeItem?
+    suspend fun findAll(): List<KnowledgeItem>
 }
 
 /**
@@ -74,5 +90,9 @@ internal class InMemoryKnowledgeItemPersistence : KnowledgeItemPersistence {
 
     override suspend fun find(knowledgeId: KnowledgeId): KnowledgeItem? = mutex.withLock {
         items[knowledgeId]
+    }
+
+    override suspend fun findAll(): List<KnowledgeItem> = mutex.withLock {
+        items.values.toList()
     }
 }

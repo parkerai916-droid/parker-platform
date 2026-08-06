@@ -368,4 +368,6 @@ private class FakeKnowledgeItemPersistence : KnowledgeItemPersistence {
 
     override suspend fun find(knowledgeId: parker.core.interfaces.KnowledgeId): KnowledgeItem? =
         delegate.find(knowledgeId)
+
+    override suspend fun findAll(): List<KnowledgeItem> = delegate.findAll()
 }

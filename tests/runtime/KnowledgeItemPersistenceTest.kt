@@ -90,6 +90,38 @@ class KnowledgeItemPersistenceTest {
     }
 
     @Test
+    fun `findAll on an empty persistence returns an empty list`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+
+        assertEquals(emptyList<KnowledgeItem>(), persistence.findAll())
+    }
+
+    @Test
+    fun `findAll returns every stored item in insertion order`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val first = item(KnowledgeId("knowledge-1"))
+        val second = item(KnowledgeId("knowledge-2"))
+        val third = item(KnowledgeId("knowledge-3"))
+
+        persistence.store(first)
+        persistence.store(second)
+        persistence.store(third)
+
+        assertEquals(listOf(first, second, third), persistence.findAll())
+    }
+
+    @Test
+    fun `findAll does not alter store or find behaviour`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val value = item()
+
+        persistence.store(value)
+        persistence.findAll()
+
+        assertEquals(value, persistence.find(value.knowledgeId))
+    }
+
+    @Test
     fun `KnowledgeItemPersistence is an internal seam, not part of the public interfaces package`() {
         assertEquals(
             "parker.core.runtime",
