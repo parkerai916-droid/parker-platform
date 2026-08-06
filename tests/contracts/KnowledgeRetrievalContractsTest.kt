@@ -73,17 +73,45 @@ class KnowledgeRetrievalContractsTest {
         assertEquals(10, query.maximumResults)
     }
 
+    @Test
+    fun `includeRetired defaults to false, so an existing three-argument construction site keeps its new, deliberate exclusion behaviour`() {
+        val query = KnowledgeRetrievalQuery(relevance = "grocery preferences", correlationId = "corr-42", maximumResults = 10)
+
+        assertFalse(query.includeRetired)
+    }
+
+    @Test
+    fun `includeRetired is preserved unchanged when explicitly set true`() {
+        val query = KnowledgeRetrievalQuery(
+            relevance = "grocery preferences",
+            correlationId = "corr-42",
+            maximumResults = 10,
+            includeRetired = true,
+        )
+
+        assertTrue(query.includeRetired)
+    }
+
     // --- KnowledgeRetrievalQuery: no ranking, semantic, or permission field ---
 
     @Test
-    fun `KnowledgeRetrievalQuery carries exactly relevance, correlationId, and maximumResults -- no other field`() {
+    fun `KnowledgeRetrievalQuery carries exactly relevance, correlationId, maximumResults, and includeRetired -- no other field`() {
         val declaredProperties = KnowledgeRetrievalQuery::class.declaredMemberProperties.map { it.name }.toSet()
 
         assertEquals(
-            setOf("relevance", "correlationId", "maximumResults"),
+            setOf("relevance", "correlationId", "maximumResults", "includeRetired"),
             declaredProperties,
-            "KnowledgeRetrievalQuery must declare exactly these three properties -- found: $declaredProperties",
+            "KnowledgeRetrievalQuery must declare exactly these four properties -- found: $declaredProperties",
         )
+    }
+
+    @Test
+    fun `includeRetired is a non-nullable Boolean -- a structural criterion, never a nullable permission-shaped field`() {
+        val includeRetiredProperty = KnowledgeRetrievalQuery::class.declaredMemberProperties
+            .single { it.name == "includeRetired" }
+
+        assertEquals(Boolean::class, includeRetiredProperty.returnType.classifier)
+        assertFalse(includeRetiredProperty.returnType.isMarkedNullable)
     }
 
     @Test

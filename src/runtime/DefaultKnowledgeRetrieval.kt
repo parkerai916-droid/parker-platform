@@ -3,6 +3,7 @@ package parker.core.runtime
 import java.time.Clock
 import java.time.Duration
 import parker.core.interfaces.KnowledgeItem
+import parker.core.interfaces.KnowledgeItemStatus
 import parker.core.interfaces.KnowledgePromotion
 import parker.core.interfaces.KnowledgeResultEntry
 import parker.core.interfaces.KnowledgeRetrieval
@@ -14,21 +15,23 @@ import parker.core.interfaces.StalenessDisclosure
 
 /**
  * Programme 3, Knowledge Memory, Implementation Units 9.2 (Deterministic
- * Retrieval Engine) and 9.3 (Staleness Disclosure). The sole
- * implementation of [parker.core.interfaces.KnowledgeRetrieval] -- see
+ * Retrieval Engine), 9.3 (Staleness Disclosure), and 9.4 (Retirement and
+ * Supersession Retrieval-Shape Decision). The sole implementation of
+ * [parker.core.interfaces.KnowledgeRetrieval] -- see
  * `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_IMPLEMENTATION_PLAN.md`
- * §4, Units 9.2 and 9.3, and `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_CONTRACT_DESIGN.md`
+ * §4, Units 9.2 through 9.4, and `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_CONTRACT_DESIGN.md`
  * ("the Unit 9 Contract Design") for the constitutional reasoning this
  * class implements exactly and nothing more.
  *
- * This class implements query execution, filtering, one disclosed,
- * consistently-applied ordering rule (Contract Design §8), and one
- * disclosed staleness-disclosure heuristic (Contract Design V2 §3,
- * Amendment 7; Unit 9 Contract Design §2). It does not implement
- * retirement/supersession default-inclusion policy (Unit 9.4), permission
- * enforcement (Unit 9.5), or runtime composition (Unit 9.6) -- each
- * remains a later, separately authorised Unit's own responsibility,
- * exactly as the Implementation Plan's own ordering fixes.
+ * This class implements query execution, filtering (structural matching
+ * and lifecycle-status shaping), one disclosed, consistently-applied
+ * ordering rule (Contract Design §8), one disclosed staleness-disclosure
+ * heuristic (Contract Design V2 §3, Amendment 7; Unit 9 Contract Design
+ * §2), and one disclosed retired-item default-inclusion policy (Unit 9
+ * Contract Design §6). It does not implement permission enforcement (Unit
+ * 9.5) or runtime composition (Unit 9.6) -- each remains a later,
+ * separately authorised Unit's own responsibility, exactly as the
+ * Implementation Plan's own ordering fixes.
  *
  * ## Read source: [persistence], never Memory Core
  *
@@ -178,24 +181,112 @@ import parker.core.interfaces.StalenessDisclosure
  * carries a newly-computed classification worth measuring elapsed time
  * from.
  *
- * ## Lifecycle status -- currently unfiltered, an absence of policy, not a policy
+ * ## Lifecycle shaping (Unit 9.4) -- a considered policy, not an absence of one
  *
- * [retrieve] applies no filtering by [KnowledgeItem.status] of any kind --
- * an item whose status is [parker.core.interfaces.KnowledgeItemStatus.RETIRED]
- * is matched, ordered, and bounded identically to an
- * [parker.core.interfaces.KnowledgeItemStatus.ACTIVE] one, provided its
- * own most recent history entry's [parker.core.interfaces.KnowledgeLifecycleEvent.basis]
- * satisfies [matches]. **This is not a considered "include retired items
- * by default" policy decision.** It is the simple absence of any
- * lifecycle-aware filtering logic in this Unit at all. The Unit 9
- * Contract Design §6 explicitly reserves the actual default-inclusion
- * question -- included by default, excluded by default, or included only
- * under an explicit caller criterion -- to a later retrieval-shape
- * decision (Unit 9 Implementation Plan, Unit 9.4). This Unit's own
- * current, unconditional-inclusion behaviour must not be read as having
- * already answered that question, must not be relied upon as stable, and
- * remains subject to change, in either direction, once Unit 9.4 actually
- * decides it.
+ * **The planning determination, stated once, here, and applied
+ * consistently by [isRetrievable].** Unit 9 Contract Design §6 named
+ * three lawful outcomes for whether a [KnowledgeItemStatus.RETIRED] item
+ * appears in an ordinary [KnowledgeRetrievalQuery]'s own result set --
+ * included by default, excluded by default, or included only under an
+ * explicit caller criterion -- and left the choice to this Unit. This
+ * Unit chooses **excluded by default, included only when the caller sets
+ * [KnowledgeRetrievalQuery.includeRetired] to `true`.** Two governing
+ * texts drive this, in tension, both satisfied only by this combination:
+ * Unit 9 Contract Design §1 defines an ordinary query as a "task-scoped
+ * request for relevant, **already-promoted** knowledge" -- naturally a
+ * request for what Knowledge Memory still holds as current, since a
+ * retired item is, by definition (Contract Design V2 §3), "no longer
+ * current"; but Contract Design V2 §3's own "retirement never implies
+ * deletion... remain retained and retrievable" guarantee forecloses a
+ * *permanent*, non-overridable exclusion, since this class is "the sole
+ * public path through which anything outside Knowledge Memory may
+ * observe promoted knowledge" (Unit 9 Contract Design §1) -- a retired
+ * item excluded from it with no override would be retrievable in name
+ * only. Excluding by default, with an explicit, disclosed opt-in,
+ * satisfies both: ordinary queries return current knowledge; a caller who
+ * genuinely needs a retired item can still reach it through the one
+ * lawful path. This default is a considered decision, not the earlier,
+ * disclosed-as-provisional absence of one Units 9.2 and 9.3 left in
+ * place -- seeded from [KnowledgeRetrievalQuery.includeRetired]'s own
+ * `false` default, so an existing caller who does not name that parameter
+ * receives the new, deliberate exclusion, not silent continuation of the
+ * old placeholder behaviour.
+ *
+ * **[isRetrievable] filters on [KnowledgeItem.status] alone, deliberately
+ * never on whether [KnowledgeItem.history] contains a
+ * [parker.core.interfaces.KnowledgeRetirement] event.** This distinction
+ * matters for restoration: Unit 9 Contract Design §6 fixes that
+ * "restoration... returns its status to active" and that "a restored item
+ * is retrievable exactly as any other active item once restored."
+ * Filtering on current [KnowledgeItem.status] gives restoration this
+ * treatment automatically and without any special-case code -- a restored
+ * item's [KnowledgeItem.status] is [KnowledgeItemStatus.ACTIVE], so
+ * [isRetrievable] admits it exactly as it would any other active item,
+ * regardless of the [parker.core.interfaces.KnowledgeRetirement] event
+ * still, correctly, visible earlier in its own [KnowledgeItem.history].
+ * Filtering on history-contains-a-retirement instead would have
+ * incorrectly re-excluded every restored item forever -- exactly the
+ * "silently collapse... with no trace" failure Unit 9 Contract Design §6
+ * warns against, inverted into a different, equally dishonest failure.
+ *
+ * **Superseded classifications required no filtering decision, and no
+ * contract widening, at all.** Contract Design V2 §3 fixes that
+ * supersession "is re-evaluated against the superseding evidence, exactly
+ * as an ordinary revision" -- it is not a status, not a fourth lifecycle
+ * event kind, and never forks a [KnowledgeItem] into a separate "current"
+ * and "superseded" record. A single [KnowledgeItem]'s own
+ * [KnowledgeItem.evidentialState] already holds exactly its current
+ * classification, and [KnowledgeItem.history] already holds every earlier
+ * one, including every earlier hop of an arbitrarily long supersession
+ * chain (Contract Design V2 §3: "the full chain... remains transitively
+ * retrievable"). [retrieve] forwards each matched [KnowledgeItem]
+ * unchanged -- it never truncates, filters, or re-projects
+ * [KnowledgeItem.history] -- so multi-hop retrievability, and the
+ * current-versus-superseded distinction Unit 9 Contract Design §6's own
+ * "Superseded" paragraph fixes ("the item's current classification is the
+ * most recent entry in its own single, non-forking history, and any
+ * earlier, superseded entry remains part of that same history rather than
+ * being presented as though it were current"), are both satisfied by
+ * construction, not by anything this Unit adds. This is also why
+ * [KnowledgeResultEntry] itself needed no widening for supersession: the
+ * distinguishing information a caller needs -- which entry is current,
+ * which are historical -- is already present on the unchanged
+ * [KnowledgeItem] every entry already carries.
+ *
+ * **No "latest only" selection exists anywhere in this class.** Unit 9
+ * Contract Design §6 states plainly that "nothing here selects a 'latest
+ * only' retrieval policy," since Contract Design V2 §3's own multi-hop
+ * retrievability requirement forecloses it as the sole behaviour. This
+ * class discloses relationships -- a matched item's full, ordered
+ * [KnowledgeItem.history] -- and leaves any "which entry matters most"
+ * judgment entirely to the caller; it computes no "latest" projection, no
+ * summary, and no collapse of the chain into a single representative
+ * entry anywhere in [retrieve].
+ *
+ * **[KnowledgeItemStatus] alone is sufficient to represent every retrieval-
+ * shaping decision this Unit makes.** No additional, derived
+ * classification was added to distinguish "superseded" as its own kind,
+ * because supersession is not a status in the constitutional model this
+ * class is bound to (Contract Design V2 §3) -- it is a revision-kind
+ * history event, already fully disclosed by forwarding
+ * [KnowledgeItem.history] unchanged, as explained above. The one genuine
+ * status-shaped decision -- whether [KnowledgeItemStatus.RETIRED] items
+ * appear by default -- is fully expressed by the two-value status model
+ * this file already uses; inventing a third value, or a parallel
+ * classification, would violate the Implementation Plan's own
+ * cross-cutting "no new lifecycle state or event kind" boundary (§3) for
+ * no disclosed benefit.
+ *
+ * **[includeRetired] is a structural criterion, never a permission
+ * signal.** Unit 9 Contract Design §6's own closing paragraph --
+ * "lifecycle status is never a substitute for, or determinant of, a
+ * permission decision" -- applies to this new field exactly as it already
+ * applies to [KnowledgeItem.status] itself. A caller setting
+ * [KnowledgeRetrievalQuery.includeRetired] to `true` requests that retired
+ * items be considered for structural matching; it grants no permission,
+ * bypasses no future gate, and is evaluated identically by whatever
+ * mechanism Unit 9.5 eventually wires, exactly as every other matched
+ * item is.
  *
  * ## Permission -- accepted, never consulted
  *
@@ -215,19 +306,25 @@ import parker.core.interfaces.StalenessDisclosure
  * order, bounded to the same count, with the same staleness disclosures,
  * every time -- no randomisation and no load-dependent reordering exists
  * anywhere in [retrieve] (Unit 9 Contract Design §8; `docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_SCOPE_LOCK.md`
- * §7). One disclosed exception: [disclosureFor]'s own elapsed-time
- * computation is, necessarily, wall-clock-derived, and two calls
- * genuinely separated in real time by more than [POSSIBLY_STALE_AFTER]
- * may honestly differ in which entries they disclose as
- * [StalenessDisclosure.POSSIBLY_STALE] -- mirroring
+ * §7). [isRetrievable] is a pure function of [KnowledgeItem.status] and
+ * [KnowledgeRetrievalQuery.includeRetired] alone -- no wall-clock read,
+ * no randomisation, applied by the same single [List.filter] step as
+ * [matches] -- so lifecycle shaping is exactly as deterministic as
+ * structural matching itself, uniformly, never varying by query shape or
+ * code path (mirroring Scope Lock §8's own concurrent-revision-ordering
+ * uniformity discipline). One disclosed exception, unchanged from Unit
+ * 9.3: [disclosureFor]'s own elapsed-time computation is, necessarily,
+ * wall-clock-derived, and two calls genuinely separated in real time by
+ * more than [POSSIBLY_STALE_AFTER] may honestly differ in which entries
+ * they disclose as [StalenessDisclosure.POSSIBLY_STALE] -- mirroring
  * [DefaultKnowledgeCandidateEvaluator]'s own identical, already-disclosed
  * treatment of [parker.core.interfaces.KnowledgePromotion.occurredAt]
  * ("timestamps may legitimately differ across repeated evaluations...
  * does not weaken, and is entirely separate from, the deterministic
- * identity and classification guarantees"). Matching, ordering, and
- * bounding remain fully deterministic regardless; only the staleness
- * disclosure is time-relative, exactly as a genuinely time-based signal
- * must be.
+ * identity and classification guarantees"). Matching, lifecycle shaping,
+ * ordering, and bounding all remain fully deterministic regardless; only
+ * the staleness disclosure is time-relative, exactly as a genuinely
+ * time-based signal must be.
  *
  * @param persistence The sole read source for already-promoted
  *   [KnowledgeItem] values. Read only -- this class never calls
@@ -247,7 +344,7 @@ internal class DefaultKnowledgeRetrieval(
         query: KnowledgeRetrievalQuery,
     ): KnowledgeRetrievalDisposition {
         val matched = persistence.findAll()
-            .filter { item -> matches(item, query.relevance) }
+            .filter { item -> matches(item, query.relevance) && isRetrievable(item, query) }
             .take(query.maximumResults)
             .map { item -> KnowledgeResultEntry(item = item, staleness = disclosureFor(item)) }
 
@@ -257,6 +354,10 @@ internal class DefaultKnowledgeRetrieval(
     private fun matches(item: KnowledgeItem, relevance: String): Boolean {
         val currentBasis = item.history.lastOrNull()?.basis ?: return false
         return currentBasis.contains(relevance, ignoreCase = true)
+    }
+
+    private fun isRetrievable(item: KnowledgeItem, query: KnowledgeRetrievalQuery): Boolean {
+        return item.status == KnowledgeItemStatus.ACTIVE || query.includeRetired
     }
 
     private fun disclosureFor(item: KnowledgeItem): StalenessDisclosure {

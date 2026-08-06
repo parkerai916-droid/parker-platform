@@ -1280,11 +1280,53 @@ interface KnowledgeSubmission {
  * deliberately omitted -- Contract Design Version 2 never names it as a
  * V2-tier retrieval concept, and this Unit adds no field beyond what the
  * Contract Design's own text requires.
+ *
+ * **Widened by Programme 3, Knowledge Memory, Implementation Unit 9.4
+ * (Retirement and Supersession Retrieval-Shape Decision) -- the smallest
+ * additive widening the Unit 9 Contract Design §6 itself already named as
+ * one of three lawful outcomes.** [includeRetired] is added because Unit
+ * 9.4's own planning determination
+ * (`docs/reviews/PROGRAMME_3_UNIT_9_4_RETIREMENT_SUPERSESSION_SHAPING_COMPLETION_REVIEW.md`)
+ * concluded that an ordinary Knowledge Query must exclude
+ * [KnowledgeItemStatus.RETIRED] items by default (an ordinary,
+ * task-scoped request for "relevant, already-promoted knowledge" -- Unit
+ * 9 Contract Design §1 -- is naturally a request for knowledge Knowledge
+ * Memory still holds as current, not knowledge it has already marked "no
+ * longer current"), while Contract Design Version 2 §3's own "retirement
+ * never implies deletion... remain retained and retrievable" guarantee
+ * forecloses a permanent, non-overridable exclusion, since Knowledge
+ * Retrieval is "the sole public path through which anything outside
+ * Knowledge Memory may observe promoted knowledge" (Unit 9 Contract
+ * Design §1) and a retired item unreachable through it, ever, would be
+ * retrievable in name only. The Unit 9 Contract Design §6 itself already
+ * names exactly this resolution as one of three lawful outcomes --
+ * "included only under an explicit caller criterion" -- so this widening
+ * exercises authority the adopted Contract Design already disclosed,
+ * never a newly invented one. [includeRetired] is a **structural**
+ * criterion about which of an already-permitted caller's own matched
+ * items to include, never a permission signal -- Unit 9 Contract Design
+ * §6's own closing paragraph ("lifecycle status is never a substitute
+ * for, or determinant of, a permission decision") applies to this field
+ * exactly as it applies to [KnowledgeItem.status] itself: a retired item
+ * a caller requests via `includeRetired = true` remains subject to
+ * whatever permission classification Unit 9.5 eventually wires, never
+ * exempted from it by virtue of this field. Defaults to `false` --
+ * callers who construct a [KnowledgeRetrievalQuery] without naming this
+ * parameter receive the new, deliberate default (excluded), not the old,
+ * disclosed-as-provisional "unconditionally included" placeholder
+ * behaviour Units 9.2 and 9.3 left in place pending this Unit's own
+ * decision. [KnowledgeResultEntry] itself required no corresponding
+ * widening: a retired item, once included, already discloses its own
+ * retired status honestly via the unchanged [KnowledgeItem.status] field
+ * it already carries -- see [DefaultKnowledgeRetrieval]'s own "Lifecycle
+ * shaping" KDoc for the full reasoning, including why supersession
+ * required no widening or new field at all.
  */
 data class KnowledgeRetrievalQuery(
     val relevance: String,
     val correlationId: String,
     val maximumResults: Int,
+    val includeRetired: Boolean = false,
 ) {
     init {
         require(relevance.isNotBlank()) { "KnowledgeRetrievalQuery.relevance must not be blank" }
