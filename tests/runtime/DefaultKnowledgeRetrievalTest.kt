@@ -9,7 +9,9 @@ import kotlin.reflect.full.declaredFunctions
 import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.full.primaryConstructor
 import kotlinx.coroutines.test.runTest
+import parker.core.interfaces.DecisionId
 import parker.core.interfaces.EvidentialState
+import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.KnowledgeId
 import parker.core.interfaces.KnowledgeItem
 import parker.core.interfaces.KnowledgeItemStatus
@@ -20,6 +22,11 @@ import parker.core.interfaces.KnowledgeRetirement
 import parker.core.interfaces.KnowledgeRetrievalDisposition
 import parker.core.interfaces.KnowledgeRetrievalQuery
 import parker.core.interfaces.MemoryCoreRecordReference
+import parker.core.interfaces.PermissionAction
+import parker.core.interfaces.PermissionDecision
+import parker.core.interfaces.PermissionDecisionOutcome
+import parker.core.interfaces.PermissionEngine
+import parker.core.interfaces.PermissionLevel
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ProvenanceId
 import parker.core.interfaces.ProvenanceReference
@@ -32,15 +39,17 @@ import kotlin.test.assertTrue
 
 /**
  * Programme 3, Knowledge Memory, Implementation Units 9.2 (Deterministic
- * Retrieval Engine), 9.3 (Staleness Disclosure), and 9.4 (Retirement and
- * Supersession Retrieval-Shape Decision). Behavioural and structural
- * tests for [DefaultKnowledgeRetrieval] -- see
+ * Retrieval Engine), 9.3 (Staleness Disclosure), 9.4 (Retirement and
+ * Supersession Retrieval-Shape Decision), and 9.5 (Permission Enforcement
+ * Wiring). Behavioural and structural tests for [DefaultKnowledgeRetrieval]
+ * -- see
  * `docs/reviews/PROGRAMME_3_UNIT_9_2_DETERMINISTIC_RETRIEVAL_ENGINE_COMPLETION_REVIEW.md`,
  * `docs/reviews/PROGRAMME_3_UNIT_9_3_STALENESS_DISCLOSURE_COMPLETION_REVIEW.md`,
- * and `docs/reviews/PROGRAMME_3_UNIT_9_4_RETIREMENT_SUPERSESSION_SHAPING_COMPLETION_REVIEW.md`
+ * `docs/reviews/PROGRAMME_3_UNIT_9_4_RETIREMENT_SUPERSESSION_SHAPING_COMPLETION_REVIEW.md`,
+ * and `docs/reviews/PROGRAMME_3_UNIT_9_5_PERMISSION_ENFORCEMENT_IMPLEMENTATION_COMPLETION_REVIEW.md`
  * for the design decisions this suite verifies. This suite does not
- * exercise permission enforcement or runtime composition -- neither is
- * implemented by any of these three Units, and neither is exercised here.
+ * exercise runtime composition -- Unit 9.6 is not implemented, and not
+ * exercised here.
  */
 class DefaultKnowledgeRetrievalTest {
 
@@ -86,13 +95,43 @@ class DefaultKnowledgeRetrievalTest {
         includeRetired = includeRetired,
     )
 
+    /** An engine approving (or, per [outcome], not approving) every evaluation, regardless of granularity. */
+    private fun approvingEngine(outcome: PermissionDecisionOutcome = PermissionDecisionOutcome.APPROVED) =
+        FakePermissionEngine { request -> decision(request, outcome) }
+
+    /**
+     * An engine approving the act-level gate unconditionally, and deciding every item-level gate
+     * per [itemOutcome] -- the shape most Unit 9.5 tests need. Distinguishes the two granularities
+     * by comparing [ExecutionRequest.intent] against [DefaultKnowledgeRetrieval.ACT_LEVEL_INTENT],
+     * never by call order alone.
+     */
+    private fun actLevelApprovingEngine(itemOutcome: PermissionDecisionOutcome) =
+        FakePermissionEngine { request ->
+            val outcome = if (request.intent == DefaultKnowledgeRetrieval.ACT_LEVEL_INTENT) {
+                PermissionDecisionOutcome.APPROVED
+            } else {
+                itemOutcome
+            }
+            decision(request, outcome)
+        }
+
+    private fun decision(request: ExecutionRequest, outcome: PermissionDecisionOutcome) = PermissionDecision(
+        decisionId = DecisionId("decision-1"),
+        principalId = request.principalId,
+        resourceId = request.targetResources.first(),
+        action = PermissionAction.READ,
+        decision = outcome,
+        level = PermissionLevel.AUTOMATIC,
+        timestamp = Instant.now(),
+    )
+
     // --- Matching ---
 
     @Test
     fun `an item whose most recent basis contains the relevance text is matched`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery shopping list preferences"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -105,7 +144,7 @@ class DefaultKnowledgeRetrievalTest {
     fun `matching is case-insensitive`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "Grocery Shopping List"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -117,7 +156,7 @@ class DefaultKnowledgeRetrievalTest {
     fun `an item whose basis does not contain the relevance text is excluded`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "unrelated household task"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -145,7 +184,7 @@ class DefaultKnowledgeRetrievalTest {
             basis = "updated household budget notes",
         )
         persistence.store(item(knowledgeId, basis = "unused", history = listOf(originalPromotion, revision)))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val groceryResult = retrieval.retrieve(principal, query(relevance = "grocery"))
         val budgetResult = retrieval.retrieve(principal, query(relevance = "budget"))
@@ -160,7 +199,7 @@ class DefaultKnowledgeRetrievalTest {
     fun `an ACTIVE item is matched, ordered, and bounded exactly as before -- Unit 9-4 changes nothing about active-item behaviour`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", status = KnowledgeItemStatus.ACTIVE))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -175,7 +214,7 @@ class DefaultKnowledgeRetrievalTest {
     fun `a RETIRED item is excluded from an ordinary query by default -- Unit 9-4's own considered default`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", status = KnowledgeItemStatus.RETIRED))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -193,7 +232,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("active"), basis = "grocery active", status = KnowledgeItemStatus.ACTIVE))
         persistence.store(item(KnowledgeId("retired"), basis = "grocery retired", status = KnowledgeItemStatus.RETIRED))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -207,7 +246,7 @@ class DefaultKnowledgeRetrievalTest {
     fun `includeRetired = true admits a RETIRED item, disclosing its retired status honestly, never as though it were active`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", status = KnowledgeItemStatus.RETIRED))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
 
@@ -225,7 +264,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("active"), basis = "grocery active", status = KnowledgeItemStatus.ACTIVE))
         persistence.store(item(KnowledgeId("retired"), basis = "grocery retired", status = KnowledgeItemStatus.RETIRED))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
 
@@ -237,14 +276,13 @@ class DefaultKnowledgeRetrievalTest {
     }
 
     @Test
-    fun `includeRetired = true does not itself grant, imply, or bypass any permission decision -- Unit 9-5's own future responsibility, untouched`() = runTest {
+    fun `includeRetired = true does not itself grant, imply, or bypass the item-level permission gate`() = runTest {
         // A structural, behavioural companion to the contract-tier "includeRetired is a structural
         // criterion, never a permission-shaped field" test -- confirms includeRetired only widens
-        // which already-matched items are considered, never returns NotAuthorised or any permission
-        // outcome of its own, since no permission evaluation exists anywhere in this Unit yet.
+        // which already-matched items are considered for permission evaluation, never bypasses it.
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", status = KnowledgeItemStatus.RETIRED))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
 
@@ -285,7 +323,7 @@ class DefaultKnowledgeRetrievalTest {
             history = listOf(promotion, retirement, restoration),
         )
         persistence.store(restoredItem)
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         // Matching uses the most recent history entry's own basis (Unit 9.2's own fixed decision,
         // untouched here), so the query targets the restoration's own disclosed basis text.
@@ -330,7 +368,7 @@ class DefaultKnowledgeRetrievalTest {
         persistence.store(
             item(knowledgeId, basis = "unused", history = listOf(originalPromotion, revision), status = KnowledgeItemStatus.ACTIVE),
         )
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "revised quantities"))
 
@@ -363,7 +401,7 @@ class DefaultKnowledgeRetrievalTest {
         persistence.store(
             item(knowledgeId, basis = "unused", history = listOf(originalPromotion, supersedingPromotion)),
         )
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -396,7 +434,7 @@ class DefaultKnowledgeRetrievalTest {
             basis = "grocery list, current",
         )
         persistence.store(item(knowledgeId, basis = "unused", history = listOf(superseded, current)))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -421,7 +459,7 @@ class DefaultKnowledgeRetrievalTest {
             )
         }
         persistence.store(item(knowledgeId, basis = "unused", history = chain))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -445,7 +483,7 @@ class DefaultKnowledgeRetrievalTest {
         }
         val storedItem = item(knowledgeId, basis = "unused", history = chain)
         persistence.store(storedItem)
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -461,7 +499,7 @@ class DefaultKnowledgeRetrievalTest {
         persistence.store(item(KnowledgeId("k3"), basis = "grocery third", status = KnowledgeItemStatus.RETIRED))
         persistence.store(item(KnowledgeId("k1"), basis = "grocery first", status = KnowledgeItemStatus.ACTIVE))
         persistence.store(item(KnowledgeId("k2"), basis = "grocery second", status = KnowledgeItemStatus.RETIRED))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
         val theQuery = query(relevance = "grocery", includeRetired = true)
 
         val first = retrieval.retrieve(principal, theQuery)
@@ -478,7 +516,7 @@ class DefaultKnowledgeRetrievalTest {
         persistence.store(item(KnowledgeId("k1"), basis = "grocery one", status = KnowledgeItemStatus.ACTIVE))
         persistence.store(item(KnowledgeId("k2"), basis = "grocery two", status = KnowledgeItemStatus.RETIRED))
         persistence.store(item(KnowledgeId("k3"), basis = "grocery three", status = KnowledgeItemStatus.ACTIVE))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery", maximumResults = 1, includeRetired = true))
 
@@ -503,7 +541,7 @@ class DefaultKnowledgeRetrievalTest {
                 status = KnowledgeItemStatus.RETIRED,
             ),
         )
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
 
@@ -519,7 +557,7 @@ class DefaultKnowledgeRetrievalTest {
         val knowledgeId = KnowledgeId("k1")
         val retiredItem = item(knowledgeId, basis = "grocery list", status = KnowledgeItemStatus.RETIRED)
         persistence.store(retiredItem)
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         retrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
         retrieval.retrieve(principal, query(relevance = "grocery"))
@@ -532,7 +570,7 @@ class DefaultKnowledgeRetrievalTest {
     @Test
     fun `an empty persistence returns Retrieved with an empty result, never an error or denial`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "anything"))
 
@@ -548,7 +586,7 @@ class DefaultKnowledgeRetrievalTest {
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list one"))
         persistence.store(item(KnowledgeId("k2"), basis = "grocery list two"))
         persistence.store(item(KnowledgeId("k3"), basis = "grocery list three"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery", maximumResults = 2))
 
@@ -565,7 +603,7 @@ class DefaultKnowledgeRetrievalTest {
         persistence.store(item(KnowledgeId("k3"), basis = "grocery third"))
         persistence.store(item(KnowledgeId("k1"), basis = "grocery first"))
         persistence.store(item(KnowledgeId("k2"), basis = "grocery second"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -581,7 +619,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list one", occurredAt = now))
         persistence.store(item(KnowledgeId("k2"), basis = "grocery list two", occurredAt = now))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
         val theQuery = query(relevance = "grocery")
 
         val first = retrieval.retrieve(principal, theQuery)
@@ -599,7 +637,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         val recentlyClassifiedAt = now.minus(Duration.ofDays(1))
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", occurredAt = recentlyClassifiedAt))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -612,7 +650,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         val longAgoClassifiedAt = now.minus(Duration.ofDays(90))
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", occurredAt = longAgoClassifiedAt))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -625,7 +663,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         val exactlyAtThreshold = now.minus(Duration.ofDays(30))
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", occurredAt = exactlyAtThreshold))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -642,7 +680,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         val justOverThreshold = now.minus(Duration.ofDays(30)).minusSeconds(1)
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list", occurredAt = justOverThreshold))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -655,7 +693,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("fresh"), basis = "grocery fresh", occurredAt = now.minus(Duration.ofDays(1))))
         persistence.store(item(KnowledgeId("stale"), basis = "grocery stale", occurredAt = now.minus(Duration.ofDays(90))))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -687,7 +725,7 @@ class DefaultKnowledgeRetrievalTest {
             basis = "grocery revised",
         )
         persistence.store(item(knowledgeId, basis = "unused", history = listOf(originalPromotion, recentRevision)))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -720,7 +758,7 @@ class DefaultKnowledgeRetrievalTest {
             basis = "grocery no longer needed",
         )
         persistence.store(item(knowledgeId, basis = "unused", history = listOf(longAgoPromotion, recentRetirement)))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -758,7 +796,7 @@ class DefaultKnowledgeRetrievalTest {
         persistence.store(
             item(knowledgeId, basis = "unused", history = listOf(longAgoPromotion, oldRetirement, recentRestoration)),
         )
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -793,7 +831,7 @@ class DefaultKnowledgeRetrievalTest {
             history = listOf(onlyRetirement),
         )
         persistence.store(itemWithNoPromotion)
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
 
@@ -813,7 +851,7 @@ class DefaultKnowledgeRetrievalTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery fresh", occurredAt = now.minus(Duration.ofDays(1))))
         persistence.store(item(KnowledgeId("k2"), basis = "grocery stale", occurredAt = now.minus(Duration.ofDays(90))))
-        val retrieval = DefaultKnowledgeRetrieval(persistence, fixedClock)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(), fixedClock)
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -825,24 +863,11 @@ class DefaultKnowledgeRetrievalTest {
         )
     }
 
-    // --- Permission: accepted, never consulted ---
-
     @Test
-    fun `retrieve never returns NotAuthorised -- permission enforcement is not implemented by this Unit`() = runTest {
+    fun `different requesting principals receive identical results for the same query, given a principal-agnostic policy`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
-
-        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
-
-        assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
-    }
-
-    @Test
-    fun `different requesting principals receive identical results for the same query`() = runTest {
-        val persistence = InMemoryKnowledgeItemPersistence()
-        persistence.store(item(KnowledgeId("k1"), basis = "grocery list"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
         val theQuery = query(relevance = "grocery")
 
         val first = retrieval.retrieve(PrincipalId("owner-a"), theQuery)
@@ -851,24 +876,442 @@ class DefaultKnowledgeRetrievalTest {
         assertEquals(first, second)
     }
 
-    // --- Structural: no Memory Core dependency, no ranking, no PermissionEngine dependency ---
+    // ================================================================
+    // Permission Enforcement (Unit 9.5)
+    // ================================================================
+
+    // --- Authorised retrieval ---
 
     @Test
-    fun `DefaultKnowledgeRetrieval holds exactly two constructor dependencies -- KnowledgeItemPersistence and a Clock`() {
-        val constructor = requireNotNull(DefaultKnowledgeRetrieval::class.primaryConstructor)
-        val parameterTypes = constructor.parameters.map { it.type.classifier }
+    fun `an authorised query returns Retrieved with the matched item`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery list"))
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
-        assertEquals(listOf(KnowledgeItemPersistence::class, Clock::class), parameterTypes)
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(1, retrieved.result.entries.size)
     }
 
     @Test
-    fun `the clock parameter defaults, so an existing single-argument construction site remains valid`() = runTest {
-        // Unit 9.3 added `clock` with a default value specifically so this construction shape --
-        // already used by every pre-existing Unit 9.2 call site -- continues to compile and behave,
-        // using the real system clock implicitly, exactly as before this Unit's own addition.
+    fun `retrieve requires an actual Permission Engine call -- it is not bypassed`() = runTest {
+        val engine = approvingEngine()
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertTrue(engine.evaluateCallCount >= 1)
+    }
+
+    // --- Act-level denial ---
+
+    @Test
+    fun `a DENIED act-level decision returns NotAuthorised and never reads persistence`() = runTest {
+        val persistence = CountingKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery list"))
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(PermissionDecisionOutcome.DENIED))
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertIs<KnowledgeRetrievalDisposition.NotAuthorised>(disposition)
+        assertEquals(0, persistence.findAllCallCount, "a denied act-level decision must never read persistence")
+    }
+
+    @Test
+    fun `a DEFERRED act-level decision is NotAuthorised, treated the same as denial`() = runTest {
+        val persistence = CountingKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery list"))
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(PermissionDecisionOutcome.DEFERRED))
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertIs<KnowledgeRetrievalDisposition.NotAuthorised>(disposition)
+        assertEquals(0, persistence.findAllCallCount)
+    }
+
+    @Test
+    fun `a NotAuthorised result carries a non-blank reason naming the requesting principal`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(PermissionDecisionOutcome.DENIED))
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val notAuthorised = assertIs<KnowledgeRetrievalDisposition.NotAuthorised>(disposition)
+        assertTrue(notAuthorised.reason.isNotBlank())
+        assertTrue(notAuthorised.reason.contains(principal.value), "reason should name the requesting principal")
+    }
+
+    @Test
+    fun `an act-level denial performs no matching, lifecycle shaping, or staleness computation`() = runTest {
+        val persistence = CountingKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery list", occurredAt = now.minus(Duration.ofDays(90))))
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine(PermissionDecisionOutcome.DENIED), fixedClock)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertEquals(0, persistence.findAllCallCount, "no persistence read occurs, so no matching, shaping, or staleness computation can occur either")
+    }
+
+    // --- Mixed authorised/unauthorised items (item-level gate) ---
+
+    @Test
+    fun `an item-level DENIED decision silently excludes that item, never surfaced as a distinguishable denial`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val approvedId = KnowledgeId("approved")
+        val deniedId = KnowledgeId("denied")
+        persistence.store(item(approvedId, basis = "grocery approved"))
+        persistence.store(item(deniedId, basis = "grocery denied"))
+        val engine = FakePermissionEngine { request ->
+            val outcome = if (request.intent.contains(deniedId.value)) {
+                PermissionDecisionOutcome.DENIED
+            } else {
+                PermissionDecisionOutcome.APPROVED
+            }
+            decision(request, outcome)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(listOf(approvedId), retrieved.result.entries.map { it.item.knowledgeId })
+    }
+
+    @Test
+    fun `an item-level DEFERRED decision is also silently excluded, mirroring DENIED treatment`() = runTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), basis = "grocery list"))
-        val retrieval = DefaultKnowledgeRetrieval(persistence)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, actLevelApprovingEngine(PermissionDecisionOutcome.DEFERRED))
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(emptyList<Any>(), retrieved.result.entries)
+    }
+
+    // --- Complete filtering of all items ---
+
+    @Test
+    fun `when every item is denied at item level, the result is an ordinary empty Retrieved, never NotAuthorised`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "grocery two"))
+        val retrieval = DefaultKnowledgeRetrieval(persistence, actLevelApprovingEngine(PermissionDecisionOutcome.DENIED))
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(
+            emptyList<Any>(),
+            retrieved.result.entries,
+            "complete item-level filtering must never be conflated with act-level NotAuthorised",
+        )
+    }
+
+    // --- Deterministic ordering after filtering ---
+
+    @Test
+    fun `deterministic ordering is preserved after item-level permission filtering`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "grocery two"))
+        persistence.store(item(KnowledgeId("k3"), basis = "grocery three"))
+        val deniedId = KnowledgeId("k2")
+        val engine = FakePermissionEngine { request ->
+            val outcome = if (request.intent.contains(deniedId.value)) PermissionDecisionOutcome.DENIED else PermissionDecisionOutcome.APPROVED
+            decision(request, outcome)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+        val theQuery = query(relevance = "grocery")
+
+        val first = retrieval.retrieve(principal, theQuery)
+        val second = retrieval.retrieve(principal, theQuery)
+
+        val order = assertIs<KnowledgeRetrievalDisposition.Retrieved>(first).result.entries.map { it.item.knowledgeId }
+        assertEquals(listOf(KnowledgeId("k1"), KnowledgeId("k3")), order, "insertion order preserved, minus the denied item")
+        assertEquals(first, second, "repeated calls against unchanged state and policy are fully repeatable")
+    }
+
+    // --- Retirement filtering combined with permission filtering ---
+
+    @Test
+    fun `retirement filtering and permission filtering compose -- a RETIRED item is excluded before ever reaching the item-level gate`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("active"), basis = "grocery active", status = KnowledgeItemStatus.ACTIVE))
+        persistence.store(item(KnowledgeId("retired"), basis = "grocery retired", status = KnowledgeItemStatus.RETIRED))
+        val evaluatedIntents = mutableListOf<String>()
+        val engine = FakePermissionEngine { request ->
+            evaluatedIntents.add(request.intent)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(listOf(KnowledgeId("active")), retrieved.result.entries.map { it.item.knowledgeId })
+        assertFalse(
+            evaluatedIntents.any { it.contains("retired") },
+            "a RETIRED item excluded by lifecycle shaping must never reach the item-level permission gate at all",
+        )
+        assertEquals(2, evaluatedIntents.size, "1 act-level + 1 item-level (the ACTIVE item only)")
+    }
+
+    @Test
+    fun `an explicitly included RETIRED item (includeRetired = true) is still subject to the item-level permission gate`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val retiredId = KnowledgeId("retired")
+        persistence.store(item(retiredId, basis = "grocery retired", status = KnowledgeItemStatus.RETIRED))
+        val engine = FakePermissionEngine { request ->
+            val outcome = if (request.intent.contains(retiredId.value)) PermissionDecisionOutcome.DENIED else PermissionDecisionOutcome.APPROVED
+            decision(request, outcome)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(
+            emptyList<Any>(),
+            retrieved.result.entries,
+            "includeRetired grants no permission of its own -- the item-level gate still applies",
+        )
+    }
+
+    // --- Superseded history preservation under permission approval ---
+
+    @Test
+    fun `superseded history remains fully intact on an item that passes both permission gates`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val knowledgeId = KnowledgeId("k1")
+        val evidenceReference = MemoryCoreRecordReference.ToAssertion(parker.core.interfaces.AssertionId("assertion-k1"))
+        val superseded = KnowledgePromotion(
+            knowledgeId = knowledgeId,
+            evidenceReference = evidenceReference,
+            resultingState = EvidentialState.UNKNOWN,
+            occurredAt = Instant.parse("2026-01-01T00:00:00Z"),
+            basis = "grocery superseded",
+        )
+        val current = KnowledgePromotion(
+            knowledgeId = knowledgeId,
+            evidenceReference = evidenceReference,
+            resultingState = EvidentialState.UNKNOWN,
+            occurredAt = Instant.parse("2026-02-01T00:00:00Z"),
+            basis = "grocery current",
+        )
+        persistence.store(item(knowledgeId, basis = "unused", history = listOf(superseded, current)))
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(listOf(superseded, current), retrieved.result.entries.single().item.history)
+    }
+
+    // --- Correlation identifier propagation ---
+
+    @Test
+    fun `query correlationId is propagated unchanged into every ExecutionRequest, act-level and item-level alike`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "grocery two"))
+        val capturedCorrelationIds = mutableListOf<String>()
+        val engine = FakePermissionEngine { request ->
+            capturedCorrelationIds.add(request.correlationId)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+        val theQuery = KnowledgeRetrievalQuery(relevance = "grocery", correlationId = "distinctive-correlation-id", maximumResults = 10)
+
+        retrieval.retrieve(principal, theQuery)
+
+        assertEquals(3, capturedCorrelationIds.size, "1 act-level + 2 item-level evaluations")
+        assertTrue(
+            capturedCorrelationIds.all { it == "distinctive-correlation-id" },
+            "every evaluation must carry the caller's own correlationId unchanged, never a freshly minted one",
+        )
+    }
+
+    @Test
+    fun `an act-level denial still evaluates with the caller-supplied correlationId, never an ambient or freshly minted one`() = runTest {
+        var capturedCorrelationId: String? = null
+        val engine = FakePermissionEngine { request ->
+            capturedCorrelationId = request.correlationId
+            decision(request, PermissionDecisionOutcome.DENIED)
+        }
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+        val theQuery = KnowledgeRetrievalQuery(relevance = "grocery", correlationId = "act-level-corr-id", maximumResults = 10)
+
+        retrieval.retrieve(principal, theQuery)
+
+        assertEquals("act-level-corr-id", capturedCorrelationId)
+    }
+
+    // --- Resource/action correctness ---
+
+    @Test
+    fun `every ExecutionRequest, act-level and item-level, names the fixed KNOWLEDGE_RETRIEVAL_RESOURCE_ID and RETRIEVE_ACTION_NAME`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        val capturedRequests = mutableListOf<ExecutionRequest>()
+        val engine = FakePermissionEngine { request ->
+            capturedRequests.add(request)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertEquals(2, capturedRequests.size, "1 act-level + 1 item-level")
+        capturedRequests.forEach { request ->
+            assertEquals(listOf(DefaultKnowledgeRetrieval.KNOWLEDGE_RETRIEVAL_RESOURCE_ID), request.targetResources)
+            assertEquals(listOf(DefaultKnowledgeRetrieval.RETRIEVE_ACTION_NAME), request.proposedActions)
+        }
+    }
+
+    @Test
+    fun `the act-level and item-level requests are distinguishable only by intent, never by resource or action`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        val capturedIntents = mutableListOf<String>()
+        val engine = FakePermissionEngine { request ->
+            capturedIntents.add(request.intent)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertEquals(DefaultKnowledgeRetrieval.ACT_LEVEL_INTENT, capturedIntents[0])
+        assertTrue(capturedIntents[1].contains("k1"), "the item-level intent names the specific item under evaluation")
+    }
+
+    // --- Principal propagation ---
+
+    @Test
+    fun `requestingPrincipalId is propagated unchanged into every ExecutionRequest, act-level and item-level alike`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        val capturedPrincipals = mutableListOf<PrincipalId>()
+        val engine = FakePermissionEngine { request ->
+            capturedPrincipals.add(request.principalId)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertTrue(capturedPrincipals.isNotEmpty())
+        assertTrue(capturedPrincipals.all { it == principal })
+    }
+
+    // --- Exact evaluation count / no double evaluation ---
+
+    @Test
+    fun `exactly 1 + N evaluations occur when the act-level gate approves, for N items surviving matching and lifecycle shaping`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "grocery two"))
+        persistence.store(item(KnowledgeId("k3"), basis = "unrelated household task"))
+        val engine = approvingEngine()
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertEquals(3, engine.evaluateCallCount, "1 act-level + 2 items surviving matching -- k3 never matched, never evaluated")
+    }
+
+    @Test
+    fun `exactly 1 evaluation occurs when the act-level gate denies, regardless of how many items would otherwise match`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "grocery two"))
+        val engine = approvingEngine(PermissionDecisionOutcome.DENIED)
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertEquals(1, engine.evaluateCallCount)
+    }
+
+    @Test
+    fun `no item is evaluated more than once`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "grocery two"))
+        val requestIds = mutableListOf<String>()
+        val engine = FakePermissionEngine { request ->
+            requestIds.add(request.requestId.value)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertEquals(requestIds.size, requestIds.toSet().size, "every evaluation must use its own, distinct requestId -- no evaluation is repeated")
+    }
+
+    // --- Boundary conditions ---
+
+    @Test
+    fun `an authorised query against empty persistence evaluates only the act-level gate and returns an empty Retrieved`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val engine = approvingEngine()
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "anything"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(emptyList<Any>(), retrieved.result.entries)
+        assertEquals(1, engine.evaluateCallCount, "only the act-level gate is evaluated when nothing matches")
+    }
+
+    @Test
+    fun `maximumResults bounds the permission-approved set, not the pre-filter candidate set`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "grocery two"))
+        persistence.store(item(KnowledgeId("k3"), basis = "grocery three"))
+        val deniedId = KnowledgeId("k1")
+        val engine = FakePermissionEngine { request ->
+            val outcome = if (request.intent.contains(deniedId.value)) PermissionDecisionOutcome.DENIED else PermissionDecisionOutcome.APPROVED
+            decision(request, outcome)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery", maximumResults = 1))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(
+            listOf(KnowledgeId("k2")),
+            retrieved.result.entries.map { it.item.knowledgeId },
+            "k1 was denied, so bounding to 1 must yield k2 (the next approved item in order), not an empty result",
+        )
+    }
+
+    // --- Structural: three constructor dependencies, no Memory Core dependency ---
+
+    @Test
+    fun `DefaultKnowledgeRetrieval holds exactly three constructor dependencies -- KnowledgeItemPersistence, PermissionEngine, and a Clock`() {
+        val constructor = requireNotNull(DefaultKnowledgeRetrieval::class.primaryConstructor)
+        val parameterTypes = constructor.parameters.map { it.type.classifier }
+
+        assertEquals(listOf(KnowledgeItemPersistence::class, PermissionEngine::class, Clock::class), parameterTypes)
+    }
+
+    @Test
+    fun `the clock parameter defaults, so a two-argument (persistence, permissionEngine) construction site remains valid`() = runTest {
+        // Unit 9.3 added `clock` with a default value; Unit 9.5 adds a mandatory `permissionEngine`
+        // between `persistence` and `clock` -- a two-argument call now uses the real system clock
+        // implicitly, exactly as a one-argument call did before this Unit's own addition. There is,
+        // deliberately, no default `PermissionEngine` -- a default-approving fallback would be
+        // self-authorisation, which no governing document permits.
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "grocery list"))
+        val retrieval = DefaultKnowledgeRetrieval(persistence, approvingEngine())
 
         val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
 
@@ -876,9 +1319,9 @@ class DefaultKnowledgeRetrievalTest {
     }
 
     @Test
-    fun `no MemoryRetrieval, MemoryCore, or PermissionEngine dependency exists anywhere on DefaultKnowledgeRetrieval`() {
+    fun `no MemoryRetrieval or MemoryCore dependency exists anywhere on DefaultKnowledgeRetrieval`() {
         val declaredProperties = DefaultKnowledgeRetrieval::class.declaredMemberProperties.map { it.name.lowercase() }
-        listOf("memoryretrieval", "memorycore", "permissionengine").forEach { forbidden ->
+        listOf("memoryretrieval", "memorycore").forEach { forbidden ->
             assertFalse(
                 declaredProperties.any { it.contains(forbidden) },
                 "DefaultKnowledgeRetrieval must not declare a property resembling '$forbidden' -- found: $declaredProperties",
@@ -906,5 +1349,32 @@ class DefaultKnowledgeRetrievalTest {
                 "DefaultKnowledgeRetrieval must not declare '$forbidden' -- found: $declaredNames",
             )
         }
+    }
+}
+
+/**
+ * Test-only wrapper counting [findAll] invocations, so tests can prove an
+ * act-level permission denial never reads persistence at all (the adopted
+ * Unit 9 Permission Enforcement Mechanism Clarification §8 step 2's own
+ * "must never read `KnowledgeItemPersistence` before it completes"
+ * requirement). Delegates to a real [InMemoryKnowledgeItemPersistence] so
+ * tests that only care about call counting still get real storage
+ * semantics, mirroring [DefaultKnowledgeSubmissionTest]'s own
+ * `FakeKnowledgeItemPersistence` shape exactly.
+ */
+private class CountingKnowledgeItemPersistence : KnowledgeItemPersistence {
+
+    private val delegate = InMemoryKnowledgeItemPersistence()
+
+    var findAllCallCount: Int = 0
+        private set
+
+    override suspend fun store(item: KnowledgeItem): KnowledgeItem = delegate.store(item)
+
+    override suspend fun find(knowledgeId: KnowledgeId): KnowledgeItem? = delegate.find(knowledgeId)
+
+    override suspend fun findAll(): List<KnowledgeItem> {
+        findAllCallCount++
+        return delegate.findAll()
     }
 }

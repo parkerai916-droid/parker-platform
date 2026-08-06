@@ -2,6 +2,9 @@ package parker.core.runtime
 
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
+import java.util.UUID
+import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.KnowledgeItem
 import parker.core.interfaces.KnowledgeItemStatus
 import parker.core.interfaces.KnowledgePromotion
@@ -10,33 +13,111 @@ import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeRetrievalDisposition
 import parker.core.interfaces.KnowledgeRetrievalQuery
 import parker.core.interfaces.KnowledgeRetrievalResult
+import parker.core.interfaces.PermissionDecision
+import parker.core.interfaces.PermissionDecisionOutcome
+import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.RequestId
+import parker.core.interfaces.RequestOrigin
+import parker.core.interfaces.RequestPriority
+import parker.core.interfaces.ResourceId
 import parker.core.interfaces.StalenessDisclosure
 
 /**
  * Programme 3, Knowledge Memory, Implementation Units 9.2 (Deterministic
- * Retrieval Engine), 9.3 (Staleness Disclosure), and 9.4 (Retirement and
- * Supersession Retrieval-Shape Decision). The sole implementation of
+ * Retrieval Engine), 9.3 (Staleness Disclosure), 9.4 (Retirement and
+ * Supersession Retrieval-Shape Decision), and 9.5 (Permission Enforcement
+ * Wiring). The sole implementation of
  * [parker.core.interfaces.KnowledgeRetrieval] -- see
  * `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_IMPLEMENTATION_PLAN.md`
- * §4, Units 9.2 through 9.4, and `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_CONTRACT_DESIGN.md`
- * ("the Unit 9 Contract Design") for the constitutional reasoning this
+ * §4, Units 9.2 through 9.5, `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_CONTRACT_DESIGN.md`
+ * ("the Unit 9 Contract Design"), and
+ * `docs/governance/PROGRAMME_3_UNIT_9_PERMISSION_ENFORCEMENT_MECHANISM_CLARIFICATION.md`
+ * ("the Clarification", Adopted) for the constitutional reasoning this
  * class implements exactly and nothing more.
  *
  * This class implements query execution, filtering (structural matching
  * and lifecycle-status shaping), one disclosed, consistently-applied
  * ordering rule (Contract Design §8), one disclosed staleness-disclosure
  * heuristic (Contract Design V2 §3, Amendment 7; Unit 9 Contract Design
- * §2), and one disclosed retired-item default-inclusion policy (Unit 9
- * Contract Design §6). It does not implement permission enforcement (Unit
- * 9.5) or runtime composition (Unit 9.6) -- each remains a later,
- * separately authorised Unit's own responsibility, exactly as the
- * Implementation Plan's own ordering fixes.
+ * §2), one disclosed retired-item default-inclusion policy (Unit 9
+ * Contract Design §6), and the Clarification's own two-tier permission
+ * gate. It does not implement runtime composition (Unit 9.6) -- that
+ * remains a later, separately authorised Unit's own responsibility,
+ * exactly as the Implementation Plan's own ordering fixes.
+ *
+ * ## Permission enforcement (Unit 9.5) -- the Clarification's own two-tier gate, implemented exactly
+ *
+ * The Clarification's Section 6.2 freezes two, and only two, evaluation
+ * granularities, both required (neither alone satisfies the Unit 9
+ * Clarification's own per-item disclosure reasoning and Contract Design
+ * §9's own binding "empty result implies permission was granted"
+ * requirement simultaneously):
+ *
+ * 1. **Act-level gate.** [retrieve] evaluates [permissionEngine] exactly
+ *    once per call, using [buildExecutionRequest] with
+ *    [ACT_LEVEL_INTENT], before [persistence] is read at all. On any
+ *    outcome other than [PermissionDecisionOutcome.APPROVED] or
+ *    [PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION],
+ *    [KnowledgeRetrievalDisposition.NotAuthorised] is returned
+ *    immediately -- no persistence read, no matching, no lifecycle
+ *    shaping, and no staleness computation occurs on this path
+ *    (Clarification §6.2 item 1, §8 steps 2-3).
+ * 2. **Item-level gate.** Where the act-level gate approves, every
+ *    candidate [KnowledgeItem] surviving [matches] and [isRetrievable] --
+ *    unchanged Unit 9.2/9.4 behaviour -- receives its own, separate
+ *    evaluation, in the same order [persistence] returned them, **before**
+ *    [KnowledgeRetrievalQuery.maximumResults] bounding is applied
+ *    (Clarification §8 step 6, whose own disclosed reasoning this class
+ *    relies on unchanged: bounding after permission filtering, not
+ *    before, so a caller who receives fewer than [KnowledgeRetrievalQuery.maximumResults]
+ *    entries can trust this reflects genuinely fewer *visible* items, not
+ *    an artefact of a bound applied before visibility was known). An item
+ *    whose evaluation is not `APPROVED`/`APPROVED_WITH_CONFIRMATION` is
+ *    silently excluded from the result -- never surfaced as a
+ *    distinguishable per-item denial, indistinguishable at the type level
+ *    from an item that never matched at all (Clarification §10, mirroring
+ *    `PermissionFilteredMemoryRetrieval`'s own established per-record
+ *    filtering precedent).
+ *
+ * These are evaluations of two genuinely different questions -- "may this
+ * principal use Knowledge Retrieval at all" and "may this principal see
+ * this specific item" -- never a redundant, duplicate evaluation of the
+ * same proposal (Clarification §6.2). A query therefore evaluates
+ * [PermissionEngine.evaluate] exactly `1` time when the act-level gate
+ * denies, or exactly `1 + N` times when it approves, where `N` is the
+ * number of items surviving [matches] and [isRetrievable] before bounding
+ * (Clarification §8's own disclosed "Verification consequence").
+ *
+ * ## One fixed resource/action pair, reused at both granularities
+ *
+ * [KNOWLEDGE_RETRIEVAL_RESOURCE_ID] and [RETRIEVE_ACTION_NAME] are the
+ * single, fixed, disclosed-but-unregistered pair the Clarification §7
+ * names -- never a per-item identifier. Both granularities' own
+ * [ExecutionRequest] share the identical `targetResources`/
+ * `proposedActions` pair; only [ExecutionRequest.intent] varies (naming
+ * the specific item under evaluation, for the item-level gate), and only
+ * *how many times*, and *against which principal*, the pair is evaluated
+ * varies (Clarification §7: "only *how many times*, and *against which
+ * principal*, the same fixed pair is evaluated varies").
+ *
+ * ## Correlation identifier -- propagated unchanged, never freshly minted
+ *
+ * Unlike [DefaultKnowledgeSubmission] (which mints a fresh correlation
+ * identifier, since `KnowledgeCandidate` carries none of its own),
+ * [KnowledgeRetrievalQuery.correlationId] already exists precisely so it
+ * can be propagated (Unit 9 Contract Design §4). Every [ExecutionRequest]
+ * this class constructs, at either granularity, carries
+ * [KnowledgeRetrievalQuery.correlationId] unchanged as its own
+ * [ExecutionRequest.correlationId] -- never a freshly minted value
+ * (Clarification §9). [ExecutionRequest.requestId] is still freshly
+ * minted per evaluation (an address for one specific evaluation, a
+ * different concern from correlating every evaluation belonging to the
+ * same query).
  *
  * ## Read source: [persistence], never Memory Core
  *
- * This class holds exactly one dependency -- [persistence] -- and,
- * deliberately, no [parker.core.interfaces.MemoryRetrieval] or
+ * This class holds no [parker.core.interfaces.MemoryRetrieval] or
  * [parker.core.interfaces.MemoryCore] reference of any kind. It is
  * therefore structurally incapable of reading Memory Core content at any
  * point in [retrieve], mirroring [DefaultKnowledgeSubmission]'s own
@@ -76,13 +157,14 @@ import parker.core.interfaces.StalenessDisclosure
  * [KnowledgeItemPersistence.findAll] already returns items in the order
  * they were stored (its own KDoc). This class relies on that existing
  * guarantee rather than sorting, ranking, or re-ordering anything itself
- * -- filtering with [List.filter] and bounding with [List.take] both
- * preserve the input list's own relative order (Kotlin's own documented
- * guarantee for both), so the one ordering rule Contract Design §8
- * requires to "exist and be applied consistently" is satisfied by
- * construction, never by an ordering algorithm this class implements.
- * The same query against unchanged persisted state therefore returns an
- * identical result, in identical order, on every call.
+ * -- filtering, item-level permission evaluation (a sequential, in-order
+ * loop, never a re-ordering operation), and bounding with [List.take] all
+ * preserve the input list's own relative order, so the one ordering rule
+ * Contract Design §8 requires to "exist and be applied consistently" is
+ * satisfied by construction, never by an ordering algorithm this class
+ * implements. The same query against unchanged persisted state and an
+ * unchanged permission policy therefore returns an identical result, in
+ * identical order, on every call.
  *
  * ## Staleness -- a disclosed, honest, age-based signal, never a claim of the governed condition
  *
@@ -125,7 +207,9 @@ import parker.core.interfaces.StalenessDisclosure
  * moment its current classification was last computed -- and
  * [StalenessDisclosure.INDETERMINATE] otherwise: the honest default,
  * deliberately not a claim of freshness, for every item this signal does
- * not distinguish as unusually old.
+ * not distinguish as unusually old. Unit 9.5 computes this disclosure
+ * only for the final, permission-approved, bounded set (Clarification §8
+ * step 8) -- an unchanged computation, applied to a possibly smaller set.
  *
  * **The false-negative direction is the more serious of this proxy's two
  * failure modes, not a symmetric limitation.** A freshly-classified item
@@ -239,29 +323,27 @@ import parker.core.interfaces.StalenessDisclosure
  * classification, and [KnowledgeItem.history] already holds every earlier
  * one, including every earlier hop of an arbitrarily long supersession
  * chain (Contract Design V2 §3: "the full chain... remains transitively
- * retrievable"). [retrieve] forwards each matched [KnowledgeItem]
- * unchanged -- it never truncates, filters, or re-projects
+ * retrievable"). [retrieve] forwards each item-level-approved
+ * [KnowledgeItem] unchanged -- it never truncates, filters, or re-projects
  * [KnowledgeItem.history] -- so multi-hop retrievability, and the
  * current-versus-superseded distinction Unit 9 Contract Design §6's own
- * "Superseded" paragraph fixes ("the item's current classification is the
- * most recent entry in its own single, non-forking history, and any
- * earlier, superseded entry remains part of that same history rather than
- * being presented as though it were current"), are both satisfied by
- * construction, not by anything this Unit adds. This is also why
- * [KnowledgeResultEntry] itself needed no widening for supersession: the
- * distinguishing information a caller needs -- which entry is current,
- * which are historical -- is already present on the unchanged
- * [KnowledgeItem] every entry already carries.
+ * "Superseded" paragraph fixes, are both satisfied by construction, not by
+ * anything this Unit adds. This is also why [KnowledgeResultEntry] itself
+ * needed no widening for supersession, and why Unit 9.5's own item-level
+ * permission gate needed none either: the distinguishing information a
+ * caller needs -- which entry is current, which are historical -- is
+ * already present on the unchanged [KnowledgeItem] every approved entry
+ * already carries.
  *
  * **No "latest only" selection exists anywhere in this class.** Unit 9
  * Contract Design §6 states plainly that "nothing here selects a 'latest
  * only' retrieval policy," since Contract Design V2 §3's own multi-hop
  * retrievability requirement forecloses it as the sole behaviour. This
- * class discloses relationships -- a matched item's full, ordered
- * [KnowledgeItem.history] -- and leaves any "which entry matters most"
- * judgment entirely to the caller; it computes no "latest" projection, no
- * summary, and no collapse of the chain into a single representative
- * entry anywhere in [retrieve].
+ * class discloses relationships -- a matched, approved item's full,
+ * ordered [KnowledgeItem.history] -- and leaves any "which entry matters
+ * most" judgment entirely to the caller; it computes no "latest"
+ * projection, no summary, and no collapse of the chain into a single
+ * representative entry anywhere in [retrieve].
  *
  * **[KnowledgeItemStatus] alone is sufficient to represent every retrieval-
  * shaping decision this Unit makes.** No additional, derived
@@ -280,55 +362,65 @@ import parker.core.interfaces.StalenessDisclosure
  * **[includeRetired] is a structural criterion, never a permission
  * signal.** Unit 9 Contract Design §6's own closing paragraph --
  * "lifecycle status is never a substitute for, or determinant of, a
- * permission decision" -- applies to this new field exactly as it already
- * applies to [KnowledgeItem.status] itself. A caller setting
+ * permission decision" -- applies to this field exactly as it already
+ * applies to [KnowledgeItem.status] itself, and exactly as it applies to
+ * Unit 9.5's own permission gate: a caller setting
  * [KnowledgeRetrievalQuery.includeRetired] to `true` requests that retired
- * items be considered for structural matching; it grants no permission,
- * bypasses no future gate, and is evaluated identically by whatever
- * mechanism Unit 9.5 eventually wires, exactly as every other matched
- * item is.
- *
- * ## Permission -- accepted, never consulted
- *
- * [requestingPrincipalId] is accepted because [KnowledgeRetrieval.retrieve]'s
- * own fixed signature (Unit 9.1) requires it -- this class does not read,
- * filter by, or otherwise consult its value for any decision. No
- * permission evaluation of any kind occurs here; every call is treated as
- * authorised, since gating this act is Unit 9.5's own, separately
- * authorised, not-yet-begun responsibility (Unit 9 Contract Design §5).
- * [KnowledgeRetrievalDisposition.NotAuthorised] is never returned by this
- * class -- only [KnowledgeRetrievalDisposition.Retrieved].
+ * items be considered for structural matching; it grants no permission
+ * and is evaluated identically, by the same item-level gate, as every
+ * other matched item.
  *
  * ## Determinism, disclosed precisely
  *
- * For unchanged persisted state *and* a fixed instant in time, the same
- * [KnowledgeRetrievalQuery] yields the same matched items, in the same
- * order, bounded to the same count, with the same staleness disclosures,
- * every time -- no randomisation and no load-dependent reordering exists
- * anywhere in [retrieve] (Unit 9 Contract Design §8; `docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_SCOPE_LOCK.md`
+ * For unchanged persisted state, an unchanged permission policy, *and* a
+ * fixed instant in time, the same [KnowledgeRetrievalQuery] yields the
+ * same disposition, the same matched items, in the same order, bounded to
+ * the same count, with the same staleness disclosures, every time -- no
+ * randomisation and no load-dependent reordering exists anywhere in
+ * [retrieve] (Unit 9 Contract Design §8; `docs/governance/PROGRAMME_3_KNOWLEDGE_MEMORY_SCOPE_LOCK.md`
  * §7). [isRetrievable] is a pure function of [KnowledgeItem.status] and
- * [KnowledgeRetrievalQuery.includeRetired] alone -- no wall-clock read,
- * no randomisation, applied by the same single [List.filter] step as
- * [matches] -- so lifecycle shaping is exactly as deterministic as
- * structural matching itself, uniformly, never varying by query shape or
- * code path (mirroring Scope Lock §8's own concurrent-revision-ordering
- * uniformity discipline). One disclosed exception, unchanged from Unit
- * 9.3: [disclosureFor]'s own elapsed-time computation is, necessarily,
- * wall-clock-derived, and two calls genuinely separated in real time by
- * more than [POSSIBLY_STALE_AFTER] may honestly differ in which entries
- * they disclose as [StalenessDisclosure.POSSIBLY_STALE] -- mirroring
+ * [KnowledgeRetrievalQuery.includeRetired] alone -- no wall-clock read, no
+ * randomisation, applied by the same single filtering step as [matches]
+ * -- so lifecycle shaping is exactly as deterministic as structural
+ * matching itself, uniformly, never varying by query shape or code path
+ * (mirroring Scope Lock §8's own concurrent-revision-ordering uniformity
+ * discipline). [isAuthorised] is likewise a pure function of its own
+ * [PermissionDecision] argument alone.
+ *
+ * **Two disclosed exceptions, not one.** [disclosureFor]'s own
+ * elapsed-time computation is, necessarily, wall-clock-derived, and two
+ * calls genuinely separated in real time by more than
+ * [POSSIBLY_STALE_AFTER] may honestly differ in which entries they
+ * disclose as [StalenessDisclosure.POSSIBLY_STALE] -- mirroring
  * [DefaultKnowledgeCandidateEvaluator]'s own identical, already-disclosed
  * treatment of [parker.core.interfaces.KnowledgePromotion.occurredAt]
  * ("timestamps may legitimately differ across repeated evaluations...
  * does not weaken, and is entirely separate from, the deterministic
- * identity and classification guarantees"). Matching, lifecycle shaping,
- * ordering, and bounding all remain fully deterministic regardless; only
- * the staleness disclosure is time-relative, exactly as a genuinely
- * time-based signal must be.
+ * identity and classification guarantees"). Unit 9.5 adds a second,
+ * genuinely new exception: this class's own overall determinism claim now
+ * additionally depends on [permissionEngine] itself returning a stable
+ * decision for repeated evaluations of the same [ExecutionRequest]
+ * content against the same principal and unchanged policy -- a property
+ * this class assumes, consistent with the general "no ranking or
+ * scoring" and "no random or load-dependent behaviour" discipline every
+ * prior Unit here already relies on for its own collaborators, but does
+ * not, and cannot, itself enforce, since [PermissionEngine] is a Trust
+ * Framework-owned dependency this class invokes rather than implements.
+ * Matching, lifecycle shaping, ordering, and bounding all remain fully
+ * deterministic regardless of either exception; only the staleness
+ * disclosure and the permission decisions themselves are the two
+ * time/policy-relative signals, exactly as a genuinely time-based signal
+ * and an externally-owned trust decision must honestly be.
  *
  * @param persistence The sole read source for already-promoted
  *   [KnowledgeItem] values. Read only -- this class never calls
- *   [KnowledgeItemPersistence.store].
+ *   [KnowledgeItemPersistence.store]. Never read before the act-level
+ *   permission gate approves (Clarification §8 step 2's own "must never
+ *   read `KnowledgeItemPersistence` before it completes" requirement).
+ * @param permissionEngine Evaluated at least once, and never zero times,
+ *   per [retrieve] call -- exactly once for the act-level gate, plus once
+ *   per candidate item surviving structural matching and lifecycle
+ *   shaping, for the item-level gate (Clarification §6.2, §8).
  * @param clock The time source [disclosureFor] reads "now" from. Defaults
  *   to the real system clock in production; tests supply a fixed
  *   [Clock] so staleness assertions remain deterministic and instant,
@@ -336,6 +428,7 @@ import parker.core.interfaces.StalenessDisclosure
  */
 internal class DefaultKnowledgeRetrieval(
     private val persistence: KnowledgeItemPersistence,
+    private val permissionEngine: PermissionEngine,
     private val clock: Clock = Clock.systemUTC(),
 ) : KnowledgeRetrieval {
 
@@ -343,12 +436,48 @@ internal class DefaultKnowledgeRetrieval(
         requestingPrincipalId: PrincipalId,
         query: KnowledgeRetrievalQuery,
     ): KnowledgeRetrievalDisposition {
-        val matched = persistence.findAll()
+        val actLevelDecision = permissionEngine.evaluate(
+            buildExecutionRequest(
+                requestingPrincipalId = requestingPrincipalId,
+                correlationId = query.correlationId,
+                intent = ACT_LEVEL_INTENT,
+            ),
+        )
+
+        if (!isAuthorised(actLevelDecision)) {
+            return KnowledgeRetrievalDisposition.NotAuthorised(
+                "Permission Engine did not authorise Knowledge Retrieval for principal " +
+                    "'${requestingPrincipalId.value}' (decision=${actLevelDecision.decision})",
+            )
+        }
+
+        val candidates = persistence.findAll()
             .filter { item -> matches(item, query.relevance) && isRetrievable(item, query) }
+
+        val approved = mutableListOf<KnowledgeItem>()
+        for (item in candidates) {
+            val itemDecision = permissionEngine.evaluate(
+                buildExecutionRequest(
+                    requestingPrincipalId = requestingPrincipalId,
+                    correlationId = query.correlationId,
+                    intent = itemLevelIntent(item),
+                ),
+            )
+            if (isAuthorised(itemDecision)) {
+                approved += item
+            }
+        }
+
+        val entries = approved
             .take(query.maximumResults)
             .map { item -> KnowledgeResultEntry(item = item, staleness = disclosureFor(item)) }
 
-        return KnowledgeRetrievalDisposition.Retrieved(KnowledgeRetrievalResult(matched))
+        return KnowledgeRetrievalDisposition.Retrieved(KnowledgeRetrievalResult(entries))
+    }
+
+    private fun isAuthorised(decision: PermissionDecision): Boolean {
+        return decision.decision == PermissionDecisionOutcome.APPROVED ||
+            decision.decision == PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
     }
 
     private fun matches(item: KnowledgeItem, relevance: String): Boolean {
@@ -371,6 +500,39 @@ internal class DefaultKnowledgeRetrieval(
         }
     }
 
+    private fun itemLevelIntent(item: KnowledgeItem): String =
+        "Disclose Knowledge Item '${item.knowledgeId.value}' in a Knowledge Retrieval result"
+
+    /**
+     * Shared [ExecutionRequest] construction for both the act-level and
+     * item-level gates -- the two granularities differ only in [intent]
+     * (Clarification §6.2, §7), never in [KNOWLEDGE_RETRIEVAL_RESOURCE_ID],
+     * [RETRIEVE_ACTION_NAME], or how [correlationId] is sourced.
+     * [correlationId] is always the caller-supplied
+     * [KnowledgeRetrievalQuery.correlationId], never freshly minted
+     * (Clarification §9) -- unlike [ExecutionRequest.requestId], which is
+     * freshly minted per evaluation, mirroring
+     * [DefaultKnowledgeSubmission.buildExecutionRequest]'s own identical
+     * per-call `requestId` minting.
+     */
+    private fun buildExecutionRequest(
+        requestingPrincipalId: PrincipalId,
+        correlationId: String,
+        intent: String,
+    ): ExecutionRequest {
+        return ExecutionRequest(
+            requestId = RequestId("knowledge-retrieval-${UUID.randomUUID()}"),
+            principalId = requestingPrincipalId,
+            origin = RequestOrigin.REMOTE_INTERFACE,
+            intent = intent,
+            targetResources = listOf(KNOWLEDGE_RETRIEVAL_RESOURCE_ID),
+            proposedActions = listOf(RETRIEVE_ACTION_NAME),
+            priority = RequestPriority.NORMAL,
+            createdAt = Instant.now(),
+            correlationId = correlationId,
+        )
+    }
+
     companion object {
         /**
          * See this file's own "Staleness" KDoc, above, for the full
@@ -379,5 +541,36 @@ internal class DefaultKnowledgeRetrieval(
          * without a Contract Design revision.
          */
         private val POSSIBLY_STALE_AFTER: Duration = Duration.ofDays(30)
+
+        /**
+         * A fixed, well-known [ResourceId] both of Unit 9.5's own gates
+         * always name as their target -- not a per-item identity
+         * (Clarification §7: "a single, fixed resource identity
+         * representing the Knowledge Retrieval boundary itself... not a
+         * per-item resource"), mirroring
+         * [DefaultKnowledgeSubmission.KNOWLEDGE_SUBMISSION_RESOURCE_ID]'s
+         * own exact naming and treatment. Not registered anywhere by this
+         * Unit.
+         */
+        val KNOWLEDGE_RETRIEVAL_RESOURCE_ID: ResourceId = ResourceId("knowledge-memory-retrieval")
+
+        /**
+         * A fixed proposed-action name both of Unit 9.5's own gates always
+         * name, following this repository's own established
+         * dotted-namespace convention (Clarification §7). A future
+         * `ActionVocabulary` registration is expected to map it to a
+         * resolvable `(PermissionAction, ResourceType)` pair; not
+         * registered anywhere by this Unit.
+         */
+        const val RETRIEVE_ACTION_NAME: String = "knowledge.retrieve"
+
+        /**
+         * The [ExecutionRequest.intent] the act-level gate always supplies
+         * -- fixed, not caller- or query-specific, since the act-level
+         * gate asks only "may this principal use Knowledge Retrieval at
+         * all," never anything about a specific item (Clarification §6.2
+         * item 1).
+         */
+        const val ACT_LEVEL_INTENT: String = "Authorise Knowledge Retrieval for a requesting principal"
     }
 }
