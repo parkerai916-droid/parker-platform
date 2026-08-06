@@ -1,0 +1,425 @@
+package parker.composition
+
+import java.lang.reflect.Field
+import java.nio.file.Files
+import java.time.Duration
+import java.time.Instant
+import kotlinx.coroutines.test.runTest
+import parker.core.interfaces.EvidentialState
+import parker.core.interfaces.KnowledgeId
+import parker.core.interfaces.KnowledgeItem
+import parker.core.interfaces.KnowledgeItemStatus
+import parker.core.interfaces.KnowledgePromotion
+import parker.core.interfaces.KnowledgeRetrieval
+import parker.core.interfaces.KnowledgeRetrievalDisposition
+import parker.core.interfaces.KnowledgeRetrievalQuery
+import parker.core.interfaces.KnowledgeSubmission
+import parker.core.interfaces.MemoryCoreRecordReference
+import parker.core.interfaces.PermissionEngine
+import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.ProvenanceId
+import parker.core.interfaces.ProvenanceReference
+import parker.core.interfaces.StalenessDisclosure
+import parker.core.runtime.CommunicationConversationCoordinator
+import parker.core.runtime.ConversationReplyCoordinator
+import parker.core.runtime.ConversationTurnReasoningCoordinator
+import parker.core.runtime.DefaultKnowledgeRetrieval
+import parker.core.runtime.InMemoryKnowledgeItemPersistence
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+
+/**
+ * Programme 3, Knowledge Memory, Implementation Unit 9.6 ("Runtime
+ * Composition"). End-to-end tests against the real, fully-wired
+ * production graph -- a real [InMemoryKnowledgeItemPersistence], a real
+ * `DefaultPermissionEngine`][parker.core.runtime.DefaultPermissionEngine]
+ * resolving this graph's own newly-registered `knowledge.retrieve`
+ * convention, and the real, composed [DefaultKnowledgeRetrieval] -- not
+ * fakes, mirroring [ParkerRuntimeEvidenceIntelligenceCompositionTest]'s
+ * own established style exactly. This suite proves the *wiring* Unit 9.6
+ * adds; it does not re-prove Units 9.1-9.5's own behaviour, already
+ * covered by `DefaultKnowledgeRetrievalTest`'s own 63 tests.
+ *
+ * Reflection is used only where no public seam exists to observe shared
+ * instance identity across the composed graph -- `ParkerRuntime` exposes
+ * none of its internal composition by design, exactly as
+ * [ParkerRuntimeEvidenceIntelligenceCompositionTest]'s own KDoc already
+ * discloses for its own, identical reason. No public `ParkerRuntime`
+ * entry point exists for retrieval (Unit 9.6 does not add one -- wiring
+ * Knowledge Retrieval to Reasoning Context remains Programme 4's own,
+ * separately governed act), so every test below reaches the composed
+ * [KnowledgeRetrieval] instance itself via [privateField], then calls its
+ * own public [KnowledgeRetrieval.retrieve] operation directly -- the same
+ * "reflect to the collaborator, then call its own real public method"
+ * discipline the persistence-identity and shared-engine tests in the
+ * Evidence Intelligence suite already establish for other collaborators.
+ */
+class ParkerRuntimeKnowledgeRetrievalCompositionTest {
+
+    private val ownerPrincipalId = "user.owner-knowledge-retrieval-composition-test"
+
+    private fun config(): ParkerRuntimeConfig = ParkerRuntimeConfig(
+        modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by this suite
+        modelName = "test-model",
+        ownerPrincipalId = ownerPrincipalId,
+        localTextChannelModuleId = "channel.local-text-knowledge-retrieval-composition-test",
+        evidenceStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage").toString(),
+        evidenceDeletionAuditLogPath = Files.createTempDirectory("knowledge-retrieval-composition-audit").resolve("audit.log").toString(),
+    )
+
+    private fun <T> Any.privateField(name: String): T {
+        val field: Field = this::class.java.declaredFields.first { it.name == name }
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return field.get(this) as T
+    }
+
+    private fun item(
+        knowledgeId: KnowledgeId,
+        basis: String,
+        occurredAt: Instant,
+        status: KnowledgeItemStatus = KnowledgeItemStatus.ACTIVE,
+    ): KnowledgeItem {
+        val evidenceReference = MemoryCoreRecordReference.ToAssertion(
+            parker.core.interfaces.AssertionId("assertion-${knowledgeId.value}"),
+        )
+        return KnowledgeItem(
+            knowledgeId = knowledgeId,
+            evidenceReference = evidenceReference,
+            provenanceReference = ProvenanceReference(ProvenanceId("prov-${knowledgeId.value}")),
+            evidentialState = EvidentialState.UNKNOWN,
+            status = status,
+            history = listOf(
+                KnowledgePromotion(
+                    knowledgeId = knowledgeId,
+                    evidenceReference = evidenceReference,
+                    resultingState = EvidentialState.UNKNOWN,
+                    occurredAt = occurredAt,
+                    basis = basis,
+                ),
+            ),
+        )
+    }
+
+    private fun query(relevance: String, includeRetired: Boolean = false, maximumResults: Int = 10) = KnowledgeRetrievalQuery(
+        relevance = relevance,
+        correlationId = "corr-composition-test",
+        maximumResults = maximumResults,
+        includeRetired = includeRetired,
+    )
+
+    private fun knowledgeRetrievalFrom(runtime: ParkerRuntime): KnowledgeRetrieval =
+        runtime.privateField("knowledgeRetrieval")
+
+    private fun persistenceFrom(knowledgeRetrieval: KnowledgeRetrieval): InMemoryKnowledgeItemPersistence {
+        val persistence = (knowledgeRetrieval as Any).privateField<Any>("persistence")
+        return assertIs(persistence)
+    }
+
+    // ================= Construction and dependency injection =================
+
+    @Test
+    fun `the composed Knowledge Retrieval graph constructs successfully when ParkerRuntime starts`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+
+        runtime.start()
+
+        assertEquals(RuntimeLifecycleState.RUNNING, runtime.state)
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `knowledgeRetrieval is reachable from the composed graph as a genuine DefaultKnowledgeRetrieval instance`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val knowledgeRetrieval = runtime.privateField<Any>("knowledgeRetrieval")
+
+        assertIs<DefaultKnowledgeRetrieval>(knowledgeRetrieval)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `the same InMemoryKnowledgeItemPersistence instance backs both Knowledge Submission and Knowledge Retrieval`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val acceptanceCoordinator = runtime.privateField<Any>("evidenceIntelligenceAcceptanceCoordinator")
+        val knowledgeSubmission = acceptanceCoordinator.privateField<Any>("knowledgeSubmission")
+        val submissionPersistence = knowledgeSubmission.privateField<Any>("persistence")
+
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val retrievalPersistence = persistenceFrom(knowledgeRetrieval)
+
+        assertIs<InMemoryKnowledgeItemPersistence>(submissionPersistence)
+        assertSame(
+            submissionPersistence,
+            retrievalPersistence,
+            "the write side and the read side must share the one, same persistence instance -- never a parallel one",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `the same PermissionEngine instance backs Knowledge Retrieval as every other gated act in this runtime`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val runtimePermissionEngine = runtime.privateField<PermissionEngine>("permissionEngine")
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val retrievalPermissionEngine = (knowledgeRetrieval as Any).privateField<PermissionEngine>("permissionEngine")
+
+        assertSame(runtimePermissionEngine, retrievalPermissionEngine)
+
+        runtime.shutdown()
+    }
+
+    // ================= Retrieval available through runtime =================
+
+    @Test
+    fun `an item stored via the shared persistence is retrievable through the composed Knowledge Retrieval instance`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        persistence.store(item(KnowledgeId("composed-k1"), basis = "grocery list", occurredAt = Instant.now()))
+
+        val disposition = knowledgeRetrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(
+            disposition,
+            "a registered, active owner principal must be authorised through the newly-registered knowledge.retrieve convention",
+        )
+        assertEquals(1, retrieved.result.entries.size)
+        assertEquals(KnowledgeId("composed-k1"), retrieved.result.entries.single().item.knowledgeId)
+
+        runtime.shutdown()
+    }
+
+    // ================= Permission path preserved =================
+
+    @Test
+    fun `Knowledge Retrieval's permission path is genuinely evaluated -- an unregistered principal receives NotAuthorised, never Retrieved`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        persistence.store(item(KnowledgeId("composed-k1"), basis = "grocery list", occurredAt = Instant.now()))
+
+        val disposition = knowledgeRetrieval.retrieve(PrincipalId("principal-never-registered"), query(relevance = "grocery"))
+
+        assertIs<KnowledgeRetrievalDisposition.NotAuthorised>(
+            disposition,
+            "identity resolution must genuinely run through the composed DefaultPermissionEngine -- an unregistered principal is never treated as authorised",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `Knowledge Retrieval's own act-level and item-level gates both resolve against the real, composed policy -- not a fake`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val permissionEngine = (knowledgeRetrieval as Any).privateField<PermissionEngine>("permissionEngine")
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        persistence.store(item(KnowledgeId("composed-k1"), basis = "grocery list", occurredAt = Instant.now()))
+
+        val decision = permissionEngine.evaluate(
+            parker.core.interfaces.ExecutionRequest(
+                requestId = parker.core.interfaces.RequestId("composition-test-probe"),
+                principalId = principal,
+                origin = parker.core.interfaces.RequestOrigin.REMOTE_INTERFACE,
+                intent = "probe",
+                targetResources = listOf(DefaultKnowledgeRetrieval.KNOWLEDGE_RETRIEVAL_RESOURCE_ID),
+                proposedActions = listOf(DefaultKnowledgeRetrieval.RETRIEVE_ACTION_NAME),
+                priority = parker.core.interfaces.RequestPriority.NORMAL,
+                createdAt = Instant.now(),
+                correlationId = "composition-test-probe",
+            ),
+        )
+
+        assertEquals(
+            parker.core.interfaces.PermissionDecisionOutcome.APPROVED,
+            decision.decision,
+            "the newly-registered knowledge.retrieve convention must resolve through the real, composed DefaultPermissionPolicy",
+        )
+
+        runtime.shutdown()
+    }
+
+    // ================= Lifecycle shaping preserved (Unit 9.4) =================
+
+    @Test
+    fun `a RETIRED item is excluded by default through the composed runtime, exactly as Unit 9-4 governs`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        persistence.store(item(KnowledgeId("composed-retired"), basis = "grocery retired", occurredAt = Instant.now(), status = KnowledgeItemStatus.RETIRED))
+
+        val disposition = knowledgeRetrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(emptyList<Any>(), retrieved.result.entries, "a RETIRED item must not appear in an ordinary composed-runtime query by default")
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `a RETIRED item is included when includeRetired = true, through the composed runtime`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        persistence.store(item(KnowledgeId("composed-retired"), basis = "grocery retired", occurredAt = Instant.now(), status = KnowledgeItemStatus.RETIRED))
+
+        val disposition = knowledgeRetrieval.retrieve(principal, query(relevance = "grocery", includeRetired = true))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(
+            KnowledgeItemStatus.RETIRED,
+            retrieved.result.entries.single().item.status,
+            "the explicit opt-in must reach the composed instance and honestly disclose the retired status",
+        )
+
+        runtime.shutdown()
+    }
+
+    // ================= Staleness disclosure preserved (Unit 9.3) =================
+
+    @Test
+    fun `staleness disclosure is genuinely computed through the composed runtime, using the real system clock`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        persistence.store(item(KnowledgeId("composed-fresh"), basis = "grocery fresh", occurredAt = Instant.now()))
+        persistence.store(item(KnowledgeId("composed-stale"), basis = "grocery stale", occurredAt = Instant.now().minus(Duration.ofDays(90))))
+
+        val disposition = knowledgeRetrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        val disclosureByItem = retrieved.result.entries.associate { it.item.knowledgeId to it.staleness }
+        assertEquals(
+            mapOf(
+                KnowledgeId("composed-fresh") to StalenessDisclosure.INDETERMINATE,
+                KnowledgeId("composed-stale") to StalenessDisclosure.POSSIBLY_STALE,
+            ),
+            disclosureByItem,
+        )
+
+        runtime.shutdown()
+    }
+
+    // ================= Deterministic ordering preserved =================
+
+    @Test
+    fun `deterministic ordering is preserved through the composed runtime across repeated calls`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        persistence.store(item(KnowledgeId("composed-k3"), basis = "grocery third", occurredAt = Instant.now()))
+        persistence.store(item(KnowledgeId("composed-k1"), basis = "grocery first", occurredAt = Instant.now()))
+        persistence.store(item(KnowledgeId("composed-k2"), basis = "grocery second", occurredAt = Instant.now()))
+        val theQuery = query(relevance = "grocery")
+
+        val first = knowledgeRetrieval.retrieve(principal, theQuery)
+        val second = knowledgeRetrieval.retrieve(principal, theQuery)
+
+        val order = assertIs<KnowledgeRetrievalDisposition.Retrieved>(first).result.entries.map { it.item.knowledgeId }
+        assertEquals(listOf(KnowledgeId("composed-k3"), KnowledgeId("composed-k1"), KnowledgeId("composed-k2")), order)
+        assertEquals(first, second, "the same query against unchanged composed state is fully repeatable")
+
+        runtime.shutdown()
+    }
+
+    // ================= Regression coverage =================
+
+    @Test
+    fun `submitEvidence composition remains unchanged by this Unit's own additions`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+
+        val outcome = runtime.submitEvidence(
+            principal,
+            parker.core.interfaces.CandidateEvidenceArtifact("knowledge retrieval composition regression content".toByteArray()),
+            parker.core.interfaces.CandidateProvenance(
+                sourceIdentifier = "knowledge-retrieval-composition-regression-source",
+                sourceType = "test",
+                acquisitionTime = Instant.parse("2026-01-01T00:00:00Z"),
+                contentNature = parker.core.interfaces.ContentNature.ORIGINAL,
+            ),
+            "integration-test-document",
+        )
+
+        assertIs<parker.core.runtime.EvidenceRegistrationOutcome.Registered>(
+            outcome,
+            "adding the new knowledge.retrieve READ/MEMORY rule must not disturb the existing evidence.accept path",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `Knowledge Submission's own WRITE MEMORY gate remains unaffected by the new READ MEMORY rule this Unit registers`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val acceptanceCoordinator = runtime.privateField<Any>("evidenceIntelligenceAcceptanceCoordinator")
+        val knowledgeSubmission = acceptanceCoordinator.privateField<KnowledgeSubmission>("knowledgeSubmission")
+
+        val decision = runtime.privateField<PermissionEngine>("permissionEngine").evaluate(
+            parker.core.interfaces.ExecutionRequest(
+                requestId = parker.core.interfaces.RequestId("composition-test-submission-probe"),
+                principalId = principal,
+                origin = parker.core.interfaces.RequestOrigin.REMOTE_INTERFACE,
+                intent = "probe",
+                targetResources = listOf(parker.core.runtime.DefaultKnowledgeSubmission.KNOWLEDGE_SUBMISSION_RESOURCE_ID),
+                proposedActions = listOf(parker.core.runtime.DefaultKnowledgeSubmission.SUBMIT_ACTION_NAME),
+                priority = parker.core.interfaces.RequestPriority.NORMAL,
+                createdAt = Instant.now(),
+                correlationId = "composition-test-submission-probe",
+            ),
+        )
+
+        assertEquals(parker.core.interfaces.PermissionDecisionOutcome.APPROVED, decision.decision)
+        assertIs<parker.core.runtime.DefaultKnowledgeSubmission>(knowledgeSubmission)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `no Knowledge Retrieval dependency is reachable from the conversation coordinator chain`() {
+        val knowledgeRetrievalTypeNames = setOf(
+            "parker.core.interfaces.KnowledgeRetrieval",
+            "parker.core.runtime.DefaultKnowledgeRetrieval",
+        )
+        val conversationClasses = listOf(
+            ConversationReplyCoordinator::class.java,
+            CommunicationConversationCoordinator::class.java,
+            ConversationTurnReasoningCoordinator::class.java,
+        )
+
+        conversationClasses.forEach { conversationClass ->
+            val fieldTypeNames = conversationClass.declaredFields.map { it.type.name }
+            assertTrue(
+                fieldTypeNames.none { it in knowledgeRetrievalTypeNames },
+                "${conversationClass.name} must hold no Knowledge Retrieval dependency -- found fields: $fieldTypeNames",
+            )
+        }
+    }
+}

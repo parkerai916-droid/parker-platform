@@ -21,6 +21,7 @@ import parker.core.interfaces.EvidenceDeletionResult
 import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.InboundOwnerMessage
+import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeSource
 import parker.core.interfaces.KnowledgeSubmission
 import parker.core.interfaces.MemoryCore
@@ -55,6 +56,7 @@ import parker.core.runtime.DefaultEvidenceCustodian
 import parker.core.runtime.DefaultEvidenceIntelligence
 import parker.core.runtime.DefaultExecutionPipeline
 import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
+import parker.core.runtime.DefaultKnowledgeRetrieval
 import parker.core.runtime.DefaultKnowledgeSubmission
 import parker.core.runtime.DefaultOwnerEvidenceDeletionAuthority
 import parker.core.runtime.DefaultPermissionEngine
@@ -228,6 +230,18 @@ class ParkerRuntime(
     private lateinit var permissionEngine: PermissionEngine
     private lateinit var evidenceIntelligence: EvidenceIntelligence
     private lateinit var evidenceIntelligenceAcceptanceCoordinator: EvidenceIntelligenceAcceptanceCoordinator
+
+    // Programme 3, Knowledge Memory, Unit 9.6 ("Runtime Composition"). knowledgeRetrieval is held
+    // as its own narrow public interface type (mirroring evidenceIntelligence's own identical
+    // precedent, above), promoted to a field -- unlike knowledgeSubmission, which remains a
+    // construction-local val handed to evidenceIntelligenceAcceptanceCoordinator -- for a
+    // different reason than permissionEngine's/evidenceIntelligence's own promotion: no production
+    // entry point consumes it yet (wiring Knowledge Retrieval to Reasoning Context remains
+    // Programme 4's own, separately governed act, Scope Lock §4), so a field is the only way this
+    // instance remains reachable from the composed graph at all, exactly as the Unit 9 Knowledge
+    // Retrieval Implementation Plan's own Unit 9.6 entry requires ("making Knowledge Retrieval
+    // reachable within the composed runtime"). No new public ParkerRuntime method is added for it.
+    private lateinit var knowledgeRetrieval: KnowledgeRetrieval
 
     /**
      * Runs the full construction and startup sequence exactly once. Throws
@@ -545,6 +559,22 @@ class ParkerRuntime(
                     outcome = PermissionDecisionOutcome.APPROVED,
                     level = PermissionLevel.AUTOMATIC,
                 ),
+                // Programme 3, Knowledge Memory, Unit 9.6 ("Runtime Composition"): a genuinely new
+                // (action, resourceType) pair for this policy -- the minimum required for
+                // knowledge.retrieve to be reachable at all, mirroring the identical "minimum
+                // required, narrow in what it grants" discipline the WRITE/MEMORY rule above
+                // already applies to knowledge.submit. AUTOMATIC, not APPROVED_WITH_CONFIRMATION,
+                // for the same reason given there: no confirmation-collection mechanism exists
+                // anywhere in this runtime. This rule governs only the act-level and item-level
+                // gates DefaultKnowledgeRetrieval itself already, separately evaluates (Unit 9.5,
+                // Adopted) -- it grants no broader Knowledge Memory permission and does not alter
+                // either gate's own evaluation order, count, or denial disposition.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.MEMORY,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                ),
                 PermissionPolicyRule(
                     action = PermissionAction.DELETE,
                     resourceType = ResourceType.DOCUMENT,
@@ -734,11 +764,13 @@ class ParkerRuntime(
         // merely in isolated unit tests.
         val permissionFilteredMemoryRetrieval = PermissionFilteredMemoryRetrieval(inMemoryMemoryCore, permissionEngine)
 
-        // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"). One
-        // long-lived InMemoryKnowledgeItemPersistence for the lifetime of this ParkerRuntime --
-        // never recreated per invocation, never exposed for retrieval (Knowledge Memory's own
-        // read boundary onto Memory Core remains a distinct, not-yet-built unit, per
-        // docs/implementation/PROGRAMME_3_KNOWLEDGE_MEMORY_IMPLEMENTATION_PLAN.md).
+        // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"), and now
+        // also Unit 9.6 ("Runtime Composition"). One long-lived InMemoryKnowledgeItemPersistence
+        // for the lifetime of this ParkerRuntime -- never recreated per invocation, shared
+        // unchanged between the write side (knowledgeSubmission, below) and the read side
+        // (knowledgeRetrieval, below) -- never a second, parallel persistence instance, so
+        // anything knowledgeSubmission successfully promotes is genuinely reachable through
+        // knowledgeRetrieval.
         val knowledgeItemPersistence = InMemoryKnowledgeItemPersistence()
         val knowledgeCandidateEvaluator = DefaultKnowledgeCandidateEvaluator(permissionFilteredMemoryRetrieval)
         val knowledgeSubmission: KnowledgeSubmission = DefaultKnowledgeSubmission(
@@ -746,6 +778,16 @@ class ParkerRuntime(
             knowledgeItemPersistence,
             permissionEngine,
         )
+
+        // Programme 3, Knowledge Memory, Unit 9.6 ("Runtime Composition"). The same, shared
+        // knowledgeItemPersistence and permissionEngine instances above -- never a second,
+        // parallel persistence or a second, parallel Permission Engine. DefaultKnowledgeRetrieval
+        // self-gates (docs/governance/PROGRAMME_3_UNIT_9_PERMISSION_ENFORCEMENT_MECHANISM_CLARIFICATION.md,
+        // Adopted), so, unlike permissionFilteredMemoryRetrieval above, no external decorator is
+        // composed here -- this is the sole, already-gated implementation, held directly. clock is
+        // left defaulted (the real system clock), exactly as every other production call site of
+        // this class already does.
+        knowledgeRetrieval = DefaultKnowledgeRetrieval(knowledgeItemPersistence, permissionEngine)
 
         val evidenceIntelligenceInputResolver = EvidenceIntelligenceInputResolver(defaultEvidenceCustodian, permissionFilteredMemoryRetrieval)
         val evidenceIntelligenceReasoningCoordinator = EvidenceIntelligenceReasoningCoordinator(reasoningProvider)
@@ -817,6 +859,41 @@ class ParkerRuntime(
                 ActionVocabularyEntry(
                     verbPhrase = DefaultKnowledgeSubmission.SUBMIT_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
+                ),
+            )
+        }
+
+        // Programme 3, Knowledge Memory, Unit 9.6 ("Runtime Composition"). Resource/ActionVocabulary
+        // registration for DefaultKnowledgeRetrieval's own disclosed-but-previously-unregistered
+        // resource/action pair (docs/governance/PROGRAMME_3_UNIT_9_PERMISSION_ENFORCEMENT_MECHANISM_CLARIFICATION.md,
+        // Adopted, Section 7) -- a separate stage from Evidence Intelligence's own, above, since
+        // Knowledge Retrieval belongs to neither that unit nor Knowledge Submission, even though
+        // it shares Knowledge Submission's own KNOWLEDGE_SUBMISSION_RESOURCE_ID's naming
+        // convention and ResourceType.MEMORY. The same fixed pair is named by both
+        // DefaultKnowledgeRetrieval's own act-level and item-level gates -- Unit 9.5's own Section
+        // 7 fixes one resource identity and one action name, evaluated at two granularities, never
+        // two separate pairs -- so registering it once here suffices for both.
+        stage("Knowledge Retrieval resource registration") {
+            val now = clock()
+            resourceRegistry.register(
+                Resource(
+                    resourceId = DefaultKnowledgeRetrieval.KNOWLEDGE_RETRIEVAL_RESOURCE_ID,
+                    resourceType = ResourceType.MEMORY,
+                    displayName = "Knowledge Retrieval",
+                    ownerPrincipalId = SYSTEM_PARKER_PRINCIPAL_ID,
+                    sensitivity = ResourceSensitivity.PUBLIC,
+                    lifecycleState = ResourceLifecycleState.REGISTERED,
+                    createdAt = now,
+                    updatedAt = now,
+                    source = "composition-root:knowledge-retrieval",
+                ),
+            )
+        }
+        stage("Knowledge Retrieval action vocabulary registration") {
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DefaultKnowledgeRetrieval.RETRIEVE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.MEMORY)),
                 ),
             )
         }
