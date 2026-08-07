@@ -11,6 +11,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.io.TempDir
 import parker.core.interfaces.Assertion
 import parker.core.interfaces.AssertionId
+import parker.core.interfaces.CandidateEntity
+import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ContentNature
 import parker.core.interfaces.Document
 import parker.core.interfaces.DocumentId
@@ -528,5 +530,82 @@ class MemoryCoreRecoveryTest {
             assertTrue(forbiddenSubstrings.none { qualifiedName.contains(it) }, "found forbidden dependency '$qualifiedName' on MemoryCoreRecovery.recover")
             assertTrue(forbiddenPrefixes.none { qualifiedName.startsWith(it) }, "found forbidden filesystem type '$qualifiedName' on MemoryCoreRecovery.recover")
         }
+    }
+
+    // ================= Memory Core Durability, Implementation Unit 5: identifier restoration (integration) =================
+
+    @Test
+    fun `after a full recovery, creating a new record never collides with any identifier that was restored`() = runTest {
+        val prov = provenance("provenance-1")
+        val restoredEntity = entity("entity-4", prov.provenanceId)
+        val log = fakeLog(
+            DurableMemoryCoreEntry.ProvenanceCreated(provenance = prov),
+            DurableMemoryCoreEntry.EntityCreated(entity = restoredEntity),
+        )
+
+        val recovered = MemoryCoreRecovery.recover(log)
+        val newEntity = recovered.createEntity(
+            principal,
+            CandidateEntity(entityType = "person", primaryLabel = "New", provenanceId = prov.provenanceId),
+        )
+
+        assertEquals(EntityId("entity-5"), newEntity.entityId)
+    }
+
+    @Test
+    fun `empty recovery resumes minting from the very first identifier of each kind`() = runTest {
+        val recovered = MemoryCoreRecovery.recover(FakeMemoryCoreDurabilityLog())
+
+        val provenance = recovered.createProvenance(principal, CandidateProvenance(
+            sourceIdentifier = "source",
+            sourceType = "conversation",
+            acquisitionTime = Instant.parse("2026-01-01T00:00:00Z"),
+            contentNature = ContentNature.ORIGINAL,
+        ))
+
+        assertEquals(ProvenanceId("provenance-1"), provenance.provenanceId)
+    }
+
+    @Test
+    fun `a malformed identifier discovered only during counter restoration fails the entire recovery`() = runTest {
+        // Every individual restore* call succeeds (the identifier is merely non-blank, which is all
+        // Entity's own construction-time validation requires) -- the malformed-prefix problem is only
+        // caught by restoreIdentifierCounters, called as recover()'s own last step.
+        val prov = provenance("provenance-1")
+        val malformedEntity = entity("not-the-right-prefix-1", prov.provenanceId)
+        val log = fakeLog(
+            DurableMemoryCoreEntry.ProvenanceCreated(provenance = prov),
+            DurableMemoryCoreEntry.EntityCreated(entity = malformedEntity),
+        )
+
+        assertFailsWith<MemoryCoreRecoveryException.IdentifierCounterRestorationFailed> { MemoryCoreRecovery.recover(log) }
+    }
+
+    @Test
+    fun `a failed recovery attempt never influences the counters a later, separate, successful recovery attempt computes`() = runTest {
+        val badProv = provenance("provenance-1")
+        val badEntity = entity("entity-1", ProvenanceId("provenance-does-not-exist"))
+        val failingLog = fakeLog(
+            DurableMemoryCoreEntry.ProvenanceCreated(provenance = badProv),
+            DurableMemoryCoreEntry.EntityCreated(entity = badEntity),
+        )
+        assertFailsWith<MemoryCoreRecoveryException.RestorationFailed> { MemoryCoreRecovery.recover(failingLog) }
+
+        // A second, entirely separate, well-formed log recovers cleanly, as though the failed
+        // attempt above had never happened -- recover() constructs its own fresh InMemoryMemoryCore
+        // every call, so no state could leak between the two attempts even in principle.
+        val goodProv = provenance("provenance-1")
+        val goodEntity = entity("entity-9", goodProv.provenanceId)
+        val goodLog = fakeLog(
+            DurableMemoryCoreEntry.ProvenanceCreated(provenance = goodProv),
+            DurableMemoryCoreEntry.EntityCreated(entity = goodEntity),
+        )
+        val recovered = MemoryCoreRecovery.recover(goodLog)
+        val newEntity = recovered.createEntity(
+            principal,
+            CandidateEntity(entityType = "person", primaryLabel = "New", provenanceId = goodProv.provenanceId),
+        )
+
+        assertEquals(EntityId("entity-10"), newEntity.entityId, "the successful recovery's own counter must be derived purely from its own data")
     }
 }

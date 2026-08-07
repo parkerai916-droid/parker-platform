@@ -427,6 +427,117 @@ class InMemoryMemoryCore : MemoryCore, MemoryRetrieval {
         relationshipStore[relationship.relationshipId] = relationship
     }
 
+    // ================= Identifier counter restoration (Memory Core Durability, Implementation Unit 5) =================
+
+    /**
+     * Memory Core Durability, Implementation Unit 5 (Identifier
+     * Restoration). Restores all five per-kind identifier counters in one
+     * call, each to `(highest numeric suffix among that kind's own
+     * currently-stored identifiers) + 1` -- the exact rule
+     * `docs/architecture/MEMORY_CORE_DURABILITY_SCOPE_LOCK.md` Section 18
+     * fixes as binding: "A Memory Core durability implementation **SHALL**
+     * restore each per-kind identifier counter to (highest persisted
+     * identifier of that kind) + 1 on recovery, and **SHALL NOT** permit
+     * identifier reuse across a restart." A kind with no currently-stored
+     * identifiers restores to `1` -- the same starting value this class
+     * already uses for a genuinely fresh store, computed here as the
+     * natural result of `(0) + 1` rather than special-cased.
+     *
+     * ## Derivation, not separate persistence -- by design, not by
+     * omission
+     *
+     * `docs/implementation/MEMORY_CORE_DURABILITY_IMPLEMENTATION_PLAN.md`'s
+     * own Unit 5 section selects deriving each counter from the
+     * already-restored records themselves, over durably persisting a
+     * counter value as its own separate fact, "avoiding a second,
+     * redundant source of truth that could itself drift out of sync with
+     * the records it counts."
+     * This function is that derivation, reading directly from this
+     * class's own store keys -- the single, authoritative source of which
+     * identifiers actually exist -- never from a separately-tracked tally.
+     *
+     * ## Independent per kind; immune to duplicates, gaps, and lifecycle
+     * transitions
+     *
+     * Each of the five stores is inspected independently, using only that
+     * store's own current key set: a sparse or out-of-order-looking
+     * identifier sequence within one kind restores correctly because every
+     * key is considered, not merely the most recently encountered one, and
+     * because deriving from the *final* store contents (not from a
+     * running tally kept during replay) means a durably-repeated creation
+     * entry -- already idempotently collapsed to one stored record by
+     * [restoreEntity] and its four counterparts -- can never inflate a
+     * counter twice for what is, in the store, one single key. A
+     * [DurableMemoryCoreEntry.StatusTransitioned] entry never adds,
+     * removes, or renames a store key (only [transitionStatus]'s own
+     * `.copy(status = ...)` touches an existing entry's `status` field),
+     * so lifecycle transitions have no way to influence any counter this
+     * function computes.
+     *
+     * ## Malformed identifiers fail closed -- never silently ignored, never
+     * silently defaulted
+     *
+     * Every identifier type this repository defines validates only that
+     * its own value is non-blank -- nothing enforces the `"kind-N"`
+     * minting format this class's own `create*` operations always use at
+     * the type level. An identifier that does not match that format
+     * (wrong prefix, non-numeric or non-positive suffix) is refused
+     * outright, via [require] (`IllegalArgumentException`), rather than
+     * silently skipped (which could under-count and risk a future
+     * collision) or silently coerced to some default (which would be
+     * exactly the fabricated-certainty this Programme's own governing
+     * principle forbids). A suffix at or adjacent to [Long]'s own maximum
+     * value, whose `+ 1` would silently wrap to a negative, invalid
+     * counter under ordinary Kotlin arithmetic, is instead detected via
+     * [Math.addExact] and reported as a failure, never allowed to wrap
+     * silently.
+     *
+     * ## Call discipline: after successful replay only, never before, and
+     * only from within this same module
+     *
+     * `internal`, mirroring every other Unit 4/5 addition to this class:
+     * unreachable through [MemoryCore] or [MemoryRetrieval]. This function
+     * performs no referential-integrity check and constructs no new
+     * record -- it is meaningful, and safe to call, only once every
+     * `restore*` call for this recovery pass has already completed
+     * successfully; `MemoryCoreRecovery.recover` is the only caller, and
+     * calls this exactly once, as the last step before returning a
+     * successfully recovered instance -- never on a partially-populated
+     * store a failed recovery pass would otherwise discard.
+     */
+    internal suspend fun restoreIdentifierCounters() = mutex.withLock {
+        nextProvenanceSequence = nextSequenceFor(provenanceStore.keys.map { it.value }, "provenance-")
+        nextEntitySequence = nextSequenceFor(entityStore.keys.map { it.value }, "entity-")
+        nextDocumentSequence = nextSequenceFor(documentStore.keys.map { it.value }, "document-")
+        nextAssertionSequence = nextSequenceFor(assertionStore.keys.map { it.value }, "assertion-")
+        nextRelationshipSequence = nextSequenceFor(relationshipStore.keys.map { it.value }, "relationship-")
+    }
+
+    private fun nextSequenceFor(identifierValues: Collection<String>, prefix: String): Long {
+        var maxSuffix = 0L
+        identifierValues.forEach { value ->
+            require(value.startsWith(prefix) && value.length > prefix.length) {
+                "Cannot restore identifier counters: '$value' does not match the expected '$prefix<N>' format"
+            }
+            val suffix = value.substring(prefix.length).toLongOrNull()
+            require(suffix != null && suffix >= 1L) {
+                "Cannot restore identifier counters: '$value' does not carry a positive numeric suffix"
+            }
+            if (suffix > maxSuffix) {
+                maxSuffix = suffix
+            }
+        }
+        return try {
+            Math.addExact(maxSuffix, 1L)
+        } catch (e: ArithmeticException) {
+            throw IllegalStateException(
+                "Cannot restore identifier counters for prefix '$prefix': maximum restored suffix " +
+                    "$maxSuffix is already at Long's own upper bound -- the next identifier would overflow",
+                e,
+            )
+        }
+    }
+
     // ================= Retrieval behaviour =================
 
     override suspend fun getEntity(requestingPrincipalId: PrincipalId, entityId: EntityId): Entity? =

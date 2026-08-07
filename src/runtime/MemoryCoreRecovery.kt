@@ -102,13 +102,30 @@ internal object MemoryCoreRecovery {
 
     /**
      * Reconstructs a fresh [InMemoryMemoryCore] from every entry
-     * [durabilityLog] has durably committed, in exact durable order.
+     * [durabilityLog] has durably committed, in exact durable order, then
+     * restores every per-kind identifier counter (Memory Core Durability,
+     * Implementation Unit 5) as the last step before returning.
      *
      * A missing or genuinely empty durability log (zero entries) produces
      * a genuinely empty, but successfully recovered, [InMemoryMemoryCore]
      * -- not a failure. Any other condition under which the recovered
      * state cannot be trusted throws a [MemoryCoreRecoveryException]
      * subtype instead of returning anything.
+     *
+     * ## Identifier counter restoration happens only after every entry has
+     * already been successfully replayed -- never before, never on a
+     * partial result
+     *
+     * [InMemoryMemoryCore.restoreIdentifierCounters] is called exactly
+     * once, after the `forEachIndexed` loop below has completed in full
+     * without throwing. If any entry fails to replay, this function
+     * propagates that failure immediately and never reaches the
+     * counter-restoration call at all -- the partially-populated
+     * [InMemoryMemoryCore] instance that was being built is simply
+     * discarded, unreachable, with whatever counter values it started
+     * with (irrelevant, since nothing ever returns it). A failed recovery
+     * therefore can never advance a counter that any caller could
+     * observe.
      */
     suspend fun recover(durabilityLog: MemoryCoreDurabilityLog): InMemoryMemoryCore {
         val entries = try {
@@ -121,6 +138,12 @@ internal object MemoryCoreRecovery {
 
         entries.forEachIndexed { index, entry ->
             applyEntry(memoryCore, entry, index)
+        }
+
+        try {
+            memoryCore.restoreIdentifierCounters()
+        } catch (e: Exception) {
+            throw MemoryCoreRecoveryException.IdentifierCounterRestorationFailed(e.message ?: "identifier counter restoration failed", e)
         }
 
         return memoryCore
@@ -264,4 +287,18 @@ internal sealed class MemoryCoreRecoveryException(message: String, cause: Throwa
     /** A [DurableMemoryCoreEntry.StatusTransitioned] entry names a `priorStatus`/`targetStatus` pair that is not a valid transition. */
     class ImpossibleTransition(val reference: String, val priorStatus: String, val targetStatus: String) :
         MemoryCoreRecoveryException("Memory Core recovery encountered an impossible lifecycle transition for $reference: '$priorStatus' -> '$targetStatus' is not a valid transition")
+
+    /**
+     * Memory Core Durability, Implementation Unit 5 (Identifier
+     * Restoration). Every entry replayed successfully, but
+     * [InMemoryMemoryCore.restoreIdentifierCounters] itself failed --
+     * a malformed identifier (wrong prefix, non-numeric or non-positive
+     * suffix) among the now-fully-restored records, or a counter that
+     * would overflow [Long]'s own upper bound. Recovery as a whole still
+     * fails: an [InMemoryMemoryCore] whose own future identifier minting
+     * cannot be trusted is not a successfully recovered instance, even
+     * though every individual record it holds replayed correctly.
+     */
+    class IdentifierCounterRestorationFailed(val reason: String, cause: Throwable) :
+        MemoryCoreRecoveryException("Memory Core recovery failed while restoring identifier counters: $reason", cause)
 }

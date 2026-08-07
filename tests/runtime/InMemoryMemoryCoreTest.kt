@@ -112,6 +112,33 @@ class InMemoryMemoryCoreTest {
         provenanceId = provenanceId,
     )
 
+    /**
+     * A bare, already-identified [Provenance], for Memory Core Durability
+     * Implementation Unit 5's own tests -- distinct from
+     * [candidateProvenance], which carries no identifier at all and is
+     * only ever passed to [InMemoryMemoryCore.createProvenance] (which
+     * mints one). This helper instead constructs the finished record
+     * directly, exactly as `restoreProvenance`/`restoreIdentifierCounters`
+     * tests need to supply an already-known identifier.
+     */
+    private fun provenance(id: String) = Provenance(
+        provenanceId = ProvenanceId(id),
+        sourceIdentifier = "conversation-turn-1",
+        sourceType = "conversation",
+        acquisitionTime = Instant.parse("2025-01-01T00:00:00Z"),
+        ingestionTime = Instant.parse("2025-01-01T00:00:01Z"),
+        contentNature = ContentNature.ORIGINAL,
+    )
+
+    /** A bare, already-identified [Entity] -- see [provenance]'s own KDoc for why this is distinct from [candidateEntity]. */
+    private fun entity(id: String, provenanceId: ProvenanceId) = Entity(
+        entityId = EntityId(id),
+        entityType = "person",
+        primaryLabel = "Person $id",
+        provenanceId = provenanceId,
+        createdAt = Instant.parse("2025-01-01T00:00:02Z"),
+    )
+
     // ================= Provenance creation =================
 
     @Test
@@ -857,5 +884,178 @@ class InMemoryMemoryCoreTest {
 
         assertEquals(restoreFunctionNames.size, InMemoryMemoryCore::class.declaredFunctions.count { it.name in restoreFunctionNames })
         assertTrue(declaredInternal, "every restore* function must be internal, never public")
+    }
+
+    // ================= Memory Core Durability, Implementation Unit 5: restoreIdentifierCounters =================
+
+    @Test
+    fun `restoreIdentifierCounters on an empty store leaves every counter at its original starting value`() = runTest {
+        val core = InMemoryMemoryCore()
+
+        core.restoreIdentifierCounters()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+
+        assertEquals(ProvenanceId("provenance-1"), provenance.provenanceId, "an empty store must resume minting from 1, exactly as a genuinely fresh store already does")
+    }
+
+    @Test
+    fun `restoreIdentifierCounters resumes minting at one past a single restored identifier`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = provenance("provenance-1")
+        core.restoreProvenance(provenance)
+
+        core.restoreIdentifierCounters()
+        val nextProvenance = core.createProvenance(principal, candidateProvenance())
+
+        assertEquals(ProvenanceId("provenance-2"), nextProvenance.provenanceId)
+    }
+
+    @Test
+    fun `restoreIdentifierCounters resumes past the highest of several sparse, non-contiguous identifiers`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        core.restoreEntity(entity("entity-1", provenance.provenanceId))
+        core.restoreEntity(entity("entity-5", provenance.provenanceId))
+        core.restoreEntity(entity("entity-3", provenance.provenanceId))
+
+        core.restoreIdentifierCounters()
+        val nextEntity = core.createEntity(principal, candidateEntity(provenance.provenanceId))
+
+        assertEquals(EntityId("entity-6"), nextEntity.entityId, "the gap at entity-2/4 must never be filled -- the next identifier is one past the true maximum (5), not one past the count of records (3)")
+    }
+
+    @Test
+    fun `restoreIdentifierCounters derives the true maximum regardless of the order identifiers were restored in`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        // Restored out of numeric order -- the highest-numbered identifier is restored first.
+        core.restoreEntity(entity("entity-9", provenance.provenanceId))
+        core.restoreEntity(entity("entity-2", provenance.provenanceId))
+        core.restoreEntity(entity("entity-4", provenance.provenanceId))
+
+        core.restoreIdentifierCounters()
+        val nextEntity = core.createEntity(principal, candidateEntity(provenance.provenanceId))
+
+        assertEquals(EntityId("entity-10"), nextEntity.entityId, "the maximum must be the true numeric maximum, never merely the most recently restored identifier")
+    }
+
+    @Test
+    fun `each of the five per-kind counters restores independently of the other four`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = provenance("provenance-1")
+        core.restoreProvenance(provenance)
+        core.restoreEntity(entity("entity-7", provenance.provenanceId))
+        // Document, Assertion, and Relationship have no restored records at all.
+
+        core.restoreIdentifierCounters()
+
+        val nextProvenance = core.createProvenance(principal, candidateProvenance())
+        val nextEntity = core.createEntity(principal, candidateEntity(provenance.provenanceId))
+        val nextDocument = core.registerDocument(principal, candidateDocument(provenance.provenanceId))
+        val nextAssertion = core.createAssertion(principal, candidateAssertion(provenance.provenanceId))
+
+        assertEquals(ProvenanceId("provenance-2"), nextProvenance.provenanceId, "Provenance's own counter must reflect only Provenance's own restored maximum")
+        assertEquals(EntityId("entity-8"), nextEntity.entityId, "Entity's own counter must reflect only Entity's own restored maximum")
+        assertEquals(DocumentId("document-1"), nextDocument.documentId, "an untouched kind must still start at 1, unaffected by another kind's own high-numbered restoration")
+        assertEquals(AssertionId("assertion-1"), nextAssertion.assertionId, "an untouched kind must still start at 1, unaffected by another kind's own high-numbered restoration")
+    }
+
+    @Test
+    fun `a durably-repeated identical record collapses to one store key and never inflates the restored counter`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        val entity = entity("entity-1", provenance.provenanceId)
+        core.restoreEntity(entity)
+        core.restoreEntity(entity) // idempotent duplicate -- restoreEntity's own existing behaviour
+
+        core.restoreIdentifierCounters()
+        val nextEntity = core.createEntity(principal, candidateEntity(provenance.provenanceId))
+
+        assertEquals(EntityId("entity-2"), nextEntity.entityId, "one durably-repeated record must count as exactly one identifier, never two")
+    }
+
+    @Test
+    fun `restoreIdentifierCounters rejects an identifier that does not match the expected prefix-and-numeric-suffix format`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        // EntityId's own construction-time validation checks only non-blank -- a malformed value
+        // (wrong prefix here) can still be constructed directly, exactly as corrupt or hand-crafted
+        // durable data might restore.
+        core.restoreEntity(entity("not-the-right-prefix-7", provenance.provenanceId))
+
+        assertFailsWith<IllegalArgumentException> { core.restoreIdentifierCounters() }
+    }
+
+    @Test
+    fun `restoreIdentifierCounters rejects an identifier whose suffix is not a positive number`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        core.restoreEntity(entity("entity-not-a-number", provenance.provenanceId))
+
+        assertFailsWith<IllegalArgumentException> { core.restoreIdentifierCounters() }
+    }
+
+    @Test
+    fun `restoreIdentifierCounters rejects a suffix at Long's own upper bound rather than silently wrapping to a negative counter`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        core.restoreEntity(entity("entity-${Long.MAX_VALUE}", provenance.provenanceId))
+
+        assertFailsWith<IllegalStateException> { core.restoreIdentifierCounters() }
+    }
+
+    @Test
+    fun `a DELETED record's own identifier still counts toward the restored maximum -- its identifier is never reused`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        val deletedEntity = entity("entity-6", provenance.provenanceId)
+        core.restoreEntity(deletedEntity)
+        core.transitionStatus(principal, MemoryCoreRecordReference.ToEntity(deletedEntity.entityId), MemoryCoreRecordStatus.DELETED)
+
+        core.restoreIdentifierCounters()
+        val nextEntity = core.createEntity(principal, candidateEntity(provenance.provenanceId))
+
+        assertEquals(
+            EntityId("entity-7"),
+            nextEntity.entityId,
+            "a DELETED record is never physically removed from its store -- its own identifier must still count toward the restored maximum, exactly like any other status",
+        )
+    }
+
+    @Test
+    fun `a lifecycle transition applied after restoration has no effect on the restored identifier counter`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        val restoredEntity = entity("entity-3", provenance.provenanceId)
+        core.restoreEntity(restoredEntity)
+        core.transitionStatus(principal, MemoryCoreRecordReference.ToEntity(restoredEntity.entityId), MemoryCoreRecordStatus.DISPUTED)
+
+        core.restoreIdentifierCounters()
+        val nextEntity = core.createEntity(principal, candidateEntity(provenance.provenanceId))
+
+        assertEquals(EntityId("entity-4"), nextEntity.entityId, "a status transition changes a record's status field only -- it must never influence which identifier a counter resumes from")
+    }
+
+    @Test
+    fun `after restoration, no newly created identifier ever collides with an already-restored one`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = core.createProvenance(principal, candidateProvenance())
+        core.restoreEntity(entity("entity-1", provenance.provenanceId))
+        core.restoreEntity(entity("entity-2", provenance.provenanceId))
+        core.restoreEntity(entity("entity-3", provenance.provenanceId))
+
+        core.restoreIdentifierCounters()
+        val mintedIdentifiers = (1..5).map { core.createEntity(principal, candidateEntity(provenance.provenanceId)).entityId }
+
+        val restoredIdentifiers = setOf(EntityId("entity-1"), EntityId("entity-2"), EntityId("entity-3"))
+        assertTrue(mintedIdentifiers.none { it in restoredIdentifiers }, "no newly minted identifier may ever equal an already-restored one")
+        assertEquals(5, mintedIdentifiers.toSet().size, "every newly minted identifier must also be distinct from every other newly minted one")
+    }
+
+    @Test
+    fun `restoreIdentifierCounters itself is internal, never public API surface`() {
+        val function = InMemoryMemoryCore::class.declaredFunctions.single { it.name == "restoreIdentifierCounters" }
+
+        assertEquals(KVisibility.INTERNAL, function.visibility)
     }
 }
