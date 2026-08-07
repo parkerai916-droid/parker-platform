@@ -11,6 +11,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.io.TempDir
+import parker.core.interfaces.AssertionId
+import parker.core.interfaces.CandidateAssertion
+import parker.core.interfaces.CandidateDocument
 import parker.core.interfaces.CandidateEntity
 import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.CandidateRelationship
@@ -26,7 +29,9 @@ import parker.core.interfaces.MemoryRetrieval
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.Provenance
 import parker.core.interfaces.ProvenanceId
+import parker.core.interfaces.Relationship
 import parker.core.interfaces.RelationshipEndpoint
+import parker.core.interfaces.RelationshipId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -74,6 +79,30 @@ class DurableMemoryCoreTest {
         primaryLabel = "New Person",
         provenanceId = provenanceId,
     )
+
+    // Memory Core Durability, Implementation Unit 10 (Verification): candidate helpers for
+    // Document, Assertion, and Relationship, mirroring InMemoryMemoryCoreTest's own identically-shaped
+    // helpers -- needed here so this file's own restart-cycle tests can cover all five record kinds,
+    // not only Provenance and Entity.
+    private fun candidateDocument(provenanceId: ProvenanceId) = CandidateDocument(
+        documentType = "email",
+        locationReference = "mailbox://inbox/message-1",
+        provenanceId = provenanceId,
+    )
+
+    private fun candidateAssertion(provenanceId: ProvenanceId) = CandidateAssertion(
+        statement = "the user prefers window seats",
+        provenanceId = provenanceId,
+    )
+
+    private fun candidateRelationship(provenanceId: ProvenanceId, fromEndpoint: RelationshipEndpoint, toEndpoint: RelationshipEndpoint) =
+        CandidateRelationship(
+            relationshipType = Relationship.SUPPORTS,
+            fromEndpoint = fromEndpoint,
+            toEndpoint = toEndpoint,
+            directional = true,
+            provenanceId = provenanceId,
+        )
 
     // ================= Construction: successful recovery =================
 
@@ -377,6 +406,102 @@ class DurableMemoryCoreTest {
         assertEquals(created, second.getEntity(principal, created.entityId))
         val nextEntity = second.createEntity(principal, candidateEntity(prov.provenanceId))
         assertEquals(EntityId("entity-2"), nextEntity.entityId, "identifier minting must continue correctly across the restart")
+    }
+
+    // Memory Core Durability, Implementation Unit 10 (Verification), item 2: "Write/restart/read
+    // tests, all five record kinds." The test above already covers Provenance and Entity through a
+    // full DurableMemoryCore-level restart cycle -- the three tests below close the remaining gap for
+    // Document, Assertion, and Relationship at this same level (each kind is already covered at the
+    // lower MemoryCoreRecovery.recover level by MemoryCoreRecoveryTest.kt, but item 2 names the
+    // DurableMemoryCore-wrapping restart cycle specifically, per its own "new DurableMemoryCore
+    // wrapping a fresh InMemoryMemoryCore, same durability log" wording).
+
+    @Test
+    fun `a Document survives a full construct-write-restart-read cycle through DurableMemoryCore`(@TempDir tempDir: Path) = runTest {
+        val logFile = tempDir.resolve("durability.log")
+
+        val first = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+        val prov = first.createProvenance(principal, candidateProvenance)
+        val created = first.registerDocument(principal, candidateDocument(prov.provenanceId))
+
+        val second = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+
+        assertEquals(created, second.getDocument(principal, created.documentId))
+        val nextDocument = second.registerDocument(principal, candidateDocument(prov.provenanceId))
+        assertEquals(DocumentId("document-2"), nextDocument.documentId, "identifier minting must continue correctly across the restart")
+    }
+
+    @Test
+    fun `an Assertion survives a full construct-write-restart-read cycle through DurableMemoryCore`(@TempDir tempDir: Path) = runTest {
+        val logFile = tempDir.resolve("durability.log")
+
+        val first = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+        val prov = first.createProvenance(principal, candidateProvenance)
+        val created = first.createAssertion(principal, candidateAssertion(prov.provenanceId))
+
+        val second = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+
+        assertEquals(created, second.getAssertion(principal, created.assertionId))
+        val nextAssertion = second.createAssertion(principal, candidateAssertion(prov.provenanceId))
+        assertEquals(AssertionId("assertion-2"), nextAssertion.assertionId, "identifier minting must continue correctly across the restart")
+    }
+
+    @Test
+    fun `a Relationship survives a full construct-write-restart-read cycle through DurableMemoryCore`(@TempDir tempDir: Path) = runTest {
+        val logFile = tempDir.resolve("durability.log")
+
+        val first = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+        val prov = first.createProvenance(principal, candidateProvenance)
+        val fromEntity = first.createEntity(principal, candidateEntity(prov.provenanceId))
+        val toEntity = first.createEntity(principal, candidateEntity(prov.provenanceId))
+        val created = first.createRelationship(
+            principal,
+            candidateRelationship(
+                prov.provenanceId,
+                RelationshipEndpoint(RelationshipEndpoint.ENTITY, fromEntity.entityId.value),
+                RelationshipEndpoint(RelationshipEndpoint.ENTITY, toEntity.entityId.value),
+            ),
+        )
+
+        val second = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+
+        assertEquals(created, second.getRelationship(principal, created.relationshipId))
+        val nextRelationship = second.createRelationship(
+            principal,
+            candidateRelationship(
+                prov.provenanceId,
+                RelationshipEndpoint(RelationshipEndpoint.ENTITY, fromEntity.entityId.value),
+                RelationshipEndpoint(RelationshipEndpoint.ENTITY, toEntity.entityId.value),
+            ),
+        )
+        assertEquals(RelationshipId("relationship-2"), nextRelationship.relationshipId, "identifier minting must continue correctly across the restart")
+    }
+
+    // Memory Core Durability, Implementation Unit 10 (Verification), item 3: "Lifecycle-transition
+    // restart test. A multi-step transition sequence survives restart with the correct final status
+    // (Unit 6)." Already covered at the MemoryCoreRecovery.recover level by
+    // MemoryCoreRecoveryTest.kt's own "multiple transitions on one record are replayed in order,
+    // reaching the correct final status" -- this test closes the same property specifically through a
+    // full DurableMemoryCore-level restart cycle, mirroring the three tests immediately above.
+    @Test
+    fun `a multi-step lifecycle transition sequence survives a full DurableMemoryCore restart, reaching the correct final status`(
+        @TempDir tempDir: Path,
+    ) = runTest {
+        val logFile = tempDir.resolve("durability.log")
+
+        val first = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+        val prov = first.createProvenance(principal, candidateProvenance)
+        val created = first.createEntity(principal, candidateEntity(prov.provenanceId))
+        first.transitionStatus(principal, MemoryCoreRecordReference.ToEntity(created.entityId), MemoryCoreRecordStatus.DISPUTED)
+        first.transitionStatus(principal, MemoryCoreRecordReference.ToEntity(created.entityId), MemoryCoreRecordStatus.ARCHIVED)
+
+        val second = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logFile))
+
+        assertEquals(
+            MemoryCoreRecordStatus.ARCHIVED,
+            second.getEntity(principal, created.entityId)?.status,
+            "the full two-step transition chain (ACTIVE -> DISPUTED -> ARCHIVED) must be genuinely replayed, not collapsed, and must survive the restart",
+        )
     }
 
     // ================= Memory Core Durability, Implementation Unit 7: concurrency and ordering =================

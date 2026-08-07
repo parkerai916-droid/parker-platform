@@ -960,6 +960,50 @@ class InMemoryMemoryCoreTest {
         assertEquals(AssertionId("assertion-1"), nextAssertion.assertionId, "an untouched kind must still start at 1, unaffected by another kind's own high-numbered restoration")
     }
 
+    // Memory Core Durability, Implementation Unit 10 (Verification), item 5: "Identifier max+1 tests,
+    // all five kinds." The test above exercises Provenance, Entity, Document, and Assertion --
+    // Relationship is the one kind it deliberately leaves untouched (its own comment: "Document,
+    // Assertion, and Relationship have no restored records at all"), and no other existing test
+    // restores a Relationship and then confirms its own counter resumes correctly. This test closes
+    // that specific gap.
+    @Test
+    fun `Relationship's own counter restores correctly and a newly created Relationship never collides with a restored one`() = runTest {
+        val core = InMemoryMemoryCore()
+        val provenance = provenance("provenance-1")
+        core.restoreProvenance(provenance)
+        val fromEntity = entity("entity-1", provenance.provenanceId)
+        val toEntity = entity("entity-2", provenance.provenanceId)
+        core.restoreEntity(fromEntity)
+        core.restoreEntity(toEntity)
+        val restoredRelationship = Relationship(
+            relationshipId = RelationshipId("relationship-3"),
+            relationshipType = Relationship.SUPPORTS,
+            fromEndpoint = RelationshipEndpoint(RelationshipEndpoint.ENTITY, fromEntity.entityId.value),
+            toEndpoint = RelationshipEndpoint(RelationshipEndpoint.ENTITY, toEntity.entityId.value),
+            directional = true,
+            provenanceId = provenance.provenanceId,
+            createdAt = Instant.parse("2025-01-01T00:00:00Z"),
+        )
+        core.restoreRelationship(restoredRelationship)
+
+        core.restoreIdentifierCounters()
+        val nextRelationship = core.createRelationship(
+            principal,
+            candidateRelationship(
+                provenance.provenanceId,
+                RelationshipEndpoint(RelationshipEndpoint.ENTITY, fromEntity.entityId.value),
+                RelationshipEndpoint(RelationshipEndpoint.ENTITY, toEntity.entityId.value),
+            ),
+        )
+
+        assertEquals(
+            RelationshipId("relationship-4"),
+            nextRelationship.relationshipId,
+            "Relationship's own counter must resume one past its own restored maximum, exactly like every other kind",
+        )
+        assertNotEquals(restoredRelationship.relationshipId, nextRelationship.relationshipId, "no newly minted Relationship identifier may ever equal an already-restored one")
+    }
+
     @Test
     fun `a durably-repeated identical record collapses to one store key and never inflates the restored counter`() = runTest {
         val core = InMemoryMemoryCore()

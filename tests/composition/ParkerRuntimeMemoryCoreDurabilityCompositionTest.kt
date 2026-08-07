@@ -4,15 +4,22 @@ import java.lang.reflect.Field
 import java.nio.file.Files
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
+import parker.core.interfaces.CandidateAssertion
+import parker.core.interfaces.CandidateDocument
 import parker.core.interfaces.CandidateEntity
+import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ContentNature
+import parker.core.interfaces.DocumentId
 import parker.core.interfaces.MemoryCore
 import parker.core.interfaces.MemoryRetrieval
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.ProvenanceId
 import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
+import parker.core.runtime.EvidenceRegistrationOutcome
+import parker.core.runtime.FileSystemMemoryCoreDurabilityLog
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -155,6 +162,85 @@ class ParkerRuntimeMemoryCoreDurabilityCompositionTest {
         assertEquals("Durability Composition Fixture", recovered.primaryLabel)
 
         secondRuntime.shutdown()
+    }
+
+    // Memory Core Durability, Implementation Unit 10 (Verification), item 10: "Full runtime
+    // reconstruction test. ParkerRuntime.start(), exercised end-to-end against a pre-populated
+    // durability log, reaches RUNNING with fully restored Memory Core state, and every existing
+    // consumer (EvidenceRegistrationCoordinator, the Programme 4 coordinator,
+    // PermissionFilteredMemoryRetrieval) observes the restored data through its own existing call
+    // path." The test above already proves genuine file-backed recovery through one reflectively-
+    // obtained reference; this test goes further, checking each of the three named consumers' own
+    // distinct field independently, plus one genuine public-API exercise (submitEvidence) proving the
+    // write side continues correctly atop restored state, not merely that reflection can observe it.
+    @Test
+    fun `ParkerRuntime start() against a pre-populated durability log reaches RUNNING, and each of the three named consumers observes the restored state through its own reference`() = runTest {
+        val logPath = Files.createTempDirectory("memory-core-durability-composition-prepopulated").resolve("memory-core.log")
+        val principal = PrincipalId(ownerPrincipalId)
+
+        // Pre-populated independently of ParkerRuntime entirely -- a bare DurableMemoryCore over the
+        // real filesystem log, never a live runtime -- exactly the "a durability log already exists,
+        // from some prior process" scenario this item names, not merely a second lap of a runtime this
+        // same test constructed.
+        val seed = DurableMemoryCore.create(FileSystemMemoryCoreDurabilityLog(logPath))
+        val seededProvenance = seed.createProvenance(principal, candidateProvenance())
+        val seededEntity = seed.createEntity(
+            principal,
+            CandidateEntity(entityType = "person", primaryLabel = "Pre-Populated Entity", provenanceId = seededProvenance.provenanceId),
+        )
+        val seededDocument = seed.registerDocument(
+            principal,
+            CandidateDocument(documentType = "email", locationReference = "mailbox://inbox/message-1", provenanceId = seededProvenance.provenanceId),
+        )
+        val seededAssertion = seed.createAssertion(
+            principal,
+            CandidateAssertion(statement = "pre-populated assertion", provenanceId = seededProvenance.provenanceId),
+        )
+
+        val runtime = ParkerRuntime(config(memoryCoreDurabilityLogPath = logPath.toString()), RecordingParkerLogger())
+        runtime.start()
+
+        assertEquals(RuntimeLifecycleState.RUNNING, runtime.state, "start() must reach RUNNING against a genuinely pre-populated log, not merely an empty one")
+
+        // Consumer 1: EvidenceRegistrationCoordinator's own memoryCore field, queried directly.
+        val registrationMemoryCore = runtime
+            .privateField<EvidenceRegistrationCoordinator>("evidenceRegistrationCoordinator")
+            .privateField<DurableMemoryCore>("memoryCore")
+        assertEquals(seededEntity, registrationMemoryCore.getEntity(principal, seededEntity.entityId), "EvidenceRegistrationCoordinator's own MemoryCore reference must observe the pre-populated Entity")
+
+        // Consumer 2: EvidenceIntelligenceAcceptanceCoordinator's own memoryCore field, queried directly.
+        val acceptanceMemoryCore = runtime
+            .privateField<EvidenceIntelligenceAcceptanceCoordinator>("evidenceIntelligenceAcceptanceCoordinator")
+            .privateField<DurableMemoryCore>("memoryCore")
+        assertEquals(seededDocument, acceptanceMemoryCore.getDocument(principal, seededDocument.documentId), "EvidenceIntelligenceAcceptanceCoordinator's own MemoryCore reference must observe the pre-populated Document")
+
+        // Consumer 3: the shared PermissionFilteredMemoryRetrieval's own delegate field, queried
+        // directly -- bypassing the decorator's own deliberate, permanent fail-closed retrieval gate
+        // (Errata 004; already independently verified elsewhere), exactly as
+        // ParkerRuntimeEvidenceIntelligenceCompositionTest's own established precedent does to confirm
+        // a record genuinely exists before separately demonstrating the wrapper's own denial.
+        val evidenceIntelligence = runtime.privateField<Any>("evidenceIntelligence")
+        val inputResolver = evidenceIntelligence.privateField<Any>("inputResolver")
+        val retrievalDecorator = inputResolver.privateField<PermissionFilteredMemoryRetrieval>("memoryRetrieval")
+        val retrievalDelegate = retrievalDecorator.privateField<DurableMemoryCore>("delegate")
+        assertEquals(seededAssertion, retrievalDelegate.getAssertion(principal, seededAssertion.assertionId), "the shared PermissionFilteredMemoryRetrieval's own delegate must observe the pre-populated Assertion")
+
+        // Genuine public-API exercise: EvidenceRegistrationCoordinator's own real call path
+        // (submitEvidence), proving the write side continues correctly atop restored identifier
+        // counters -- the newly minted Provenance/Document must not collide with the pre-populated
+        // provenance-1/document-1.
+        val registered = assertIs<EvidenceRegistrationOutcome.Registered>(
+            runtime.submitEvidence(
+                principal,
+                CandidateEvidenceArtifact("post-restart submission content".toByteArray()),
+                candidateProvenance(),
+                "post-restart-document",
+            ),
+        )
+        assertEquals(ProvenanceId("provenance-2"), registered.provenance.provenanceId, "a post-restart write must continue minting past the pre-populated Provenance, never colliding with it")
+        assertEquals(DocumentId("document-2"), registered.document.documentId, "a post-restart write must continue minting past the pre-populated Document, never colliding with it")
+
+        runtime.shutdown()
     }
 
     // ================= Runtime failure verification: no silent empty-store fallback =================
