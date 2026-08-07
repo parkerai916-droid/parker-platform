@@ -12,11 +12,13 @@ class IdentifiersTest {
         assertEquals(PrincipalId("p-1"), PrincipalId("p-1"))
         assertEquals(ResourceId("r-1"), ResourceId("r-1"))
         assertEquals(RequestId("req-1"), RequestId("req-1"))
+        assertEquals(AuthorizationPurposeId("ap-1"), AuthorizationPurposeId("ap-1"))
     }
 
     @Test
     fun `identifiers with different values are not equal`() {
         assertNotEquals(PrincipalId("p-1"), PrincipalId("p-2"))
+        assertNotEquals(AuthorizationPurposeId("ap-1"), AuthorizationPurposeId("ap-2"))
     }
 
     @Test
@@ -26,5 +28,7 @@ class IdentifiersTest {
         assertFailsWith<IllegalArgumentException> { RequestId("") }
         assertFailsWith<IllegalArgumentException> { DecisionId("") }
         assertFailsWith<IllegalArgumentException> { ResultId("") }
+        assertFailsWith<IllegalArgumentException> { AuthorizationPurposeId("") }
+        assertFailsWith<IllegalArgumentException> { AuthorizationPurposeId("   ") }
     }
 }
