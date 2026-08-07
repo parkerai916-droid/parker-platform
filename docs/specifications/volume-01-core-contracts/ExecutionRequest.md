@@ -51,6 +51,9 @@ word.
 - correlationId
 - metadata
 
+## Optional Fields
+- **authorizationPurpose** (added by `docs/architecture/AUTHORIZATION_PURPOSE_SCOPE_LOCK.md` §2.2, Unit 2 of `docs/implementation/AUTHORIZATION_PURPOSE_IMPLEMENTATION_PLAN.md`) — the fourth constitutional authorization dimension, alongside Principal, Action, and Resource. Genuinely optional, not merely undocumented as required: absent for every existing caller today, and remains absent until a later Unit's own Permission Policy extension consults it. Deliberately not listed under "Required Fields" below, unlike this document's own pre-existing treatment of `sessionId`/`riskEstimate`/`expiresAt`/`metadata` (each already optional in the Kotlin contract and the JSON schema despite appearing in that list) — that existing inconsistency is disclosed, not repeated, for this new field.
+
 ## Lifecycle
 Created → Validated → PermissionPending → Approved → Queued → Executing → Completed
 

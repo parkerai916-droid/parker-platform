@@ -16,7 +16,7 @@ requestId, principalId, origin, intent, targetResources, proposedActions,
 priority, createdAt, correlationId.
 
 ## Optional Fields
-sessionId, riskEstimate, expiresAt, metadata.
+sessionId, riskEstimate, expiresAt, metadata, authorizationPurpose.
 
 ## Key Enumerations
 - origin: VOICE, TEXT, SCHEDULED_TASK, AGENT, PLUGIN, HOME_ASSISTANT_EVENT, ANDROID_EVENT, REMOTE_INTERFACE

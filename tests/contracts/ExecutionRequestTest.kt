@@ -4,6 +4,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 
 class ExecutionRequestTest {
 
@@ -12,6 +13,7 @@ class ExecutionRequestTest {
         correlationId: String = "corr-1",
         createdAt: Instant = Instant.parse("2026-01-01T00:00:00Z"),
         expiresAt: Instant? = Instant.parse("2026-01-01T00:05:00Z"),
+        authorizationPurpose: AuthorizationPurposeId? = null,
     ) = ExecutionRequest(
         requestId = RequestId("req-1"),
         principalId = PrincipalId("user-1"),
@@ -23,6 +25,7 @@ class ExecutionRequestTest {
         createdAt = createdAt,
         correlationId = correlationId,
         expiresAt = expiresAt,
+        authorizationPurpose = authorizationPurpose,
     )
 
     @Test
@@ -62,5 +65,38 @@ class ExecutionRequestTest {
         val r = request(expiresAt = null)
 
         assertEquals(null, r.expiresAt)
+    }
+
+    @Test
+    fun `authorizationPurpose is optional and absent by default`() {
+        val r = request()
+
+        assertEquals(null, r.authorizationPurpose)
+    }
+
+    @Test
+    fun `authorizationPurpose is preserved when supplied`() {
+        val r = request(authorizationPurpose = AuthorizationPurposeId("test.example-purpose"))
+
+        assertEquals(AuthorizationPurposeId("test.example-purpose"), r.authorizationPurpose)
+    }
+
+    @Test
+    fun `requests with different authorizationPurpose are not equal`() {
+        val withPurpose = request(authorizationPurpose = AuthorizationPurposeId("test.example-purpose"))
+        val withoutPurpose = request(authorizationPurpose = null)
+
+        assertNotEquals(withPurpose, withoutPurpose)
+    }
+
+    @Test
+    fun `copy preserves authorizationPurpose unless explicitly overridden`() {
+        val original = request(authorizationPurpose = AuthorizationPurposeId("test.example-purpose"))
+
+        val copied = original.copy(intent = "a different intent")
+        assertEquals(AuthorizationPurposeId("test.example-purpose"), copied.authorizationPurpose)
+
+        val cleared = original.copy(authorizationPurpose = null)
+        assertEquals(null, cleared.authorizationPurpose)
     }
 }

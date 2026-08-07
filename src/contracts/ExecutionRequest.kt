@@ -18,6 +18,17 @@ import java.time.Instant
  * `ExecutionResult`'s `Expired` status only make sense if something
  * tracks an expiry, and every request needs a correlation id for the
  * audit trail ADR-020 requires). See IMPLEMENTATION_GAPS.md.
+ *
+ * `authorizationPurpose` (Trust Framework Authorization Purpose,
+ * `docs/architecture/AUTHORIZATION_PURPOSE_SCOPE_LOCK.md` §2.2, Unit 2 of
+ * `docs/implementation/AUTHORIZATION_PURPOSE_IMPLEMENTATION_PLAN.md`): the
+ * fourth authorization dimension, alongside Principal/Action/Resource,
+ * carried on the request itself, additive to every existing field and
+ * optional until a later Unit's own `DefaultPermissionPolicy` extension
+ * (Unit 4) actually consults it. Its presence here does not itself change
+ * any permission decision -- `PermissionEngine`'s own public interface and
+ * `DefaultPermissionPolicy`'s own resolution step are both unmodified by
+ * this field's own addition.
  */
 enum class RequestOrigin {
     VOICE,
@@ -60,6 +71,7 @@ data class ExecutionRequest(
     val riskEstimate: RiskEstimate? = null,
     val expiresAt: Instant? = null,
     val metadata: Map<String, String> = emptyMap(),
+    val authorizationPurpose: AuthorizationPurposeId? = null,
 ) {
     init {
         require(intent.isNotBlank()) { "ExecutionRequest.intent must not be blank" }
