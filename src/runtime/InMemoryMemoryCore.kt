@@ -538,6 +538,145 @@ class InMemoryMemoryCore : MemoryCore, MemoryRetrieval {
         }
     }
 
+    // ================= Prepare behaviour (Memory Core Durability, Implementation Unit 6) =================
+
+    /**
+     * Memory Core Durability, Implementation Unit 6 (Durable Memory Core
+     * Decorator). Five internal-only preparation functions -- one per
+     * creatable record kind -- mirroring the corresponding `create*`
+     * operation's own referential-integrity checks and identifier-minting
+     * exactly, but stopping short of storing the result. Added as a
+     * strictly additive extension to this class: no existing method's
+     * signature, behaviour, or semantics changes.
+     *
+     * ## Why this Unit needs a function `create*` cannot serve
+     *
+     * `docs/architecture/MEMORY_CORE_DURABILITY_CONTRACT_DESIGN.md`'s own
+     * Section 11 fixes the durable-write ordering this whole Programme is
+     * built around: it names exactly one acceptable failure window --
+     * "failure after durable commit but before the in-memory update
+     * completes" -- and never once contemplates the reverse (an in-memory
+     * update completing before the durable commit). `DurableMemoryCore`
+     * (this Unit's own decorator) must therefore durably append a
+     * complete [DurableMemoryCoreEntry] *before* the corresponding record
+     * ever becomes visible in memory -- but every `create*` operation
+     * mints its own identifier and stores the result as one atomic,
+     * inseparable step, so there is no existing way to obtain a complete,
+     * validated, uniquely-identified record without also, in the same
+     * call, already having stored it. [prepareProvenance] and its four
+     * counterparts are that missing step: mint and validate, but do not
+     * store. `DurableMemoryCore` calls one of these, durably appends the
+     * result, and only then calls the corresponding existing `restore*`
+     * function (Implementation Unit 4) -- already exactly "insert an
+     * already-complete, already-identified record" -- to make the record
+     * visible in memory.
+     *
+     * ## A minted identifier may be "burned" by a subsequent append
+     * failure -- already tolerated, not a new risk
+     *
+     * If [DurableMemoryCore] durably appends a prepared record and the
+     * append itself fails, the identifier this function already minted is
+     * never stored anywhere and is never reused (per this class's own
+     * existing "identifiers are never reassigned, reused, or recycled"
+     * discipline) -- it simply becomes a permanent gap in that kind's own
+     * identifier sequence. This is not a new failure mode this Unit
+     * introduces: sparse, non-contiguous identifier sequences are already
+     * a normal, fully-tolerated outcome this class's own Implementation
+     * Unit 5 (`restoreIdentifierCounters`) is explicitly designed to
+     * handle correctly, for exactly this reason among others.
+     *
+     * ## Referential integrity and minting order are unchanged from the
+     * corresponding `create*` operation
+     *
+     * Each function performs the exact same checks, in the exact same
+     * order, as its `create*` counterpart -- referential integrity first
+     * (so a validation failure never burns an identifier), minting
+     * second. [prepareProvenance] has no referential integrity of its own
+     * to check, exactly like [createProvenance].
+     */
+    internal suspend fun prepareProvenance(candidate: CandidateProvenance): Provenance = mutex.withLock {
+        val provenanceId = ProvenanceId("provenance-${nextProvenanceSequence++}")
+        Provenance(
+            provenanceId = provenanceId,
+            sourceIdentifier = candidate.sourceIdentifier,
+            sourceType = candidate.sourceType,
+            acquisitionTime = candidate.acquisitionTime,
+            ingestionTime = Instant.now(),
+            contentNature = candidate.contentNature,
+            creator = candidate.creator,
+            creatorPrincipalId = candidate.creatorPrincipalId,
+            claimedCreationTime = candidate.claimedCreationTime,
+            derivedFrom = candidate.derivedFrom,
+            extractedFrom = candidate.extractedFrom,
+            processingHistory = candidate.processingHistory,
+            integrityInformation = candidate.integrityInformation,
+            confidence = candidate.confidence,
+            sensitivity = candidate.sensitivity,
+        )
+    }
+
+    internal suspend fun prepareEntity(candidate: CandidateEntity): Entity = mutex.withLock {
+        requireExistingProvenance(candidate.provenanceId)
+        val entityId = EntityId("entity-${nextEntitySequence++}")
+        Entity(
+            entityId = entityId,
+            entityType = candidate.entityType,
+            primaryLabel = candidate.primaryLabel,
+            provenanceId = candidate.provenanceId,
+            createdAt = Instant.now(),
+            aliases = candidate.aliases,
+            relatedPrincipalId = candidate.relatedPrincipalId,
+            status = MemoryCoreRecordStatus.ACTIVE,
+            metadata = candidate.metadata,
+        )
+    }
+
+    internal suspend fun prepareDocument(candidate: CandidateDocument): Document = mutex.withLock {
+        requireExistingProvenance(candidate.provenanceId)
+        val documentId = DocumentId("document-${nextDocumentSequence++}")
+        Document(
+            documentId = documentId,
+            documentType = candidate.documentType,
+            locationReference = candidate.locationReference,
+            provenanceId = candidate.provenanceId,
+            registeredAt = Instant.now(),
+            integrityHash = candidate.integrityHash,
+            processingStatus = candidate.processingStatus,
+            status = MemoryCoreRecordStatus.ACTIVE,
+            metadata = candidate.metadata,
+        )
+    }
+
+    internal suspend fun prepareAssertion(candidate: CandidateAssertion): Assertion = mutex.withLock {
+        requireExistingProvenance(candidate.provenanceId)
+        val assertionId = AssertionId("assertion-${nextAssertionSequence++}")
+        Assertion(
+            assertionId = assertionId,
+            statement = candidate.statement,
+            provenanceId = candidate.provenanceId,
+            confidence = candidate.confidence,
+            status = MemoryCoreRecordStatus.ACTIVE,
+            metadata = candidate.metadata,
+        )
+    }
+
+    internal suspend fun prepareRelationship(candidate: CandidateRelationship): Relationship = mutex.withLock {
+        requireExistingProvenance(candidate.provenanceId)
+        requireResolvableEndpoint(candidate.fromEndpoint)
+        requireResolvableEndpoint(candidate.toEndpoint)
+        val relationshipId = RelationshipId("relationship-${nextRelationshipSequence++}")
+        Relationship(
+            relationshipId = relationshipId,
+            relationshipType = candidate.relationshipType,
+            fromEndpoint = candidate.fromEndpoint,
+            toEndpoint = candidate.toEndpoint,
+            directional = candidate.directional,
+            provenanceId = candidate.provenanceId,
+            createdAt = Instant.now(),
+            status = MemoryCoreRecordStatus.ACTIVE,
+        )
+    }
+
     // ================= Retrieval behaviour =================
 
     override suspend fun getEntity(requestingPrincipalId: PrincipalId, entityId: EntityId): Entity? =
