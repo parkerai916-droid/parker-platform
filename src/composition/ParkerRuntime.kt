@@ -79,6 +79,7 @@ import parker.core.runtime.GoalPlanningHandoffCoordinator
 import parker.core.runtime.GoalPlanningHandoffOutcome
 import parker.core.runtime.InMemoryActionVocabulary
 import parker.core.runtime.InMemoryAgentRuntime
+import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
 import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
@@ -94,6 +95,7 @@ import parker.core.runtime.InMemoryToolRegistry
 import parker.core.runtime.InMemoryWorldModel
 import parker.core.runtime.LocalHttpModelInferenceClient
 import parker.core.runtime.LocalTextChannelDeliverTool
+import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.ModelReasoningProvider
 import parker.core.runtime.PermissionPolicyRule
 import parker.core.runtime.ReplyDeliveryCoordinator
@@ -350,6 +352,17 @@ class ParkerRuntime(
         val resourceRegistry = InMemoryResourceRegistry()
         val vocabulary = InMemoryActionVocabulary()
         val actionMapper = ActionMapper(vocabulary)
+        // Authorization Purpose Implementation Plan, Unit 5 ("Composition Wiring"): constructed at
+        // the same composition stage as resourceRegistry/vocabulary above (Scope Lock §2.3 --
+        // "composition-time registration... at the same composition stage ActionVocabulary/
+        // ResourceRegistry entries already are"), and supplied to DefaultPermissionPolicy below.
+        // Deliberately a construction-local val, never a ParkerRuntime field -- nothing else in
+        // this composed graph consumes it yet (Unit 5's own non-responsibilities: no consumer
+        // adoption). Zero Authorization Purpose values are registered here or anywhere else in
+        // this method -- an empty registry after composition is Unit 5's own expected, correct
+        // outcome (Implementation Plan §7: "no domain-specific Authorization Purpose value is
+        // registered by this unit").
+        val authorizationPurposeRegistry = InMemoryAuthorizationPurposeRegistry()
         val toolRegistry = InMemoryToolRegistry(resourceRegistry)
         val moduleRegistry = InMemoryModuleRegistry(toolRegistry, resourceRegistry)
         val toolInvocationBinding = InMemoryToolInvocationBinding()
@@ -506,6 +519,7 @@ class ParkerRuntime(
         val permissionPolicy = DefaultPermissionPolicy(
             actionMapper = actionMapper,
             resourceRegistry = resourceRegistry,
+            authorizationPurposeRegistry = authorizationPurposeRegistry,
             rules = listOf(
                 PermissionPolicyRule(
                     action = PermissionAction.NOTIFY,
@@ -757,13 +771,6 @@ class ParkerRuntime(
             plannerRuntime = plannerRuntime,
         )
 
-        conversationReplyCoordinator = ConversationReplyCoordinator(
-            communicationConversationCoordinator,
-            replyDeliveryCoordinator,
-            goalPlanningHandoffCoordinator,
-        )
-        runtimeEventLogger = RuntimeEventLogger(eventBus, logger, SYSTEM_PARKER_PRINCIPAL_ID)
-
         // Programme 4, Evidence Intelligence, Unit 8 ("Runtime Composition and Full
         // Verification", Implementation Plan Section 8 Unit 8). Wires Units 1-7 -- already
         // implemented and independently verified in isolation -- into this composition root,
@@ -803,6 +810,23 @@ class ParkerRuntime(
             knowledgeItemPersistence,
             permissionEngine,
         )
+
+        // Parker Conversational Memory Bridge, Admission Unit
+        // (docs/implementation/CONVERSATIONAL_MEMORY_ADMISSION_IMPLEMENTATION_PLAN.md). Reuses the
+        // existing memoryCore (the durable instance -- see the "no double gating" reasoning already
+        // established above for evidenceRegistrationCoordinator/evidenceIntelligenceAcceptanceCoordinator)
+        // and the knowledgeSubmission instance just constructed -- never a second, parallel instance
+        // of either. permissionEngine gates only this coordinator's own Memory Core write; it never
+        // re-evaluates knowledgeSubmission's own, separate, already-existing self-gate.
+        val memoryAdmissionCoordinator = MemoryAdmissionCoordinator(memoryCore, knowledgeSubmission, permissionEngine)
+
+        conversationReplyCoordinator = ConversationReplyCoordinator(
+            communicationConversationCoordinator,
+            replyDeliveryCoordinator,
+            goalPlanningHandoffCoordinator,
+            memoryAdmissionCoordinator,
+        )
+        runtimeEventLogger = RuntimeEventLogger(eventBus, logger, SYSTEM_PARKER_PRINCIPAL_ID)
 
         // Programme 3, Knowledge Memory, Unit 9.6 ("Runtime Composition"). The same, shared
         // knowledgeItemPersistence and permissionEngine instances above -- never a second,
@@ -919,6 +943,35 @@ class ParkerRuntime(
                 ActionVocabularyEntry(
                     verbPhrase = DefaultKnowledgeRetrieval.RETRIEVE_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.MEMORY)),
+                ),
+            )
+        }
+
+        // Parker Conversational Memory Bridge, Admission Unit. WRITE/MEMORY is already an APPROVED
+        // rule (registered above, alongside Evidence Custodian) -- only this Resource/ActionVocabulary
+        // registration is new here, mirroring every other Memory-Core-writing coordinator's own
+        // identical registration shape.
+        stage("Conversational Memory Admission resource registration") {
+            val now = clock()
+            resourceRegistry.register(
+                Resource(
+                    resourceId = MemoryAdmissionCoordinator.CONVERSATIONAL_MEMORY_RESOURCE_ID,
+                    resourceType = ResourceType.MEMORY,
+                    displayName = "Conversational Memory Admission",
+                    ownerPrincipalId = SYSTEM_PARKER_PRINCIPAL_ID,
+                    sensitivity = ResourceSensitivity.PUBLIC,
+                    lifecycleState = ResourceLifecycleState.REGISTERED,
+                    createdAt = now,
+                    updatedAt = now,
+                    source = "composition-root:conversational-memory-admission",
+                ),
+            )
+        }
+        stage("Conversational Memory Admission action vocabulary registration") {
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = MemoryAdmissionCoordinator.CREATE_CONVERSATIONAL_MEMORY_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
                 ),
             )
         }
