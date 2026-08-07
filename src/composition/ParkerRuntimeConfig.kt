@@ -43,6 +43,14 @@ package parker.composition
  *   -- its parent directory must already exist and be writable; the file
  *   itself is created if missing. Required, for the same reason
  *   [evidenceStorageRootPath] is required.
+ * @param memoryCoreDurabilityLogPath Memory Core Durability, Unit 8
+ *   (Runtime Composition). The exact file path (not a directory) passed
+ *   unchanged to `FileSystemMemoryCoreDurabilityLog` -- its parent
+ *   directory must already exist and be writable; the file itself is
+ *   created if missing, mirroring [evidenceDeletionAuditLogPath]'s own
+ *   exact shape. Required, for the same reason [evidenceStorageRootPath]
+ *   is required -- this composition root does not invent a default
+ *   location for durable Memory Core records.
  * @param logLevel Console display threshold, eventually passed to
  *   `ConsoleParkerLogger`'s own `minLevel` constructor parameter -- a
  *   presentation-layer filter only, never a decision about which events
@@ -66,6 +74,7 @@ data class ParkerRuntimeConfig(
     val localTextChannelModuleId: String = "channel.local-text",
     val evidenceStorageRootPath: String,
     val evidenceDeletionAuditLogPath: String,
+    val memoryCoreDurabilityLogPath: String,
     val logLevel: LogLevel = LogLevel.INFO,
 )
 
@@ -94,6 +103,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_LOCAL_TEXT_CHANNEL_MODULE_ID = "PARKER_LOCAL_TEXT_CHANNEL_MODULE_ID"
     const val KEY_EVIDENCE_STORAGE_ROOT = "PARKER_EVIDENCE_STORAGE_ROOT"
     const val KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH = "PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH"
+    const val KEY_MEMORY_CORE_DURABILITY_LOG_PATH = "PARKER_MEMORY_CORE_DURABILITY_LOG_PATH"
     const val KEY_LOG_LEVEL = "PARKER_LOG_LEVEL"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
@@ -138,6 +148,7 @@ object ParkerRuntimeConfigLoader {
                 ?: "channel.local-text",
             evidenceStorageRootPath = requireKey(environment, KEY_EVIDENCE_STORAGE_ROOT),
             evidenceDeletionAuditLogPath = requireKey(environment, KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH),
+            memoryCoreDurabilityLogPath = requireKey(environment, KEY_MEMORY_CORE_DURABILITY_LOG_PATH),
             logLevel = logLevel,
         )
     }

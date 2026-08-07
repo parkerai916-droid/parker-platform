@@ -33,6 +33,7 @@ class ParkerRuntimeStartupAndShutdownTest {
         localTextChannelModuleId = localTextChannelModuleId,
         evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
+        memoryCoreDurabilityLogPath = Files.createTempDirectory("unused-memory-core").resolve("memory-core.log").toString(),
     )
 
     @Test

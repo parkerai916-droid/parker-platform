@@ -19,10 +19,10 @@ import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
 import parker.core.runtime.DefaultKnowledgeSubmission
+import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceRegistrationOutcome
 import parker.core.runtime.InMemoryKnowledgeItemPersistence
-import parker.core.runtime.InMemoryMemoryCore
 import kotlin.reflect.full.declaredFunctions
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,8 +36,10 @@ import kotlin.test.assertTrue
 /**
  * Programme 4, Evidence Intelligence, Implementation Unit 8 ("Runtime
  * Composition and Full Verification"). End-to-end tests against the
- * real, fully-wired production graph -- a real [InMemoryMemoryCore], a
- * real [DefaultPermissionEngine][parker.core.runtime.DefaultPermissionEngine]
+ * real, fully-wired production graph -- a real [DurableMemoryCore]
+ * (Memory Core Durability Unit 8, recovered from an isolated per-test
+ * durability log), a real
+ * [DefaultPermissionEngine][parker.core.runtime.DefaultPermissionEngine]
  * resolving the graph's own newly-registered conventions, and the real
  * `ParkerRuntime.analyseEvidence`/`submitEvidence` entry points -- not
  * fakes, mirroring [ParkerRuntimeEvidenceCustodianIntegrationTest]'s own
@@ -73,6 +75,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         localTextChannelModuleId = "channel.local-text-evidence-intelligence-integration-test",
         evidenceStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-intelligence-integration-audit").resolve("audit.log").toString(),
+        memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-intelligence-integration-memory").resolve("memory-core.log").toString(),
     )
 
     private fun candidateProvenance() = CandidateProvenance(
@@ -122,7 +125,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
     }
 
     @Test
-    fun `the same InMemoryMemoryCore backs both the acceptance coordinator's raw write path and the shared retrieval decorator`() = runTest {
+    fun `the same DurableMemoryCore backs both the acceptance coordinator's raw write path and the shared retrieval decorator`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -131,7 +134,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         val retrievalDecorator = retrievalDecoratorFrom(runtime)
         val retrievalDelegate = retrievalDecorator.privateField<MemoryRetrieval>("delegate")
 
-        assertIs<InMemoryMemoryCore>(rawMemoryCore, "PermissionGatedMemoryCore must never be inserted here -- this coordinator already gates its own writes")
+        assertIs<DurableMemoryCore>(rawMemoryCore, "PermissionGatedMemoryCore must never be inserted here -- this coordinator already gates its own writes; the raw dependency is Memory Core Durability Unit 8's own DurableMemoryCore, not the volatile InMemoryMemoryCore it recovers and wraps")
         assertSame(rawMemoryCore, retrievalDelegate, "the acceptance coordinator's raw MemoryCore and the retrieval decorator's wrapped delegate must be the one, same instance -- never a parallel Memory Core")
 
         runtime.shutdown()
@@ -269,10 +272,10 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         // Seed a real Entity directly against the raw, reflectively-obtained MemoryCore -- test
         // setup only, deliberately bypassing every gate, mirroring how a real caller never could.
         val acceptanceCoordinator = runtime.privateField<Any>("evidenceIntelligenceAcceptanceCoordinator")
-        // Reflected as the concrete InMemoryMemoryCore, not the MemoryCore interface, so this
+        // Reflected as the concrete DurableMemoryCore, not the MemoryCore interface, so this
         // fixture-setup step can call both createProvenance/createEntity (MemoryCore) and getEntity
         // (MemoryRetrieval) on the one, same underlying object.
-        val rawMemoryCore = acceptanceCoordinator.privateField<InMemoryMemoryCore>("memoryCore")
+        val rawMemoryCore = acceptanceCoordinator.privateField<DurableMemoryCore>("memoryCore")
         val provenance = rawMemoryCore.createProvenance(principal, candidateProvenance())
         val entity = rawMemoryCore.createEntity(
             principal,

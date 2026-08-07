@@ -47,6 +47,7 @@ class ParkerRuntimeEvidenceCustodianIntegrationTest {
         localTextChannelModuleId = "channel.local-text-evidence-integration-test",
         evidenceStorageRootPath = Files.createTempDirectory("evidence-integration-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-integration-audit").resolve("audit.log").toString(),
+        memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-integration-memory").resolve("memory-core.log").toString(),
     )
 
     private fun candidateProvenance() = CandidateProvenance(

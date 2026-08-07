@@ -65,6 +65,7 @@ import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.DeterministicAgentStepSource
+import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
@@ -73,6 +74,7 @@ import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
 import parker.core.runtime.FileSystemEvidenceDeletionAudit
+import parker.core.runtime.FileSystemMemoryCoreDurabilityLog
 import parker.core.runtime.GoalPlanningHandoffCoordinator
 import parker.core.runtime.GoalPlanningHandoffOutcome
 import parker.core.runtime.InMemoryActionVocabulary
@@ -83,7 +85,6 @@ import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
 import parker.core.runtime.InMemoryKnowledgeItemPersistence
 import parker.core.runtime.InMemoryKnowledgeStore
-import parker.core.runtime.InMemoryMemoryCore
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryPlannerRuntime
 import parker.core.runtime.InMemoryResourceRegistry
@@ -282,9 +283,11 @@ class ParkerRuntime(
      * action-vocabulary entries, and construct `DefaultPermissionPolicy`
      * with the corresponding `PermissionPolicyRule`s for all of the
      * above; (4a, Evidence Custodian Runtime Integration) construct
-     * `FileSystemEvidenceArtifactStorage`, `InMemoryMemoryCore` (this
-     * composition root's first production `MemoryCore` construction),
-     * `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`,
+     * `FileSystemEvidenceArtifactStorage`, `FileSystemMemoryCoreDurabilityLog`
+     * and `DurableMemoryCore.create` (Memory Core Durability Unit 8; this
+     * composition root's first production `MemoryCore` construction,
+     * recovering durable state exactly once and aborting startup on
+     * recovery failure), `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`,
      * `FileSystemEvidenceDeletionAudit`, and
      * `DefaultOwnerEvidenceDeletionAuthority` -- the last of which is
      * held only by this class's own `deleteEvidenceAsOwner`, never
@@ -612,27 +615,45 @@ class ParkerRuntime(
         // choice, per the Implementation Plan's own "an ordering choice is disclosed as a
         // planning-level convenience, never as a new architectural decision" precedent.
         //
-        // InMemoryMemoryCore is the first production construction of MemoryCore anywhere in this
-        // composition root -- InMemoryKnowledgeStore (Programme 3's own Knowledge layer, already
-        // constructed above) is a distinct interface and has never required a live MemoryCore
-        // instance. Plain InMemoryMemoryCore is used deliberately, not the EventPublishingMemoryCore
-        // decorator that already exists in this package (src/composition/EventPublishingMemoryCore.kt):
-        // wiring Memory Core's own event publication live for the first time remains a separate
-        // decision this Unit does not make -- EvidenceRegistrationCoordinator only requires a
-        // MemoryCore, not an event-publishing one. PermissionGatedMemoryCore (also already
-        // implemented and independently verified, Programme 2) likewise remains unconstructed here:
-        // EvidenceRegistrationCoordinator (below) and EvidenceIntelligenceAcceptanceCoordinator
-        // (Programme 4 Unit 8, further below) each already gate their own MemoryCore writes
-        // internally, so wrapping either's raw memoryCore dependency in PermissionGatedMemoryCore
-        // would double-gate an already-gated call; no genuine consumer for it exists in this graph.
-        // inMemoryMemoryCore itself, however, now has its first genuine reader beyond memoryCore:
-        // Programme 4 Unit 8's shared PermissionFilteredMemoryRetrieval (below) wraps this exact
-        // instance directly -- one Memory Core, never a parallel one.
+        // InMemoryMemoryCore, recovered below, is the first production construction of MemoryCore
+        // anywhere in this composition root -- InMemoryKnowledgeStore (Programme 3's own Knowledge
+        // layer, already constructed above) is a distinct interface and has never required a live
+        // MemoryCore instance. Plain InMemoryMemoryCore, wrapped by DurableMemoryCore, is used
+        // deliberately, not the EventPublishingMemoryCore decorator that already exists in this
+        // package (src/composition/EventPublishingMemoryCore.kt): wiring Memory Core's own event
+        // publication live for the first time remains a separate decision this Unit does not make --
+        // EvidenceRegistrationCoordinator only requires a MemoryCore, not an event-publishing one.
+        // PermissionGatedMemoryCore (also already implemented and independently verified, Programme 2)
+        // likewise remains unconstructed here: EvidenceRegistrationCoordinator (below) and
+        // EvidenceIntelligenceAcceptanceCoordinator (Programme 4 Unit 8, further below) each already
+        // gate their own MemoryCore writes internally, so wrapping either's raw memoryCore dependency
+        // in PermissionGatedMemoryCore would double-gate an already-gated call; no genuine consumer
+        // for it exists in this graph -- Memory Core Durability Unit 8's own Planning Review reaffirms
+        // this determination explicitly, against the current state of this file, before composing the
+        // durable decorator below.
         val evidenceArtifactStorage = stage("Evidence Custodian storage construction") {
             FileSystemEvidenceArtifactStorage(Path.of(config.evidenceStorageRootPath))
         }
-        val inMemoryMemoryCore = InMemoryMemoryCore()
-        val memoryCore: MemoryCore = inMemoryMemoryCore
+
+        // Memory Core Durability Unit 8 (Runtime Composition). The filesystem durability log and
+        // the recovery it drives are both genuinely suspending (file I/O), so both are constructed
+        // inside two stage() calls here in start(), never in a synchronous constructor -- the same
+        // "load-before-RUNNING" discipline this composition root's other stage()-wrapped steps
+        // already follow. DurableMemoryCore.create() recovers InMemoryMemoryCore's own complete
+        // starting state from the durability log exactly once (MemoryCoreRecovery.recover, Units 4-5),
+        // deriving identifier counters as part of that same recovery pass -- no separate step is
+        // needed here for that. A recovery fault (MemoryCoreRecoveryException, thrown by
+        // DurableMemoryCore.create itself) is not a ParkerRuntimeException, so stage()'s own
+        // catch-and-wrap turns it into DependencyConstructionFailed, which start()'s own outer
+        // handling already turns into state=FAILED, never RUNNING -- there is no separate fallback
+        // path here that could construct a fresh, empty InMemoryMemoryCore instead.
+        val memoryCoreDurabilityLog = stage("Memory Core durability log construction") {
+            FileSystemMemoryCoreDurabilityLog(Path.of(config.memoryCoreDurabilityLogPath))
+        }
+        val durableMemoryCore = stage("Memory Core recovery") {
+            DurableMemoryCore.create(memoryCoreDurabilityLog)
+        }
+        val memoryCore: MemoryCore = durableMemoryCore
         val defaultEvidenceCustodian = DefaultEvidenceCustodian(evidenceArtifactStorage, permissionEngine)
         evidenceCustodian = defaultEvidenceCustodian
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
@@ -747,7 +768,7 @@ class ParkerRuntime(
         // Verification", Implementation Plan Section 8 Unit 8). Wires Units 1-7 -- already
         // implemented and independently verified in isolation -- into this composition root,
         // reusing every shared dependency Section 5 of the Implementation Plan already fixes
-        // (inMemoryMemoryCore, defaultEvidenceCustodian, permissionEngine, reasoningProvider);
+        // (memoryCore, defaultEvidenceCustodian, permissionEngine, reasoningProvider);
         // none is duplicated. analyseEvidence, below, is the sole production entry point:
         // neither this block nor any other code path attaches Evidence Intelligence to
         // submitOwnerMessage or any conversation path, and no background analysis is started.
@@ -755,14 +776,18 @@ class ParkerRuntime(
         // permissionFilteredMemoryRetrieval is the one shared PermissionFilteredMemoryRetrieval
         // (Programme 2, already implemented, until now unwired) that both
         // EvidenceIntelligenceInputResolver and DefaultKnowledgeCandidateEvaluator receive --
-        // never a second instance, and inMemoryMemoryCore is never exposed to either as a raw
-        // MemoryRetrieval. Its own memory.retrieve/memory.retrieve_document actions are
-        // deliberately left unregistered below (Errata 004 Section 7): targetResources is always
-        // empty for a Memory Core retrieval check, so no Resource registration could ever let
-        // DefaultPermissionPolicy's ResourceRegistry-based resolution approve one -- Memory
-        // Retrieval therefore remains genuinely, honestly fail-closed through this runtime, not
-        // merely in isolated unit tests.
-        val permissionFilteredMemoryRetrieval = PermissionFilteredMemoryRetrieval(inMemoryMemoryCore, permissionEngine)
+        // never a second instance. Memory Core Durability Unit 8 (Runtime Composition) wraps
+        // durableMemoryCore here, not the raw recovered InMemoryMemoryCore delegate -- that
+        // delegate is DurableMemoryCore's own private field, unreachable from this composition
+        // root; every read this runtime performs, exactly like every write, now passes through
+        // the durable decorator, which itself delegates each MemoryRetrieval call straight to the
+        // recovered in-memory state with no durability-log interaction (Unit 6). Its own
+        // memory.retrieve/memory.retrieve_document actions are deliberately left unregistered
+        // below (Errata 004 Section 7): targetResources is always empty for a Memory Core
+        // retrieval check, so no Resource registration could ever let DefaultPermissionPolicy's
+        // ResourceRegistry-based resolution approve one -- Memory Retrieval therefore remains
+        // genuinely, honestly fail-closed through this runtime, not merely in isolated unit tests.
+        val permissionFilteredMemoryRetrieval = PermissionFilteredMemoryRetrieval(durableMemoryCore, permissionEngine)
 
         // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"), and now
         // also Unit 9.6 ("Runtime Composition"). One long-lived InMemoryKnowledgeItemPersistence

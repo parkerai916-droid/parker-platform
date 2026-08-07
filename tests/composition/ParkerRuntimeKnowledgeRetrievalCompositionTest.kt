@@ -68,6 +68,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         localTextChannelModuleId = "channel.local-text-knowledge-retrieval-composition-test",
         evidenceStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("knowledge-retrieval-composition-audit").resolve("audit.log").toString(),
+        memoryCoreDurabilityLogPath = Files.createTempDirectory("knowledge-retrieval-composition-memory").resolve("memory-core.log").toString(),
     )
 
     private fun <T> Any.privateField(name: String): T {
