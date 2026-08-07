@@ -2550,3 +2550,55 @@ the pre-amendment "submit and wait for completion" behaviour must now call
 the new `AgentRunExecutionTrigger.execute(agentRunId)` immediately
 afterward (`InMemoryTaskManagerRuntime` does this automatically for its
 own submissions).
+
+## Parker Conversational Memory Bridge, Admission Unit -- findings
+
+### 54. `KnowledgeSubmission.submit` cannot resolve, and therefore cannot promote, any candidate in the live, composed runtime, for any caller
+
+**Status: Open. Newly discovered, not yet closed. Highest-priority open
+governance work** -- full record, root-cause trace, blast radius, and
+requirements a resolution must satisfy:
+`docs/architecture/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_GATING_BLOCKER.md`.
+
+`DefaultKnowledgeCandidateEvaluator`, as actually composed in
+`ParkerRuntime.kt`, resolves a submitted candidate's evidence through
+`PermissionFilteredMemoryRetrieval`, which is unconditionally fail-closed
+by construction: Memory Core records are never `ResourceRegistry`
+entries (Errata 004's own design), so `DefaultPermissionPolicy.evaluate`'s
+own `resourceTypes` set is always empty for every retrieval request this
+decorator issues, and `ActionMapper.mapOne`'s own match requires the
+target resource type to be a member of that set -- an empty set can never
+contain any member, so every retrieval this decorator issues is denied,
+regardless of Action Vocabulary registration, regardless of who is
+asking, and regardless of whether the referenced record genuinely exists.
+
+Discovered by the Parker Conversational Memory Bridge, Admission Unit's
+own mandatory live, end-to-end verification -- the first time this path
+was genuinely exercised against the real, fully-composed runtime rather
+than in isolation (which correctly proves the evaluator's own logic, not
+the composition) or as a deliberate denial case (which
+`ParkerRuntimeEvidenceIntelligenceCompositionTest` already covers,
+correctly, for `EvidenceIntelligenceInputResolver`'s own retrieval path).
+Not a defect in the Admission Unit's own implementation, confirmed
+independently correct and fully tested in isolation
+(`docs/reviews/CONVERSATIONAL_MEMORY_ADMISSION_INDEPENDENT_CONSTITUTIONAL_REVIEW.md`,
+`ACCEPTED`).
+
+**Blocks:** Knowledge Memory's own promotion pipeline (`KnowledgeSubmission.submit`,
+every caller); Evidence Intelligence's own knowledge dispatch in
+principle (additionally gated today by a separate, disclosed issue --
+`EvidenceAnalysisResult.CandidateRecordProduced` is declared but never
+constructed anywhere in `src/`, so this path is not independently
+confirmed reachable in production for a distinct reason, not
+investigated further here); the Parker Conversational Memory Bridge,
+Admission Unit (confirmed blocked, live); any future Conversational
+Memory Bridge Retrieval Unit (transitively blocked -- nothing would be
+promoted for it to retrieve).
+
+Investigated directly for a narrow, in-scope fix; none exists without
+altering `DefaultPermissionPolicy`, `ActionMapper`, or Memory Core's own
+Resource-representation choice (Errata 004) -- each a genuine,
+Contract-Design-tier architectural change to frozen Trust Framework
+components, not an implementation-tier patch. See the linked blocker
+document's own Section 6 for the full trace and Section 7 for the
+requirements a future resolution must satisfy.
