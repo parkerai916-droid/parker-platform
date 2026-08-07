@@ -3,6 +3,7 @@ package parker.core.runtime
 import java.time.Instant
 import parker.core.interfaces.ActionMappingResult
 import parker.core.interfaces.ActionResourceMapping
+import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.DecisionId
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionAction
@@ -29,12 +30,22 @@ import parker.core.interfaces.ResourceType
  * concern remains something a caller decides, per PermissionPolicy.md
  * §11's "Policy storage" and "Policy editing" being explicitly out of
  * scope).
+ *
+ * [authorizationPurpose] (Authorization Purpose Implementation Plan, Unit
+ * 4): `null` (the default) means this rule addresses every request
+ * reaching its (action, resourceType) pair regardless of Authorization
+ * Purpose, identical to today's behaviour. A non-null value narrows the
+ * rule to only those requests declaring that exact, currently-active
+ * Authorization Purpose -- see [DefaultPermissionPolicy]'s own KDoc for
+ * the precedence this creates against a coarser, `null`-purpose rule
+ * addressing the same pair.
  */
 data class PermissionPolicyRule(
     val action: PermissionAction,
     val resourceType: ResourceType,
     val outcome: PermissionDecisionOutcome,
     val level: PermissionLevel,
+    val authorizationPurpose: AuthorizationPurposeId? = null,
 )
 
 /**
@@ -96,11 +107,44 @@ data class PermissionPolicyRule(
  * `PermissionDecisionOutcome` has no fifth "invalid" value for
  * `evaluate` to return; `DENIED` is Section 7's own specified
  * conservative default for exactly this situation.
+ *
+ * ## Authorization Purpose (Authorization Purpose Implementation Plan, Unit 4)
+ *
+ * [authorizationPurposeRegistry] is optional and defaults to `null`,
+ * additive to this class's own existing two dependencies -- `ParkerRuntime`'s
+ * own composition of this class is unmodified by this Unit (out of this
+ * Unit's own scope) and continues to omit it, so every currently-composed
+ * request behaves exactly as before. Where supplied, `evaluate` reads
+ * `request.authorizationPurpose` (Unit 2) and, if non-null, checks
+ * `authorizationPurposeRegistry.isActive(...)` (Unit 3) once per
+ * evaluation. A [PermissionPolicyRule] naming that exact, currently-active
+ * value takes precedence over a coarser rule addressing the same (action,
+ * resourceType) pair without one -- never the reverse -- satisfying
+ * `AUTHORIZATION_PURPOSE_SCOPE_LOCK.md` §2.4's precedence-safety
+ * requirement ("a coarse rule may never resolve a request a more
+ * specific, Authorization-Purpose-aware rule was meant to govern"). An
+ * absent, unregistered, or retired value can never satisfy a
+ * purpose-aware rule -- it falls back to the coarse rule exactly as "no
+ * purpose supplied" would, and if no coarse rule exists either, the
+ * request denies through this class's own pre-existing "no rule matches"
+ * default (§2.4's own "fail-closed... denies by the same default every
+ * other unknown value already denies by").
+ *
+ * This class deliberately does **not** implement a verb-phrase matching
+ * dimension. `docs/governance/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_POLICY_RULE_COLLISION_CLARIFICATION.md`
+ * (Gap #54) selected that mechanism at the governance level but states
+ * explicitly it implements no Kotlin and does not authorise the Scope
+ * Lock/Implementation Plan such a change would require -- see
+ * `docs/reviews/AUTHORIZATION_PURPOSE_UNIT_4_PLANNING_REVIEW.md` §2 for
+ * the full disclosure. `ActionMappingResult.Resolved.proposedAction` (the
+ * verb phrase) is still discarded by [evaluate] exactly as it was before
+ * this Unit.
  */
 class DefaultPermissionPolicy(
     private val actionMapper: ActionMapper,
     private val resourceRegistry: ResourceRegistry,
     private val rules: List<PermissionPolicyRule>,
+    private val authorizationPurposeRegistry: AuthorizationPurposeRegistry? = null,
 ) {
 
     suspend fun evaluate(request: ExecutionRequest): PermissionDecision {
@@ -119,7 +163,14 @@ class DefaultPermissionPolicy(
             return deniedDecision(request)
         }
 
-        val evaluated = resolvedMappings.map { mapping -> mapping to ruleOutcomeFor(mapping) }
+        // An absent, unregistered, or retired purpose is folded into "no purpose" here --
+        // see this class's own KDoc ("Authorization Purpose") for why that is the
+        // fail-closed, regression-safe reading of Scope Lock §2.4.
+        val effectivePurpose = request.authorizationPurpose?.takeIf { purpose ->
+            authorizationPurposeRegistry?.isActive(purpose) == true
+        }
+
+        val evaluated = resolvedMappings.map { mapping -> mapping to ruleOutcomeFor(mapping, effectivePurpose) }
 
         // "Most restrictive wins" when a request's multiple proposed actions resolve to more
         // than one (action, resourceType) pair -- PermissionEngine.evaluate is still called
@@ -141,9 +192,22 @@ class DefaultPermissionPolicy(
         )
     }
 
-    /** Returns (outcome, level) for [mapping] -- `DENIED`/`AUTOMATIC` when no rule matches. */
-    private fun ruleOutcomeFor(mapping: ActionResourceMapping): Pair<PermissionDecisionOutcome, PermissionLevel> {
-        val rule = rules.find { it.action == mapping.action && it.resourceType == mapping.resourceType }
+    /**
+     * Returns (outcome, level) for [mapping] -- `DENIED`/`AUTOMATIC` when no rule matches.
+     * A rule naming [purpose] exactly takes precedence, unconditionally, over a coarser
+     * rule addressing the same (action, resourceType) pair with no `authorizationPurpose`
+     * of its own -- the precedence-safety guarantee this class's own KDoc describes.
+     */
+    private fun ruleOutcomeFor(
+        mapping: ActionResourceMapping,
+        purpose: AuthorizationPurposeId?,
+    ): Pair<PermissionDecisionOutcome, PermissionLevel> {
+        val purposeAwareRule = purpose?.let { p ->
+            rules.find { it.action == mapping.action && it.resourceType == mapping.resourceType && it.authorizationPurpose == p }
+        }
+        val rule = purposeAwareRule ?: rules.find {
+            it.action == mapping.action && it.resourceType == mapping.resourceType && it.authorizationPurpose == null
+        }
         return if (rule != null) rule.outcome to rule.level else PermissionDecisionOutcome.DENIED to PermissionLevel.AUTOMATIC
     }
 

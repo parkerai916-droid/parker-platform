@@ -4,6 +4,7 @@ import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
+import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
@@ -74,6 +75,7 @@ class DefaultPermissionPolicyTest {
     private fun request(
         proposedActions: List<String> = listOf("do something"),
         targetResources: List<ResourceId> = listOf(ResourceId("res-1")),
+        authorizationPurpose: AuthorizationPurposeId? = null,
     ) = ExecutionRequest(
         requestId = RequestId("req-1"),
         principalId = PrincipalId("user-1"),
@@ -84,6 +86,7 @@ class DefaultPermissionPolicyTest {
         priority = RequestPriority.NORMAL,
         createdAt = Instant.parse("2026-01-01T00:00:00Z"),
         correlationId = "corr-1",
+        authorizationPurpose = authorizationPurpose,
     )
 
     /** A vocabulary with a single "do something" -> (READ, CALENDAR) entry, and no others. */
@@ -231,5 +234,204 @@ class DefaultPermissionPolicyTest {
         assertFalse(calls.contains("register"), "evaluate must never register a Resource")
         assertFalse(calls.contains("update"), "evaluate must never update a Resource")
         assertFalse(calls.contains("listByOwner"), "evaluate must never enumerate Resources by owner")
+    }
+
+    // === Authorization Purpose (Authorization Purpose Implementation Plan, Unit 4) ===
+
+    private suspend fun registryWithActive(id: AuthorizationPurposeId): InMemoryAuthorizationPurposeRegistry {
+        val registry = InMemoryAuthorizationPurposeRegistry()
+        registry.register(id)
+        return registry
+    }
+
+    private suspend fun registryWithRetired(id: AuthorizationPurposeId): InMemoryAuthorizationPurposeRegistry {
+        val registry = InMemoryAuthorizationPurposeRegistry()
+        registry.register(id)
+        registry.retire(id)
+        return registry
+    }
+
+    // --- 10. Regression: a request that never populates authorizationPurpose is unaffected
+    //         by the presence of a purpose-aware rule sharing its (action, resourceType) pair ---
+
+    @Test
+    fun `a request with no authorizationPurpose matches only the coarse rule, even when a purpose-aware rule exists for the same pair`() = runTest {
+        val purpose = AuthorizationPurposeId("household.routine-maintenance")
+        val coarse = PermissionPolicyRule(PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC)
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC,
+            authorizationPurpose = purpose,
+        )
+        val policy = DefaultPermissionPolicy(
+            ActionMapper(readCalendarVocabulary()),
+            registryWithCalendarResource(),
+            listOf(coarse, purposeAware),
+            registryWithActive(purpose),
+        )
+
+        val decision = policy.evaluate(request())
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
+    }
+
+    // --- 11. Regression: omitting the AuthorizationPurposeRegistry constructor argument entirely
+    //         (the shape ParkerRuntime.kt's own unmodified composition still uses) is safe even
+    //         when a request declares a purpose and a purpose-aware rule exists ---
+
+    @Test
+    fun `omitting the AuthorizationPurposeRegistry constructor argument falls back to the coarse rule`() = runTest {
+        val purpose = AuthorizationPurposeId("household.routine-maintenance")
+        val coarse = PermissionPolicyRule(PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC)
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC,
+            authorizationPurpose = purpose,
+        )
+        // 3-arg construction -- no AuthorizationPurposeRegistry supplied at all.
+        val policy = DefaultPermissionPolicy(ActionMapper(readCalendarVocabulary()), registryWithCalendarResource(), listOf(coarse, purposeAware))
+
+        val decision = policy.evaluate(request(authorizationPurpose = purpose))
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
+    }
+
+    // --- 12. A purpose-aware rule takes precedence over a coarser rule when the request's
+    //         declared purpose is registered and active, even though it is MORE restrictive
+    //         than the coarse rule -- proving genuine precedence, not "most restrictive wins" ---
+
+    @Test
+    fun `a more restrictive purpose-aware rule overrides a more permissive coarse rule for a matching, active purpose`() = runTest {
+        val purpose = AuthorizationPurposeId("household.routine-maintenance")
+        val coarse = PermissionPolicyRule(PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC)
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.DENIED, PermissionLevel.ADMINISTRATIVE,
+            authorizationPurpose = purpose,
+        )
+        val policy = DefaultPermissionPolicy(
+            ActionMapper(readCalendarVocabulary()),
+            registryWithCalendarResource(),
+            listOf(coarse, purposeAware),
+            registryWithActive(purpose),
+        )
+
+        val decision = policy.evaluate(request(authorizationPurpose = purpose))
+
+        assertEquals(PermissionDecisionOutcome.DENIED, decision.decision)
+        assertEquals(PermissionLevel.ADMINISTRATIVE, decision.level)
+    }
+
+    // --- 13. Same as above, in the opposite restrictiveness direction: a LESS restrictive
+    //         purpose-aware rule also governs over a MORE restrictive coarse rule -- confirming
+    //         this is dimension-based precedence, not restrictiveness-based selection ---
+
+    @Test
+    fun `a less restrictive purpose-aware rule also overrides a more restrictive coarse rule for a matching, active purpose`() = runTest {
+        val purpose = AuthorizationPurposeId("household.routine-maintenance")
+        val coarse = PermissionPolicyRule(PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC)
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC,
+            authorizationPurpose = purpose,
+        )
+        val policy = DefaultPermissionPolicy(
+            ActionMapper(readCalendarVocabulary()),
+            registryWithCalendarResource(),
+            listOf(coarse, purposeAware),
+            registryWithActive(purpose),
+        )
+
+        val decision = policy.evaluate(request(authorizationPurpose = purpose))
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
+    }
+
+    // --- 14. Fail-closed: an unregistered purpose value cannot satisfy a purpose-aware rule,
+    //         and falls back to the coarse rule exactly as an absent purpose would ---
+
+    @Test
+    fun `an unregistered authorizationPurpose falls back to the coarse rule, never the purpose-aware one`() = runTest {
+        val purpose = AuthorizationPurposeId("household.never-registered")
+        val coarse = PermissionPolicyRule(PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC)
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC,
+            authorizationPurpose = purpose,
+        )
+        val policy = DefaultPermissionPolicy(
+            ActionMapper(readCalendarVocabulary()),
+            registryWithCalendarResource(),
+            listOf(coarse, purposeAware),
+            InMemoryAuthorizationPurposeRegistry(), // purpose never registered
+        )
+
+        val decision = policy.evaluate(request(authorizationPurpose = purpose))
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
+    }
+
+    // --- 15. Fail-closed: a retired purpose value is treated identically to an unregistered one ---
+
+    @Test
+    fun `a retired authorizationPurpose falls back to the coarse rule, never the purpose-aware one`() = runTest {
+        val purpose = AuthorizationPurposeId("household.retired-purpose")
+        val coarse = PermissionPolicyRule(PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC)
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC,
+            authorizationPurpose = purpose,
+        )
+        val policy = DefaultPermissionPolicy(
+            ActionMapper(readCalendarVocabulary()),
+            registryWithCalendarResource(),
+            listOf(coarse, purposeAware),
+            registryWithRetired(purpose),
+        )
+
+        val decision = policy.evaluate(request(authorizationPurpose = purpose))
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
+    }
+
+    // --- 16. Fail-closed, no coarse fallback available: an absent/unregistered purpose with
+    //         only a purpose-aware rule in the table produces DENIED via the pre-existing
+    //         "no rule matches" default -- not a new, separate deny mechanism ---
+
+    @Test
+    fun `with no coarse rule available, an unmatched authorizationPurpose produces DENIED via the existing no-rule-matches default`() = runTest {
+        val purpose = AuthorizationPurposeId("household.routine-maintenance")
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC,
+            authorizationPurpose = purpose,
+        )
+        val policy = DefaultPermissionPolicy(
+            ActionMapper(readCalendarVocabulary()),
+            registryWithCalendarResource(),
+            listOf(purposeAware),
+            registryWithActive(purpose),
+        )
+
+        // No authorizationPurpose declared -- the only rule in the table requires one.
+        val decision = policy.evaluate(request())
+
+        assertEquals(PermissionDecisionOutcome.DENIED, decision.decision)
+    }
+
+    // --- 17. Precedence safety, stated directly: a coarse rule must never silently resolve
+    //         a request whose declared, active purpose matches a more specific rule -- tested
+    //         against BOTH possible resolution orders in the rule list, to rule out an
+    //         implementation that merely happens to prefer list order ---
+
+    @Test
+    fun `a coarse rule never resolves a request whose active purpose matches a more specific rule, regardless of rule list order`() = runTest {
+        val purpose = AuthorizationPurposeId("household.routine-maintenance")
+        val coarse = PermissionPolicyRule(PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC)
+        val purposeAware = PermissionPolicyRule(
+            PermissionAction.READ, ResourceType.CALENDAR, PermissionDecisionOutcome.DENIED, PermissionLevel.ADMINISTRATIVE,
+            authorizationPurpose = purpose,
+        )
+        val registry = registryWithActive(purpose)
+
+        val coarseFirst = DefaultPermissionPolicy(ActionMapper(readCalendarVocabulary()), registryWithCalendarResource(), listOf(coarse, purposeAware), registry)
+        val purposeFirst = DefaultPermissionPolicy(ActionMapper(readCalendarVocabulary()), registryWithCalendarResource(), listOf(purposeAware, coarse), registry)
+
+        val req = request(authorizationPurpose = purpose)
+        assertEquals(PermissionDecisionOutcome.DENIED, coarseFirst.evaluate(req).decision)
+        assertEquals(PermissionDecisionOutcome.DENIED, purposeFirst.evaluate(req).decision)
     }
 }
