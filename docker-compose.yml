@@ -23,11 +23,20 @@ services:
       # volumes below, not by this path being configurable per deployment.
       PARKER_EVIDENCE_STORAGE_ROOT: /data/evidence
       PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH: /data/evidence-audit/deletion-audit.log
+
+      # Memory Core Durability, Unit 9 (Container Durability). Same fixed
+      # in-container path convention as the two Evidence Custodian paths
+      # above -- a file inside a directory-mounted volume, not the
+      # directory itself, mirroring PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH's
+      # own identical shape.
+      PARKER_MEMORY_CORE_DURABILITY_LOG_PATH: /data/memory-core/durability.log
     volumes:
       - evidence-storage:/data/evidence
       - evidence-audit:/data/evidence-audit
+      - memory-core-durability:/data/memory-core
     restart: unless-stopped
 
 volumes:
   evidence-storage:
   evidence-audit:
+  memory-core-durability:

@@ -24,13 +24,14 @@ RUN useradd --system --create-home --shell /usr/sbin/nologin parker
 WORKDIR /opt/parker
 COPY --from=build /workspace/build/install/parker ./
 
-# Evidence Custodian storage/audit mount points (docker-compose.yml's
-# evidence-storage/evidence-audit volumes). Created and owned by `parker`
-# here, before USER switches below, so that on first `docker compose up`
-# -- when Docker initialises each named volume from the image's own
-# directory content -- the volume comes up already owned by the
+# Evidence Custodian storage/audit mount points, plus Memory Core
+# Durability Unit 9's own memory-core mount point (docker-compose.yml's
+# evidence-storage/evidence-audit/memory-core-durability volumes). Created
+# and owned by `parker` here, before USER switches below, so that on first
+# `docker compose up` -- when Docker initialises each named volume from the
+# image's own directory content -- the volume comes up already owned by the
 # non-root user the process actually runs as, not root.
-RUN mkdir -p /data/evidence /data/evidence-audit \
+RUN mkdir -p /data/evidence /data/evidence-audit /data/memory-core \
     && chown -R parker:parker /opt/parker /data
 USER parker
 
