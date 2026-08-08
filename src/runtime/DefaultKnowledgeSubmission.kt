@@ -114,7 +114,7 @@ internal class DefaultKnowledgeSubmission(
             )
         }
 
-        return when (val evaluation = evaluator.evaluate(candidate)) {
+        return when (val evaluation = evaluator.evaluate(requestingPrincipalId, candidate)) {
             is KnowledgeCandidateEvaluation.Reject ->
                 KnowledgeSubmissionDisposition.Declined(evaluation.basis)
 

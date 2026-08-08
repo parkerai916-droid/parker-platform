@@ -9,10 +9,14 @@ import parker.core.interfaces.ContentNature
 import parker.core.interfaces.EvidentialState
 import parker.core.interfaces.KnowledgeCandidate
 import parker.core.interfaces.KnowledgeCandidateEvaluation
+import parker.core.interfaces.Assertion
+import parker.core.interfaces.AssertionId
 import parker.core.interfaces.MemoryCoreRecordReference
+import parker.core.interfaces.MemoryRetrieval
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.Relationship
 import parker.core.interfaces.RelationshipEndpoint
+import parker.core.interfaces.RelationshipTraversalQuery
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -48,6 +52,9 @@ class DefaultKnowledgeCandidateEvaluatorTest {
 
     private fun evaluator(core: InMemoryMemoryCore) = DefaultKnowledgeCandidateEvaluator(core)
 
+    private fun DefaultKnowledgeCandidateEvaluator.evaluate(candidate: KnowledgeCandidate): KnowledgeCandidateEvaluation =
+        evaluate(writerPrincipal, candidate)
+
     private suspend fun newAssertion(
         core: InMemoryMemoryCore,
         statement: String = "the user prefers window seats",
@@ -68,6 +75,28 @@ class DefaultKnowledgeCandidateEvaluatorTest {
             confidence = confidence,
         ),
     )
+
+    @Test
+    fun `the exact invocation Principal reaches direct evidence and relationship retrieval without fallback`() = runTest {
+        val core = InMemoryMemoryCore()
+        val subject = newAssertion(core, confidence = 1.0)
+        val recording = RecordingMemoryRetrieval(core)
+        val evaluator = DefaultKnowledgeCandidateEvaluator(recording)
+        val first = PrincipalId("user.accountable-first")
+        val second = PrincipalId("user.accountable-second")
+        val candidate = KnowledgeCandidate(
+            MemoryCoreRecordReference.ToAssertion(subject.assertionId),
+            explicitlyRequested = true,
+        )
+
+        evaluator.evaluate(first, candidate)
+        evaluator.evaluate(second, candidate)
+
+        assertEquals(listOf(first, second), recording.directPrincipals)
+        assertEquals(listOf(first, second), recording.relationshipPrincipals)
+        assertTrue(recording.directPrincipals.none { it.value == "system.knowledge-memory" })
+        assertTrue(recording.relationshipPrincipals.none { it.value == "system.knowledge-memory" })
+    }
 
     // --- 1. structural prerequisite: missing record ---
 
@@ -645,5 +674,22 @@ class DefaultKnowledgeCandidateEvaluatorTest {
             promote.item.evidentialState,
             "an unresolved contradiction must still be honestly disclosed even for an explicit-instruction candidate",
         )
+    }
+}
+
+private class RecordingMemoryRetrieval(
+    private val delegate: MemoryRetrieval,
+) : MemoryRetrieval by delegate {
+    val directPrincipals = mutableListOf<PrincipalId>()
+    val relationshipPrincipals = mutableListOf<PrincipalId>()
+
+    override suspend fun getAssertion(requestingPrincipalId: PrincipalId, assertionId: AssertionId): Assertion? {
+        directPrincipals += requestingPrincipalId
+        return delegate.getAssertion(requestingPrincipalId, assertionId)
+    }
+
+    override suspend fun traverseRelationships(query: RelationshipTraversalQuery): List<Relationship> {
+        relationshipPrincipals += query.requestingPrincipalId
+        return delegate.traverseRelationships(query)
     }
 }

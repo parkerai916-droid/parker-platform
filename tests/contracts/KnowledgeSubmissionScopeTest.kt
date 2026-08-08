@@ -114,7 +114,7 @@ class KnowledgeSubmissionScopeTest {
     }
 
     @Test
-    fun `KnowledgeCandidateEvaluator's own contract is unchanged by this Unit`() {
+    fun `KnowledgeCandidateEvaluator carries accountable Principal separately from candidate`() {
         // Guards against evaluator responsibility expansion: Evaluation B belongs exclusively
         // to KnowledgeSubmission (Unit 8 Clarification Section 5), never to the evaluator.
         val declared = KnowledgeCandidateEvaluator::class.declaredFunctions
@@ -123,10 +123,11 @@ class KnowledgeSubmissionScopeTest {
         assertEquals(1, declared.size)
 
         val evaluate = declared.single()
-        assertTrue(!evaluate.isSuspend, "KnowledgeCandidateEvaluator.evaluate must remain non-suspend, unchanged")
+        assertTrue(!evaluate.isSuspend, "KnowledgeCandidateEvaluator.evaluate must remain non-suspend")
         val valueParameters = evaluate.parameters.filter { it.kind == KParameter.Kind.VALUE }
-        assertEquals(1, valueParameters.size, "evaluate must still take exactly one value parameter")
-        assertEquals(KnowledgeCandidate::class, valueParameters[0].type.classifier)
+        assertEquals(2, valueParameters.size)
+        assertEquals(PrincipalId::class, valueParameters[0].type.classifier)
+        assertEquals(KnowledgeCandidate::class, valueParameters[1].type.classifier)
         assertEquals(KnowledgeCandidateEvaluation::class, evaluate.returnType.classifier)
     }
 }

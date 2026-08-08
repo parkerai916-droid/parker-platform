@@ -10,10 +10,15 @@ import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ContentNature
 import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.EvidenceAnalysisRequest
+import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.MemoryCore
 import parker.core.interfaces.MemoryRetrieval
+import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.RequestId
+import parker.core.interfaces.RequestOrigin
+import parker.core.interfaces.RequestPriority
 import parker.core.interfaces.RelationshipEndpoint
 import parker.core.runtime.CommunicationConversationCoordinator
 import parker.core.runtime.ConversationReplyCoordinator
@@ -298,9 +303,24 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         // Confirmed to genuinely exist, read directly off the raw core (bypassing any gate).
         assertNotNull(rawMemoryCore.getEntity(principal, entity.entityId))
 
-        // The shared, governed decorator denies it -- Errata 004's own disclosed, structural
-        // consequence: targetResources is always empty for this check, so no registration could
-        // ever let it resolve to APPROVED.
+        val evidencePurposeDecision = runtime.privateField<PermissionEngine>("permissionEngine").evaluate(
+            ExecutionRequest(
+                requestId = RequestId("gap54-unit4-evidence-purpose"),
+                principalId = principal,
+                origin = RequestOrigin.TEXT,
+                intent = "Unit 4 Evidence Intelligence non-widening proof",
+                targetResources = emptyList(),
+                proposedActions = listOf(PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME),
+                priority = RequestPriority.NORMAL,
+                createdAt = Instant.parse("2026-01-01T00:00:00Z"),
+                correlationId = "gap54-unit4-evidence-purpose",
+                authorizationPurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution"),
+            ),
+        )
+        assertEquals(PermissionDecisionOutcome.DENIED, evidencePurposeDecision.decision)
+
+        // The unbound parent remains denied as well; candidate authority is unavailable without
+        // the exact immutable candidate Purpose carried only by the candidate evaluator's view.
         val retrievalDecorator = retrievalDecoratorFrom(runtime)
         assertNull(retrievalDecorator.getEntity(principal, entity.entityId), "the governed decorator must deny even a record that genuinely exists")
 

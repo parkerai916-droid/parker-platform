@@ -944,7 +944,16 @@ sealed interface KnowledgeCandidateEvaluation {
  * shared one.
  */
 interface KnowledgeCandidateEvaluator {
-    fun evaluate(candidate: KnowledgeCandidate): KnowledgeCandidateEvaluation
+    /**
+     * Evaluates [candidate] on behalf of the real accountable
+     * [requestingPrincipalId] already supplied to [KnowledgeSubmission.submit].
+     * Principal remains separate invocation context, never candidate payload
+     * and never a substitute for Authorization Purpose.
+     */
+    fun evaluate(
+        requestingPrincipalId: PrincipalId,
+        candidate: KnowledgeCandidate,
+    ): KnowledgeCandidateEvaluation
 }
 
 /**

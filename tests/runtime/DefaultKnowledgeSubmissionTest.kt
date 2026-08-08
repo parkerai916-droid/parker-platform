@@ -219,6 +219,22 @@ class DefaultKnowledgeSubmissionTest {
         submission.submit(principalId, arbitraryCandidate())
 
         assertEquals(1, evaluator.evaluateCallCount)
+        assertEquals(principalId, evaluator.lastRequestingPrincipalId)
+    }
+
+    @Test
+    fun `two submitting principals are forwarded unchanged without reuse or substitution`() = runTest {
+        val evaluator = FakeKnowledgeCandidateEvaluator(KnowledgeCandidateEvaluation.Reject("declined for test"))
+        val submission = DefaultKnowledgeSubmission(evaluator, FakeKnowledgeItemPersistence(), approvingEngine())
+        val first = PrincipalId("user.accountable-first")
+        val second = PrincipalId("user.accountable-second")
+
+        submission.submit(first, arbitraryCandidate())
+        assertEquals(first, evaluator.lastRequestingPrincipalId)
+
+        submission.submit(second, arbitraryCandidate())
+        assertEquals(second, evaluator.lastRequestingPrincipalId)
+        assertEquals(2, evaluator.evaluateCallCount)
     }
 
     @Test
@@ -236,7 +252,10 @@ class DefaultKnowledgeSubmissionTest {
     fun `the permission gate occurs before the evaluator is invoked -- a denied request never reaches it`() = runTest {
         val callOrder = mutableListOf<String>()
         val evaluator = object : KnowledgeCandidateEvaluator {
-            override fun evaluate(candidate: KnowledgeCandidate): KnowledgeCandidateEvaluation {
+            override fun evaluate(
+                requestingPrincipalId: PrincipalId,
+                candidate: KnowledgeCandidate,
+            ): KnowledgeCandidateEvaluation {
                 callOrder.add("evaluator.evaluate")
                 return KnowledgeCandidateEvaluation.Reject("unused")
             }
@@ -341,9 +360,15 @@ private class FakeKnowledgeCandidateEvaluator(
 
     var evaluateCallCount: Int = 0
         private set
+    var lastRequestingPrincipalId: PrincipalId? = null
+        private set
 
-    override fun evaluate(candidate: KnowledgeCandidate): KnowledgeCandidateEvaluation {
+    override fun evaluate(
+        requestingPrincipalId: PrincipalId,
+        candidate: KnowledgeCandidate,
+    ): KnowledgeCandidateEvaluation {
         evaluateCallCount++
+        lastRequestingPrincipalId = requestingPrincipalId
         return result
     }
 }

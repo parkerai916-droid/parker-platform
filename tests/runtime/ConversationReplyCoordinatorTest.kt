@@ -422,7 +422,10 @@ class ConversationReplyCoordinatorTest {
         val memoryCore = InMemoryMemoryCore()
         val permissionEngine = FakePermissionEngine { request -> approvedDecision(request) }
         val alwaysRejects = object : KnowledgeCandidateEvaluator {
-            override fun evaluate(candidate: parker.core.interfaces.KnowledgeCandidate) =
+            override fun evaluate(
+                requestingPrincipalId: PrincipalId,
+                candidate: parker.core.interfaces.KnowledgeCandidate,
+            ) =
                 parker.core.interfaces.KnowledgeCandidateEvaluation.Reject("contrived rejection for test")
         }
         return MemoryAdmissionCoordinator(

@@ -26,7 +26,6 @@ import parker.core.runtime.PermissionPolicyRule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -149,14 +148,21 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
     }
 
     @Test
-    fun `no PermissionPolicyRule in the composed policy names an authorizationPurpose`() = runTest {
+    fun `only the two Unit 4 candidate retrieval rules name an authorizationPurpose`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val rules = composedPolicy(runtime).privateField<List<PermissionPolicyRule>>("rules")
 
-        assertTrue(rules.isNotEmpty(), "the pre-existing production rule set must still be present")
-        rules.forEach { rule -> assertNull(rule.authorizationPurpose, "Unit 5 adds no new PermissionPolicyRule and adopts no existing one for Authorization Purpose") }
+        assertEquals(2, rules.count { it.authorizationPurpose != null })
+        rules.filter { it.authorizationPurpose != null }.forEach { rule ->
+            assertEquals(AuthorizationPurposeId("knowledge-memory.candidate-evaluation"), rule.authorizationPurpose)
+            assertEquals(PermissionDecisionOutcome.APPROVED, rule.outcome)
+            assertTrue(
+                rule.proposedAction == PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME ||
+                    rule.proposedAction == PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
+            )
+        }
 
         runtime.shutdown()
     }
@@ -334,10 +340,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
     // ================= Gap #54 remains unresolved (mandatory) =================
 
     @Test
-    fun `memory retrieve remains DENIED through the full, composed permissionEngine regardless of Authorization Purpose`() = runTest {
-        // Unit 2 now registers and derives memory.retrieve, but its exact verb-specific DENIED
-        // guard outranks the existing coarse READ/MEMORY approval. This remains a full-engine
-        // non-widening check; consumer Purpose propagation and approving rules do not yet exist.
+    fun `memory retrieve approves only the exact candidate purpose through the full composed engine`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -378,8 +381,25 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         assertEquals(
             PermissionDecisionOutcome.DENIED,
             withPurpose.decision,
-            "registration and derivation must not authorise memory.retrieve without the later exact Purpose-plus-verb rule",
+            "registration alone must not authorize memory.retrieve without the exact candidate Purpose",
         )
+
+        val withCandidatePurpose = engine.evaluate(
+            ExecutionRequest(
+                requestId = RequestId("req-gap54-unit4-candidate"),
+                principalId = PrincipalId(ownerPrincipalId),
+                origin = RequestOrigin.TEXT,
+                intent = "Unit 4 exact candidate authority",
+                targetResources = emptyList(),
+                proposedActions = listOf(PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME),
+                priority = RequestPriority.NORMAL,
+                createdAt = Instant.now(),
+                correlationId = "corr-gap54-unit4-candidate",
+                authorizationPurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation"),
+            ),
+        )
+        assertEquals(PermissionDecisionOutcome.APPROVED, withCandidatePurpose.decision)
+        assertEquals(PermissionLevel.AUTOMATIC, withCandidatePurpose.level)
 
         runtime.shutdown()
     }

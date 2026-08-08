@@ -6,12 +6,23 @@ import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.AuthorizationPurposeId
+import parker.core.interfaces.CandidateAssertion
+import parker.core.interfaces.CandidateProvenance
+import parker.core.interfaces.ContentNature
+import parker.core.interfaces.CandidateRelationship
+import parker.core.interfaces.EvidentialState
 import parker.core.interfaces.ExecutionRequest
+import parker.core.interfaces.KnowledgeCandidate
+import parker.core.interfaces.KnowledgeCandidateEvaluation
 import parker.core.interfaces.MemoryRetrieval
+import parker.core.interfaces.MemoryCoreRecordReference
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
+import parker.core.interfaces.PermissionLevel
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.Relationship
+import parker.core.interfaces.RelationshipEndpoint
 import parker.core.interfaces.RequestId
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
@@ -21,6 +32,7 @@ import parker.core.runtime.ActionMapper
 import parker.core.runtime.AuthorizationPurposeRegistry
 import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
 import parker.core.runtime.DefaultPermissionPolicy
+import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.InMemoryActionVocabulary
 import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
@@ -29,10 +41,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
+import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-/** Gap #54 Memory Retrieval Operationalisation Units 2-3 composition and fail-closed verification. */
+/** Gap #54 Memory Retrieval Operationalisation Units 2-4 composition and authorization verification. */
 class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
 
     private val candidatePurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
@@ -117,7 +130,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
     }
 
     @Test
-    fun `production contains exactly both verb-specific DENIED guards and no purpose-specific rule`() = runTest {
+    fun `production contains exactly two unchanged guards and two candidate-only approval rules`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -127,7 +140,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
                 it.proposedAction == PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME
         }
 
-        assertEquals(2, memoryVerbRules.size)
+        assertEquals(4, memoryVerbRules.size)
         assertEquals(
             setOf(
                 PermissionPolicyRule(
@@ -145,15 +158,36 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
                     proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
                 ),
             ),
-            memoryVerbRules.toSet(),
+            memoryVerbRules.filter { it.outcome == PermissionDecisionOutcome.DENIED }.toSet(),
         )
-        assertTrue(rules.none { it.authorizationPurpose != null }, "Unit 4 purpose-specific policy has not begun")
+        assertEquals(
+            setOf(
+                PermissionPolicyRule(
+                    PermissionAction.READ,
+                    ResourceType.MEMORY,
+                    PermissionDecisionOutcome.APPROVED,
+                    PermissionLevel.AUTOMATIC,
+                    candidatePurpose,
+                    PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    PermissionAction.READ,
+                    ResourceType.DOCUMENT,
+                    PermissionDecisionOutcome.APPROVED,
+                    PermissionLevel.AUTOMATIC,
+                    candidatePurpose,
+                    PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
+                ),
+            ),
+            memoryVerbRules.filter { it.outcome == PermissionDecisionOutcome.APPROVED }.toSet(),
+        )
+        assertTrue(rules.none { it.authorizationPurpose == evidencePurpose && it.decisionIsApproved() })
 
         runtime.shutdown()
     }
 
     @Test
-    fun `both guards outrank existing coarse approvals in production and reversed rule order`() = runTest {
+    fun `candidate rules outrank guards while guards outrank coarse approvals independent of rule order`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -177,6 +211,14 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
 
         listOf(productionPolicy, reversedPolicy).forEachIndexed { index, evaluatedPolicy ->
             assertEquals(
+                PermissionDecisionOutcome.APPROVED,
+                evaluatedPolicy.evaluate(request(PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME, candidatePurpose, "candidate-memory-$index")).decision,
+            )
+            assertEquals(
+                PermissionDecisionOutcome.APPROVED,
+                evaluatedPolicy.evaluate(request(PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME, candidatePurpose, "candidate-document-$index")).decision,
+            )
+            assertEquals(
                 PermissionDecisionOutcome.DENIED,
                 evaluatedPolicy.evaluate(request(PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME, suffix = "memory-$index")).decision,
             )
@@ -190,7 +232,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
     }
 
     @Test
-    fun `absent active unregistered and retired purposes all remain denied for both verbs`() = runTest {
+    fun `exact authorization matrix approves only candidate purpose and denies every other purpose state`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -208,13 +250,117 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
         )
         verbs.forEach { verb ->
             purposes.forEachIndexed { index, purpose ->
+                val expected = if (purpose == candidatePurpose) PermissionDecisionOutcome.APPROVED else PermissionDecisionOutcome.DENIED
                 assertEquals(
-                    PermissionDecisionOutcome.DENIED,
+                    expected,
                     engine.evaluate(request(verb, purpose, "${verb.replace('.', '-')}-$index")).decision,
                     "verb=$verb purpose=$purpose",
                 )
             }
         }
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `candidate authority rejects wrong verb and conflicting duplicate authority denies by ambiguity`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val productionPolicy = policy(runtime)
+        assertEquals(
+            PermissionDecisionOutcome.DENIED,
+            productionPolicy.evaluate(request("memory.retrieve_unapproved", candidatePurpose, "wrong-verb")).decision,
+        )
+
+        val rules = productionPolicy.privateField<List<PermissionPolicyRule>>("rules")
+        val conflicting = rules + PermissionPolicyRule(
+            action = PermissionAction.READ,
+            resourceType = ResourceType.MEMORY,
+            outcome = PermissionDecisionOutcome.DENIED,
+            level = PermissionLevel.AUTOMATIC,
+            authorizationPurpose = candidatePurpose,
+            proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+        )
+        val ambiguousPolicy = DefaultPermissionPolicy(
+            actionMapper = productionPolicy.privateField("actionMapper"),
+            resourceRegistry = productionPolicy.privateField("resourceRegistry"),
+            rules = conflicting,
+            authorizationPurposeRegistry = productionPolicy.privateField("authorizationPurposeRegistry"),
+            targetlessResourceTypesByProposedAction = productionPolicy.privateField("targetlessResourceTypesByProposedAction"),
+        )
+        assertEquals(
+            PermissionDecisionOutcome.DENIED,
+            ambiguousPolicy.evaluate(request(PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME, candidatePurpose, "ambiguous")).decision,
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `real candidate evaluator resolves genuine Memory Core evidence through its shared purpose-bound decorator`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val acceptanceCoordinator = runtime.privateField<Any>("evidenceIntelligenceAcceptanceCoordinator")
+        val rawMemoryCore = acceptanceCoordinator.privateField<DurableMemoryCore>("memoryCore")
+        val provenance = rawMemoryCore.createProvenance(
+            owner,
+            CandidateProvenance(
+                sourceIdentifier = "unit-4-real-candidate",
+                sourceType = "test-harness",
+                acquisitionTime = Instant.parse("2026-01-01T00:00:00Z"),
+                contentNature = ContentNature.ORIGINAL,
+            ),
+        )
+        val assertion = rawMemoryCore.createAssertion(
+            owner,
+            CandidateAssertion(
+                statement = "Unit 4 candidate evidence is resolvable",
+                provenanceId = provenance.provenanceId,
+                confidence = 1.0,
+            ),
+        )
+        val contradictingAssertion = rawMemoryCore.createAssertion(
+            owner,
+            CandidateAssertion(
+                statement = "Unit 4 candidate evidence is contradicted",
+                provenanceId = provenance.provenanceId,
+                confidence = 1.0,
+            ),
+        )
+        rawMemoryCore.createRelationship(
+            owner,
+            CandidateRelationship(
+                relationshipType = Relationship.CONTRADICTS,
+                fromEndpoint = RelationshipEndpoint(RelationshipEndpoint.ASSERTION, assertion.assertionId.value),
+                toEndpoint = RelationshipEndpoint(RelationshipEndpoint.ASSERTION, contradictingAssertion.assertionId.value),
+                directional = false,
+                provenanceId = provenance.provenanceId,
+            ),
+        )
+        val submission = acceptanceCoordinator.privateField<Any>("knowledgeSubmission")
+        val evaluator = submission.privateField<DefaultKnowledgeCandidateEvaluator>("evaluator")
+
+        val promoted = assertIs<KnowledgeCandidateEvaluation.Promote>(
+            evaluator.evaluate(
+                owner,
+                KnowledgeCandidate(
+                    evidenceReference = MemoryCoreRecordReference.ToAssertion(assertion.assertionId),
+                    explicitlyRequested = true,
+                ),
+            ),
+        )
+        assertEquals(EvidentialState.COMPETING_EXPLANATIONS, promoted.item.evidentialState)
+        assertIs<KnowledgeCandidateEvaluation.Reject>(
+            evaluator.evaluate(
+                PrincipalId("user.unregistered-accountable-principal"),
+                KnowledgeCandidate(
+                    evidenceReference = MemoryCoreRecordReference.ToAssertion(assertion.assertionId),
+                    explicitlyRequested = true,
+                ),
+            ),
+        )
 
         runtime.shutdown()
     }

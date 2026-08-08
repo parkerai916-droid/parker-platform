@@ -617,7 +617,9 @@ class ParkerRuntime(
                 // Gap #54 Memory Retrieval Operationalisation Unit 2: verb-only fail-closed
                 // guards. They are deliberately listed after the applicable coarse approvals:
                 // Unit 1 specificity, never list order, makes them govern these exact verbs.
-                // They add no authority; Unit 4 Purpose-plus-verb approvals do not exist yet.
+                // Unit 4's two Purpose-plus-verb approvals below outrank these guards only for
+                // the exact active candidate-evaluation Purpose. Every other Purpose state still
+                // resolves through these guards rather than the coarse approvals above.
                 PermissionPolicyRule(
                     action = PermissionAction.READ,
                     resourceType = ResourceType.MEMORY,
@@ -630,6 +632,26 @@ class ParkerRuntime(
                     resourceType = ResourceType.DOCUMENT,
                     outcome = PermissionDecisionOutcome.DENIED,
                     level = PermissionLevel.AUTOMATIC,
+                    proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
+                ),
+                // Gap #54 Memory Retrieval Operationalisation Unit 4: the complete and only
+                // production Memory Core retrieval authority introduced by this programme.
+                // These rules authorize governed candidate-evidence resolution, not the caller,
+                // and do not approve Evidence Intelligence or any absent/other Purpose.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.MEMORY,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE,
+                    proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE,
                     proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
                 ),
                 PermissionPolicyRule(
@@ -832,7 +854,8 @@ class ParkerRuntime(
         // registers and derives memory.retrieve/memory.retrieve_document, but the two exact
         // verb-specific DENIED guards above outrank existing coarse approvals. Unit 3 creates two
         // immutable Purpose-bound views below; both delegate to this one parent and neither can
-        // override policy. Memory Retrieval therefore remains genuinely fail-closed.
+        // override policy. Unit 4 authorizes only the candidate view's two exact retrieval verbs;
+        // the Evidence Intelligence view and every non-candidate state remain fail-closed.
         val permissionFilteredMemoryRetrieval = PermissionFilteredMemoryRetrieval(durableMemoryCore, permissionEngine)
         val candidateEvaluationMemoryRetrieval =
             permissionFilteredMemoryRetrieval.forAuthorizationPurpose(KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE)

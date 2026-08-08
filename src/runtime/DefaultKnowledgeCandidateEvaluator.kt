@@ -215,8 +215,11 @@ class DefaultKnowledgeCandidateEvaluator(
     private val memoryRetrieval: MemoryRetrieval,
 ) : KnowledgeCandidateEvaluator {
 
-    override fun evaluate(candidate: KnowledgeCandidate): KnowledgeCandidateEvaluation = runBlocking {
-        val resolved = resolve(candidate.evidenceReference)
+    override fun evaluate(
+        requestingPrincipalId: PrincipalId,
+        candidate: KnowledgeCandidate,
+    ): KnowledgeCandidateEvaluation = runBlocking {
+        val resolved = resolve(requestingPrincipalId, candidate.evidenceReference)
             ?: return@runBlocking KnowledgeCandidateEvaluation.Reject(
                 "the referenced Memory Core record could not be resolved -- either it does not exist, or " +
                     "access to it was not authorised; Knowledge Memory does not distinguish the two cases here, " +
@@ -226,7 +229,7 @@ class DefaultKnowledgeCandidateEvaluator(
 
         val relationships = memoryRetrieval.traverseRelationships(
             RelationshipTraversalQuery(
-                requestingPrincipalId = SYSTEM_PRINCIPAL_ID,
+                requestingPrincipalId = requestingPrincipalId,
                 maximumResults = MAX_RELATIONSHIP_RESULTS,
                 startingEndpoint = RelationshipEndpoint(resolved.recordKind, resolved.recordId),
                 direction = RelationshipTraversalDirection.BOTH,
@@ -349,24 +352,27 @@ class DefaultKnowledgeCandidateEvaluator(
         return KnowledgeCandidateEvaluation.Promote(item, promotion)
     }
 
-    private suspend fun resolve(reference: MemoryCoreRecordReference): ResolvedRecord? = when (reference) {
+    private suspend fun resolve(
+        requestingPrincipalId: PrincipalId,
+        reference: MemoryCoreRecordReference,
+    ): ResolvedRecord? = when (reference) {
         is MemoryCoreRecordReference.ToEntity ->
-            memoryRetrieval.getEntity(SYSTEM_PRINCIPAL_ID, reference.entityId)?.let {
+            memoryRetrieval.getEntity(requestingPrincipalId, reference.entityId)?.let {
                 ResolvedRecord(RelationshipEndpoint.ENTITY, reference.entityId.value, it.provenanceId, confidence = null)
             }
 
         is MemoryCoreRecordReference.ToDocument ->
-            memoryRetrieval.getDocument(SYSTEM_PRINCIPAL_ID, reference.documentId)?.let {
+            memoryRetrieval.getDocument(requestingPrincipalId, reference.documentId)?.let {
                 ResolvedRecord(RelationshipEndpoint.DOCUMENT, reference.documentId.value, it.provenanceId, confidence = null)
             }
 
         is MemoryCoreRecordReference.ToAssertion ->
-            memoryRetrieval.getAssertion(SYSTEM_PRINCIPAL_ID, reference.assertionId)?.let {
+            memoryRetrieval.getAssertion(requestingPrincipalId, reference.assertionId)?.let {
                 ResolvedRecord(RelationshipEndpoint.ASSERTION, reference.assertionId.value, it.provenanceId, confidence = it.confidence)
             }
 
         is MemoryCoreRecordReference.ToRelationship ->
-            memoryRetrieval.getRelationship(SYSTEM_PRINCIPAL_ID, reference.relationshipId)?.let {
+            memoryRetrieval.getRelationship(requestingPrincipalId, reference.relationshipId)?.let {
                 ResolvedRecord(RelationshipEndpoint.RELATIONSHIP, reference.relationshipId.value, it.provenanceId, confidence = null)
             }
     }
@@ -388,16 +394,6 @@ class DefaultKnowledgeCandidateEvaluator(
     )
 
     companion object {
-        /**
-         * This evaluator's own fixed system identity, used only for the
-         * mandatory, audit-only `requestingPrincipalId` parameter every
-         * [MemoryRetrieval] method requires -- never evaluated or filtered
-         * on by Memory Core itself (`MemoryRetrieval`'s own KDoc). Mirrors
-         * `EventPublishingMemoryCore`'s own (`parker.composition`),
-         * identically justified `MEMORY_CORE_SYSTEM_PRINCIPAL_ID` constant.
-         */
-        val SYSTEM_PRINCIPAL_ID = PrincipalId("system.knowledge-memory")
-
         /**
          * A pagination bound for the one relationship-traversal query this
          * class issues per evaluation -- a structural query parameter, not
