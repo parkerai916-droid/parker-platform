@@ -8,6 +8,7 @@ import parker.core.interfaces.CandidateEntity
 import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ContentNature
+import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.MemoryCore
 import parker.core.interfaces.MemoryRetrieval
@@ -29,6 +30,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotSame
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -141,7 +143,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
     }
 
     @Test
-    fun `EvidenceIntelligenceInputResolver and DefaultKnowledgeCandidateEvaluator receive the same PermissionFilteredMemoryRetrieval instance`() = runTest {
+    fun `EvidenceIntelligenceInputResolver and candidate evaluator receive distinct purpose views over one decorator`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -154,9 +156,19 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         val evaluator = knowledgeSubmission.privateField<Any>("evaluator")
         val retrievalFromEvaluator = evaluator.privateField<MemoryRetrieval>("memoryRetrieval")
 
-        assertIs<PermissionFilteredMemoryRetrieval>(retrievalFromInputResolver)
         assertIs<DefaultKnowledgeCandidateEvaluator>(evaluator)
-        assertSame(retrievalFromInputResolver, retrievalFromEvaluator, "one shared decorator, never one per consumer")
+        assertNotSame(retrievalFromInputResolver, retrievalFromEvaluator)
+        val evidenceParent = retrievalFromInputResolver.privateField<PermissionFilteredMemoryRetrieval>("parent")
+        val candidateParent = retrievalFromEvaluator.privateField<PermissionFilteredMemoryRetrieval>("parent")
+        assertSame(evidenceParent, candidateParent, "both views must route through one shared decorator")
+        assertEquals(
+            AuthorizationPurposeId("evidence-intelligence.input-resolution").value,
+            retrievalFromInputResolver.privateField<String>("authorizationPurpose"),
+        )
+        assertEquals(
+            AuthorizationPurposeId("knowledge-memory.candidate-evaluation").value,
+            retrievalFromEvaluator.privateField<String>("authorizationPurpose"),
+        )
 
         runtime.shutdown()
     }
@@ -179,7 +191,8 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
     private fun retrievalDecoratorFrom(runtime: ParkerRuntime): PermissionFilteredMemoryRetrieval {
         val evidenceIntelligence = runtime.privateField<Any>("evidenceIntelligence")
         val inputResolver = evidenceIntelligence.privateField<EvidenceIntelligenceInputResolver>("inputResolver")
-        return inputResolver.privateField("memoryRetrieval")
+        val purposeBoundView = inputResolver.privateField<MemoryRetrieval>("memoryRetrieval")
+        return purposeBoundView.privateField("parent")
     }
 
     // ================= Invocation denial =================

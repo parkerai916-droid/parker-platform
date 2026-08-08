@@ -830,10 +830,14 @@ class ParkerRuntime(
         // the durable decorator, which itself delegates each MemoryRetrieval call straight to the
         // recovered in-memory state with no durability-log interaction (Unit 6). Unit 2 now
         // registers and derives memory.retrieve/memory.retrieve_document, but the two exact
-        // verb-specific DENIED guards above outrank existing coarse approvals. Both consumers
-        // still share this unbound decorator and therefore propagate no Authorization Purpose;
-        // Unit 3 has not begun and Memory Retrieval remains genuinely fail-closed.
+        // verb-specific DENIED guards above outrank existing coarse approvals. Unit 3 creates two
+        // immutable Purpose-bound views below; both delegate to this one parent and neither can
+        // override policy. Memory Retrieval therefore remains genuinely fail-closed.
         val permissionFilteredMemoryRetrieval = PermissionFilteredMemoryRetrieval(durableMemoryCore, permissionEngine)
+        val candidateEvaluationMemoryRetrieval =
+            permissionFilteredMemoryRetrieval.forAuthorizationPurpose(KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE)
+        val evidenceIntelligenceMemoryRetrieval =
+            permissionFilteredMemoryRetrieval.forAuthorizationPurpose(EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE)
 
         // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"), and now
         // also Unit 9.6 ("Runtime Composition"). One long-lived InMemoryKnowledgeItemPersistence
@@ -843,7 +847,7 @@ class ParkerRuntime(
         // anything knowledgeSubmission successfully promotes is genuinely reachable through
         // knowledgeRetrieval.
         val knowledgeItemPersistence = InMemoryKnowledgeItemPersistence()
-        val knowledgeCandidateEvaluator = DefaultKnowledgeCandidateEvaluator(permissionFilteredMemoryRetrieval)
+        val knowledgeCandidateEvaluator = DefaultKnowledgeCandidateEvaluator(candidateEvaluationMemoryRetrieval)
         val knowledgeSubmission: KnowledgeSubmission = DefaultKnowledgeSubmission(
             knowledgeCandidateEvaluator,
             knowledgeItemPersistence,
@@ -877,7 +881,7 @@ class ParkerRuntime(
         // this class already does.
         knowledgeRetrieval = DefaultKnowledgeRetrieval(knowledgeItemPersistence, permissionEngine)
 
-        val evidenceIntelligenceInputResolver = EvidenceIntelligenceInputResolver(defaultEvidenceCustodian, permissionFilteredMemoryRetrieval)
+        val evidenceIntelligenceInputResolver = EvidenceIntelligenceInputResolver(defaultEvidenceCustodian, evidenceIntelligenceMemoryRetrieval)
         val evidenceIntelligenceReasoningCoordinator = EvidenceIntelligenceReasoningCoordinator(reasoningProvider)
         evidenceIntelligence = DefaultEvidenceIntelligence(evidenceIntelligenceInputResolver, evidenceIntelligenceReasoningCoordinator)
 

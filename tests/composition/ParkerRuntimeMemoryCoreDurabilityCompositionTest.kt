@@ -123,7 +123,8 @@ class ParkerRuntimeMemoryCoreDurabilityCompositionTest {
 
         val evidenceIntelligence = runtime.privateField<Any>("evidenceIntelligence")
         val inputResolver = evidenceIntelligence.privateField<Any>("inputResolver")
-        val retrievalDecorator = inputResolver.privateField<PermissionFilteredMemoryRetrieval>("memoryRetrieval")
+        val retrievalView = inputResolver.privateField<MemoryRetrieval>("memoryRetrieval")
+        val retrievalDecorator = retrievalView.privateField<PermissionFilteredMemoryRetrieval>("parent")
         val retrievalDelegate = retrievalDecorator.privateField<MemoryRetrieval>("delegate")
 
         assertSame(rawMemoryCore, retrievalDelegate, "retrieval must be wired through the durable decorator itself, not a second reference to the recovered in-memory delegate DurableMemoryCore holds privately")
@@ -221,7 +222,8 @@ class ParkerRuntimeMemoryCoreDurabilityCompositionTest {
         // a record genuinely exists before separately demonstrating the wrapper's own denial.
         val evidenceIntelligence = runtime.privateField<Any>("evidenceIntelligence")
         val inputResolver = evidenceIntelligence.privateField<Any>("inputResolver")
-        val retrievalDecorator = inputResolver.privateField<PermissionFilteredMemoryRetrieval>("memoryRetrieval")
+        val retrievalView = inputResolver.privateField<MemoryRetrieval>("memoryRetrieval")
+        val retrievalDecorator = retrievalView.privateField<PermissionFilteredMemoryRetrieval>("parent")
         val retrievalDelegate = retrievalDecorator.privateField<DurableMemoryCore>("delegate")
         assertEquals(seededAssertion, retrievalDelegate.getAssertion(principal, seededAssertion.assertionId), "the shared PermissionFilteredMemoryRetrieval's own delegate must observe the pre-populated Assertion")
 

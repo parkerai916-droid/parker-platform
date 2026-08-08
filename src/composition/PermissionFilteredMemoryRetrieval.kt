@@ -4,6 +4,7 @@ import java.time.Instant
 import java.util.UUID
 import parker.core.interfaces.AssertionId
 import parker.core.interfaces.Assertion
+import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.ChronologicalLookupQuery
 import parker.core.interfaces.Document
 import parker.core.interfaces.DocumentId
@@ -113,43 +114,111 @@ class PermissionFilteredMemoryRetrieval(
     private val permissionEngine: PermissionEngine,
 ) : MemoryRetrieval {
 
-    override suspend fun getEntity(requestingPrincipalId: PrincipalId, entityId: EntityId): Entity? {
+    /**
+     * Gap #54 Operationalisation Unit 3: creates a non-authoritative, immutable Purpose carrier
+     * over this one decorator. The returned view has no engine or raw delegate and can only route
+     * calls back through this parent's existing retrieval, request construction and filtering.
+     * Kept `internal` for composition and verification; [ParkerRuntime] owns the sole production
+     * instance locally and exposes neither the parent nor this factory to runtime callers.
+     */
+    internal fun forAuthorizationPurpose(authorizationPurpose: AuthorizationPurposeId): MemoryRetrieval =
+        PurposeBoundMemoryRetrieval(this, authorizationPurpose)
+
+    override suspend fun getEntity(requestingPrincipalId: PrincipalId, entityId: EntityId): Entity? =
+        getEntity(requestingPrincipalId, entityId, null)
+
+    private suspend fun getEntity(
+        requestingPrincipalId: PrincipalId,
+        entityId: EntityId,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): Entity? {
         val entity = delegate.getEntity(requestingPrincipalId, entityId) ?: return null
-        return if (isApproved(requestingPrincipalId, RETRIEVE_ACTION_NAME)) entity else null
+        return if (isApproved(requestingPrincipalId, RETRIEVE_ACTION_NAME, authorizationPurpose)) entity else null
     }
 
-    override suspend fun getDocument(requestingPrincipalId: PrincipalId, documentId: DocumentId): Document? {
+    override suspend fun getDocument(requestingPrincipalId: PrincipalId, documentId: DocumentId): Document? =
+        getDocument(requestingPrincipalId, documentId, null)
+
+    private suspend fun getDocument(
+        requestingPrincipalId: PrincipalId,
+        documentId: DocumentId,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): Document? {
         val document = delegate.getDocument(requestingPrincipalId, documentId) ?: return null
-        return if (isApproved(requestingPrincipalId, RETRIEVE_DOCUMENT_ACTION_NAME)) document else null
+        return if (isApproved(requestingPrincipalId, RETRIEVE_DOCUMENT_ACTION_NAME, authorizationPurpose)) document else null
     }
 
-    override suspend fun getAssertion(requestingPrincipalId: PrincipalId, assertionId: AssertionId): Assertion? {
+    override suspend fun getAssertion(requestingPrincipalId: PrincipalId, assertionId: AssertionId): Assertion? =
+        getAssertion(requestingPrincipalId, assertionId, null)
+
+    private suspend fun getAssertion(
+        requestingPrincipalId: PrincipalId,
+        assertionId: AssertionId,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): Assertion? {
         val assertion = delegate.getAssertion(requestingPrincipalId, assertionId) ?: return null
-        return if (isApproved(requestingPrincipalId, RETRIEVE_ACTION_NAME)) assertion else null
+        return if (isApproved(requestingPrincipalId, RETRIEVE_ACTION_NAME, authorizationPurpose)) assertion else null
     }
 
-    override suspend fun getRelationship(requestingPrincipalId: PrincipalId, relationshipId: RelationshipId): Relationship? {
+    override suspend fun getRelationship(requestingPrincipalId: PrincipalId, relationshipId: RelationshipId): Relationship? =
+        getRelationship(requestingPrincipalId, relationshipId, null)
+
+    private suspend fun getRelationship(
+        requestingPrincipalId: PrincipalId,
+        relationshipId: RelationshipId,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): Relationship? {
         val relationship = delegate.getRelationship(requestingPrincipalId, relationshipId) ?: return null
-        return if (isApproved(requestingPrincipalId, RETRIEVE_ACTION_NAME)) relationship else null
+        return if (isApproved(requestingPrincipalId, RETRIEVE_ACTION_NAME, authorizationPurpose)) relationship else null
     }
 
     override suspend fun findEntities(query: EntityLookupQuery): List<Entity> =
-        delegate.findEntities(query).filter { isApproved(query.requestingPrincipalId, RETRIEVE_ACTION_NAME) }
+        findEntities(query, null)
+
+    private suspend fun findEntities(query: EntityLookupQuery, authorizationPurpose: AuthorizationPurposeId?): List<Entity> =
+        delegate.findEntities(query).filter { isApproved(query.requestingPrincipalId, RETRIEVE_ACTION_NAME, authorizationPurpose) }
 
     override suspend fun findDocuments(query: DocumentLookupQuery): List<Document> =
-        delegate.findDocuments(query).filter { isApproved(query.requestingPrincipalId, RETRIEVE_DOCUMENT_ACTION_NAME) }
+        findDocuments(query, null)
+
+    private suspend fun findDocuments(query: DocumentLookupQuery, authorizationPurpose: AuthorizationPurposeId?): List<Document> =
+        delegate.findDocuments(query).filter { isApproved(query.requestingPrincipalId, RETRIEVE_DOCUMENT_ACTION_NAME, authorizationPurpose) }
 
     override suspend fun traverseRelationships(query: RelationshipTraversalQuery): List<Relationship> =
-        delegate.traverseRelationships(query).filter { isApproved(query.requestingPrincipalId, RETRIEVE_ACTION_NAME) }
+        traverseRelationships(query, null)
+
+    private suspend fun traverseRelationships(
+        query: RelationshipTraversalQuery,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): List<Relationship> =
+        delegate.traverseRelationships(query).filter { isApproved(query.requestingPrincipalId, RETRIEVE_ACTION_NAME, authorizationPurpose) }
 
     override suspend fun findByTimeRange(query: ChronologicalLookupQuery): List<MemoryCoreRecord> =
-        filterAuthorisedRecords(query.requestingPrincipalId, delegate.findByTimeRange(query))
+        findByTimeRange(query, null)
+
+    private suspend fun findByTimeRange(
+        query: ChronologicalLookupQuery,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): List<MemoryCoreRecord> =
+        filterAuthorisedRecords(query.requestingPrincipalId, delegate.findByTimeRange(query), authorizationPurpose)
 
     override suspend fun findByMetadata(query: MetadataLookupQuery): List<MemoryCoreRecord> =
-        filterAuthorisedRecords(query.requestingPrincipalId, delegate.findByMetadata(query))
+        findByMetadata(query, null)
+
+    private suspend fun findByMetadata(
+        query: MetadataLookupQuery,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): List<MemoryCoreRecord> =
+        filterAuthorisedRecords(query.requestingPrincipalId, delegate.findByMetadata(query), authorizationPurpose)
 
     override suspend fun findByProvenance(query: ProvenanceLookupQuery): List<MemoryCoreRecord> =
-        filterAuthorisedRecords(query.requestingPrincipalId, delegate.findByProvenance(query))
+        findByProvenance(query, null)
+
+    private suspend fun findByProvenance(
+        query: ProvenanceLookupQuery,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): List<MemoryCoreRecord> =
+        filterAuthorisedRecords(query.requestingPrincipalId, delegate.findByProvenance(query), authorizationPurpose)
 
     /**
      * One [PermissionEngine.evaluate] call per candidate [records] entry,
@@ -157,23 +226,35 @@ class PermissionFilteredMemoryRetrieval(
      * (`List.filter`'s own guarantee) -- never a single, whole-query gate
      * (Errata 004 Section 9).
      */
-    private suspend fun filterAuthorisedRecords(requestingPrincipalId: PrincipalId, records: List<MemoryCoreRecord>): List<MemoryCoreRecord> =
+    private suspend fun filterAuthorisedRecords(
+        requestingPrincipalId: PrincipalId,
+        records: List<MemoryCoreRecord>,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): List<MemoryCoreRecord> =
         records.filter { record ->
             val actionName = when (record) {
                 is MemoryCoreRecord.OfDocument -> RETRIEVE_DOCUMENT_ACTION_NAME
                 is MemoryCoreRecord.OfEntity, is MemoryCoreRecord.OfAssertion, is MemoryCoreRecord.OfRelationship -> RETRIEVE_ACTION_NAME
             }
-            isApproved(requestingPrincipalId, actionName)
+            isApproved(requestingPrincipalId, actionName, authorizationPurpose)
         }
 
-    private suspend fun isApproved(requestingPrincipalId: PrincipalId, actionName: String): Boolean {
-        val decision = permissionEngine.evaluate(buildExecutionRequest(requestingPrincipalId, actionName))
+    private suspend fun isApproved(
+        requestingPrincipalId: PrincipalId,
+        actionName: String,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): Boolean {
+        val decision = permissionEngine.evaluate(buildExecutionRequest(requestingPrincipalId, actionName, authorizationPurpose))
         return decision.decision == PermissionDecisionOutcome.APPROVED ||
             decision.decision == PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
     }
 
     /** Errata 004 Section 7: `targetResources` is always empty; `proposedActions` carries the one descriptive string. */
-    private fun buildExecutionRequest(requestingPrincipalId: PrincipalId, actionName: String): ExecutionRequest {
+    private fun buildExecutionRequest(
+        requestingPrincipalId: PrincipalId,
+        actionName: String,
+        authorizationPurpose: AuthorizationPurposeId?,
+    ): ExecutionRequest {
         val id = UUID.randomUUID()
         return ExecutionRequest(
             requestId = RequestId("memory-core-read-$id"),
@@ -185,7 +266,44 @@ class PermissionFilteredMemoryRetrieval(
             priority = RequestPriority.NORMAL,
             createdAt = Instant.now(),
             correlationId = "memory-core-read-$id",
+            authorizationPurpose = authorizationPurpose,
         )
+    }
+
+    /** Immutable carrier only: no engine, policy, registry, raw delegate, or decision logic. */
+    private class PurposeBoundMemoryRetrieval(
+        private val parent: PermissionFilteredMemoryRetrieval,
+        private val authorizationPurpose: AuthorizationPurposeId,
+    ) : MemoryRetrieval {
+        override suspend fun getEntity(requestingPrincipalId: PrincipalId, entityId: EntityId): Entity? =
+            parent.getEntity(requestingPrincipalId, entityId, authorizationPurpose)
+
+        override suspend fun getDocument(requestingPrincipalId: PrincipalId, documentId: DocumentId): Document? =
+            parent.getDocument(requestingPrincipalId, documentId, authorizationPurpose)
+
+        override suspend fun getAssertion(requestingPrincipalId: PrincipalId, assertionId: AssertionId): Assertion? =
+            parent.getAssertion(requestingPrincipalId, assertionId, authorizationPurpose)
+
+        override suspend fun getRelationship(requestingPrincipalId: PrincipalId, relationshipId: RelationshipId): Relationship? =
+            parent.getRelationship(requestingPrincipalId, relationshipId, authorizationPurpose)
+
+        override suspend fun findEntities(query: EntityLookupQuery): List<Entity> =
+            parent.findEntities(query, authorizationPurpose)
+
+        override suspend fun findDocuments(query: DocumentLookupQuery): List<Document> =
+            parent.findDocuments(query, authorizationPurpose)
+
+        override suspend fun traverseRelationships(query: RelationshipTraversalQuery): List<Relationship> =
+            parent.traverseRelationships(query, authorizationPurpose)
+
+        override suspend fun findByTimeRange(query: ChronologicalLookupQuery): List<MemoryCoreRecord> =
+            parent.findByTimeRange(query, authorizationPurpose)
+
+        override suspend fun findByMetadata(query: MetadataLookupQuery): List<MemoryCoreRecord> =
+            parent.findByMetadata(query, authorizationPurpose)
+
+        override suspend fun findByProvenance(query: ProvenanceLookupQuery): List<MemoryCoreRecord> =
+            parent.findByProvenance(query, authorizationPurpose)
     }
 
     companion object {

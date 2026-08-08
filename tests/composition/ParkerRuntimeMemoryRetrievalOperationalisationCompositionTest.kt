@@ -28,10 +28,11 @@ import parker.core.runtime.PermissionPolicyRule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-/** Gap #54 Memory Retrieval Operationalisation Unit 2 composition and fail-closed verification. */
+/** Gap #54 Memory Retrieval Operationalisation Units 2-3 composition and fail-closed verification. */
 class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
 
     private val candidatePurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
@@ -219,7 +220,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
     }
 
     @Test
-    fun `both consumers still share the unbound decorator and declare no purpose field`() = runTest {
+    fun `both consumers receive distinct exact-purpose views over one shared parent decorator`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -231,8 +232,12 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
         val evaluator = submission.privateField<DefaultKnowledgeCandidateEvaluator>("evaluator")
         val evaluatorRetrieval = evaluator.privateField<MemoryRetrieval>("memoryRetrieval")
 
-        assertTrue(resolverRetrieval is PermissionFilteredMemoryRetrieval)
-        assertSame(resolverRetrieval, evaluatorRetrieval)
+        assertNotSame(resolverRetrieval, evaluatorRetrieval)
+        val resolverParent = resolverRetrieval.privateField<PermissionFilteredMemoryRetrieval>("parent")
+        val evaluatorParent = evaluatorRetrieval.privateField<PermissionFilteredMemoryRetrieval>("parent")
+        assertSame(resolverParent, evaluatorParent)
+        assertEquals(evidencePurpose.value, resolverRetrieval.privateField<String>("authorizationPurpose"))
+        assertEquals(candidatePurpose.value, evaluatorRetrieval.privateField<String>("authorizationPurpose"))
         assertFalse(DefaultKnowledgeCandidateEvaluator::class.java.declaredFields.any { it.name.contains("authorizationPurpose", true) })
         assertFalse(EvidenceIntelligenceInputResolver::class.java.declaredFields.any { it.name.contains("authorizationPurpose", true) })
         assertFalse(PermissionFilteredMemoryRetrieval::class.java.declaredFields.any { it.name.contains("authorizationPurpose", true) })

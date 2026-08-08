@@ -5,6 +5,7 @@ import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.Assertion
 import parker.core.interfaces.AssertionId
+import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.ChronologicalLookupQuery
 import parker.core.interfaces.ContentNature
 import parker.core.interfaces.DecisionId
@@ -36,6 +37,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -413,6 +415,47 @@ class PermissionFilteredMemoryRetrievalTest {
     }
 
     // ================= Structural safeguards =================
+
+    @Test
+    fun `a purpose-bound view carries its one exact immutable purpose while the unbound parent remains absent-purpose`() = runTest {
+        val purpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
+        val captured = mutableListOf<ExecutionRequest>()
+        val filtered = PermissionFilteredMemoryRetrieval(
+            FakeMemoryRetrieval(entityResult = entity("entity-purpose")),
+            fixedEngine(PermissionDecisionOutcome.DENIED) { captured += it },
+        )
+        val bound = filtered.forAuthorizationPurpose(purpose)
+
+        assertNull(bound.getEntity(principal, EntityId("entity-purpose")))
+        assertNull(filtered.getEntity(principal, EntityId("entity-purpose")))
+
+        assertEquals(purpose, captured[0].authorizationPurpose)
+        assertNull(captured[1].authorizationPurpose)
+    }
+
+    @Test
+    fun `two purpose-bound views are distinct immutable carriers over the same parent with no authority dependencies`() {
+        val filtered = PermissionFilteredMemoryRetrieval(FakeMemoryRetrieval(), fixedEngine(PermissionDecisionOutcome.DENIED))
+        val candidate = filtered.forAuthorizationPurpose(AuthorizationPurposeId("knowledge-memory.candidate-evaluation"))
+        val evidence = filtered.forAuthorizationPurpose(AuthorizationPurposeId("evidence-intelligence.input-resolution"))
+
+        assertNotSame(candidate, evidence)
+        val candidateFields = candidate::class.java.declaredFields.filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }
+        val evidenceFields = evidence::class.java.declaredFields.filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }
+        assertEquals(setOf("parent", "authorizationPurpose"), candidateFields.map { it.name }.toSet())
+        assertEquals(setOf("parent", "authorizationPurpose"), evidenceFields.map { it.name }.toSet())
+        (candidateFields + evidenceFields).forEach { assertTrue(Modifier.isFinal(it.modifiers), "${it.name} must be immutable") }
+
+        fun Any.field(name: String): Any? = this::class.java.getDeclaredField(name).also { it.isAccessible = true }.get(this)
+        assertSame(filtered, candidate.field("parent"))
+        assertSame(filtered, evidence.field("parent"))
+        // AuthorizationPurposeId is a Kotlin value class and is therefore unboxed to its String
+        // representation in this private backing field; request-level behavioral tests above
+        // prove it is re-boxed correctly on ExecutionRequest.
+        assertEquals("knowledge-memory.candidate-evaluation", candidate.field("authorizationPurpose"))
+        assertEquals("evidence-intelligence.input-resolution", evidence.field("authorizationPurpose"))
+        assertTrue(candidateFields.none { it.type.name.contains("PermissionEngine") || it.type.name.contains("Registry") })
+    }
 
     @Test
     fun `PermissionFilteredMemoryRetrieval implements only MemoryRetrieval`() {
