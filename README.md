@@ -771,6 +771,7 @@ The current verified baseline includes dedicated behavioural verification for th
 9. Contract Designs
 10. Scope Locks
 11. Implementation history and implementation gaps
+12. Repository audits
 
 ---
 
@@ -780,6 +781,7 @@ The current verified baseline includes dedicated behavioural verification for th
 docs/
     adr/              Architecture Decision Records
     architecture/      Governance Reviews, Contract Designs, architecture decisions
+    audits/            Repository-wide forensic audits (permanent, dated, read-only records)
     development/
     diagrams/
     engineering/
