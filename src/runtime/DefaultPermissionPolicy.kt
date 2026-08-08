@@ -39,6 +39,10 @@ import parker.core.interfaces.ResourceType
  * Authorization Purpose -- see [DefaultPermissionPolicy]'s own KDoc for
  * the precedence this creates against a coarser, `null`-purpose rule
  * addressing the same pair.
+ *
+ * [proposedAction] is an optional exact verb-phrase discriminator. `null`
+ * preserves the existing coarse rule. A non-null value matches only the
+ * identical verb phrase already resolved by [ActionMapper].
  */
 data class PermissionPolicyRule(
     val action: PermissionAction,
@@ -46,6 +50,7 @@ data class PermissionPolicyRule(
     val outcome: PermissionDecisionOutcome,
     val level: PermissionLevel,
     val authorizationPurpose: AuthorizationPurposeId? = null,
+    val proposedAction: String? = null,
 )
 
 /**
@@ -130,22 +135,37 @@ data class PermissionPolicyRule(
  * default (§2.4's own "fail-closed... denies by the same default every
  * other unknown value already denies by").
  *
- * This class deliberately does **not** implement a verb-phrase matching
- * dimension. `docs/governance/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_POLICY_RULE_COLLISION_CLARIFICATION.md`
- * (Gap #54) selected that mechanism at the governance level but states
- * explicitly it implements no Kotlin and does not authorise the Scope
- * Lock/Implementation Plan such a change would require -- see
- * `docs/reviews/AUTHORIZATION_PURPOSE_UNIT_4_PLANNING_REVIEW.md` §2 for
- * the full disclosure. `ActionMappingResult.Resolved.proposedAction` (the
- * verb phrase) is still discarded by [evaluate] exactly as it was before
- * this Unit.
+ * ## Targetless derivation and verb-specific rules (Gap #54 Unit 1)
+ *
+ * [targetlessResourceTypesByProposedAction] is empty by default and is
+ * validated against the two-action closed set frozen by the accepted
+ * Operationalisation Scope Lock. For a structurally targetless request,
+ * each verb is mapped independently with only its own configured types.
+ * Requests with real targets continue to use only [resourceRegistry].
+ *
+ * Applicable rules are ordered by the two optional exact dimensions they
+ * declare: Authorization Purpose and verb phrase. One unique maximally
+ * specific rule governs. Multiple maximal rules are ambiguous and deny,
+ * making selection independent of rule-list ordering.
  */
 class DefaultPermissionPolicy(
     private val actionMapper: ActionMapper,
     private val resourceRegistry: ResourceRegistry,
     private val rules: List<PermissionPolicyRule>,
     private val authorizationPurposeRegistry: AuthorizationPurposeRegistry? = null,
+    private val targetlessResourceTypesByProposedAction: Map<String, Set<ResourceType>> = emptyMap(),
 ) {
+
+    init {
+        require(
+            targetlessResourceTypesByProposedAction.all { (proposedAction, resourceTypes) ->
+                GOVERNED_TARGETLESS_RESOURCE_TYPES[proposedAction] == resourceTypes
+            },
+        ) {
+            "Targetless resource derivation is closed to memory.retrieve -> MEMORY and " +
+                "memory.retrieve_document -> DOCUMENT"
+        }
+    }
 
     suspend fun evaluate(request: ExecutionRequest): PermissionDecision {
         val resourceTypes = request.targetResources
@@ -153,9 +173,18 @@ class DefaultPermissionPolicy(
             .map { it.resourceType }
             .toSet()
 
-        val resolvedMappings = actionMapper.map(request.proposedActions, resourceTypes)
-            .filterIsInstance<ActionMappingResult.Resolved>()
-            .flatMap { it.mappings }
+        val resolvedMappings = request.proposedActions.flatMap { proposedAction ->
+            val typesForAction = if (request.targetResources.isEmpty()) {
+                targetlessResourceTypesByProposedAction[proposedAction].orEmpty()
+            } else {
+                resourceTypes
+            }
+            actionMapper.map(listOf(proposedAction), typesForAction)
+                .filterIsInstance<ActionMappingResult.Resolved>()
+                .flatMap { resolved ->
+                    resolved.mappings.map { mapping -> ResolvedPolicyMapping(resolved.proposedAction, mapping) }
+                }
+        }
 
         if (resolvedMappings.isEmpty()) {
             // No resolved (action, resourceType) pair at all -- see this class's own KDoc
@@ -170,7 +199,7 @@ class DefaultPermissionPolicy(
             authorizationPurposeRegistry?.isActive(purpose) == true
         }
 
-        val evaluated = resolvedMappings.map { mapping -> mapping to ruleOutcomeFor(mapping, effectivePurpose) }
+        val evaluated = resolvedMappings.map { resolved -> resolved to ruleOutcomeFor(resolved, effectivePurpose) }
 
         // "Most restrictive wins" when a request's multiple proposed actions resolve to more
         // than one (action, resourceType) pair -- PermissionEngine.evaluate is still called
@@ -185,7 +214,7 @@ class DefaultPermissionPolicy(
             decisionId = DecisionId("dec-policy-${request.requestId.value}"),
             principalId = request.principalId,
             resourceId = request.targetResources.firstOrNull() ?: ResourceId("no-target-resource"),
-            action = chosenMapping.action,
+            action = chosenMapping.mapping.action,
             decision = chosenOutcome.first,
             level = chosenOutcome.second,
             timestamp = Instant.now(),
@@ -193,23 +222,30 @@ class DefaultPermissionPolicy(
     }
 
     /**
-     * Returns (outcome, level) for [mapping] -- `DENIED`/`AUTOMATIC` when no rule matches.
-     * A rule naming [purpose] exactly takes precedence, unconditionally, over a coarser
-     * rule addressing the same (action, resourceType) pair with no `authorizationPurpose`
-     * of its own -- the precedence-safety guarantee this class's own KDoc describes.
+     * Returns (outcome, level) for [resolved] -- `DENIED`/`AUTOMATIC` when no rule matches
+     * or when more than one applicable rule has maximal specificity.
      */
     private fun ruleOutcomeFor(
-        mapping: ActionResourceMapping,
+        resolved: ResolvedPolicyMapping,
         purpose: AuthorizationPurposeId?,
     ): Pair<PermissionDecisionOutcome, PermissionLevel> {
-        val purposeAwareRule = purpose?.let { p ->
-            rules.find { it.action == mapping.action && it.resourceType == mapping.resourceType && it.authorizationPurpose == p }
+        val applicable = rules.filter { rule ->
+            rule.action == resolved.mapping.action &&
+                rule.resourceType == resolved.mapping.resourceType &&
+                (rule.authorizationPurpose == null || rule.authorizationPurpose == purpose) &&
+                (rule.proposedAction == null || rule.proposedAction == resolved.proposedAction)
         }
-        val rule = purposeAwareRule ?: rules.find {
-            it.action == mapping.action && it.resourceType == mapping.resourceType && it.authorizationPurpose == null
-        }
-        return if (rule != null) rule.outcome to rule.level else PermissionDecisionOutcome.DENIED to PermissionLevel.AUTOMATIC
+        val maximalSpecificity = applicable.maxOfOrNull(::specificity)
+            ?: return PermissionDecisionOutcome.DENIED to PermissionLevel.AUTOMATIC
+        val maximalRules = applicable.filter { specificity(it) == maximalSpecificity }
+        val rule = maximalRules.singleOrNull()
+            ?: return PermissionDecisionOutcome.DENIED to PermissionLevel.AUTOMATIC
+        return rule.outcome to rule.level
     }
+
+    private fun specificity(rule: PermissionPolicyRule): Int =
+        (if (rule.authorizationPurpose != null) 1 else 0) +
+            (if (rule.proposedAction != null) 1 else 0)
 
     private fun restrictiveness(outcome: PermissionDecisionOutcome): Int = when (outcome) {
         PermissionDecisionOutcome.DENIED -> 0
@@ -233,4 +269,16 @@ class DefaultPermissionPolicy(
         level = PermissionLevel.AUTOMATIC,
         timestamp = Instant.now(),
     )
+
+    private data class ResolvedPolicyMapping(
+        val proposedAction: String,
+        val mapping: ActionResourceMapping,
+    )
+
+    private companion object {
+        val GOVERNED_TARGETLESS_RESOURCE_TYPES: Map<String, Set<ResourceType>> = mapOf(
+            "memory.retrieve" to setOf(ResourceType.MEMORY),
+            "memory.retrieve_document" to setOf(ResourceType.DOCUMENT),
+        )
+    }
 }
