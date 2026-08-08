@@ -34,12 +34,11 @@ import kotlin.test.assertTrue
  * Authorization Purpose Implementation Plan, Unit 5 ("Composition
  * Wiring") and Unit 6 ("End-to-End Verification"). Unit 5's own tests
  * (below, unmodified) prove the already-built Unit 1-4 infrastructure now
- * exists in the composed [ParkerRuntime] graph -- construction, wiring to
- * the one [DefaultPermissionPolicy] instance, and a still-empty,
- * still-inert registry -- never that any real Authorization Purpose value
- * is registered or that any existing consumer adopts it (both explicitly
- * out of that Unit's own scope; Programme Unit 4/Gap #54 own that later
- * work). Unit 6's own tests (added below, in their own section) extend
+ * exists in the composed [ParkerRuntime] graph -- construction and wiring to
+ * the one [DefaultPermissionPolicy] instance. Gap #54 Operationalisation
+ * Unit 2 now registers exactly two real Purpose values while retaining the
+ * original non-adoption guarantee: no consumer propagates either value and
+ * no Purpose-specific rule exists. Unit 6's own tests extend
  * this file with the properties that specifically require the *real*
  * composed runtime rather than a test-constructed policy/engine pair:
  * single-instance structure, regression through the *full*
@@ -128,17 +127,23 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         runtime.shutdown()
     }
 
-    // ================= Zero production adoption =================
+    // ================= Unit 2 vocabulary registration without consumer adoption =================
 
     @Test
-    fun `no production Authorization Purpose value is registered in the composed registry`() = runTest {
+    fun `exactly the two accepted Memory retrieval Authorization Purpose values are registered`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val registry = composedPolicy(runtime).privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
         val entries = registry.privateField<Map<*, *>>("entries")
 
-        assertTrue(entries.isEmpty(), "an empty registry after composition is Unit 5's own expected, correct outcome")
+        assertEquals(
+            setOf(
+                AuthorizationPurposeId("knowledge-memory.candidate-evaluation"),
+                AuthorizationPurposeId("evidence-intelligence.input-resolution"),
+            ),
+            entries.keys,
+        )
 
         runtime.shutdown()
     }
@@ -330,11 +335,9 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
 
     @Test
     fun `memory retrieve remains DENIED through the full, composed permissionEngine regardless of Authorization Purpose`() = runTest {
-        // The nearest truthful existing seam (Planning Review Section 5): memory.retrieve is
-        // deliberately never registered in the composed ActionVocabulary, and
-        // PermissionFilteredMemoryRetrieval's own real requests always carry an empty
-        // targetResources list -- reproduced here structurally, without invoking
-        // PermissionFilteredMemoryRetrieval itself (excluded from this Unit's own scope).
+        // Unit 2 now registers and derives memory.retrieve, but its exact verb-specific DENIED
+        // guard outranks the existing coarse READ/MEMORY approval. This remains a full-engine
+        // non-widening check; consumer Purpose propagation and approving rules do not yet exist.
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -375,7 +378,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         assertEquals(
             PermissionDecisionOutcome.DENIED,
             withPurpose.decision,
-            "Authorization Purpose infrastructure alone must not accidentally authorise memory.retrieve -- Gap #54 remains a separate, unresolved policy-content decision",
+            "registration and derivation must not authorise memory.retrieve without the later exact Purpose-plus-verb rule",
         )
 
         runtime.shutdown()

@@ -10,6 +10,7 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
 import parker.core.interfaces.AgentPolicy
+import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ConversationEngine
@@ -356,13 +357,15 @@ class ParkerRuntime(
         // the same composition stage as resourceRegistry/vocabulary above (Scope Lock §2.3 --
         // "composition-time registration... at the same composition stage ActionVocabulary/
         // ResourceRegistry entries already are"), and supplied to DefaultPermissionPolicy below.
-        // Deliberately a construction-local val, never a ParkerRuntime field -- nothing else in
-        // this composed graph consumes it yet (Unit 5's own non-responsibilities: no consumer
-        // adoption). Zero Authorization Purpose values are registered here or anywhere else in
-        // this method -- an empty registry after composition is Unit 5's own expected, correct
-        // outcome (Implementation Plan §7: "no domain-specific Authorization Purpose value is
-        // registered by this unit").
+        // Deliberately a construction-local val, never a ParkerRuntime field. Gap #54 Memory
+        // Retrieval Operationalisation Unit 2 registers exactly the two frozen real Purpose
+        // values below, but no consumer receives either value until Unit 3 and no Purpose-aware
+        // approving rule exists until Unit 4. Registration is eligibility data, never authority.
         val authorizationPurposeRegistry = InMemoryAuthorizationPurposeRegistry()
+        stage("Memory retrieval Authorization Purpose registration") {
+            authorizationPurposeRegistry.register(KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE)
+            authorizationPurposeRegistry.register(EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE)
+        }
         val toolRegistry = InMemoryToolRegistry(resourceRegistry)
         val moduleRegistry = InMemoryModuleRegistry(toolRegistry, resourceRegistry)
         val toolInvocationBinding = InMemoryToolInvocationBinding()
@@ -514,12 +517,31 @@ class ParkerRuntime(
                     mappings = setOf(ActionResourceMapping(PermissionAction.DELETE, ResourceType.DOCUMENT)),
                 ),
             )
+            // Gap #54 Memory Retrieval Operationalisation Unit 2: resolution/configuration only.
+            // Exact verb-specific DENIED guards below prevent fall-through to the pre-existing
+            // coarse READ/MEMORY and READ/DOCUMENT approvals.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.MEMORY)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
+                ),
+            )
         }
 
         val permissionPolicy = DefaultPermissionPolicy(
             actionMapper = actionMapper,
             resourceRegistry = resourceRegistry,
             authorizationPurposeRegistry = authorizationPurposeRegistry,
+            targetlessResourceTypesByProposedAction = mapOf(
+                PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME to setOf(ResourceType.MEMORY),
+                PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME to setOf(ResourceType.DOCUMENT),
+            ),
             rules = listOf(
                 PermissionPolicyRule(
                     action = PermissionAction.NOTIFY,
@@ -591,6 +613,24 @@ class ParkerRuntime(
                     resourceType = ResourceType.MEMORY,
                     outcome = PermissionDecisionOutcome.APPROVED,
                     level = PermissionLevel.AUTOMATIC,
+                ),
+                // Gap #54 Memory Retrieval Operationalisation Unit 2: verb-only fail-closed
+                // guards. They are deliberately listed after the applicable coarse approvals:
+                // Unit 1 specificity, never list order, makes them govern these exact verbs.
+                // They add no authority; Unit 4 Purpose-plus-verb approvals do not exist yet.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.MEMORY,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
                 ),
                 PermissionPolicyRule(
                     action = PermissionAction.DELETE,
@@ -788,12 +828,11 @@ class ParkerRuntime(
         // delegate is DurableMemoryCore's own private field, unreachable from this composition
         // root; every read this runtime performs, exactly like every write, now passes through
         // the durable decorator, which itself delegates each MemoryRetrieval call straight to the
-        // recovered in-memory state with no durability-log interaction (Unit 6). Its own
-        // memory.retrieve/memory.retrieve_document actions are deliberately left unregistered
-        // below (Errata 004 Section 7): targetResources is always empty for a Memory Core
-        // retrieval check, so no Resource registration could ever let DefaultPermissionPolicy's
-        // ResourceRegistry-based resolution approve one -- Memory Retrieval therefore remains
-        // genuinely, honestly fail-closed through this runtime, not merely in isolated unit tests.
+        // recovered in-memory state with no durability-log interaction (Unit 6). Unit 2 now
+        // registers and derives memory.retrieve/memory.retrieve_document, but the two exact
+        // verb-specific DENIED guards above outrank existing coarse approvals. Both consumers
+        // still share this unbound decorator and therefore propagate no Authorization Purpose;
+        // Unit 3 has not begun and Memory Retrieval remains genuinely fail-closed.
         val permissionFilteredMemoryRetrieval = PermissionFilteredMemoryRetrieval(durableMemoryCore, permissionEngine)
 
         // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"), and now
@@ -1367,6 +1406,10 @@ class ParkerRuntime(
 
     private companion object {
         const val NOTIFY_OWNER_VERB_PHRASE = "notify owner"
+        val KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE =
+            AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
+        val EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE =
+            AuthorizationPurposeId("evidence-intelligence.input-resolution")
         val SYSTEM_PARKER_PRINCIPAL_ID = PrincipalId("system.parker")
         val CONVERSATION_ENGINE_PRINCIPAL_ID = PrincipalId("system.conversation-engine")
         val RESPONSE_COMPOSER_PRINCIPAL_ID = PrincipalId("system.response-composer")

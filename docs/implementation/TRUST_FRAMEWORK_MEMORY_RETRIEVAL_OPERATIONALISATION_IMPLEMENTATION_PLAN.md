@@ -1,4 +1,4 @@
-**Status:** Proposed Implementation Plan, planning only. Prepared against the explicitly accepted `TRUST_FRAMEWORK_MEMORY_RETRIEVAL_OPERATIONALISATION_SCOPE_LOCK.md` and its accepted Independent Constitutional Review. No Kotlin or test implementation is performed or authorised merely by this document. Nothing is staged, committed, or pushed.
+**Status:** Accepted Implementation Plan, amended by the Unit 2 Fail-Closed Guard Rules governance correction following the pre-implementation Unit 2 Planning Review. The correction authorises exactly two verb-specific `DENIED` guards needed to prevent the newly configured targetless verbs from inheriting existing coarse production approvals. It does not amend Unit 1, grant retrieval authority, or begin Unit 2 implementation. No Kotlin or test implementation is performed by this document. Nothing is staged, committed, or pushed.
 
 # Trust Framework — Gap #54 Memory Retrieval Operationalisation — Implementation Plan
 
@@ -17,7 +17,7 @@ Current denial occurs because `PermissionFilteredMemoryRetrieval` constructs an 
 The minimum safe dependency order is:
 
 1. build policy mechanism with empty-by-default configuration;
-2. register/configure the two action mappings, two targetless derivations and two Purpose values, but no approving rule;
+2. register/configure the two action mappings, two targetless derivations and two Purpose values, plus the two exact verb-specific fail-closed `DENIED` guards required to prevent fall-through to existing coarse approvals, but no approving rule;
 3. bind and propagate the two consumer purposes, still with no approving rule;
 4. add exactly the two accepted candidate-evaluation approving rules; and
 5. prove the complete composed admission-to-persistence path and Evidence Intelligence non-widening.
@@ -94,6 +94,21 @@ The production rules added in Unit 4 are exactly:
 
 There is no Evidence Intelligence rule and no coarse Memory retrieval approval.
 
+### 3.5 Unit 2 fail-closed guard correction
+
+Fresh pre-implementation inspection found that production already contains coarse `READ`/`MEMORY` and `READ`/`DOCUMENT` `APPROVED` rules for separately governed acts. Once Unit 2 registers and derives the new Memory verbs, absence of any verb-specific rule would allow those coarse rules to authorize the new requests. The originally planned “no rule applies” denial was therefore incorrect.
+
+Unit 2 is amended to add exactly these non-authorizing guards:
+
+| Verb | Action/type | Authorization Purpose | Decision/level |
+|---|---|---|---|
+| `memory.retrieve` | `READ` / `MEMORY` | `null` | `DENIED` / `AUTOMATIC` |
+| `memory.retrieve_document` | `READ` / `DOCUMENT` | `null` | `DENIED` / `AUTOMATIC` |
+
+These rules name acts, not callers. Under Unit 1's accepted specificity mechanism each exact-verb guard outranks the applicable coarse action/type approval, independent of rule order. They grant no authority and apply regardless of absent or ineffective Purpose.
+
+Later Unit 4's already-accepted candidate rules name both the same exact verb and the active `knowledge-memory.candidate-evaluation` Purpose. Their Purpose-plus-verb specificity is greater than these verb-only guards, so they may lawfully override the guards only for that exact active Purpose. Evidence Intelligence has no equivalent approving rule and therefore remains governed by the verb-specific denial. No Unit 3 propagation or Unit 4 approval is authorised by this correction.
+
 ## 4. Common unit gates
 
 Every unit below has these mandatory gates in addition to its unit-specific checks:
@@ -167,19 +182,21 @@ No registry, vocabulary or policy contract changes are permitted.
 
 ### Implementation boundary
 
-Register the two exact action entries, configure the two exact derivations, and register the two exact accepted Purpose IDs through the existing production registry. Add no purpose-bound consumer view and no approving rule.
+Register the two exact action entries, configure the two exact derivations, register the two exact accepted Purpose IDs through the existing production registry, and add exactly the two verb-specific `DENIED` guards in §3.5. Add no purpose-bound consumer view and no approving rule.
 
 ### Prohibited changes
 
-No consumer propagation, Memory retrieval approval, Evidence Intelligence approval, adapter, direct access or unrelated registration.
+No consumer propagation, Memory retrieval approval, Evidence Intelligence approval, Purpose-specific rule, adapter, direct access, unrelated registration or policy rule beyond the two exact verb-specific `DENIED` guards.
 
 ### Targeted verification
 
 Through the real composed engine, prove:
 
 - both verbs resolve to only their frozen action/type mapping;
-- action registration plus derivation still returns `DENIED` with absent, either registered, unregistered or retired Purpose because no rule applies;
+- action registration plus derivation returns `DENIED` with absent, either registered, unregistered or retired Purpose because the exact-verb guard outranks the pre-existing coarse approval;
 - Purpose registration alone grants no authority;
+- both exact guards are present as `DENIED`/`AUTOMATIC`, and no additional Memory rule exists;
+- existing coarse `READ`/`MEMORY` and `READ`/`DOCUMENT` approvals cannot authorize either exact Memory verb, independent of rule ordering;
 - exactly two real Purpose values are active;
 - no fake Resource Registry entry exists; and
 - the runtime still has one engine, policy, registry and shared decorator.
@@ -260,6 +277,8 @@ No other production file may change in this unit.
 ### Implementation boundary
 
 Add exactly the two rules in §3.4. No rule for Evidence Intelligence and no Purpose-null Memory retrieval rule may be added.
+
+The two Unit 4 Purpose-plus-verb rules are intentionally more specific than Unit 2's existing verb-only `DENIED` guards. They may override those guards only for the exact active `knowledge-memory.candidate-evaluation` Purpose. The guards remain governing denials for absent, ineffective, Evidence Intelligence and every other Purpose.
 
 ### Prohibited changes
 
@@ -348,7 +367,7 @@ Full-suite verification, Unit 5 Completion Review and Unit 5 Independent Constit
 |---|---:|---:|---:|---:|---|---|
 | Baseline | No | No | No | No | `DENIED` | `DENIED` |
 | Unit 1 | Mechanism only, empty defaults | No | No | No | `DENIED` | `DENIED` |
-| Unit 2 | Configured | Yes | No | No | `DENIED` | `DENIED` |
+| Unit 2 | Configured | Yes | No | Two exact verb-only `DENIED` guards; no approval | `DENIED` | `DENIED` |
 | Unit 3 | Configured | Yes | Yes | No | `DENIED` | `DENIED` |
 | Unit 4 | Configured | Yes | Yes | Exact candidate-only pair | `APPROVED` only for exact active candidate Purpose | `DENIED` |
 | Unit 5 | Unchanged | Unchanged | Unchanged | Unchanged | Real promotion verified | Same-runtime denial verified |
@@ -358,10 +377,11 @@ Therefore:
 - registration alone grants nothing;
 - derivation alone grants nothing;
 - Purpose registration alone grants nothing;
+- the two Unit 2 verb-specific guards prevent existing coarse approvals from widening either Memory verb;
 - propagation without a rule grants nothing;
 - absent, unregistered and retired Purposes cannot use candidate rules;
 - no coarse Memory approval ever exists;
-- exact Purpose-and-verb rules outrank coarser rules;
+- exact Purpose-and-verb Unit 4 rules outrank the verb-only guards only for the exact active candidate Purpose;
 - ambiguity denies; and
 - Evidence Intelligence never passes through a permissive intermediate state.
 
