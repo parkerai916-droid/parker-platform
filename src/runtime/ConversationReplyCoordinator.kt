@@ -87,22 +87,37 @@ import parker.core.interfaces.ReasoningProviderResponse
  *   deliver.
  * @param goalPlanningHandoffCoordinator Used exactly once per call, only
  *   when the admitted response is [ReasoningProviderResponse.Goal], to
- *   construct a `PlanningRequest` and report planning deferral. This is
- *   the only new dependency this class accepts as of the
- *   Reasoning-to-Planning Handoff -- the absence of any other
- *   constructor parameter is itself the structural guarantee that this
- *   class cannot reach `CommunicationIntake`,
- *   `ConversationTurnReasoningCoordinator`, `ConversationEngine`,
- *   `ReasoningProvider`, `ResponseComposer`, `ResponseDelivery`,
- *   `IdentityService`, `ExecutionPipeline`, `PermissionEngine`,
- *   `PlannerRuntime`, `ModelReasoningProvider`,
+ *   construct a `PlanningRequest` and report planning deferral. As of the
+ *   Reasoning-to-Planning Handoff, the absence of any other constructor
+ *   parameter was itself the structural guarantee that this class could
+ *   not reach `CommunicationIntake`, `ConversationTurnReasoningCoordinator`,
+ *   `ConversationEngine`, `ReasoningProvider`, `ResponseComposer`,
+ *   `ResponseDelivery`, `IdentityService`, `ExecutionPipeline`,
+ *   `PermissionEngine`, `PlannerRuntime`, `ModelReasoningProvider`,
  *   `LocalHttpModelInferenceClient`, `KnowledgeStore`, or `WorldModel`,
- *   directly.
+ *   directly -- this guarantee is revised, not preserved, by
+ *   [memoryAdmissionCoordinator] immediately below.
+ * @param memoryAdmissionCoordinator Parker Conversational Memory Bridge,
+ *   Admission Unit. Used exactly once per call, only when the admitted
+ *   response is [ReasoningProviderResponse.Remember], to run the full,
+ *   already-governed admission sequence
+ *   (`docs/implementation/CONVERSATIONAL_MEMORY_ADMISSION_IMPLEMENTATION_PLAN.md`)
+ *   and produce a [MemoryAdmissionOutcome]. This is this class's own
+ *   first reach into Memory Core / Knowledge Memory territory -- always
+ *   indirect, through this one coordinator's own narrow, self-gated
+ *   `admit` method, never a direct `MemoryCore`/`KnowledgeSubmission`
+ *   reference held by this class itself. The resulting outcome is mapped
+ *   to a fixed, deterministic [ReasoningProviderResponse.Reply] by
+ *   [buildAdmissionReply], below, and delivered through the unchanged
+ *   `Reply`/`NoAction` path -- [replyDeliveryCoordinator], `ResponseComposer`,
+ *   and `ResponseDelivery` are none of them modified by this parameter's
+ *   own introduction.
  */
 class ConversationReplyCoordinator(
     private val communicationConversationCoordinator: CommunicationConversationCoordinator,
     private val replyDeliveryCoordinator: ReplyDeliveryCoordinator,
     private val goalPlanningHandoffCoordinator: GoalPlanningHandoffCoordinator,
+    private val memoryAdmissionCoordinator: MemoryAdmissionCoordinator,
 ) {
 
     /**
@@ -117,6 +132,15 @@ class ConversationReplyCoordinator(
      *   [goalPlanningHandoffCoordinator]`.initiatePlanning`, wrapped in
      *   [ConversationOutcome.Planned]. [replyDeliveryCoordinator]
      *   is never called on this branch.
+     * - [ReasoningProviderResponse.Remember] (Parker Conversational Memory
+     *   Bridge, Admission Unit): routed to [memoryAdmissionCoordinator]`.admit`,
+     *   whose real, governed [MemoryAdmissionOutcome] is mapped by
+     *   [buildAdmissionReply] to a fixed [ReasoningProviderResponse.Reply],
+     *   then delivered through [replyDeliveryCoordinator]`.composeAndDeliver`
+     *   exactly like an ordinary `Reply` -- unwrapped into
+     *   [ConversationOutcome.ReplyDelivered] or [ConversationOutcome.NotAccepted]
+     *   on the identical terms. [goalPlanningHandoffCoordinator] is never
+     *   called on this branch.
      * - `Reply`/`NoAction`: routed to [replyDeliveryCoordinator]`.composeAndDeliver`,
      *   exactly as before this revision, unwrapped into
      *   [ConversationOutcome.ReplyDelivered] or [ConversationOutcome.NotAccepted].
@@ -126,7 +150,10 @@ class ConversationReplyCoordinator(
      * [parker.core.interfaces.OutboundParkerResponse], never constructs
      * or mutates a `PlanningRequest` itself, never retries, and never
      * recovers from an exception any dependency throws -- such an
-     * exception propagates to this method's own caller unchanged.
+     * exception propagates to this method's own caller unchanged. This
+     * includes any exception [memoryAdmissionCoordinator]`.admit` itself
+     * propagates (a genuine Memory Core fault, for example) -- never
+     * caught here, never converted into a false success reply.
      */
     suspend fun submitAndDeliver(
         message: InboundOwnerMessage,
@@ -139,11 +166,33 @@ class ConversationReplyCoordinator(
             is GatedOutcome.Produced -> when (val response = reasoned.value) {
                 is ReasoningProviderResponse.Goal ->
                     ConversationOutcome.Planned(goalPlanningHandoffCoordinator.initiatePlanning(message, response))
+                is ReasoningProviderResponse.Remember -> deliverReply(message, buildAdmissionReply(
+                    memoryAdmissionCoordinator.admit(message.senderPrincipalId, message.correlationId.value, response.text),
+                ))
                 is ReasoningProviderResponse.Reply -> deliverReply(message, response)
                 ReasoningProviderResponse.NoAction -> deliverReply(message, response)
             }
         }
     }
+
+    /**
+     * Parker Conversational Memory Bridge, Admission Unit. Maps a real,
+     * already-governed [MemoryAdmissionOutcome] to a fixed, deterministic
+     * [ReasoningProviderResponse.Reply] -- **never the Reasoning
+     * Provider's own text for this path.** This is the mechanism that
+     * satisfies the governing task's own mandatory response-integrity
+     * requirement: Parker states persistence succeeded only after
+     * [MemoryAdmissionCoordinator.admit] has already returned a real
+     * `Stored` outcome; every other outcome produces an honest,
+     * accurately-scoped disclosure instead. No branch of this function
+     * ever composes text the governed outcome does not itself justify.
+     */
+    private fun buildAdmissionReply(outcome: MemoryAdmissionOutcome): ReasoningProviderResponse.Reply =
+        when (outcome) {
+            is MemoryAdmissionOutcome.Stored -> ReasoningProviderResponse.Reply("I'll remember that.")
+            is MemoryAdmissionOutcome.NotStored -> ReasoningProviderResponse.Reply("I wasn't able to store that: ${outcome.basis}")
+            is MemoryAdmissionOutcome.NotAuthorised -> ReasoningProviderResponse.Reply("I'm not able to store that right now: ${outcome.reason}")
+        }
 
     /**
      * The unchanged `Reply`/`NoAction` path: [replyDeliveryCoordinator]`.composeAndDeliver`

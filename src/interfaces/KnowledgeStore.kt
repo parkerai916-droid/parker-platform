@@ -851,12 +851,35 @@ data class KnowledgeReference(
  * and its contribution must be disclosed in the promotion basis whenever
  * relied upon (§16.5).
  *
+ * ## `soleBasisIsExplicitInstruction` (Parker Conversational Memory
+ * Bridge, Admission Unit;
+ * `docs/governance/PROGRAMME_3_EXPLICIT_OWNER_INSTRUCTION_PROMOTION_EXCEPTION_SCOPE_LOCK_CLARIFICATION.md`)
+ *
+ * A second, distinct non-evidential submission-context field, deliberately
+ * separate from [explicitlyRequested] rather than a reuse of it: `true`
+ * only where the evidence [evidenceReference] names was created
+ * *specifically and only* to durably record an explicit, unambiguous
+ * owner instruction to remember the stated proposition -- never merely
+ * that the submission happened to be explicitly requested for some other,
+ * unrelated reason. A candidate built from Evidence Intelligence's own
+ * pipeline may legitimately carry `explicitlyRequested = true` without
+ * ever carrying this field `true`; the two are independent facts. The
+ * only authorised consumer is Knowledge Memory's own promotion evaluator,
+ * where `true` licenses the one, narrow single-factor promotion exception
+ * the governing Clarification above creates -- it has no effect on the
+ * ordinary multi-factor gate for any candidate that does not carry it
+ * `true` (Clarification Guarantee 5). Nullable, for the identical reason
+ * [explicitlyRequested] is nullable: `null` means the constructing
+ * subsystem did not claim this narrow circumstance applies, never a
+ * fabricated `false`.
+ *
  * No `init` block exists on this type -- there is no field beyond
  * ordinary type safety left to validate.
  */
 data class KnowledgeCandidate(
     val evidenceReference: MemoryCoreRecordReference,
     val explicitlyRequested: Boolean? = null,
+    val soleBasisIsExplicitInstruction: Boolean? = null,
 )
 
 /**

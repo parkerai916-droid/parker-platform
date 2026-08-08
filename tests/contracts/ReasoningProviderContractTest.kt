@@ -133,6 +133,22 @@ class ReasoningProviderContractTest {
         assertIs<ReasoningProviderResponse.Reply>(reply)
     }
 
+    // --- Remember (Parker Conversational Memory Bridge, Admission Unit) ---
+
+    @Test
+    fun `Remember rejects blank text`() {
+        assertFailsWith<IllegalArgumentException> {
+            ReasoningProviderResponse.Remember("   ")
+        }
+    }
+
+    @Test
+    fun `Remember accepts non-blank text`() {
+        val remember = ReasoningProviderResponse.Remember("my favourite coffee mug is black")
+
+        assertIs<ReasoningProviderResponse.Remember>(remember)
+    }
+
     // --- NoAction ---
 
     @Test
@@ -143,10 +159,11 @@ class ReasoningProviderContractTest {
     // --- sealed exclusivity ---
 
     @Test
-    fun `a ReasoningProviderResponse holds exactly one of Goal, Reply, or NoAction, never more than one`() {
+    fun `a ReasoningProviderResponse holds exactly one of Goal, Reply, Remember, or NoAction, never more than one`() {
         val responses: List<ReasoningProviderResponse> = listOf(
             ReasoningProviderResponse.Goal("goal text"),
             ReasoningProviderResponse.Reply("reply text"),
+            ReasoningProviderResponse.Remember("remember text"),
             ReasoningProviderResponse.NoAction,
         )
 
@@ -154,6 +171,7 @@ class ReasoningProviderContractTest {
             when (response) {
                 is ReasoningProviderResponse.Goal -> assertIs<ReasoningProviderResponse.Goal>(response)
                 is ReasoningProviderResponse.Reply -> assertIs<ReasoningProviderResponse.Reply>(response)
+                is ReasoningProviderResponse.Remember -> assertIs<ReasoningProviderResponse.Remember>(response)
                 is ReasoningProviderResponse.NoAction -> assertIs<ReasoningProviderResponse.NoAction>(response)
             }
         }

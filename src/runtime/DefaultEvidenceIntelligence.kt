@@ -215,5 +215,16 @@ internal class DefaultEvidenceIntelligence(
             "ReasoningProviderResponse.Goal has no lawful EvidenceAnalysisResult mapping " +
                 "(docs/reviews/EVIDENCE_INTELLIGENCE_UNIT_5_PLANNING_AND_BOUNDARY_REVIEW.md, Section 4)",
         )
+
+        // Parker Conversational Memory Bridge, Admission Unit: Remember is a conversation-turn
+        // classification (Conversation Reply Coordinator's own new, sole consumer) -- Evidence
+        // Intelligence's own Reasoning Provider invocation is a wholly separate reasoning subject
+        // (ReasoningSubject.OfEvidenceAnalysisRequest, never OfTurn), and no governance authorises a
+        // lawful EvidenceAnalysisResult mapping for it, mirroring Goal's own identical treatment
+        // immediately above -- a genuine implementation-level anomaly, faulted, never silently
+        // coerced.
+        is ReasoningProviderResponse.Remember -> throw UnsupportedOperationException(
+            "ReasoningProviderResponse.Remember has no lawful EvidenceAnalysisResult mapping",
+        )
     }
 }

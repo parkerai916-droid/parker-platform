@@ -47,6 +47,8 @@ class UnclassifiableModelResponseException(val raw: String) :
  *   trimmed. A blank `<text>` surfaces as `IllegalArgumentException` from
  *   `Goal`'s own constructor validation, not caught here.
  * - `REPLY:<text>` -> [ReasoningProviderResponse.Reply], same handling.
+ * - `REMEMBER:<text>` -> [ReasoningProviderResponse.Remember], same
+ *   handling (Parker Conversational Memory Bridge, Admission Unit).
  * - Exactly `NOACTION`, with nothing else present after the one outer
  *   trim -> [ReasoningProviderResponse.NoAction]. Trailing text after
  *   `NOACTION` does not match this branch.
@@ -65,6 +67,9 @@ class TaggedReasoningResponseParser : ReasoningResponseParser {
             trimmed.startsWith(REPLY_TAG) ->
                 ReasoningProviderResponse.Reply(trimmed.removePrefix(REPLY_TAG).trim())
 
+            trimmed.startsWith(REMEMBER_TAG) ->
+                ReasoningProviderResponse.Remember(trimmed.removePrefix(REMEMBER_TAG).trim())
+
             trimmed == NOACTION_TAG ->
                 ReasoningProviderResponse.NoAction
 
@@ -75,6 +80,7 @@ class TaggedReasoningResponseParser : ReasoningResponseParser {
     private companion object {
         const val GOAL_TAG = "GOAL:"
         const val REPLY_TAG = "REPLY:"
+        const val REMEMBER_TAG = "REMEMBER:"
         const val NOACTION_TAG = "NOACTION"
     }
 }

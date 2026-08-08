@@ -42,6 +42,7 @@ class LoggingReasoningProvider(
         val variant = when (response) {
             is ReasoningProviderResponse.Reply -> "Reply"
             is ReasoningProviderResponse.Goal -> "Goal"
+            is ReasoningProviderResponse.Remember -> "Remember"
             ReasoningProviderResponse.NoAction -> "NoAction"
         }
         val subjectIdentifier = when (val subject = request.subject) {

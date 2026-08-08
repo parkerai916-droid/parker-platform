@@ -266,6 +266,27 @@ class DefaultKnowledgeCandidateEvaluator(
             )
         }
 
+        // Parker Conversational Memory Bridge, Admission Unit
+        // (docs/governance/PROGRAMME_3_EXPLICIT_OWNER_INSTRUCTION_PROMOTION_EXCEPTION_SCOPE_LOCK_CLARIFICATION.md).
+        // The one, narrow, express single-factor exception that Clarification authorises -- checked
+        // after Contradiction (an unresolved contradiction is still disclosed honestly even for an
+        // explicit-instruction candidate) and before the ordinary two-factor gate. Always assigns
+        // EvidentialState.UNKNOWN, never a stronger state (Clarification Guarantee 3) -- exactly the
+        // same, weakest classification the two-factor path below already assigns, never more
+        // generous. soleBasisIsExplicitInstruction is deliberately distinct from explicitlyRequested
+        // (KnowledgeStore.kt's own KDoc) -- this branch never fires merely because explicitlyRequested
+        // is true.
+        if (candidate.soleBasisIsExplicitInstruction == true) {
+            return@runBlocking promote(
+                candidate = candidate,
+                knowledgeId = knowledgeId,
+                provenanceReference = provenanceReference,
+                state = EvidentialState.UNKNOWN,
+                basis = "promoted solely because of an explicit, deterministic owner instruction to remember this; " +
+                    "no independent evidential weight was established" + corroborationDisclosure,
+            )
+        }
+
         val confidenceReachable = resolved.confidence != null
         val explicitRequestReachable = candidate.explicitlyRequested == true
         val reachableFactors = listOfNotNull(

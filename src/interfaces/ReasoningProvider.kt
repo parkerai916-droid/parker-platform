@@ -159,6 +159,27 @@ sealed class ReasoningProviderResponse {
     }
 
     /**
+     * The Reasoning Provider has determined the owner's Turn is a direct,
+     * unambiguous instruction to remember a specific, stated proposition
+     * (Parker Conversational Memory Bridge, Admission Unit;
+     * `docs/governance/PROGRAMME_3_EXPLICIT_OWNER_INSTRUCTION_PROMOTION_EXCEPTION_SCOPE_LOCK_CLARIFICATION.md`
+     * Guarantee 2). This is a speech-act (intent) classification, exactly
+     * like [Goal] versus [Reply] -- it carries no confidence, importance,
+     * or evidential-weight judgment of any kind, and never may. Where any
+     * doubt exists whether the owner intended such an instruction, [Reply]
+     * or [NoAction] is the correct classification instead, never this one.
+     *
+     * @param text The proposition the owner asked to be remembered,
+     *   expressed in plain prose, extracted unchanged from the owner's own
+     *   words. Must be non-blank.
+     */
+    data class Remember(val text: String) : ReasoningProviderResponse() {
+        init {
+            require(text.isNotBlank()) { "Remember.text must not be blank" }
+        }
+    }
+
+    /**
      * The Reasoning Provider has confidently determined that the owner's
      * Turn warrants neither a goal nor a reply. Not a failure signal --
      * see the class-level documentation above.

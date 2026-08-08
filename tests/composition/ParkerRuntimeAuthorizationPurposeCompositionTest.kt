@@ -17,27 +17,41 @@ import parker.core.interfaces.RequestPriority
 import parker.core.runtime.AuthorizationPurposeRegistry
 import parker.core.runtime.DefaultEvidenceCustodian
 import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
+import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
+import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.PermissionPolicyRule
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
  * Authorization Purpose Implementation Plan, Unit 5 ("Composition
- * Wiring"). Proves the already-built Unit 1-4 infrastructure now exists
- * in the composed [ParkerRuntime] graph -- construction, wiring to the
- * one [DefaultPermissionPolicy] instance, and a still-empty, still-inert
- * registry -- never that any real Authorization Purpose value is
- * registered or that any existing consumer adopts it (both explicitly
- * out of this Unit's own scope; Programme Unit 4/Gap #54 own that later
- * work). This suite proves the *wiring* Unit 5 adds; it does not re-prove
- * Units 1-4's own behaviour, already covered by their own unit test
- * suites (`AuthorizationPurposeRegistryTest.kt`, `DefaultPermissionPolicyTest.kt`).
+ * Wiring") and Unit 6 ("End-to-End Verification"). Unit 5's own tests
+ * (below, unmodified) prove the already-built Unit 1-4 infrastructure now
+ * exists in the composed [ParkerRuntime] graph -- construction, wiring to
+ * the one [DefaultPermissionPolicy] instance, and a still-empty,
+ * still-inert registry -- never that any real Authorization Purpose value
+ * is registered or that any existing consumer adopts it (both explicitly
+ * out of that Unit's own scope; Programme Unit 4/Gap #54 own that later
+ * work). Unit 6's own tests (added below, in their own section) extend
+ * this file with the properties that specifically require the *real*
+ * composed runtime rather than a test-constructed policy/engine pair:
+ * single-instance structure, regression through the *full*
+ * `permissionEngine.evaluate` chain (identity resolution + policy, not
+ * `DefaultPermissionPolicy.evaluate` alone), and proof that Authorization
+ * Purpose infrastructure alone has not accidentally authorised Gap #54's
+ * still-blocked `memory.retrieve` path
+ * (`docs/reviews/AUTHORIZATION_PURPOSE_UNIT_6_PLANNING_REVIEW.md` §5).
+ * Neither Unit re-proves Units 1-4's own behaviour, already covered by
+ * their own unit test suites (`AuthorizationPurposeRegistryTest.kt`,
+ * `DefaultPermissionPolicyTest.kt`,
+ * `AuthorizationPurposeEndToEndVerificationTest.kt`).
  *
  * Reflection is used only where no public seam exists to observe internal
  * composition state -- `ParkerRuntime` exposes none of its internal
@@ -67,10 +81,9 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         return field.get(this) as T
     }
 
-    private fun composedPolicy(runtime: ParkerRuntime): DefaultPermissionPolicy {
-        val permissionEngine = runtime.privateField<PermissionEngine>("permissionEngine")
-        return permissionEngine.privateField("policy")
-    }
+    private fun composedEngine(runtime: ParkerRuntime): PermissionEngine = runtime.privateField("permissionEngine")
+
+    private fun composedPolicy(runtime: ParkerRuntime): DefaultPermissionPolicy = composedEngine(runtime).privateField("policy")
 
     // ================= Construction and wiring =================
 
@@ -216,6 +229,154 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
 
         assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
         assertEquals(PermissionLevel.AUTOMATIC, decision.level)
+
+        runtime.shutdown()
+    }
+
+    // ================================================================================
+    // Unit 6 ("End-to-End Verification") -- properties requiring the real, composed
+    // runtime specifically. See AuthorizationPurposeEndToEndVerificationTest.kt for
+    // the precedence-safety/fail-closed matrix, proven through a real, test-constructed
+    // DefaultPermissionEngine/DefaultPermissionPolicy pair (the real production rule
+    // list here is fixed and cannot carry a purpose-aware rule without an unauthorised
+    // production change).
+    // ================================================================================
+
+    private val ownerPrincipalId = "user.owner-authz-purpose-composition-test"
+
+    // ================= Single-authority architecture =================
+
+    @Test
+    fun `the composed permissionEngine field is the one, real DefaultPermissionEngine implementation`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        assertIs<DefaultPermissionEngine>(composedEngine(runtime), "single-authority architecture requires the one real implementation, never a second or substitute one")
+
+        runtime.shutdown()
+    }
+
+    // ================= Regression through the FULL engine (identity resolution + policy) =================
+
+    @Test
+    fun `an existing production action still resolves APPROVED through the full, composed permissionEngine (identity plus policy)`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val decision = composedEngine(runtime).evaluate(
+            ExecutionRequest(
+                requestId = RequestId("req-authz-purpose-unit6-full-engine-regression"),
+                principalId = PrincipalId(ownerPrincipalId),
+                origin = RequestOrigin.TEXT,
+                intent = "Unit 6 full-engine regression check",
+                targetResources = listOf(DefaultEvidenceCustodian.EVIDENCE_INTAKE_RESOURCE_ID),
+                proposedActions = listOf(DefaultEvidenceCustodian.ACCEPT_ACTION_NAME),
+                priority = RequestPriority.NORMAL,
+                createdAt = Instant.now(),
+                correlationId = "corr-authz-purpose-unit6-full-engine-regression",
+            ),
+        )
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
+        assertEquals(PermissionLevel.AUTOMATIC, decision.level)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `a registered, active, but rule-unmatched Authorization Purpose still resolves via the coarse rule through the full, composed permissionEngine`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val registry = composedPolicy(runtime).privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
+        val syntheticPurpose = AuthorizationPurposeId("test.unit-6-full-engine-absent-widening-check")
+        assertTrue(registry.register(syntheticPurpose) is AuthorizationPurposeRegistrationOutcome.Registered)
+
+        val decision = composedEngine(runtime).evaluate(
+            ExecutionRequest(
+                requestId = RequestId("req-authz-purpose-unit6-full-engine-regression-2"),
+                principalId = PrincipalId(ownerPrincipalId),
+                origin = RequestOrigin.TEXT,
+                intent = "Unit 6 full-engine regression check with a declared, registered purpose",
+                targetResources = listOf(DefaultEvidenceCustodian.EVIDENCE_INTAKE_RESOURCE_ID),
+                proposedActions = listOf(DefaultEvidenceCustodian.ACCEPT_ACTION_NAME),
+                priority = RequestPriority.NORMAL,
+                createdAt = Instant.now(),
+                correlationId = "corr-authz-purpose-unit6-full-engine-regression-2",
+                authorizationPurpose = syntheticPurpose,
+            ),
+        )
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, decision.decision)
+        assertEquals(PermissionLevel.AUTOMATIC, decision.level)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `no consumer class -- including Conversational Memory Admission's own coordinator -- declares a field referencing the Authorization Purpose registry`() {
+        // MemoryAdmissionCoordinator was, at this repository's own current baseline, found
+        // already wired into the committed ParkerRuntime.kt graph despite its own source file
+        // remaining untracked (docs/reviews/AUTHORIZATION_PURPOSE_UNIT_6_PLANNING_REVIEW.md
+        // Section 0) -- disclosed there, not corrected here. Because it is genuinely part of the
+        // real, composed graph, it is checked here alongside the two consumers Unit 5's own test
+        // (above) already checks, for the same "no hidden adoption" reason.
+        val coordinatorFields = MemoryAdmissionCoordinator::class.java.declaredFields.map { it.name }
+
+        assertTrue(coordinatorFields.none { it.contains("authorizationPurpose", ignoreCase = true) }, "MemoryAdmissionCoordinator: $coordinatorFields")
+    }
+
+    // ================= Gap #54 remains unresolved (mandatory) =================
+
+    @Test
+    fun `memory retrieve remains DENIED through the full, composed permissionEngine regardless of Authorization Purpose`() = runTest {
+        // The nearest truthful existing seam (Planning Review Section 5): memory.retrieve is
+        // deliberately never registered in the composed ActionVocabulary, and
+        // PermissionFilteredMemoryRetrieval's own real requests always carry an empty
+        // targetResources list -- reproduced here structurally, without invoking
+        // PermissionFilteredMemoryRetrieval itself (excluded from this Unit's own scope).
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val engine = composedEngine(runtime)
+        val withoutPurpose = engine.evaluate(
+            ExecutionRequest(
+                requestId = RequestId("req-authz-purpose-unit6-gap54-no-purpose"),
+                principalId = PrincipalId(ownerPrincipalId),
+                origin = RequestOrigin.TEXT,
+                intent = "Gap #54 non-widening check -- no Authorization Purpose declared",
+                targetResources = emptyList(),
+                proposedActions = listOf(PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME),
+                priority = RequestPriority.NORMAL,
+                createdAt = Instant.now(),
+                correlationId = "corr-authz-purpose-unit6-gap54-no-purpose",
+            ),
+        )
+        assertEquals(PermissionDecisionOutcome.DENIED, withoutPurpose.decision, "memory.retrieve must remain DENIED with no Authorization Purpose declared")
+
+        val registry = composedPolicy(runtime).privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
+        val syntheticPurpose = AuthorizationPurposeId("test.unit-6-gap54-non-widening-check")
+        assertTrue(registry.register(syntheticPurpose) is AuthorizationPurposeRegistrationOutcome.Registered)
+
+        val withPurpose = engine.evaluate(
+            ExecutionRequest(
+                requestId = RequestId("req-authz-purpose-unit6-gap54-with-purpose"),
+                principalId = PrincipalId(ownerPrincipalId),
+                origin = RequestOrigin.TEXT,
+                intent = "Gap #54 non-widening check -- a registered, active Authorization Purpose declared",
+                targetResources = emptyList(),
+                proposedActions = listOf(PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME),
+                priority = RequestPriority.NORMAL,
+                createdAt = Instant.now(),
+                correlationId = "corr-authz-purpose-unit6-gap54-with-purpose",
+                authorizationPurpose = syntheticPurpose,
+            ),
+        )
+        assertEquals(
+            PermissionDecisionOutcome.DENIED,
+            withPurpose.decision,
+            "Authorization Purpose infrastructure alone must not accidentally authorise memory.retrieve -- Gap #54 remains a separate, unresolved policy-content decision",
+        )
 
         runtime.shutdown()
     }

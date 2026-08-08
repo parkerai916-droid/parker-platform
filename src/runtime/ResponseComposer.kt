@@ -84,6 +84,14 @@ class ResponseComposer(
             is ReasoningProviderResponse.Goal -> GatedOutcome.NotAccepted(
                 "not a Reply; reasoningResponse was Goal",
             )
+            // Parker Conversational Memory Bridge, Admission Unit: unreachable in production --
+            // ConversationReplyCoordinator always converts a Remember into a real Reply
+            // (buildAdmissionReply) before this class is ever called; a raw Remember never reaches
+            // here. Handled defensively, mirroring Goal/NoAction's own identical "not a Reply" shape,
+            // rather than left as a non-exhaustive `when`.
+            is ReasoningProviderResponse.Remember -> GatedOutcome.NotAccepted(
+                "not a Reply; reasoningResponse was Remember",
+            )
             ReasoningProviderResponse.NoAction -> GatedOutcome.NotAccepted(
                 "not a Reply; reasoningResponse was NoAction",
             )

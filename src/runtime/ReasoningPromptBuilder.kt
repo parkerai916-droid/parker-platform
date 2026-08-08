@@ -22,9 +22,15 @@ fun interface ReasoningPromptBuilder {
  * The Plan's Decision A: a simple, deterministic template -- the already-
  * assembled context entries (one per line, in order), then the owner's
  * own message, then a fixed instruction requiring the model to prefix its
- * reply with exactly one of `GOAL:`, `REPLY:`, or `NOACTION`. No further
- * prompt engineering, few-shot examples, or persona instructions (Review
- * Section 12, Decision 2).
+ * reply with exactly one of `GOAL:`, `REPLY:`, `REMEMBER:`, or `NOACTION`.
+ * No further prompt engineering, few-shot examples, or persona
+ * instructions (Review Section 12, Decision 2). `REMEMBER:` was added by
+ * the Parker Conversational Memory Bridge, Admission Unit
+ * (`docs/implementation/CONVERSATIONAL_MEMORY_ADMISSION_IMPLEMENTATION_PLAN.md`)
+ * -- a narrowing addition to the same selection-guidance mechanism this
+ * class already used for `GOAL:`/`REPLY:`/`NOACTION`, not a new kind of
+ * instruction; its own guidance text is deliberately conservative
+ * (explicit doubt routes to `REPLY:`, never `REMEMBER:`).
  *
  * [SELECTION_GUIDANCE] additionally states *when* each prefix applies --
  * added after live testing showed the model defaulting ordinary
@@ -60,12 +66,20 @@ class DefaultReasoningPromptBuilder : ReasoningPromptBuilder {
                 "appropriate.\n\n" +
                 "Use GOAL: only when the owner is asking you to carry out work that requires " +
                 "planning, execution, tools, later action, or multiple coordinated steps.\n\n" +
+                "Use REMEMBER: only when the owner gives a direct, unambiguous instruction to " +
+                "remember a specific, stated fact -- for example \"Remember that X\", \"Please " +
+                "remember X\", or \"Don't forget that X\". Put only the fact itself after the " +
+                "prefix, not the surrounding instruction. Never use REMEMBER: for an ordinary " +
+                "statement of fact, an incidental mention, or a question -- only for a direct " +
+                "instruction to remember something. If there is any doubt whether the owner " +
+                "intended such an instruction, use REPLY: instead (asking a clarifying question " +
+                "if needed), never REMEMBER:.\n\n" +
                 "Use NOACTION only when no response and no action is appropriate. Do not use " +
                 "NOACTION merely because the message is short, casual, or lacks an explicit " +
                 "question."
 
         const val INSTRUCTION =
-            "Respond with exactly one of the following prefixes: GOAL:, REPLY:, or " +
+            "Respond with exactly one of the following prefixes: GOAL:, REPLY:, REMEMBER:, or " +
                 "NOACTION, followed by your response text.\n\n" +
                 SELECTION_GUIDANCE +
                 "\n\n" +

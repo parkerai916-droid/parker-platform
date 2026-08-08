@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
  */
 class ReasoningPromptBuilderTest {
 
-    private val instruction = "Respond with exactly one of the following prefixes: GOAL:, REPLY:, or " +
+    private val instruction = "Respond with exactly one of the following prefixes: GOAL:, REPLY:, REMEMBER:, or " +
         "NOACTION, followed by your response text.\n\n" +
         "Use REPLY: for greetings; questions; conversational statements that reasonably " +
         "invite a response; requests for information, explanation, clarification, or " +
@@ -28,6 +28,14 @@ class ReasoningPromptBuilderTest {
         "appropriate.\n\n" +
         "Use GOAL: only when the owner is asking you to carry out work that requires " +
         "planning, execution, tools, later action, or multiple coordinated steps.\n\n" +
+        "Use REMEMBER: only when the owner gives a direct, unambiguous instruction to " +
+        "remember a specific, stated fact -- for example \"Remember that X\", \"Please " +
+        "remember X\", or \"Don't forget that X\". Put only the fact itself after the " +
+        "prefix, not the surrounding instruction. Never use REMEMBER: for an ordinary " +
+        "statement of fact, an incidental mention, or a question -- only for a direct " +
+        "instruction to remember something. If there is any doubt whether the owner " +
+        "intended such an instruction, use REPLY: instead (asking a clarifying question " +
+        "if needed), never REMEMBER:.\n\n" +
         "Use NOACTION only when no response and no action is appropriate. Do not use " +
         "NOACTION merely because the message is short, casual, or lacks an explicit " +
         "question.\n\n" +

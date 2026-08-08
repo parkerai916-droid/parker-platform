@@ -13,6 +13,7 @@ import parker.core.interfaces.DecisionId
 import parker.core.interfaces.ExecutionResult
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.InboundOwnerMessage
+import parker.core.interfaces.KnowledgeCandidateEvaluator
 import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
@@ -215,6 +216,7 @@ class ConversationReplyCoordinatorTest {
         planningSessionIdFactory: () -> String = { "fixed-planning-session-id" },
         planCandidateGenerator: PlanCandidateGenerator = fakePlanCandidateGenerator(),
         plannerRuntime: PlannerRuntime = fakePlannerRuntime { request, _ -> failedResult(request.planningSessionId) },
+        memoryAdmissionCoordinator: MemoryAdmissionCoordinator = defaultMemoryAdmissionCoordinator(),
     ): Fixture {
         val conversationTurnReasoningCoordinator = ConversationTurnReasoningCoordinator(passThroughConversationEngine(), reasoningProvider)
         val communicationConversationCoordinator = CommunicationConversationCoordinator(communicationIntake, conversationTurnReasoningCoordinator)
@@ -237,8 +239,39 @@ class ConversationReplyCoordinatorTest {
             resources,
             pipeline,
             { factoryCallCount },
-            ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator, goalPlanningHandoffCoordinator),
+            ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator, goalPlanningHandoffCoordinator, memoryAdmissionCoordinator),
         )
+    }
+
+    /**
+     * Parker Conversational Memory Bridge, Admission Unit. A minimal, real
+     * (not fake) [MemoryAdmissionCoordinator] -- an always-approving
+     * [FakePermissionEngine], a real, empty [InMemoryMemoryCore], and a
+     * real [DefaultKnowledgeSubmission] over it -- for every existing test
+     * in this file that does not itself exercise [ReasoningProviderResponse.Remember].
+     * None of this file's own pre-existing tests reach any method on this
+     * instance; it exists solely to satisfy [ConversationReplyCoordinator]'s
+     * own constructor.
+     */
+    private fun defaultMemoryAdmissionCoordinator(): MemoryAdmissionCoordinator {
+        val permissionEngine = FakePermissionEngine { request ->
+            PermissionDecision(
+                decisionId = DecisionId("dec-memory-admission-default"),
+                principalId = request.principalId,
+                resourceId = request.targetResources.single(),
+                action = PermissionAction.WRITE,
+                decision = PermissionDecisionOutcome.APPROVED,
+                level = PermissionLevel.AUTOMATIC,
+                timestamp = Instant.parse("2026-01-01T00:00:00Z"),
+            )
+        }
+        val memoryCore = InMemoryMemoryCore()
+        val knowledgeSubmission = DefaultKnowledgeSubmission(
+            DefaultKnowledgeCandidateEvaluator(memoryCore),
+            InMemoryKnowledgeItemPersistence(),
+            permissionEngine,
+        )
+        return MemoryAdmissionCoordinator(memoryCore, knowledgeSubmission, permissionEngine)
     }
 
     // ================= 1. Upstream NotAccepted =================
@@ -336,6 +369,162 @@ class ConversationReplyCoordinatorTest {
         val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
 
         assertIs<ConversationOutcome.NotAccepted>(outcome)
+    }
+
+    // ================= 3a. Remember routing (Parker Conversational Memory Bridge, Admission Unit) =================
+
+    private fun approvedDecision(request: parker.core.interfaces.ExecutionRequest) = PermissionDecision(
+        decisionId = DecisionId("dec-remember-test"),
+        principalId = request.principalId,
+        resourceId = request.targetResources.single(),
+        action = PermissionAction.WRITE,
+        decision = PermissionDecisionOutcome.APPROVED,
+        level = PermissionLevel.AUTOMATIC,
+        timestamp = fixedTimestamp,
+    )
+
+    private fun deniedDecision(request: parker.core.interfaces.ExecutionRequest) = PermissionDecision(
+        decisionId = DecisionId("dec-remember-test"),
+        principalId = request.principalId,
+        resourceId = request.targetResources.single(),
+        action = PermissionAction.WRITE,
+        decision = PermissionDecisionOutcome.DENIED,
+        level = PermissionLevel.AUTOMATIC,
+        timestamp = fixedTimestamp,
+    )
+
+    /** Always promotes -- a real MemoryAdmissionCoordinator over a fresh InMemoryMemoryCore and an always-approving permission engine. */
+    private fun storingMemoryAdmissionCoordinator(): MemoryAdmissionCoordinator {
+        val memoryCore = InMemoryMemoryCore()
+        val permissionEngine = FakePermissionEngine { request -> approvedDecision(request) }
+        return MemoryAdmissionCoordinator(
+            memoryCore,
+            DefaultKnowledgeSubmission(DefaultKnowledgeCandidateEvaluator(memoryCore), InMemoryKnowledgeItemPersistence(), permissionEngine),
+            permissionEngine,
+        )
+    }
+
+    /** Denies at this coordinator's own admission gate specifically. */
+    private fun notAuthorisedMemoryAdmissionCoordinator(): MemoryAdmissionCoordinator {
+        val memoryCore = InMemoryMemoryCore()
+        val permissionEngine = FakePermissionEngine { request ->
+            if (MemoryAdmissionCoordinator.CONVERSATIONAL_MEMORY_RESOURCE_ID in request.targetResources) deniedDecision(request) else approvedDecision(request)
+        }
+        return MemoryAdmissionCoordinator(
+            memoryCore,
+            DefaultKnowledgeSubmission(DefaultKnowledgeCandidateEvaluator(memoryCore), InMemoryKnowledgeItemPersistence(), permissionEngine),
+            permissionEngine,
+        )
+    }
+
+    /** Always declines -- a real MemoryAdmissionCoordinator wired to an evaluator that unconditionally rejects, proving buildAdmissionReply's own Declined mapping without contriving an unreachable evaluator state. */
+    private fun decliningMemoryAdmissionCoordinator(): MemoryAdmissionCoordinator {
+        val memoryCore = InMemoryMemoryCore()
+        val permissionEngine = FakePermissionEngine { request -> approvedDecision(request) }
+        val alwaysRejects = object : KnowledgeCandidateEvaluator {
+            override fun evaluate(candidate: parker.core.interfaces.KnowledgeCandidate) =
+                parker.core.interfaces.KnowledgeCandidateEvaluation.Reject("contrived rejection for test")
+        }
+        return MemoryAdmissionCoordinator(
+            memoryCore,
+            DefaultKnowledgeSubmission(alwaysRejects, InMemoryKnowledgeItemPersistence(), permissionEngine),
+            permissionEngine,
+        )
+    }
+
+    @Test
+    fun `a Remember is routed to MemoryAdmissionCoordinator, and a successful admission produces I'll remember that, delivered as an ordinary Reply`() = runTest {
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Remember("my favourite coffee mug is black") },
+            memoryAdmissionCoordinator = storingMemoryAdmissionCoordinator(),
+        )
+        val originalMessage = message(correlationId = "corr-remember-1")
+
+        val outcome = f.coordinator.submitAndDeliver(originalMessage, ReasoningContext(emptyList()), fixedConversationId)
+
+        val delivered = assertIs<ConversationOutcome.ReplyDelivered>(outcome)
+        assertEquals(ExecutionResultStatus.SUCCESS, delivered.executionResult.status)
+        assertEquals(mapOf(RESPONSE_TEXT_METADATA_KEY to "I'll remember that."), f.pipeline.lastSubmittedRequest?.metadata)
+        // Never routed to planning.
+        assertEquals(0, f.planningSessionIdFactoryCallCount())
+    }
+
+    @Test
+    fun `a denied admission produces an honest not-authorised reply, never a false success claim`() = runTest {
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Remember("a fact") },
+            memoryAdmissionCoordinator = notAuthorisedMemoryAdmissionCoordinator(),
+        )
+
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+
+        assertIs<ConversationOutcome.ReplyDelivered>(outcome)
+        val replyText = f.pipeline.lastSubmittedRequest?.metadata?.get(RESPONSE_TEXT_METADATA_KEY)
+        assertTrue(replyText?.startsWith("I'm not able to store that right now:") == true, "actual: $replyText")
+        assertTrue(replyText?.contains("I've stored that") != true, "must never claim success")
+        assertTrue(replyText?.contains("I'll remember") != true, "must never claim success")
+    }
+
+    @Test
+    fun `a declined submission produces an honest not-stored reply, never a false success claim`() = runTest {
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Remember("a fact") },
+            memoryAdmissionCoordinator = decliningMemoryAdmissionCoordinator(),
+        )
+
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+
+        assertIs<ConversationOutcome.ReplyDelivered>(outcome)
+        val replyText = f.pipeline.lastSubmittedRequest?.metadata?.get(RESPONSE_TEXT_METADATA_KEY)
+        assertTrue(replyText?.startsWith("I wasn't able to store that:") == true, "actual: $replyText")
+        assertTrue(replyText?.contains("contrived rejection for test") == true, "the evaluator's own basis must be disclosed honestly")
+    }
+
+    @Test
+    fun `the success reply is never composed until MemoryAdmissionCoordinator actually returns Stored -- the Reasoning Provider's own text is never used for this branch`() = runTest {
+        val f = fixture(
+            // A model could claim anything here; buildAdmissionReply must never use reasoningResponse.text
+            // for a Remember branch -- only the governed outcome may determine the reply.
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Remember("this text must never reach the owner directly") },
+            memoryAdmissionCoordinator = storingMemoryAdmissionCoordinator(),
+        )
+
+        f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+
+        val replyText = f.pipeline.lastSubmittedRequest?.metadata?.get(RESPONSE_TEXT_METADATA_KEY)
+        assertEquals("I'll remember that.", replyText)
+    }
+
+    @Test
+    fun `a Remember never reaches GoalPlanningHandoffCoordinator`() = runTest {
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Remember("a fact") },
+            memoryAdmissionCoordinator = storingMemoryAdmissionCoordinator(),
+            planningSessionIdFactory = { throw AssertionError("GoalPlanningHandoffCoordinator must not be called for Remember") },
+        )
+
+        val outcome = f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+
+        assertIs<ConversationOutcome.ReplyDelivered>(outcome)
+    }
+
+    @Test
+    fun `an exception thrown by MemoryAdmissionCoordinator propagates unchanged, and ReplyDeliveryCoordinator is never reached`() = runTest {
+        val throwingCoordinator = MemoryAdmissionCoordinator(
+            InMemoryMemoryCore(),
+            DefaultKnowledgeSubmission(DefaultKnowledgeCandidateEvaluator(InMemoryMemoryCore()), InMemoryKnowledgeItemPersistence(), FakePermissionEngine { approvedDecision(it) }),
+            FakePermissionEngine { throw IllegalStateException("simulated Permission Engine fault") },
+        )
+        val f = fixture(
+            reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Remember("a fact") },
+            memoryAdmissionCoordinator = throwingCoordinator,
+        )
+
+        assertFailsWith<IllegalStateException> {
+            f.coordinator.submitAndDeliver(message(), ReasoningContext(emptyList()), fixedConversationId)
+        }
+        assertEquals(0, f.identityService.resolveCallCount, "ReplyDeliveryCoordinator/ResponseComposer must never be reached once admission itself faults")
+        assertEquals(0, f.pipeline.submitCallCount)
     }
 
     // ================= 4. Downstream NotAccepted (NoAction) =================
@@ -491,15 +680,15 @@ class ConversationReplyCoordinatorTest {
         assertEquals(0, f.pipeline.submitCallCount)
     }
 
-    // ================= 12. Structural: constructor accepts exactly three dependencies =================
+    // ================= 12. Structural: constructor accepts exactly four dependencies =================
 
     @Test
-    fun `the coordinator's constructor accepts exactly three dependencies -- CommunicationConversationCoordinator, ReplyDeliveryCoordinator, and GoalPlanningHandoffCoordinator`() {
+    fun `the coordinator's constructor accepts exactly four dependencies -- CommunicationConversationCoordinator, ReplyDeliveryCoordinator, GoalPlanningHandoffCoordinator, and MemoryAdmissionCoordinator`() {
         val constructor = ConversationReplyCoordinator::class.java.declaredConstructors.single()
         val parameterTypes = constructor.parameterTypes.map { it.simpleName }.toSet()
 
         assertEquals(
-            setOf("CommunicationConversationCoordinator", "ReplyDeliveryCoordinator", "GoalPlanningHandoffCoordinator"),
+            setOf("CommunicationConversationCoordinator", "ReplyDeliveryCoordinator", "GoalPlanningHandoffCoordinator", "MemoryAdmissionCoordinator"),
             parameterTypes,
         )
     }
@@ -507,11 +696,11 @@ class ConversationReplyCoordinatorTest {
     // ================= 13. Statelessness =================
 
     @Test
-    fun `the coordinator declares no field beyond its three constructor-injected dependencies`() {
+    fun `the coordinator declares no field beyond its four constructor-injected dependencies`() {
         val fieldNames = ConversationReplyCoordinator::class.java.declaredFields.map { it.name }.toSet()
 
         assertEquals(
-            setOf("communicationConversationCoordinator", "replyDeliveryCoordinator", "goalPlanningHandoffCoordinator"),
+            setOf("communicationConversationCoordinator", "replyDeliveryCoordinator", "goalPlanningHandoffCoordinator", "memoryAdmissionCoordinator"),
             fieldNames,
         )
     }
@@ -611,7 +800,12 @@ class ConversationReplyCoordinatorTest {
             plannerRuntime = fakePlannerRuntime { _, _ -> throw AssertionError("must not be called for a Reply") },
         )
 
-        val coordinator = ConversationReplyCoordinator(communicationConversationCoordinator, replyDeliveryCoordinator, goalPlanningHandoffCoordinator)
+        val coordinator = ConversationReplyCoordinator(
+            communicationConversationCoordinator,
+            replyDeliveryCoordinator,
+            goalPlanningHandoffCoordinator,
+            defaultMemoryAdmissionCoordinator(),
+        )
 
         val originalMessage = message(correlationId = "corr-e2e-1")
         // Resolution is a real, separate, upstream call in production (ParkerRuntime.submitOwnerMessage)

@@ -538,4 +538,112 @@ class DefaultKnowledgeCandidateEvaluatorTest {
             "repeated relationships of the same kind must not change the classification",
         )
     }
+
+    // --- Parker Conversational Memory Bridge, Admission Unit: the new, express single-factor
+    // --- exception (docs/governance/PROGRAMME_3_EXPLICIT_OWNER_INSTRUCTION_PROMOTION_EXCEPTION_SCOPE_LOCK_CLARIFICATION.md) ---
+
+    @Test
+    fun `soleBasisIsExplicitInstruction alone promotes an Assertion with no confidence and no explicitlyRequested`() = runTest {
+        val core = InMemoryMemoryCore()
+        val subject = newAssertion(core, confidence = null)
+
+        val result = evaluator(core).evaluate(
+            KnowledgeCandidate(MemoryCoreRecordReference.ToAssertion(subject.assertionId), soleBasisIsExplicitInstruction = true),
+        )
+
+        val promote = assertIs<KnowledgeCandidateEvaluation.Promote>(result)
+        assertEquals(EvidentialState.UNKNOWN, promote.item.evidentialState, "the exception must never assign a stronger state than the ordinary two-factor gate itself ever produces")
+        assertTrue(
+            promote.promotion.basis.contains("explicit, deterministic owner instruction"),
+            "the basis must honestly disclose that promotion rests solely on the instruction, with no independent evidential weight",
+        )
+    }
+
+    @Test
+    fun `soleBasisIsExplicitInstruction promotes an Entity, which carries no confidence field at all`() = runTest {
+        val core = InMemoryMemoryCore()
+        val entity = core.createEntity(
+            writerPrincipal,
+            parker.core.interfaces.CandidateEntity(
+                entityType = "person",
+                primaryLabel = "Stellar",
+                provenanceId = core.createProvenance(
+                    writerPrincipal,
+                    CandidateProvenance(
+                        sourceIdentifier = "test-source",
+                        sourceType = "test-harness",
+                        acquisitionTime = Instant.parse("2026-01-01T00:00:00Z"),
+                        contentNature = ContentNature.ORIGINAL,
+                    ),
+                ).provenanceId,
+            ),
+        )
+
+        // The ordinary two-factor gate structurally cannot promote Entity-kind evidence at all
+        // (confidence is unreachable for it) -- this exception is the one, narrow way an
+        // Entity-kind candidate can be promoted absent Contradiction.
+        val result = evaluator(core).evaluate(
+            KnowledgeCandidate(MemoryCoreRecordReference.ToEntity(entity.entityId), soleBasisIsExplicitInstruction = true),
+        )
+
+        val promote = assertIs<KnowledgeCandidateEvaluation.Promote>(result)
+        assertEquals(EvidentialState.UNKNOWN, promote.item.evidentialState)
+    }
+
+    @Test
+    fun `soleBasisIsExplicitInstruction false has no effect -- the ordinary gate still applies`() = runTest {
+        val core = InMemoryMemoryCore()
+        val subject = newAssertion(core, confidence = null)
+
+        val result = evaluator(core).evaluate(
+            KnowledgeCandidate(MemoryCoreRecordReference.ToAssertion(subject.assertionId), soleBasisIsExplicitInstruction = false),
+        )
+
+        val reject = assertIs<KnowledgeCandidateEvaluation.Reject>(result)
+        assertTrue(reject.basis.contains("insufficient promotion basis"))
+    }
+
+    @Test
+    fun `explicitlyRequested true, without soleBasisIsExplicitInstruction, does not trigger the new exception -- the two fields are independent`() = runTest {
+        val core = InMemoryMemoryCore()
+        val subject = newAssertion(core, confidence = null)
+
+        val result = evaluator(core).evaluate(
+            KnowledgeCandidate(MemoryCoreRecordReference.ToAssertion(subject.assertionId), explicitlyRequested = true),
+        )
+
+        // Identical outcome to the pre-existing "explicit request alone... is rejected" test --
+        // restated here specifically to prove the new field's absence, not merely
+        // explicitlyRequested's own already-established insufficiency.
+        val reject = assertIs<KnowledgeCandidateEvaluation.Reject>(result)
+        assertTrue(reject.basis.contains("insufficient promotion basis"))
+    }
+
+    @Test
+    fun `contradiction still takes priority over soleBasisIsExplicitInstruction -- COMPETING_EXPLANATIONS, not the plain instruction-only basis`() = runTest {
+        val core = InMemoryMemoryCore()
+        val subject = newAssertion(core, statement = "the mug is black")
+        val contradicting = newAssertion(core, statement = "the mug is white")
+        core.createRelationship(
+            writerPrincipal,
+            CandidateRelationship(
+                relationshipType = Relationship.CONTRADICTS,
+                fromEndpoint = RelationshipEndpoint(RelationshipEndpoint.ASSERTION, subject.assertionId.value),
+                toEndpoint = RelationshipEndpoint(RelationshipEndpoint.ASSERTION, contradicting.assertionId.value),
+                directional = false,
+                provenanceId = subject.provenanceId,
+            ),
+        )
+
+        val result = evaluator(core).evaluate(
+            KnowledgeCandidate(MemoryCoreRecordReference.ToAssertion(subject.assertionId), soleBasisIsExplicitInstruction = true),
+        )
+
+        val promote = assertIs<KnowledgeCandidateEvaluation.Promote>(result)
+        assertEquals(
+            EvidentialState.COMPETING_EXPLANATIONS,
+            promote.item.evidentialState,
+            "an unresolved contradiction must still be honestly disclosed even for an explicit-instruction candidate",
+        )
+    }
 }

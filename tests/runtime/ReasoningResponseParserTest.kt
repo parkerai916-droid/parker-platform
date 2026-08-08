@@ -34,6 +34,14 @@ class ReasoningResponseParserTest {
     }
 
     @Test
+    fun `a REMEMBER colon prefix produces a Remember with the trimmed remainder as text`() {
+        val result = parser.parse("REMEMBER:  my favourite coffee mug is black  ")
+
+        val remember = assertIs<ReasoningProviderResponse.Remember>(result)
+        assertEquals("my favourite coffee mug is black", remember.text)
+    }
+
+    @Test
     fun `outer whitespace around the whole raw string is trimmed before matching`() {
         val result = parser.parse("  GOAL:hi  \n")
 
@@ -63,6 +71,11 @@ class ReasoningResponseParserTest {
     @Test
     fun `a blank remainder after REPLY colon throws IllegalArgumentException`() {
         assertFailsWith<IllegalArgumentException> { parser.parse("REPLY:") }
+    }
+
+    @Test
+    fun `a blank remainder after REMEMBER colon throws IllegalArgumentException`() {
+        assertFailsWith<IllegalArgumentException> { parser.parse("REMEMBER:   ") }
     }
 
     @Test
