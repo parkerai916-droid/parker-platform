@@ -4,15 +4,25 @@ import java.lang.reflect.Field
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.CorrelationId
+import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.InboundOwnerMessage
+import parker.core.interfaces.KnowledgePromotion
+import parker.core.interfaces.MemoryCoreRecordReference
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.RelationshipEndpoint
+import parker.core.runtime.ConversationReplyCoordinator
+import parker.core.runtime.DurableMemoryCore
+import parker.core.runtime.InMemoryKnowledgeItemPersistence
+import parker.core.runtime.MemoryAdmissionCoordinator
+import parker.core.runtime.MemoryAdmissionOutcome
 import java.time.Instant
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -25,42 +35,13 @@ import kotlin.test.assertTrue
  * real `KnowledgeSubmission` -- not fakes, mirroring
  * [ParkerRuntimeConversationPipelineTest]'s own established style exactly.
  *
- * **This suite exists to record a genuine, significant, pre-existing
- * finding this Unit's own mandatory live/behavioural verification
- * surfaced, not introduced.** `DefaultKnowledgeCandidateEvaluator`, as
- * actually composed in `ParkerRuntime.kt`, resolves a submitted
- * candidate's evidence through `permissionFilteredMemoryRetrieval` --
- * the same, shared decorator `ParkerRuntimeEvidenceIntelligenceCompositionTest`'s
- * own `analyseEvidence's Memory Core retrieval remains fail-closed even
- * for a record that genuinely exists in Memory Core` test already proves
- * denies *every* read unconditionally (`RETRIEVE_ACTION_NAME`/
- * `RETRIEVE_DOCUMENT_ACTION_NAME` are never registered in the Action
- * Vocabulary, and -- traced directly, `DefaultPermissionPolicy.evaluate`
- * -> `ActionMapper.mapOne` -- registering them would not help, since
- * Memory Core records are never Resource Registry entries, so
- * `targetResourceTypes` is structurally always empty for every retrieval
- * request regardless of vocabulary registration). This means
- * `KnowledgeSubmission.submit` can never resolve, and therefore can never
- * promote, *any* candidate in the live, composed runtime -- for this
- * bridge's own candidates or for Evidence Intelligence's own, identically
- * wired ones. This is not a defect in this Unit's own implementation
- * (confirmed independently correct and fully tested in isolation by
- * `MemoryAdmissionCoordinatorTest`, using a real, unfiltered `MemoryCore`
- * as its own retrieval dependency); it is a genuine, deeper, pre-existing
- * gap in Knowledge Submission's own real-world reachability, first
- * exposed here because this Unit is the first to genuinely exercise the
- * complete path end-to-end against the real, live composition, per this
- * Unit's own governing task's explicit "must prove behaviour, not merely
- * compilation" requirement. Fixing it requires changing `DefaultPermissionPolicy`
- * or `ActionMapper`'s own frozen matching logic, or Memory Core's own
- * Resource-representation choice (Errata 004) -- both well outside this
- * Unit's own authorised scope ("new permission architecture" is an
- * explicit non-responsibility). The tests below therefore verify the
- * behaviour this Unit is actually responsible for and actually
- * authorised to guarantee: that Parker recognises the explicit
- * instruction, genuinely attempts durable admission through the real,
- * governed path, and -- because that path presently, honestly fails --
- * discloses that failure accurately, never fabricating a success claim.
+ * Gap #54 Memory Retrieval Operationalisation Unit 5 replaces this
+ * suite's historical continued-failure expectation after accepted Units
+ * 1–4 lawfully operationalised candidate evidence retrieval. Success is
+ * proved from the authoritative composed Knowledge persistence and the
+ * genuine durable Memory Core assertion, never inferred from reply text.
+ * This remains admission/promotion verification only: it makes no claim
+ * that the proposition can later be discovered or recalled in conversation.
  */
 class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
 
@@ -104,34 +85,91 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
     }
 
     @Test
-    fun `an explicit REMEMBER instruction is genuinely attempted, and its current, real failure is disclosed honestly, never fabricated as success`() = runBlocking<Unit> {
-        val stub = startStub("REMEMBER: my favourite coffee mug is black")
+    fun `an explicit owner REMEMBER instruction creates durable evidence and a persisted promoted KnowledgeItem before success is reported`() = runBlocking<Unit> {
+        val proposition = "My test coffee mug is black."
+        val stub = startStub("REMEMBER: $proposition")
         val logPath = Files.createTempDirectory("memory-admission-composition-single").resolve("memory-core.log").toString()
         val logger = RecordingParkerLogger()
         val ownerSink = RecordingOwnerNotificationSink()
         val runtime = ParkerRuntime(configFor(stub, logPath), logger, ownerSink)
         runtime.start()
 
-        val outcome = runtime.submitOwnerMessage(message("Remember that my favourite coffee mug is black"))
+        val ownerMessage = message("Remember that my test coffee mug is black.")
+        val outcome = runtime.submitOwnerMessage(ownerMessage)
 
-        // The pipeline itself completes successfully -- REMEMBER was recognised, routed to
-        // MemoryAdmissionCoordinator, and a real reply was composed and delivered. This is not a
-        // ParkerRuntimeOutcome.Failed; the admission path's own internal Declined disposition is
-        // handled, not thrown.
         val delivered = assertIs<ParkerRuntimeOutcome.Delivered>(outcome)
         assertEquals(ExecutionResultStatus.SUCCESS, delivered.executionResult.status)
+        assertEquals(listOf("I'll remember that."), ownerSink.notifications)
 
-        assertEquals(1, ownerSink.notifications.size)
-        val replyText = ownerSink.notifications.single()
+        val knowledgeRetrieval = runtime.privateField<Any>("knowledgeRetrieval")
+        val persistence = knowledgeRetrieval.privateField<InMemoryKnowledgeItemPersistence>("persistence")
+        val persistedItems = persistence.findAll()
+        assertEquals(1, persistedItems.size, "success must correspond to one item in the authoritative composed persistence")
 
-        // The mandatory response-integrity guarantee, proven against a real, currently-failing
-        // governed path, not a contrived one: Parker must never claim success it did not achieve.
-        assertTrue(replyText.startsWith("I wasn't able to store that:"), "actual reply: $replyText")
-        assertTrue("I'll remember" !in replyText && "I've stored" !in replyText, "must never fabricate a success claim: $replyText")
-        assertTrue(
-            replyText.contains("could not be resolved"),
-            "the real, honest basis (Knowledge Submission's own resolution failure) must be disclosed, not a generic or misleading message: $replyText",
+        val item = persistedItems.single()
+        val assertionReference = assertIs<MemoryCoreRecordReference.ToAssertion>(item.evidenceReference)
+        val memoryCore = runtime.privateField<Any>("evidenceIntelligenceAcceptanceCoordinator")
+            .privateField<DurableMemoryCore>("memoryCore")
+        val assertion = assertNotNull(
+            memoryCore.getAssertion(PrincipalId(ownerPrincipalId), assertionReference.assertionId),
+            "the persisted item must reference an assertion that genuinely exists in the composed durable Memory Core",
         )
+        assertEquals(proposition, assertion.statement)
+        assertEquals(assertion.provenanceId, item.provenanceReference.provenanceId)
+
+        val promotion = assertIs<KnowledgePromotion>(item.history.single())
+        assertEquals(item.knowledgeId, promotion.knowledgeId)
+        assertEquals(assertionReference, promotion.evidenceReference)
+        assertEquals(item.evidentialState, promotion.resultingState)
+        assertTrue(
+            promotion.basis.contains("explicit, deterministic owner instruction"),
+            "promotion must disclose the existing explicit-owner-instruction exception: ${promotion.basis}",
+        )
+
+        // Re-read after the complete conversation call and evidence inspection: this is repository
+        // state owned by the running production composition, not an evaluator-local return value.
+        assertEquals(item, persistence.findAll().single())
+
+        val evidenceIntelligenceOutcome = runtime.analyseEvidence(
+            PrincipalId(ownerPrincipalId),
+            EvidenceAnalysisRequest(
+                analysisKind = "unit-5-same-runtime-denial",
+                requestingPrincipalId = PrincipalId(ownerPrincipalId),
+                memoryCoreReferences = listOf(
+                    RelationshipEndpoint(RelationshipEndpoint.ASSERTION, assertionReference.assertionId.value),
+                ),
+            ),
+        )
+        val completed = assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(evidenceIntelligenceOutcome)
+        assertTrue(
+            completed.acceptanceOutcomes.isEmpty(),
+            "Evidence Intelligence must remain unable to resolve the same genuine assertion candidate evaluation used",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `an unregistered Principal cannot admit or persist Knowledge through the real composed coordinator`() = runBlocking<Unit> {
+        val stub = startStub("REPLY: unused")
+        val logPath = Files.createTempDirectory("memory-admission-composition-unregistered").resolve("memory-core.log").toString()
+        val runtime = ParkerRuntime(configFor(stub, logPath), RecordingParkerLogger(), RecordingOwnerNotificationSink())
+        runtime.start()
+
+        val knowledgeRetrieval = runtime.privateField<Any>("knowledgeRetrieval")
+        val persistence = knowledgeRetrieval.privateField<InMemoryKnowledgeItemPersistence>("persistence")
+        assertTrue(persistence.findAll().isEmpty())
+
+        val replyCoordinator = runtime.privateField<ConversationReplyCoordinator>("conversationReplyCoordinator")
+        val admissionCoordinator = replyCoordinator.privateField<MemoryAdmissionCoordinator>("memoryAdmissionCoordinator")
+        val denied = admissionCoordinator.admit(
+            requestingPrincipalId = PrincipalId("user.unregistered-unit-5"),
+            correlationId = "corr-unregistered-unit-5",
+            instructionText = "This must not become persisted knowledge.",
+        )
+
+        assertIs<MemoryAdmissionOutcome.NotAuthorised>(denied)
+        assertTrue(persistence.findAll().isEmpty(), "a denied accountable Principal must not persist Knowledge")
 
         runtime.shutdown()
     }
@@ -155,11 +193,8 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
 
     @Test
     fun `this Unit's own admission gate is genuinely reached and genuinely approves in the real, live runtime -- proven structurally, not merely by absence of a denial`() = runBlocking<Unit> {
-        // The first test above already proves this indirectly (the reply reaches Knowledge
-        // Submission's own "could not be resolved" failure, which is only reachable once this
-        // Unit's own admission gate has already approved and the Memory Core write already
-        // happened) -- this test restates that same fact directly and explicitly, so a future
-        // reader does not have to infer it from a different test's own incidental reply text.
+        // The first test proves full promotion and persistence; this test retains the earlier
+        // direct regression that the admission gate itself remains reachable and approving.
         val stub = startStub("REMEMBER: Stellar is my dog")
         val logPath = Files.createTempDirectory("memory-admission-composition-gate-reached").resolve("memory-core.log").toString()
         val ownerSink = RecordingOwnerNotificationSink()
