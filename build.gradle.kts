@@ -133,6 +133,19 @@ tasks.register<Test>("reasoningProtocolBaselineCharacterisation") {
     shouldRunAfter(tasks.test)
 }
 
+tasks.register<Test>("reasoningProtocolUnit2DDiagnostic") {
+    description = "Runs the explicit opt-in Reasoning Protocol Unit 2-D diagnostic characterisation instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.ReasoningProtocolDiagnosticCharacterisationTest")
+    }
+    systemProperty("parker.reasoning.diagnostic.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         allWarningsAsErrors.set(false)
