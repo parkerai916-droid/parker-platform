@@ -232,6 +232,7 @@ private data class FrozenIdentity(
 private data class UnitTwoConfig(
     val campaignId: String,
     val artifactRoot: Path,
+    val campaignArtifactRoot: Path,
     val selectedBatch: String,
     val stageZeroApproved: Boolean,
     val scoredExecutionApproved: Boolean,
@@ -260,8 +261,8 @@ private object UnitTwoConfigLoader {
         require(live.timeoutMs == EVALUATION_TIMEOUT_MS) { "Unit 2 timeout identity mismatch" }
         val campaignId = required(CAMPAIGN_ID)
         require(campaignId == definition.campaignId) { "campaign identity mismatch" }
-        val root = Path.of(required(ARTIFACT_ROOT)).toAbsolutePath().normalize()
-        require(root.toString().replace('\\', '/').startsWith("$ARTIFACT_ROOT_PREFIX/")) { "artifact root is outside the accepted durable root" }
+        val root = acceptedArtifactParent(required(ARTIFACT_ROOT))
+        val campaignRoot = campaignArtifactRoot(root, campaignId)
         val digest = live.modelDigest ?: throw EvaluationConfigurationException("Immutable model digest is required; values redacted")
         val showHash = required(MODEL_SHOW_HASH)
         require(showHash.matches(Regex("[0-9a-fA-F]{64}"))) { "invalid /api/show evidence hash" }
@@ -272,9 +273,30 @@ private object UnitTwoConfigLoader {
             environment[PRIOR_MANIFEST_HASH]?.trim().orEmpty(),
         )
         return UnitTwoConfig(
-            campaignId, root, required(BATCH), required(STAGE_ZERO_APPROVED).toBooleanStrict(),
+            campaignId, root, campaignRoot, required(BATCH), required(STAGE_ZERO_APPROVED).toBooleanStrict(),
             required(SCORED_APPROVED).toBooleanStrict(), live, identity,
         )
+    }
+
+    private fun acceptedArtifactParent(configured: String): Path {
+        val normalizedText = configured.replace('\\', '/').trimEnd('/')
+        require(normalizedText == ARTIFACT_ROOT_PREFIX) {
+            "artifact root must be the accepted durable parent"
+        }
+        val path = Path.of(configured).normalize()
+        require(path.toString().replace('\\', '/').trimEnd('/') == ARTIFACT_ROOT_PREFIX) {
+            "artifact root normalization escaped the accepted durable parent"
+        }
+        return path
+    }
+
+    private fun campaignArtifactRoot(parent: Path, campaignId: String): Path {
+        require(campaignId.matches(Regex("[a-z0-9][a-z0-9.-]*"))) { "campaign ID must be machine-safe" }
+        val resolved = parent.resolve(campaignId).normalize()
+        require(resolved.toString().replace('\\', '/').trimEnd('/') == "$ARTIFACT_ROOT_PREFIX/$campaignId") {
+            "campaign artifact path must be exactly one directory beneath the accepted parent"
+        }
+        return resolved
     }
 }
 
@@ -780,6 +802,24 @@ class ReasoningProtocolBaselineCharacterisationTest {
         EndpointMetadata(promptEvalCount = 10, evalCount = 2), classification,
     )
 
+    private fun completeUnitTwoEnvironment(artifactRoot: String, campaignId: String = "unit2-baseline-test") = mapOf(
+        LiveEvaluationConfigLoader.ENDPOINT to "http://127.0.0.1:11434/api/generate",
+        LiveEvaluationConfigLoader.MODEL to "qwen2.5-coder:7b",
+        LiveEvaluationConfigLoader.TIMEOUT to EVALUATION_TIMEOUT_MS.toString(),
+        LiveEvaluationConfigLoader.OUTPUT to "build/offline-unit2-config.jsonl",
+        LiveEvaluationConfigLoader.COMMIT to "3a7c606-test",
+        LiveEvaluationConfigLoader.DIGEST to "sha256:offline-test-model",
+        LiveEvaluationConfigLoader.IMAGE to "offline-test-runtime",
+        UnitTwoConfigLoader.CAMPAIGN_ID to campaignId,
+        UnitTwoConfigLoader.ARTIFACT_ROOT to artifactRoot,
+        UnitTwoConfigLoader.BATCH to "STAGE-0",
+        UnitTwoConfigLoader.UBUNTU_ID to "ubuntu-offline-test",
+        UnitTwoConfigLoader.CONTAINER_ID to "container-offline-test",
+        UnitTwoConfigLoader.MODEL_SHOW_HASH to "a".repeat(64),
+        UnitTwoConfigLoader.STAGE_ZERO_APPROVED to "false",
+        UnitTwoConfigLoader.SCORED_APPROVED to "false",
+    )
+
     @Test fun `frozen corpus profiles schedule sentinels and batches are exact and deterministic`() {
         val first = definition(); val second = definition()
         assertEquals(23, BaselineCorpus.fixtures.size)
@@ -827,6 +867,32 @@ class ReasoningProtocolBaselineCharacterisationTest {
         val failure = assertFailsWith<EvaluationConfigurationException> { UnitTwoConfigLoader.load(partial, Path.of("."), d) }
         assertFalse("secret" in failure.message.orEmpty())
         assertFalse("owner" in failure.message.orEmpty())
+    }
+
+    @Test fun `accepted artifact parent resolves exactly one machine-safe campaign directory`() {
+        val d = definition()
+        val config = UnitTwoConfigLoader.load(
+            completeUnitTwoEnvironment(ARTIFACT_ROOT_PREFIX),
+            Path.of("."),
+            d,
+        )
+        assertEquals(ARTIFACT_ROOT_PREFIX, config.artifactRoot.toString().replace('\\', '/'))
+        assertEquals("$ARTIFACT_ROOT_PREFIX/${d.campaignId}", config.campaignArtifactRoot.toString().replace('\\', '/'))
+    }
+
+    @Test fun `campaign-qualified outside and traversal artifact roots are rejected`() {
+        val d = definition()
+        listOf(
+            "$ARTIFACT_ROOT_PREFIX/${d.campaignId}",
+            "/tmp/reasoning-protocol-live-model",
+            "$ARTIFACT_ROOT_PREFIX/../escape",
+            "build/reports/reasoning-protocol-live-model",
+            "src/reasoning-protocol-live-model",
+        ).forEach { invalid ->
+            assertFailsWith<IllegalArgumentException> {
+                UnitTwoConfigLoader.load(completeUnitTwoEnvironment(invalid), Path.of("."), d)
+            }
+        }
     }
 
     @Test fun `intent raw checkpoint and seal ordering is durable and deterministic`() = runBlocking {
@@ -955,7 +1021,7 @@ class ReasoningProtocolBaselineCharacterisationTest {
         val captured = OllamaIdentityEvidence.capture(modelOrigin, config.live.modelName)
         require(config.live.modelDigest == captured.first && config.identity.modelDigest.endsWith(captured.second)) { "live model identity differs from frozen configuration" }
         val harness = ReasoningProtocolLiveModelEvaluationHarness(config.live, config.campaignId)
-        DurableCampaignRunner(d, config.artifactRoot.resolve(config.campaignId), config.identity).runBatch(
+        DurableCampaignRunner(d, config.campaignArtifactRoot, config.identity).runBatch(
             config.selectedBatch, config.stageZeroApproved, config.scoredExecutionApproved,
         ) { trial -> harness.execute(SyntheticContextProfiles.construct(trial.fixture, trial.profile), trial.attempt) }
         Unit
