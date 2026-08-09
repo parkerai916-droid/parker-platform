@@ -738,11 +738,177 @@ private object OllamaIdentityEvidence {
         val tags = request(origin.resolve("/api/tags"), "GET", null)
         val escapedModel = model.replace("\\", "\\\\").replace("\"", "\\\"")
         val show = request(origin.resolve("/api/show"), "POST", "{\"model\":\"$escapedModel\"}")
-        val modelPattern = Regex.escape(model)
-        val digest = Regex("\\{[^{}]*\\\"(?:name|model)\\\"\\s*:\\s*\\\"$modelPattern\\\"[^{}]*\\\"digest\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"[^{}]*}")
-            .find(tags)?.groupValues?.get(1)
-            ?: throw CampaignStateException("Ollama /api/tags supplied no immutable digest for the exact configured model")
-        return digest to sha256(show)
+        return exactModelDigest(tags, model) to sha256(show)
+    }
+
+    fun exactModelDigest(tags: String, configuredModel: String): String {
+        val objects = directObjectsInRootArray(tags, "models")
+        val matches = objects.filter { objectText ->
+            val fields = directStringFields(objectText)
+            fields["name"] == configuredModel || fields["model"] == configuredModel
+        }
+        if (matches.size != 1) {
+            throw CampaignStateException("Ollama /api/tags must contain exactly one object for the exact configured model")
+        }
+        val digest = directStringFields(matches.single())["digest"]
+            ?: throw CampaignStateException("Ollama /api/tags exact configured model has no digest")
+        if (!digest.matches(Regex("[0-9a-fA-F]{64}"))) {
+            throw CampaignStateException("Ollama /api/tags exact configured model digest is blank, abbreviated, or malformed")
+        }
+        return digest
+    }
+
+    private fun directObjectsInRootArray(json: String, key: String): List<String> {
+        var index = skipWhitespace(json, 0)
+        requireCharacter(json, index, '{', "Ollama /api/tags root must be a JSON object")
+        index++
+        var arrayStart: Int? = null
+        while (true) {
+            index = skipWhitespace(json, index)
+            if (index >= json.length) throw CampaignStateException("Ollama /api/tags root object is incomplete")
+            if (json[index] == '}') break
+            val parsedKey = parseJsonString(json, index)
+            index = skipWhitespace(json, parsedKey.second)
+            requireCharacter(json, index, ':', "Ollama /api/tags root field lacks a value")
+            index = skipWhitespace(json, index + 1)
+            if (parsedKey.first == key) {
+                if (arrayStart != null) throw CampaignStateException("Ollama /api/tags contains duplicate models fields")
+                requireCharacter(json, index, '[', "Ollama /api/tags models field is not an array")
+                arrayStart = index
+            }
+            index = skipJsonValue(json, index)
+            index = skipWhitespace(json, index)
+            if (index < json.length && json[index] == ',') index++
+            else if (index < json.length && json[index] == '}') break
+            else throw CampaignStateException("Ollama /api/tags root object is malformed")
+        }
+        val start = arrayStart ?: throw CampaignStateException("Ollama /api/tags contains no models array")
+        val end = matchingContainerEnd(json, start, '[', ']')
+        val objects = mutableListOf<String>()
+        index = skipWhitespace(json, start + 1)
+        while (index < end) {
+            if (json[index] != '{') throw CampaignStateException("Ollama /api/tags models array contains a non-object value")
+            val objectEnd = matchingContainerEnd(json, index, '{', '}')
+            objects += json.substring(index, objectEnd + 1)
+            index = skipWhitespace(json, objectEnd + 1)
+            if (index < end) {
+                requireCharacter(json, index, ',', "Ollama /api/tags models array is malformed")
+                index = skipWhitespace(json, index + 1)
+                if (index >= end) throw CampaignStateException("Ollama /api/tags models array has a trailing comma")
+            }
+        }
+        return objects
+    }
+
+    private fun directStringFields(objectText: String): Map<String, String> {
+        var index = skipWhitespace(objectText, 0)
+        requireCharacter(objectText, index, '{', "Ollama model entry must be an object")
+        index++
+        val fields = linkedMapOf<String, String>()
+        val seenKeys = mutableSetOf<String>()
+        while (true) {
+            index = skipWhitespace(objectText, index)
+            if (index >= objectText.length) throw CampaignStateException("Ollama model entry is incomplete")
+            if (objectText[index] == '}') break
+            val key = parseJsonString(objectText, index)
+            if (!seenKeys.add(key.first)) throw CampaignStateException("Ollama model entry contains duplicate direct field ${key.first}")
+            index = skipWhitespace(objectText, key.second)
+            requireCharacter(objectText, index, ':', "Ollama model field lacks a value")
+            index = skipWhitespace(objectText, index + 1)
+            if (index < objectText.length && objectText[index] == '"') {
+                val value = parseJsonString(objectText, index)
+                fields[key.first] = value.first
+                index = value.second
+            } else {
+                index = skipJsonValue(objectText, index)
+            }
+            index = skipWhitespace(objectText, index)
+            if (index < objectText.length && objectText[index] == ',') index++
+            else if (index < objectText.length && objectText[index] == '}') break
+            else throw CampaignStateException("Ollama model entry is malformed")
+        }
+        return fields
+    }
+
+    private fun parseJsonString(json: String, start: Int): Pair<String, Int> {
+        requireCharacter(json, start, '"', "expected JSON string")
+        val value = StringBuilder()
+        var index = start + 1
+        while (index < json.length) {
+            val character = json[index++]
+            when (character) {
+                '"' -> return value.toString() to index
+                '\\' -> {
+                    if (index >= json.length) throw CampaignStateException("incomplete JSON escape")
+                    when (val escaped = json[index++]) {
+                        '"', '\\', '/' -> value.append(escaped)
+                        'b' -> value.append('\b')
+                        'f' -> value.append('\u000C')
+                        'n' -> value.append('\n')
+                        'r' -> value.append('\r')
+                        't' -> value.append('\t')
+                        'u' -> {
+                            if (index + 4 > json.length) throw CampaignStateException("incomplete JSON unicode escape")
+                            val code = json.substring(index, index + 4).toIntOrNull(16)
+                                ?: throw CampaignStateException("invalid JSON unicode escape")
+                            value.append(code.toChar())
+                            index += 4
+                        }
+                        else -> throw CampaignStateException("invalid JSON escape: $escaped")
+                    }
+                }
+                else -> {
+                    if (character.code < 0x20) throw CampaignStateException("unescaped control character in JSON string")
+                    value.append(character)
+                }
+            }
+        }
+        throw CampaignStateException("unterminated JSON string")
+    }
+
+    private fun skipJsonValue(json: String, start: Int): Int {
+        if (start >= json.length) throw CampaignStateException("missing JSON value")
+        return when (json[start]) {
+            '"' -> parseJsonString(json, start).second
+            '{' -> matchingContainerEnd(json, start, '{', '}') + 1
+            '[' -> matchingContainerEnd(json, start, '[', ']') + 1
+            else -> {
+                var index = start
+                while (index < json.length && json[index] !in charArrayOf(',', '}', ']') && !json[index].isWhitespace()) index++
+                if (index == start) throw CampaignStateException("invalid JSON value")
+                index
+            }
+        }
+    }
+
+    private fun matchingContainerEnd(json: String, start: Int, open: Char, close: Char): Int {
+        requireCharacter(json, start, open, "expected JSON container")
+        var depth = 0
+        var index = start
+        while (index < json.length) {
+            when (json[index]) {
+                '"' -> index = parseJsonString(json, index).second
+                open -> { depth++; index++ }
+                close -> {
+                    depth--
+                    if (depth == 0) return index
+                    if (depth < 0) throw CampaignStateException("unbalanced JSON container")
+                    index++
+                }
+                else -> index++
+            }
+        }
+        throw CampaignStateException("unterminated JSON container")
+    }
+
+    private fun skipWhitespace(json: String, start: Int): Int {
+        var index = start
+        while (index < json.length && json[index].isWhitespace()) index++
+        return index
+    }
+
+    private fun requireCharacter(json: String, index: Int, expected: Char, message: String) {
+        if (index >= json.length || json[index] != expected) throw CampaignStateException(message)
     }
 
     private fun request(uri: URI, method: String, body: String?): String {
@@ -761,6 +927,12 @@ private object OllamaIdentityEvidence {
         } finally {
             connection.disconnect()
         }
+    }
+}
+
+private fun requireCapturedModelIdentity(config: UnitTwoConfig, captured: Pair<String, String>) {
+    require(config.live.modelDigest == captured.first && config.identity.modelDigest.endsWith(captured.second)) {
+        "live model identity differs from frozen configuration"
     }
 }
 
@@ -802,20 +974,25 @@ class ReasoningProtocolBaselineCharacterisationTest {
         EndpointMetadata(promptEvalCount = 10, evalCount = 2), classification,
     )
 
-    private fun completeUnitTwoEnvironment(artifactRoot: String, campaignId: String = "unit2-baseline-test") = mapOf(
+    private fun completeUnitTwoEnvironment(
+        artifactRoot: String,
+        campaignId: String = "unit2-baseline-test",
+        modelDigest: String = "sha256:offline-test-model",
+        modelShowHash: String = "a".repeat(64),
+    ) = mapOf(
         LiveEvaluationConfigLoader.ENDPOINT to "http://127.0.0.1:11434/api/generate",
         LiveEvaluationConfigLoader.MODEL to "qwen2.5-coder:7b",
         LiveEvaluationConfigLoader.TIMEOUT to EVALUATION_TIMEOUT_MS.toString(),
         LiveEvaluationConfigLoader.OUTPUT to "build/offline-unit2-config.jsonl",
         LiveEvaluationConfigLoader.COMMIT to "3a7c606-test",
-        LiveEvaluationConfigLoader.DIGEST to "sha256:offline-test-model",
+        LiveEvaluationConfigLoader.DIGEST to modelDigest,
         LiveEvaluationConfigLoader.IMAGE to "offline-test-runtime",
         UnitTwoConfigLoader.CAMPAIGN_ID to campaignId,
         UnitTwoConfigLoader.ARTIFACT_ROOT to artifactRoot,
         UnitTwoConfigLoader.BATCH to "STAGE-0",
         UnitTwoConfigLoader.UBUNTU_ID to "ubuntu-offline-test",
         UnitTwoConfigLoader.CONTAINER_ID to "container-offline-test",
-        UnitTwoConfigLoader.MODEL_SHOW_HASH to "a".repeat(64),
+        UnitTwoConfigLoader.MODEL_SHOW_HASH to modelShowHash,
         UnitTwoConfigLoader.STAGE_ZERO_APPROVED to "false",
         UnitTwoConfigLoader.SCORED_APPROVED to "false",
     )
@@ -893,6 +1070,90 @@ class ReasoningProtocolBaselineCharacterisationTest {
                 UnitTwoConfigLoader.load(completeUnitTwoEnvironment(invalid), Path.of("."), d)
             }
         }
+    }
+
+    @Test fun `actual nested Ollama tags shape resolves the exact configured model digest`() {
+        val expected = "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364"
+        val other = "b".repeat(64)
+        val tags = """
+            {
+              "models": [
+                {
+                  "name": "another-model:7b",
+                  "model": "another-model:7b",
+                  "digest": "$other",
+                  "details": {"family": "other", "families": ["other"]},
+                  "capabilities": ["completion"]
+                },
+                {
+                  "name": "qwen2.5-coder:7b",
+                  "model": "qwen2.5-coder:7b",
+                  "modified_at": "value with { braces } and an escaped quote: \"safe\"",
+                  "size": 4683087332,
+                  "digest": "$expected",
+                  "details": {
+                    "parent_model": "",
+                    "format": "gguf",
+                    "family": "qwen2",
+                    "families": ["qwen2"],
+                    "parameter_size": "7.6B",
+                    "quantization_level": "Q4_K_M"
+                  },
+                  "capabilities": ["completion", "tools"]
+                }
+              ]
+            }
+        """.trimIndent()
+        assertEquals(expected, OllamaIdentityEvidence.exactModelDigest(tags, "qwen2.5-coder:7b"))
+    }
+
+    @Test fun `Ollama identity selection is exact unique full and field-order independent`() {
+        val digest = "c".repeat(64)
+        val different = "d".repeat(64)
+        val reordered = """{"models":[
+            {"digest":"$different","details":{"name":"qwen2.5-coder:7b"},"name":"qwen2.5-coder:14b"},
+            {"capabilities":["completion"],"digest":"$digest","details":{"nested":{"value":"}"}},"model":"qwen2.5-coder:7b","name":"qwen2.5-coder:7b"}
+        ]}"""
+        assertEquals(digest, OllamaIdentityEvidence.exactModelDigest(reordered, "qwen2.5-coder:7b"))
+        listOf("qwen2.5-coder", "qwen2.5-coder:14b", "qwen2.5-coder:7").forEach { notExact ->
+            if (notExact != "qwen2.5-coder:14b") {
+                assertFailsWith<CampaignStateException> { OllamaIdentityEvidence.exactModelDigest(reordered, notExact) }
+            }
+        }
+        assertEquals(different, OllamaIdentityEvidence.exactModelDigest(reordered, "qwen2.5-coder:14b"))
+
+        val duplicate = """{"models":[
+            {"name":"qwen2.5-coder:7b","digest":"$digest"},
+            {"model":"qwen2.5-coder:7b","digest":"$different"}
+        ]}"""
+        assertFailsWith<CampaignStateException> { OllamaIdentityEvidence.exactModelDigest(duplicate, "qwen2.5-coder:7b") }
+    }
+
+    @Test fun `Ollama identity extraction fails closed for missing blank abbreviated and malformed digests`() {
+        listOf(
+            """{"models":[{"name":"qwen2.5-coder:7b"}]}""",
+            """{"models":[{"name":"qwen2.5-coder:7b","digest":""}]}""",
+            """{"models":[{"name":"qwen2.5-coder:7b","digest":"dae161e2"}]}""",
+            """{"models":[{"name":"qwen2.5-coder:7b","digest":"${"g".repeat(64)}"}]}""",
+        ).forEach { tags ->
+            assertFailsWith<CampaignStateException> { OllamaIdentityEvidence.exactModelDigest(tags, "qwen2.5-coder:7b") }
+        }
+    }
+
+    @Test fun `show evidence hashing and configured digest equality remain mandatory`() {
+        val digest = "e".repeat(64)
+        val show = """{"license":"test","details":{"family":"qwen2"}}"""
+        val showHash = sha256(show)
+        assertEquals("0b3837a2ac245bcc7fb20d014dc1a9acff2eca154866fedac80510acdee4962a", showHash)
+        val d = definition()
+        val config = UnitTwoConfigLoader.load(
+            completeUnitTwoEnvironment(ARTIFACT_ROOT_PREFIX, modelDigest = digest, modelShowHash = showHash),
+            Path.of("."),
+            d,
+        )
+        requireCapturedModelIdentity(config, digest to showHash)
+        assertFailsWith<IllegalArgumentException> { requireCapturedModelIdentity(config, "f".repeat(64) to showHash) }
+        assertFailsWith<IllegalArgumentException> { requireCapturedModelIdentity(config, digest to "f".repeat(64)) }
     }
 
     @Test fun `intent raw checkpoint and seal ordering is durable and deterministic`() = runBlocking {
@@ -1019,7 +1280,7 @@ class ReasoningProtocolBaselineCharacterisationTest {
         if (batch.stage.scored) require(config.stageZeroApproved && config.scoredExecutionApproved)
         val modelOrigin = URI(config.live.endpointUrl).let { URI(it.scheme, null, it.host, it.port, "/", null, null) }
         val captured = OllamaIdentityEvidence.capture(modelOrigin, config.live.modelName)
-        require(config.live.modelDigest == captured.first && config.identity.modelDigest.endsWith(captured.second)) { "live model identity differs from frozen configuration" }
+        requireCapturedModelIdentity(config, captured)
         val harness = ReasoningProtocolLiveModelEvaluationHarness(config.live, config.campaignId)
         DurableCampaignRunner(d, config.campaignArtifactRoot, config.identity).runBatch(
             config.selectedBatch, config.stageZeroApproved, config.scoredExecutionApproved,
