@@ -94,6 +94,32 @@ sourceSets {
     }
 }
 
+// Reasoning Protocol Live-Model Conformance, Unit 1: an explicit,
+// detached evaluation source set. It is deliberately not attached to
+// test/check/build/assemble (or any other lifecycle task), so ordinary
+// repository verification remains offline and deterministic.
+val liveModelEvaluation by sourceSets.creating {
+    kotlin.srcDir("tests/integration")
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += output + compileClasspath
+}
+
+configurations[liveModelEvaluation.implementationConfigurationName].extendsFrom(
+    configurations.testImplementation.get(),
+)
+configurations[liveModelEvaluation.runtimeOnlyConfigurationName].extendsFrom(
+    configurations.testRuntimeOnly.get(),
+)
+
+tasks.register<Test>("reasoningProtocolLiveModelEvaluation") {
+    description = "Runs the explicit opt-in Reasoning Protocol live-model evaluation instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter(tasks.test)
+}
+
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         allWarningsAsErrors.set(false)
