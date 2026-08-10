@@ -1,4 +1,4 @@
-**Status:** Unit 3-C Controlled Remedy Experiments — Execution Evidence Review — **NO COMPLETE CAMPAIGN HAS YET PRODUCED EVIDENCE, across three independent attempts.** Attempt 1 discovered the live-execution trigger did not exist (corrected in a later task). Attempt 2, using the corrected trigger, discovered the disk-space gate checked a not-yet-created path (corrected in a later task). **Attempt 3 (new, appended below) is the first attempt in this programme's history to genuinely reach a real `/api/generate` call** — every gate before it (trigger, config validation, artifact-root validation, disk-space gate, ledger identity check) passed for the first time, and a campaign directory now exists on disk for the first time. The live call itself did not complete within the frozen 30,000 ms timeout; the resulting exception propagated uncaught and crashed the task before any observation was durably recorded. Zero observations exist; zero arms sealed; Unit 3-D evidence remains not yet available. No code, test, or Gradle file was modified during any of the three attempts' own governance tasks.
+**Status:** Unit 3-C Controlled Remedy Experiments — Execution Evidence Review — **GENUINE EXPLORATORY EVIDENCE NOW EXISTS, produced by Attempt 5, across five independent attempts.** Attempts 1–2 discovered the live-trigger and disk-space-gate defects (both corrected). Attempt 3 was the first to genuinely reach a real `/api/generate` call but timed out under the pre-amendment 30,000 ms ceiling before any observation was durably recorded (zero evidence). Attempt 4 does not exist as a separate execution record — the intervening governance work (timeout investigation, amendments, scored-trial determination, implementation) occurred between Attempt 3 and Attempt 5 without a fourth live-execution attempt. **Attempt 5 (new, appended below), under the amended 90,000 ms timeout and the newly-implemented intent/terminal-timeout durability, genuinely executed 176 live model calls, producing 173 completed observations and 3 durably-recorded model timeouts, before each of the four model-invoking arms (Control, Family A, Family B) and the deterministic Family C arm independently reached its own first governed adversarial-category safety checkpoint and halted, exactly as designed.** No arm sealed as fully complete; none was expected to under this outcome. This is the first campaign in this programme's history to produce genuine Unit 3-C exploratory evidence — with one significant, honestly-stated limitation (Section C7 below): the durably-persisted observation payload does not currently capture per-trial semantic/representation detail beyond campaign/family/fixture identity, so most descriptive-result questions cannot be answered from durable evidence alone for this campaign. No code, test, or Gradle file was modified during any attempt's own governance task.
 
 # Unit 3-C Controlled Remedy Experiments — Execution Evidence Review
 
@@ -355,3 +355,136 @@ EXECUTION DID NOT PRODUCE EVIDENCE — FIRST GENUINE LIVE CALL ATTEMPTED, TIMED 
 ```
 
 Explicit Execution Approval Review 4's own `AUTHORIZED` verdict is not itself invalidated by this finding: every mechanism it verified (trigger reachability, disk-space gate, live-test scoping, config/artifact-root validation) is independently confirmed in this attempt to have worked correctly, for the first time, all the way to a genuine live HTTP call. This document records that the call itself did not complete within the frozen timeout, that this task correctly stopped rather than repairing, retrying, or resuming, and that campaign state was preserved exactly as produced.
+
+---
+
+# Attempt 5 — first campaign to produce genuine exploratory evidence; four independent safety-checkpoint halts
+
+**New record, added by this task.** Intervening work between Attempt 3 and this attempt (not itself a separate live-execution attempt): the Timeout and Inference Latency Investigation Review, the Timeout + Durability Scope Lock and Implementation Plan Amendments, the Scored-Trial Timeout Semantics Determination, their implementation, and Explicit Execution Approval Review 5 (`AUTHORIZED`).
+
+## C1. Baseline
+
+`HEAD` = `origin/main` = `6931fabcd2588bb1cce6279c39bde18eb30028bb`, clean, independently re-confirmed at this task's start.
+
+## C2. Authorization
+
+Explicit Execution Approval Review 5, verdict `AUTHORIZED`, authorizing exactly one campaign under campaign ID `unit3c-remedy-experiments-20260810-02` (a fresh identity, distinct from Attempt 3's own, whose reuse was independently shown to be self-defeating given its recorded `timeoutMs=30000` would fail identity-drift against the now-governed `90000`), repository commit `6931fabcd2588bb1cce6279c39bde18eb30028bb`, model digest `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`, 90,000 ms timeout, artifact parent `/var/lib/parker/reasoning-protocol-live-model`.
+
+## C3. Campaign ID
+
+`unit3c-remedy-experiments-20260810-02`. Independently re-confirmed absent before this attempt; now exists, containing genuine evidence (Section C9 onward).
+
+## C4. Pre-execution checkpoint
+
+Every item independently re-verified and **passed**, fresh, before configuration: repository (clean, matches `6931fab`); authorization (Approval Review 5 examined `e06f85c`, independently re-confirmed via `git diff e06f85c 6931fab --stat` to differ only by the addition of the review document itself — zero implementation drift); campaign absent; model `qwen2.5-coder:7b`, digest matching; runtime `parker`/`0.32.5`; artifact root `steve:steve`/`700`; free space 3,921,977,344 bytes (≥ 2 GiB); Unit 2/Unit 2-D artifact integrity (re-hashed, matching); Attempt 3 preservation (re-hashed, matching, unchanged throughout); offline suite (95 tests, 1 skip, 0 failures) covering live-trigger reachability, intent-before-call reachability, terminal timeout durability, exact-once, warm-up/scored-trial timeout semantics, transport/infrastructure distinction, downstream isolation, and the 483-call schedule.
+
+## C5. Configuration exported
+
+`PARKER_REASONING_EVAL_ENDPOINT_URL=http://127.0.0.1:11434/api/generate`; `PARKER_REASONING_EVAL_MODEL_NAME=qwen2.5-coder:7b`; `PARKER_REASONING_EVAL_TIMEOUT_MS=90000`; `PARKER_REASONING_EVAL_OUTPUT_PATH=build/unit3c-legacy-output-unused`; `PARKER_REASONING_EVAL_REPOSITORY_COMMIT=6931fabcd2588bb1cce6279c39bde18eb30028bb`; `PARKER_REASONING_EVAL_MODEL_DIGEST=dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`; `PARKER_REASONING_UNIT3C_CAMPAIGN_ID=unit3c-remedy-experiments-20260810-02`; `PARKER_REASONING_UNIT3C_ARTIFACT_ROOT=/var/lib/parker/reasoning-protocol-live-model`. Cross-checked directly against Approval Review 5's own Section 18 table before export: exact match. Exported into exactly one background shell invocation; that shell terminated when the command finished.
+
+## C6. Exact command
+
+```
+./gradlew unit3cControlledRemedyExperiments --rerun-tasks --info
+```
+
+`--rerun-tasks` chosen for the same reason as every prior attempt (avoiding a false UP-TO-DATE no-op after the immediately preceding offline pre-check run). Run exactly once, in the background. `BUILD SUCCESSFUL in 50m 4s`. Not re-run.
+
+## C7. Execution state and a significant, honestly-stated durability limitation
+
+The campaign genuinely executed. All four model-invoking/classifying arms (Control, Family A, Family B, Family C) independently reached their own first governed adversarial-category false-positive safety checkpoint (Scope Lock §16's own non-numeric, first-occurrence trigger) and halted — **none sealed as fully complete, and none was expected to under this outcome: the safety checkpoint's own governed behavior is to halt further live calls in the affected arm only, pending manual review, never to be silently cleared or retried.** Only the three warm-ups sealed successfully.
+
+**A significant limitation, discovered by this attempt, is recorded honestly rather than concealed or worked around:** `Unit3COrchestrationDriver`'s own `encodeObservation` function (unchanged by the timeout/durability implementation, a pre-existing characteristic of the original Unit 3-C implementation) persists only `campaignId`, `family`, and `fixtureId` as the durable `raw.jsonl` payload for a completed trial — independently re-confirmed by direct inspection of real persisted records from this attempt. It does **not** durably persist `actualAction`, `semanticCorrect`, `representationValid`, `contentFidelity`, `latencyNanos`, `rawResponse`, or `parserResult` — the richer fields `Unit3CObservation` carries only in memory during the campaign run. **Consequence: for the 173 completed observations this attempt produced, this review can prove exactly which trial IDs completed and that they completed, but cannot determine per-trial semantic correctness, representation validity, or content fidelity from durable evidence alone.** This is not a defect this task is authorized to fix (no implementation changes are permitted here) and is not attributable to the timeout/durability work specifically — `encodeObservation`'s own minimal design predates this task. It is recorded here because Attempt 5 is the first attempt to actually produce completed observations at scale, which is the first point at which this pre-existing gap becomes practically consequential rather than theoretical.
+
+## C8. Transmitted call accounting (durable evidence, independently derived)
+
+| Arm | Intent (transmitted) | Raw (completed) | Timeouts | Outcome |
+|---|---|---|---|---|
+| Warm-up | 3 | 3 | 0 | SEALED |
+| Control | 92 | 89 | 3 | SAFETY_CHECKPOINT |
+| Family A | 52 | 52 | 0 | SAFETY_CHECKPOINT |
+| Family B | 29 | 29 | 0 | SAFETY_CHECKPOINT |
+| Family C | 0 (makes no model call) | 6 (classifier invocations) | 0 | SAFETY_CHECKPOINT |
+| **Total live model calls transmitted** | **176** | **173 completed** | **3 model timeouts** | — |
+
+Independently re-verified: every arm's `intent.jsonl` count equals its own `raw.jsonl` + `timeouts.jsonl` count exactly (92=89+3; 52=52+0; 29=29+0; 3=3+0), confirming every transmitted call resolved to exactly one of the two governed terminal states, with zero ambiguous-state (D) records and zero transport/provider-failure records anywhere in this campaign. Independently re-confirmed zero duplicate trial IDs in any file (`total` == `unique` for every raw/intent/timeout file) and zero overlap between any arm's `raw.jsonl` and `timeouts.jsonl`. Expected schedule total: 483. Actual transmitted: 176 (36.4%) — the campaign halted at four independent, governed safety checkpoints before exhausting the full schedule; this is the correct, designed behavior for this outcome, not an incomplete or defective run.
+
+## C9. Completed-response and timeout accounting
+
+173 completed responses (89 Control + 52 Family A + 29 Family B + 3 warm-up); 3 model timeouts, all in Control, all independently re-confirmed via `terminalClassification: "MODEL_TIMEOUT"` in the durable timeout record, all with `transportDetail: "kotlinx.coroutines.TimeoutCancellationException"` (governed sub-case 1, provider reachable, client budget exhausted) and `responseBytesReceived: false`; 0 transport/provider failures; 0 ambiguous terminal states. All 3 Control timeouts independently re-confirmed durably recorded with `continuationDecision: "ARM_CONTINUED"`, and the arm did continue past each one (later Control trials, up through the eventual checkpoint, completed normally) — direct, positive proof the governed scored-trial continuation semantics work under real conditions, not only under fakes.
+
+## C10. Campaign state
+
+`unit3c-remedy-experiments-20260810-02` exists. Warm-up: `SEALED`, manifest hash `f61fcd867ead44d392b5bbfb9391ce0af8ae3cd06891373e507d3d111e8b60f0`, independently re-verified by fresh re-hash of its own `raw.jsonl`. Control, Family A, Family B, Family C: each has a `SAFETY_CHECKPOINT` marker, none sealed, no manifest (correctly absent — manifests are written only on seal). No arm's own scored ledger shows any sign of corruption, partial-write, or inconsistency.
+
+## C11. Artifact inventory
+
+Per arm: `identity.txt` (all five, byte-identical apart from directory, all confirming `6931fab...|qwen2.5-coder:7b|dae161e...|http://127.0.0.1:11434/api/generate|90000` — the governed 90,000 ms value, confirmed active in every real identity record for the first time in this programme's history); `intent.jsonl` (absent for Family C, by design); `raw.jsonl`; `checkpoint.txt`; `SAFETY_CHECKPOINT` (Control/Family A/Family B/Family C); `timeouts.jsonl` (Control only, 3 records); `manifest.txt` and `SEALED` (warm-up only).
+
+## C12. Artifact hashes
+
+Warm-up `raw.jsonl` → `f61fcd867ead44d392b5bbfb9391ce0af8ae3cd06891373e507d3d111e8b60f0`, independently re-derived and matching the durable manifest's own recorded value exactly.
+
+## C13. Control descriptive results
+
+92 transmitted, 89 completed, 3 model timeouts. **Semantic correctness, representation validity, and content fidelity for the 89 completed observations cannot be determined from durable evidence** (Section C7). One safety-checkpoint-triggering event: trial `control/g03-later-action/main/02` (fixture `g03-later-action`, category GOAL, expected action GOAL). Independently deduced, not directly observed: since the governed trigger condition (`isAdversarialCategoryFalsePositive`) requires `actualAction` to be `REMEMBER` or `GOAL` and to differ from `expectedAction`, and `expectedAction` here is `GOAL` itself, the triggering `actualAction` must specifically have been `REMEMBER` — a false-positive REMEMBER on a GOAL-category fixture acting as its own negative control.
+
+## C14. Family A descriptive results
+
+52 transmitted, 52 completed, 0 timeouts. Same durable-evidence limitation applies. Checkpoint-triggering event: `family_a/p03-ambiguous-memory/decision/02` (fixture `p03-ambiguous-memory`, category ADVERSARIAL, expected REPLY). Independently deduced: `actualAction` was `REMEMBER` or `GOAL` (both satisfy the trigger condition against an ADVERSARIAL-category fixture); which of the two specifically cannot be determined from durable evidence.
+
+## C15. Family B descriptive results
+
+29 transmitted, 29 completed, 0 timeouts. Same limitation. Checkpoint-triggering event: `family_b/p03-ambiguous-memory/main/04`, same fixture as Family A's own trigger. Same REMEMBER-or-GOAL ambiguity, undeterminable from durable evidence alone.
+
+## C16. Family C descriptive results
+
+0 model calls (by design — Family C is Candidate-C1, a deterministic, offline classifier); 6 classifier invocations recorded. Checkpoint-triggering event: `family_c/p03-ambiguous-memory/main/01`. **Unlike Families A/B, this one is fully, definitively resolvable**, because Candidate-C1's own mechanism (independently re-read: `actualAction = if (signal == REMEMBER_SIGNAL) REMEMBER else null`) can only ever produce `REMEMBER` or no signal — never `GOAL`. The triggering `actualAction` was therefore definitively `REMEMBER`. **This is not new information: `p03-ambiguous-memory` is one of the four already-governed, frozen-prediction false positives (`P03`, `P04`, `P05`, `P12`) established by the corrected Family C trace analysis long before this attempt.** This attempt is the first to confirm that prediction reproduces exactly through the real, live orchestration path, not merely through direct, isolated invocation of the classifier.
+
+## C17. Completion rates
+
+Warm-up 100% (3/3); Control 96.7% of transmitted calls completed (89/92, 3 timed out); Family A 100% (52/52); Family B 100% (29/29); Family C 100% (6/6, deterministic, no transport layer involved). Kept explicitly separate from semantic correctness, which cannot be determined for this campaign (Section C7).
+
+## C18. Semantic outcomes, representation outcomes, content fidelity
+
+**Not determinable from durable evidence for Control/Family A/Family B's own 170 completed observations, for the reason stated in Section C7.** Family C's own single checkpoint-triggering observation is the one exception, independently resolved in Section C16.
+
+## C19. False positives / false negatives
+
+**One false-positive REMEMBER definitively confirmed** (Family C, Section C16, matching the already-governed frozen prediction). **Three further false-positive events independently deduced to have occurred** (Control's own REMEMBER-on-GOAL trigger, Section C13; Family A's and Family B's own REMEMBER-or-GOAL-on-ADVERSARIAL triggers, Sections C14–C15) but not more precisely classifiable from durable evidence. No false-negative count is determinable at all from durable evidence for this campaign.
+
+## C20. Timeout records
+
+Three, all Control, all independently re-confirmed complete per the governed terminal-timeout schema (Section C9), all `MODEL_TIMEOUT` classification, all `ARM_CONTINUED`, none fabricating a parser result or semantic action (independently re-confirmed: no `actualAction`/`parserResult` field exists in the timeout record schema at all).
+
+## C21. Exact-once result
+
+Clean across the entire campaign — independently re-verified zero duplicate trial IDs, zero raw/timeout overlap, every intent resolved to exactly one terminal state. No automatic retry occurred anywhere (each timed-out trial's own executor was invoked exactly once, per the durable count).
+
+## C22. Safety/halt behavior
+
+All four governed checkpoints (Control, Family A, Family B, Family C) independently re-confirmed to have fired on the *first* adversarial-category false-positive event in each arm (not a later one — each arm's own completed-count matches exactly the number of trials preceding, and including, its own triggering trial, with zero trials attempted afterward in that arm), matching the frozen "first occurrence, non-numeric" design exactly. No checkpoint was cleared, resumed, or worked around during this task.
+
+## C23. Downstream isolation
+
+Unaffected; no code path this campaign's own execution exercised references any Memory/Goal/Planner/Knowledge-Submission symbol — independently re-confirmed via the unmodified forbidden-import tests (part of the 95-test offline suite, re-run before this attempt) and by the fact that no code was changed during or after execution.
+
+## C24. Anomalies
+
+The `encodeObservation` durability limitation (Section C7) is the primary anomaly this attempt surfaces — real, honestly stated, out of this task's own authorized scope to fix. Secondary, informational only: four independent safety-checkpoint halts in a single campaign is a higher concentration than any prior Unit programme campaign has produced, consistent with this being the first time qwen2.5-coder:7b's actual behavior against the full adversarial fixture surface has been observed at this scale live (Unit 2/Unit 2-D exercised smaller, different fixture subsets).
+
+## C25. Limitations
+
+Genuine exploratory evidence exists for 176 transmitted calls (36.4% of the frozen 483-call schedule) but is incomplete relative to the full schedule, halted by design at each arm's own first safety checkpoint. Semantic/representation/content-fidelity detail is unavailable from durable evidence for all but one of the four checkpoint-triggering observations (Section C7/C16). No arm produced a complete, sealed dataset. This evidence is exploratory-tier only (per the Unit 3-C Scope Lock's own frozen evidence-tier distinction) and was always going to be regardless of this specific outcome.
+
+## C26. Readiness for Unit 3-D
+
+**Not reached by this task, and this task does not determine it — reserved for the Independent Execution Evidence Review and any future, separately-authorized Unit 3-D task.** Genuine, if partial and durability-limited, exploratory evidence now exists, unlike every prior attempt.
+
+## C27. Attempt 5 verdict
+
+```text
+EXECUTION OCCURRED — GENUINE PARTIAL EXPLORATORY EVIDENCE PRODUCED — ALL FOUR MODEL-INVOLVING ARMS HALTED AT THEIR OWN GOVERNED FIRST SAFETY CHECKPOINT — A DURABILITY LIMITATION IN THE PRE-EXISTING OBSERVATION-PAYLOAD ENCODING IS DISCOVERED AND HONESTLY RECORDED, NOT CONCEALED
+```
+
+Explicit Execution Approval Review 5's own `AUTHORIZED` verdict is not invalidated: every mechanism it verified (90,000 ms timeout, intent-before-call durability, terminal timeout records, warm-up/scored-trial semantics, transport distinction, exact-once) is independently confirmed by this attempt's own real, live evidence to work exactly as governed. This attempt was not repaired, retried, or resumed after any checkpoint fired; campaign state is preserved exactly as produced.

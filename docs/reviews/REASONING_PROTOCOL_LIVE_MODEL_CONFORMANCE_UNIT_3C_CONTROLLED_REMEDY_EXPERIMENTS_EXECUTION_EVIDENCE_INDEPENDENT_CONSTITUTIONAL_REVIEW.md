@@ -166,3 +166,77 @@ The Execution Evidence Review's account of Attempt 3 is independently confirmed 
 ## 35. Confirmation
 
 No model or HTTP call occurred during this review. No campaign was created, resumed, or modified — the campaign directory was inspected read-only. No production, test, or Gradle file changed. No fixture or Family A/B/C definition was altered. No remedy was selected. The Execution Evidence Review document itself was not modified by this review.
+
+---
+
+# Attempt 5 Independent Review — first genuine partial evidence, four independent safety-checkpoint halts
+
+**New section, added by this task. All prior sections above are preserved unmodified.**
+
+## 36. Method
+
+Independently re-derived every figure in this section from raw campaign artifacts using a fresh Python script written for this review, not the Execution Evidence Review's own shell-based extraction, before comparing the two. Independently re-read `identity.txt`, `SAFETY_CHECKPOINT`, `timeouts.jsonl`, and the last three records of each arm's own `intent.jsonl`/`raw.jsonl` directly.
+
+## 37. Campaign identity and configuration — independently re-derived
+
+Independently read all five `identity.txt` files (`control`, `control/warmup`, `family-a`, `family-b`, `family-c`) directly: all five are byte-identical apart from directory location, each reading `6931fabcd2588bb1cce6279c39bde18eb30028bb|qwen2.5-coder:7b|dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364|http://127.0.0.1:11434/api/generate|90000`. Independently cross-checked every field against Approval Review 5's own Section 18 table: exact match, including — for the first time in this programme's history — the timeout field reading `90000`, not `30000`.
+
+## 38. Actual transmitted/completed/timeout counts — independently re-derived by a separate method
+
+Independently re-counted via a fresh Python script (not reusing the Execution Evidence Review's own shell one-liners): warm-up 3/3/0; Control 92/89/3; Family A 52/52/0; Family B 29/29/0; Family C 0 intent (by design) / 6 raw / 0 timeout. **Total transmitted (real model calls): 176. Total completed: 173. Total model timeouts: 3. Total transport failures: 0. Total ambiguous states: 0.** Independently matches the Execution Evidence Review's own Section C8 figures exactly — cross-derivation from a different script, not merely re-running the same commands, found no discrepancy.
+
+## 39. Independent verification that each checkpoint fired at the true first occurrence, and a stated limit on how far that claim can be independently proven
+
+Independently re-read the last three records of each arm's own `intent.jsonl` (or `raw.jsonl` for Family C): in every case, the `SAFETY_CHECKPOINT` marker's own recorded `trialId` is the *literal last* intent/raw record in that arm — independently confirmed, not assumed, meaning no trial was attempted in any arm after its own checkpoint fired. This proves the halt-timing claim precisely.
+
+**A specific, adversarial limit on this review's own claim, stated plainly:** whether the checkpoint fired at the true *first* qualifying false positive (as opposed to, hypothetically, a later one, if an earlier trial's own output had also qualified but was somehow not caught) cannot be independently re-verified from durable evidence alone, because — as the Execution Evidence Review's own Section C7 correctly and honestly states — the durable `raw.jsonl` payload does not record `actualAction` for completed trials. This review's own confidence that the checkpoint fired at the *true* first occurrence rests on the already-independently-verified correctness of `isAdversarialCategoryFalsePositive`'s own call site inside `runArm`'s trial loop (checked, and the arm exited via `return`, in the same loop iteration the condition first becomes true, with no possible gap) — a code-correctness argument, not a fact re-derivable from this specific campaign's own durable data. This is recorded as an explicit boundary on independent verifiability, not a defect.
+
+## 40. Independent verification of the Family C deduction
+
+Independently re-read `Unit3CCandidateC1.classify`'s own body: `actualAction = if (signal == REMEMBER_SIGNAL) ExpectedAction.REMEMBER else null` — confirmed no code path in this function can ever produce `ExpectedAction.GOAL`. Independently cross-checked `p03-ambiguous-memory` against the already-governed, frozen Family C trace correction (24/29 correct; false positives `P03`, `P04`, `P05`, `P12`): `P03` is independently re-confirmed to be exactly `p03-ambiguous-memory`. The Execution Evidence Review's own claim that Family C's checkpoint trigger reproduces an already-known, already-predicted result — rather than representing new, surprising model behavior — is independently confirmed accurate.
+
+## 41. Independent verification of the durability-limitation claim
+
+Independently re-read `encodeObservation`'s current body a second time, separately from the Execution Evidence Review's own citation of it: `"campaignId=${observation.campaignId}|family=${observation.family}|fixtureId=${observation.fixtureId}"` — three fields, confirmed. Independently sampled three real `raw.jsonl` records from three different arms of this actual campaign and confirmed each payload matches this exact three-field format with no additional data. **This independently confirms the Execution Evidence Review's own most significant finding: semantic/representation/content-fidelity detail is genuinely unrecoverable from durable evidence for 172 of this campaign's 173 completed observations** (all except Family C's own single, deterministically-resolvable checkpoint trigger).
+
+## 42. Independent verification of artifact integrity
+
+Independently re-hashed `control/warmup/raw.jsonl`: `f61fcd867ead44d392b5bbfb9391ce0af8ae3cd06891373e507d3d111e8b60f0`, matching both the Execution Evidence Review's own citation and the durable manifest's own recorded value. Independently re-confirmed zero duplicate trial IDs across all ten raw/intent/timeout files in this campaign (a fresh `total`-vs-`unique` count per file, matching the Execution Evidence Review's own claim). Independently re-confirmed zero overlap between `control/raw.jsonl` and `control/timeouts.jsonl`.
+
+## 43. Independent re-verification of Unit 2 / Unit 2-D / Attempt 3 preservation
+
+Independently re-hashed all three: Unit 2's `stage-0/STAGE-0/raw.jsonl` (`c635ebcd...`), Unit 2-D's `warmup/raw.jsonl` (`d542f0ed...`), and Attempt 3's own `control/warmup/identity.txt` (`56af7ca3...`) — all three match every prior capture across this entire programme, independently re-confirmed unchanged by this attempt.
+
+## 44. Independent verification of exact-once behavior under real conditions
+
+Independently re-confirmed the three genuine Control timeouts each show `continuationDecision: "ARM_CONTINUED"` in their own durable record, and independently cross-checked against the intent/raw sequence: trials attempted immediately after each of the three timed-out trial IDs are present and completed in `raw.jsonl`, confirming the arm genuinely continued past each timeout under real, live conditions — not merely under the fakes this programme's offline tests use. This is independently judged the strongest evidence yet produced in this programme that the governed scored-trial continuation semantics work correctly, because it is drawn from the real execution this specific mechanism was built for, not a simulation of it.
+
+## 45. Discrepancies between this review and the Execution Evidence Review
+
+None found. Every quantitative and qualitative claim in the Execution Evidence Review's Attempt 5 section is independently reproduced from raw artifacts, using an independently-written extraction method, and found accurate — including its own honest statement of the durability limitation, which this review independently confirms rather than merely repeats.
+
+## 46. Blocking defects
+
+None *requiring correction by this task*. The `encodeObservation` durability gap (Sections 39, 41) is a real, independently-confirmed limitation on what this campaign's own evidence can support, explicitly out of this task's authorized scope to fix.
+
+## 47. Non-blocking qualifications
+
+1. Any future task that reads this campaign's own evidence must not attempt to infer per-trial semantic correctness for the 172 non-Family-C completed observations from any source — it does not exist durably, and reconstructing it from ephemeral logs (which were not preserved for this attempt, unlike Attempt 3's own crash trace) is not possible after the fact.
+2. The "first occurrence" claim for each checkpoint (Section 39) is independently confirmed as far as durable evidence allows (no trial after the trigger), but ultimately rests on already-verified code correctness for the specific claim that no *earlier* qualifying trial in the same arm was missed — this should be stated with that precision in any future document that relies on it.
+3. Family C's own checkpoint trigger reproduces an already-governed, frozen prediction (Section 40) and should not be presented as new evidence of anything not already known about the deterministic classifier's own behavior.
+
+## 48. Verdict
+
+```text
+ACCEPTED WITH QUALIFICATIONS
+```
+
+The Execution Evidence Review's account of Attempt 5 is independently confirmed accurate in every material respect, including its own significant, honestly-stated durability limitation. The qualifications in Section 47 do not indicate any error in the Execution Evidence Review's own account — they state the precise boundary of what this attempt's evidence can and cannot support, which any future task consuming this evidence must respect.
+
+## 49. Unit 3-D readiness
+
+**NO — not yet, and not determined by this task's own authority to grant.** Genuine, if partial, exploratory evidence now exists for the first time in this programme's history (176 transmitted calls, 173 completed, across all four arms), a material change from every prior attempt's own zero. However: (a) no arm produced a complete, sealed dataset — each halted at 20–100% of its own scored schedule; (b) semantic/representation/content-fidelity detail is durably unavailable for all but one observation; (c) whether *partial, checkpoint-halted, durability-limited* evidence meets Unit 3-C's own frozen exploratory-tier bar, or whether Unit 3-D's own future task must first make a fresh governance determination about how to (or whether it can) use evidence with this specific shape, is a question this Independent Review is not the correct instrument to decide — it is a Unit 3-D-scoping question, not an execution-evidence-accuracy question, and remains open for a separate, future, explicitly-authorized task.
+
+## 50. Confirmation
+
+No model or HTTP call occurred during this review. No campaign was created, resumed, or modified — inspected read-only. No production, test, or Gradle file changed. No fixture or Family A/B/C definition was altered. No remedy was selected, ranked, or compared. The Execution Evidence Review document itself was not modified by this review.
