@@ -151,7 +151,15 @@ tasks.register<Test>("unit3cControlledRemedyExperiments") {
     group = "verification"
     testClassesDirs = liveModelEvaluation.output.classesDirs
     classpath = liveModelEvaluation.runtimeClasspath
-    useJUnitPlatform()
+    // "unit3cLiveTaskIncompatible" tags tests whose assertion is valid only
+    // under ordinary/offline verification (e.g. asserting the live campaign
+    // environment variable is absent) and would necessarily fail during a
+    // genuine live run, where that variable is intentionally present. This
+    // task excludes them; the general offline live-model-evaluation task
+    // above and every other offline path still runs them.
+    useJUnitPlatform {
+        excludeTags("unit3cLiveTaskIncompatible")
+    }
     filter {
         includeTestsMatching("parker.integration.ReasoningProtocolUnit3CControlledRemedyExperimentsTest")
         includeTestsMatching("parker.integration.ReasoningProtocolUnit3COrchestrationTest")

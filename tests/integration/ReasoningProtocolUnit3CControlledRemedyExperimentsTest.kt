@@ -2,6 +2,7 @@ package parker.integration
 
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -49,6 +50,15 @@ import parker.core.runtime.UnclassifiableModelResponseException
 private const val UNIT_3C_TIMEOUT_MS = 30_000L
 private const val UNIT_3C_MODEL_NAME = "qwen2.5-coder:7b"
 private const val UNIT_3C_PROPERTY = "parker.reasoning.unit3c.enabled"
+
+/** Tags a test whose assertion is valid only under ordinary/offline
+ * verification and is incompatible, by construction, with a genuine live
+ * run (it would necessarily fail once real live configuration is present).
+ * The detached `unit3cControlledRemedyExperiments` Gradle task excludes
+ * this tag from its own test selection; every other execution path
+ * (`reasoningProtocolLiveModelEvaluation`, direct IDE/test-runner
+ * invocation of this class) is unaffected and still exercises it. */
+private const val UNIT_3C_LIVE_TASK_INCOMPATIBLE_TAG = "unit3cLiveTaskIncompatible"
 private const val UNIT_3C_CAMPAIGN_ID_MARKER = "unit3c-remedy-experiments-"
 private const val UNIT_3C_CONTEXT_PROFILE = "minimal-production-context"
 
@@ -1440,6 +1450,7 @@ class ReasoningProtocolUnit3CControlledRemedyExperimentsTest {
     // this file is structurally excluded from the `test` source set), the
     // Gradle-set property is absent, so the first gate always skips first.
 
+    @Tag(UNIT_3C_LIVE_TASK_INCOMPATIBLE_TAG)
     @Test
     fun `live Unit 3-C trigger requires a real campaign ID even when the detached task's own property is already set`() {
         // The unit3cControlledRemedyExperiments Gradle task always sets

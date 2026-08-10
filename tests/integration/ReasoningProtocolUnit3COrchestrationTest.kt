@@ -190,7 +190,17 @@ class Unit3COrchestrationDriver(
     private val usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
 ) {
     fun run(executors: Map<Unit3CFamily, Unit3CTrialExecutor>): List<Unit3CArmResult> {
-        Unit3CDiskSpaceGate.check(artifactRoot, usableSpace)
+        // The campaign-specific artifactRoot does not exist yet on a first
+        // run -- nothing creates it before this gate must run (the gate is,
+        // by design, the very first check, before any ledger or directory
+        // is touched). Files.getFileStore requires an existing path, so the
+        // gate is checked against the already-existing, durable *parent*
+        // (the same filesystem/mount the campaign directory will be created
+        // under) rather than the not-yet-created campaign directory itself.
+        val spaceCheckTarget = requireNotNull(artifactRoot.parent) {
+            "artifact root must have a parent; got $artifactRoot"
+        }
+        Unit3CDiskSpaceGate.check(spaceCheckTarget, usableSpace)
         return UNIT_3C_ARM_ORDER.map { family -> runArm(family, executors.getValue(family)) }
     }
 
@@ -430,6 +440,41 @@ class ReasoningProtocolUnit3COrchestrationTest {
         assertFailsWith<Unit3CInsufficientSpaceException> {
             Unit3CDiskSpaceGate.check(Path.of("/tmp")) { throw IOException("simulated unreadable filesystem") }
         }
+    }
+
+    @Test
+    fun `driver disk-space gate checks the durable parent, not the not-yet-created campaign directory itself`(@TempDir parent: Path) {
+        val notYetCreatedCampaignDir = parent.resolve("unit3c-remedy-experiments-not-yet-created")
+        assertFalse(Files.exists(notYetCreatedCampaignDir), "this test's own premise requires the campaign directory to not yet exist")
+        var anyExecutorCalled = false
+        val executors = Unit3CFamily.entries.associateWith {
+            Unit3CTrialExecutor { trial -> anyExecutorCalled = true; fakeObservationFor(trial, trial.fixture.expectedAction) }
+        }
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", notYetCreatedCampaignDir, sampleIdentity()) { checkedPath ->
+            assertEquals(parent, checkedPath, "the gate must be checked against the existing parent, never the not-yet-created campaign directory")
+            UNIT_3C_MINIMUM_FREE_BYTES + 1
+        }
+        driver.run(executors)
+        assertTrue(anyExecutorCalled, "once the disk-space gate correctly passes, execution must proceed")
+    }
+
+    @Test
+    fun `driver's real default disk-space check succeeds against a not-yet-created campaign directory when its parent exists with sufficient space`(@TempDir parent: Path) {
+        // Exercises the real Files.getFileStore(...).usableSpace default
+        // (no fake lambda), against a genuinely non-existent child of a
+        // real, existing directory -- reproducing, entirely offline, the
+        // exact condition that halted the first genuine live-execution
+        // attempt (a first-ever campaign directory that does not yet
+        // exist), and proving it is now handled correctly.
+        val notYetCreatedCampaignDir = parent.resolve("unit3c-remedy-experiments-test")
+        assertFalse(Files.exists(notYetCreatedCampaignDir))
+        val executors = Unit3CFamily.entries.associateWith {
+            Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) }
+        }
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", notYetCreatedCampaignDir, sampleIdentity())
+        val results = driver.run(executors)
+        assertEquals(4, results.size)
+        assertTrue(results.all { it.outcome == Unit3CArmOutcome.SEALED }, "all four arms must complete once the disk-space gate correctly passes against the real filesystem")
     }
 
     // ---- Manual false-positive safety-review checkpoint ----
