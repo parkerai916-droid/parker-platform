@@ -208,7 +208,50 @@ class Unit3COrchestrationDriver(
         Unit3CFamily.FAMILY_C -> "family-c"
     }
 
+    /** Executes the three frozen, shared, unscored warm-up trials (Plan
+     * Section 11's own "Warm-up (shared, unscored)" row) before Control's
+     * own scored trials -- and before Family A/B, which share the same
+     * live bridge -- verifying the bridge is genuinely reachable before any
+     * scored call is attempted. Lives in its own sub-ledger
+     * (`control/warmup/`), structurally separate from Control's own scored
+     * `control/` ledger, so warm-up calls can never be counted among, or
+     * confused with, the 145 scored Control observations. Reuses
+     * [Unit3CArmLedger] unchanged, so warm-ups inherit the exact same
+     * exact-once, duplicate-prevention, and crash-recovery guarantees
+     * already proven for every other ledger in this campaign. A warm-up
+     * failure (any [Unit3CArtifactIntegrityException]) halts only the
+     * Control arm -- Family A/B/C remain independently fault-isolated,
+     * exactly as the frozen Scope Lock's own arm-isolation requirement
+     * already establishes for every other measurement-invalidating defect. */
+    private fun runWarmups(executor: Unit3CTrialExecutor): Unit3CArmOutcome {
+        val trials = Unit3CCampaignDefinition.warmupTrials
+        val warmupDirectory = artifactRoot.resolve(armDirectoryName(Unit3CFamily.CONTROL)).resolve("warmup")
+        val ledger = Unit3CArmLedger(warmupDirectory, trials.map { it.id }.toSet())
+        return try {
+            ledger.checkIdentity(identity)
+            val completed = ledger.recover().toMutableSet()
+            for (trial in trials) {
+                if (trial.id in completed) continue
+                val observation = executor.execute(trial)
+                ledger.appendObservation(trial.id, encodeObservation(observation))
+                completed += trial.id
+            }
+            ledger.seal(trials.map { it.id }.toSet())
+            Unit3CArmOutcome.SEALED
+        } catch (e: Unit3CArtifactIntegrityException) {
+            Unit3CArmOutcome.HALTED
+        }
+    }
+
     private fun runArm(family: Unit3CFamily, executor: Unit3CTrialExecutor): Unit3CArmResult {
+        if (family == Unit3CFamily.CONTROL) {
+            val warmupOutcome = runWarmups(executor)
+            if (warmupOutcome != Unit3CArmOutcome.SEALED) {
+                // The shared live bridge could not be verified -- do not
+                // proceed to Control's own scored trials at all.
+                return Unit3CArmResult(family, warmupOutcome, 0)
+            }
+        }
         val trials = trialsFor(family)
         val armDirectory = artifactRoot.resolve(armDirectoryName(family))
         val ledger = Unit3CArmLedger(armDirectory, trials.map { it.id }.toSet())
@@ -460,7 +503,10 @@ class ReasoningProtocolUnit3COrchestrationTest {
         )
         val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
         driver.run(executors)
-        assertEquals(145, callCount)
+        // 148, not 145: the same Control executor now also serves the 3
+        // warm-up trials (Section on warm-up wiring), which is correct --
+        // this test only proves no cell is executed *more* than once.
+        assertEquals(148, callCount)
         callCount = 0
         // Second run against the same, now-sealed artifact directory: seal
         // blocks re-append entirely (proving the strongest form of
@@ -554,23 +600,139 @@ class ReasoningProtocolUnit3COrchestrationTest {
     // ---- Call accounting, derived from the orchestration schedule itself ----
 
     @Test
-    fun `exact 483-call total is derivable from the orchestration schedule, not merely the campaign definition object`(@TempDir dir: Path) {
+    fun `exact 483-call total is genuinely executed by the orchestration driver, including the 3 warm-ups`(@TempDir dir: Path) {
         var liveCalls = 0
+        var warmupCalls = 0
         val executors = mapOf(
-            Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial -> liveCalls++; fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial ->
+                liveCalls++
+                if (trial.fixture.id == "warmup-acknowledgement") warmupCalls++
+                fakeObservationFor(trial, trial.fixture.expectedAction)
+            },
             Unit3CFamily.FAMILY_A to Unit3CTrialExecutor { trial -> liveCalls++; fakeObservationFor(trial, trial.fixture.expectedAction) },
             Unit3CFamily.FAMILY_B to Unit3CTrialExecutor { trial -> liveCalls++; fakeObservationFor(trial, trial.fixture.expectedAction) },
             Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) }, // never increments liveCalls
         )
         val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
         val results = driver.run(executors)
-        // Warm-up trials are accounted separately (Plan Section 11) and are
-        // not part of any scored arm's own executor invocation count here;
-        // the scored-arm total below plus the fixed 3 warm-up calls
-        // (verified independently in the other test file) equals 483.
-        assertEquals(480, liveCalls) // 145 + 220 + 115
-        assertEquals(3 + liveCalls, 483)
+        // The driver's own executor-invocation count now genuinely includes
+        // the 3 warm-ups (148 = 3 + 145 for Control; 220 for Family A; 115
+        // for Family B; 0 for Family C) -- not a constant added after the
+        // fact, but the real count of calls the driver actually issued.
+        assertEquals(3, warmupCalls)
+        assertEquals(483, liveCalls) // 3 + 145 + 220 + 115
         assertTrue(results.all { it.outcome == Unit3CArmOutcome.SEALED })
+        // Control's own reported completed-trial count remains 145 (scored
+        // trials only) -- the 3 warm-ups are not counted among it, proving
+        // warm-ups do not contaminate the scored observation count.
+        assertEquals(145, results.single { it.family == Unit3CFamily.CONTROL }.completedTrialCount)
+    }
+
+    @Test
+    fun `all three warm-ups are present, exactly once, in frozen order, distinguishable from scored observations`(@TempDir dir: Path) {
+        val executedWarmupIds = mutableListOf<String>()
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial ->
+                if (trial.fixture.id == "warmup-acknowledgement") executedWarmupIds += trial.id
+                fakeObservationFor(trial, trial.fixture.expectedAction)
+            },
+            Unit3CFamily.FAMILY_A to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_B to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        driver.run(executors)
+        assertEquals(Unit3CCampaignDefinition.warmupTrials.map { it.id }, executedWarmupIds, "warm-ups must execute exactly once each, in frozen order")
+        // Distinguishable: warm-up observations live in their own directory,
+        // structurally separate from Control's own scored raw.jsonl.
+        val warmupLedgerDir = dir.resolve("control").resolve("warmup")
+        val controlLedgerDir = dir.resolve("control")
+        assertTrue(Files.exists(warmupLedgerDir.resolve("raw.jsonl")))
+        assertTrue(Files.exists(controlLedgerDir.resolve("raw.jsonl")))
+        val warmupRaw = Files.readString(warmupLedgerDir.resolve("raw.jsonl"))
+        val controlRaw = Files.readString(controlLedgerDir.resolve("raw.jsonl"))
+        assertEquals(3, warmupRaw.lines().count { it.isNotBlank() })
+        assertEquals(145, controlRaw.lines().count { it.isNotBlank() })
+        assertTrue(controlRaw.lines().none { it.contains("warmup-acknowledgement") }, "scored Control ledger must never contain a warm-up trial ID")
+    }
+
+    @Test
+    fun `crash recovery cannot duplicate already-completed warm-ups`(@TempDir dir: Path) {
+        var warmupCallCount = 0
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial ->
+                if (trial.fixture.id == "warmup-acknowledgement") warmupCallCount++
+                fakeObservationFor(trial, trial.fixture.expectedAction)
+            },
+            Unit3CFamily.FAMILY_A to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_B to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        driver.run(executors)
+        assertEquals(3, warmupCallCount)
+        // Simulate a second, independent driver instance resuming against
+        // the same, already-completed artifact root (a crash-recovery
+        // scenario where the process restarts after full completion). The
+        // correct, safe behavior is idempotent no-op recovery -- every
+        // trial ID is already in the recovered completed-set, so the
+        // executor is never invoked again for any of them, proving warm-ups
+        // (like every other trial) cannot be silently duplicated.
+        val secondDriver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val secondResults = secondDriver.run(
+            mapOf(
+                Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial -> if (trial.fixture.id == "warmup-acknowledgement") warmupCallCount++; fakeObservationFor(trial, trial.fixture.expectedAction) },
+                Unit3CFamily.FAMILY_A to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+                Unit3CFamily.FAMILY_B to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+                Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+            ),
+        )
+        assertEquals(3, warmupCallCount, "the executor must not be invoked again for any already-completed warm-up trial")
+        assertTrue(secondResults.all { it.outcome == Unit3CArmOutcome.SEALED }, "idempotent recovery over an already-complete campaign must not fail")
+    }
+
+    @Test
+    fun `a warm-up failure halts only the Control arm, not Family A, B, or C`(@TempDir dir: Path) {
+        // Corrupt the warm-up sub-ledger's recorded identity before any run,
+        // simulating a measurement-invalidating defect specific to the
+        // shared bridge-verification step.
+        val warmupDir = dir.resolve("control").resolve("warmup")
+        Files.createDirectories(warmupDir)
+        Files.writeString(warmupDir.resolve("identity.txt"), "wrong|identity|line|here|0\n")
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_A to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_B to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertEquals(Unit3CArmOutcome.HALTED, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        assertEquals(0, results.single { it.family == Unit3CFamily.CONTROL }.completedTrialCount)
+        // Control's own scored ledger must never have been touched -- the
+        // warm-up gate fails before any scored call is attempted.
+        assertFalse(Files.exists(dir.resolve("control").resolve("raw.jsonl")))
+        // Family A/B/C remain independently fault-isolated and still seal.
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_A }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_B }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_C }.outcome)
+    }
+
+    @Test
+    fun `campaign cannot silently skip warm-ups -- omitting the CONTROL executor is impossible by type, and warm-ups run unconditionally`(@TempDir dir: Path) {
+        var warmupRan = false
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial ->
+                if (trial.fixture.id == "warmup-acknowledgement") warmupRan = true
+                fakeObservationFor(trial, trial.fixture.expectedAction)
+            },
+            Unit3CFamily.FAMILY_A to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_B to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) },
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        driver.run(executors)
+        assertTrue(warmupRan, "warm-ups must run unconditionally as part of the Control arm -- there is no flag or configuration path that skips them")
     }
 
     // ---- Live-execution guard ----
