@@ -1,8 +1,12 @@
-**Status:** Independent Constitutional Review of the Unit 3-C Completion Review — **REFRESHED (fifth refresh). ACCEPTED.** This refresh does not carry forward Sections 2–10f of the fourth refresh's own text (those addressed the disk-space/live-test-scoping implementation, unaffected and unchanged by this task) — it independently re-derives fresh scrutiny specifically directed at the new timeout/durability implementation, attempting to falsify each of its own load-bearing claims rather than accepting the Completion Review's account.
+**Status:** Independent Constitutional Review of the Unit 3-C Completion Review — **REFRESHED (sixth refresh). ACCEPTED.** Sections 1–17 below are preserved as the fifth refresh's own independent scrutiny of the timeout/durability implementation (still accurate for what it checked; not re-litigated here). Section 0 and Sections 18–24 are new to this refresh, independently attempting to falsify the sixth Completion Review refresh's own load-bearing claims about the observation-durability correction.
 
 # Unit 3-C Controlled Remedy Experiments — Completion Independent Constitutional Review
 
-## 1. Method
+## 0. Sixth refresh — scope and relationship to the fifth refresh
+
+The fifth refresh (Sections 1–17) independently verified the timeout/durability implementation and, in its own Section 12, separately flagged (as a non-blocking qualification) that `Unit3CArmResult.completedTrialCount` undercounts on a late halt — unrelated to, and unaffected by, this sixth refresh. This refresh independently re-scrutinizes only what the Completion Review's own sixth-refresh Sections 0/25–31 newly claim: that `encodeObservation` now durably persists the governed fields it previously discarded, that `contentFidelity` was correctly left uncomputed rather than silently fixed, and that every previously-verified mechanism remains intact. This review was performed independently of, and did not simply adopt, the Observation Durability Defect Confirmation Review's own Independent Constitutional Review — both reviews were read fresh against primary sources, and their independent agreement is reported, not assumed, in Section 24 below.
+
+## 1. Method (fifth refresh, preserved)
 
 Independently re-read the full diff (`git diff -- tests/integration/`) line by line, not the Completion Review's own description of it. Independently re-ran `./gradlew unit3cControlledRemedyExperiments --rerun-tasks`, `./gradlew reasoningProtocolLiveModelEvaluation --rerun-tasks`, and `./gradlew test --rerun-tasks`, parsing XML directly. Independently re-read `runWarmups`, `runArm`, `Unit3COrchestrationDriver.run()`, `Unit3CArmLedger.recover()`/`recordIntent`/`recordTimeout`, and `buildModelInvokingExecutor`'s new catch clauses in full, tracing control flow by hand rather than trusting the Completion Review's own narrative of it.
 
@@ -64,7 +68,7 @@ None.
 2. `Unit3CArmResult.completedTrialCount` undercounts (reports 0) for any late-arm `HALTED` outcome, including the new scored-trial transport-failure path (Section 12) — pre-existing, not introduced by this task, but now reachable via a new trigger; any future summary-reporting task should read the durable ledger directly.
 3. `TRANSPORT_OR_PROVIDER_FAILURE` and `AMBIGUOUS` currently receive identical runtime treatment (Section 5) — correct per governance, but worth stating explicitly in the Completion Review's own Section 13 rather than only implicitly.
 
-## 16. Verdict
+## 16. Verdict (fifth refresh)
 
 ```text
 ACCEPTED
@@ -72,6 +76,54 @@ ACCEPTED
 
 Every load-bearing claim in the Completion Review was independently attempted to be falsified and survived, with one arithmetic correction (Section 13) and two non-blocking qualifications (Section 15) that do not change the underlying PASS determination. The implementation genuinely satisfies the governed timeout value, warm-up campaign-halt semantics, scored-trial continuation semantics, the transport/infrastructure distinction, intent-before-call durability, the four-state exact-once model, and the prohibition on fabricated semantic actions — independently re-derived, not merely re-stated.
 
-## 17. Confirmation
+## 17. Confirmation (fifth refresh)
 
 No model or HTTP call occurred during this review. No campaign was created, resumed, or modified. No production file changed. No fixture or Family A/B/C definition was altered. No remedy was selected. The Completion Review document itself was not modified by this review.
+
+## 18. Sixth refresh — attempt: falsify that the correction actually persists the governed fields, not merely that it looks correct on inspection
+
+Independently re-read the corrected `encodeObservation` character by character, independently re-confirmed it references every field of `Unit3CObservation` except `prompt`/`rawRequest`/`rawResponse`. Independently re-ran the new round-trip test with `build/` deleted first (ruling out a stale compiled artifact silently passing), and independently constructed a second, separate ad hoc observation (different values from the test's own `richObservation()` fixture — a Family B trial, `semanticCorrect = false`, a non-null `parserFailure`) directly from a scratch script invoking `encodeObservation`/`decodeObservationPayload` via the Gradle test classpath, confirming the round trip holds for values the shipped test suite does not itself exercise. **Not falsified.**
+
+## 19. Sixth refresh — attempt: falsify that `contentFidelity` was left alone rather than quietly computed
+
+Specifically probed, since this is the sixth refresh's own most consequential claim. Independently re-read `buildModelInvokingExecutor` and `buildFamilyCExecutor` a second time: both still hardcode `contentFidelity = null`, unconditionally — this task's diff contains no edit to either function (independently re-confirmed via `git diff -- tests/integration/ReasoningProtocolUnit3CControlledRemedyExperimentsTest.kt`, which is empty). Independently re-read the corrected `encodeObservation`'s own `contentFidelity` line: `jsonStringField("contentFidelity", observation.contentFidelity?.name)` — this reads the object's existing field, computes nothing. **Independently confirmed: no computation was added; the always-`null` value now simply survives to disk instead of being silently dropped, which is not the same defect the Determination flagged as separate and unresolved.** Not falsified.
+
+## 20. Sixth refresh — attempt: falsify that the checkpoint-triggering-trial test proves what it claims
+
+Independently re-derived `isAdversarialCategoryFalsePositive(FixtureCategory.GOAL, ExpectedAction.GOAL, ExpectedAction.REMEMBER)` by hand from the unmodified function source: `actualAction` non-null, in `{REMEMBER, GOAL}`, unequal to `expectedAction`, category `GOAL` — all four conditions true, independently confirmed the checkpoint must fire. Independently re-ran the test with a debugger-equivalent manual trace (temporarily inserting a print of the decoded payload, then reverting the change — confirmed via `git diff` showing zero net change after reversion) and independently observed the decoded `actualAction` read `"REMEMBER"` directly from the `raw.jsonl` line on disk. **Not falsified.**
+
+## 21. Sixth refresh — attempt: falsify that preserved mechanisms remain preserved, not merely re-asserted
+
+Independently re-read `runWarmups`, `runArm`, `Unit3CArmLedger.recover()`/`recordIntent`/`recordTimeout`, and `isAdversarialCategoryFalsePositive`'s call site a second time in full, line by line, confirming none contains any edit — the only change touching those functions' own surrounding code is the two call sites' resolution of `encodeObservation(observation)` from a now-deleted private member to the corrected top-level function, which does not alter what argument is passed or when. **Not falsified.**
+
+## 22. Sixth refresh — attempt: falsify the reported test counts
+
+Independently re-ran `./gradlew clean test reasoningProtocolBaselineCharacterisation reasoningProtocolUnit2DDiagnostic reasoningProtocolLiveModelEvaluation unit3cControlledRemedyExperiments` as one combined build from a clean state and independently parsed the resulting XML with a fresh script (not reusing the Completion Review's own or the Defect Confirmation Review's own parsing): **test 2015/5-skip/0-fail; reasoningProtocolBaselineCharacterisation 19/1-skip/0-fail; reasoningProtocolUnit2DDiagnostic 27/1-skip/0-fail; reasoningProtocolLiveModelEvaluation 163/4-skip/0-fail; unit3cControlledRemedyExperiments 100/1-skip/0-fail (48+52 across the two files).** All independently reproduced exactly. **Not falsified.**
+
+## 23. Sixth refresh — attempt: falsify Attempt 5 integrity
+
+Independently listed `/var/lib/parker/reasoning-protocol-live-model/unit3c-remedy-experiments-20260810-02/` (26 files) and independently computed each file's age relative to wall-clock time at the point of this review, confirming every file predates this task's session start by a materially larger margin than the session's own duration — ruling out even a same-session write followed by an immediate revert (which could in principle leave a matching final byte content but a fresh mtime). **Not falsified.**
+
+## 24. Sixth refresh — cross-check against the Observation Durability Defect Confirmation Review's own Independent Constitutional Review
+
+Read after, not before, completing Sections 18–23 above, specifically to check for independent agreement rather than to derive from it. Both reviews independently reached the same conclusions on every material point: the root cause, the `contentFidelity` boundary, the `prompt`/`rawRequest`/`rawResponse` exclusion, durability verification, preserved-mechanism verification, Attempt 5 integrity, and the reported test figures. No discrepancy found between the two independent reviews.
+
+## 25. Blocking defects (sixth refresh)
+
+None.
+
+## 26. Non-blocking qualifications (sixth refresh)
+
+`contentFidelity`'s own separate non-computation remains open (Section 19); this is inherited, not new, and is correctly out of both this task's and this review's own scope.
+
+## 27. Verdict (sixth refresh)
+
+```text
+ACCEPTED
+```
+
+The observation-durability correction genuinely persists the governed fields, without quietly expanding scope to compute `contentFidelity` or capture raw prompt/response text, without weakening any previously-verified mechanism, and without touching Attempt 5. Independently re-derived, not merely re-stated — including one independent verification method (Section 18's separate ad hoc script) not present anywhere in the Completion Review's or the Defect Confirmation Review's own text.
+
+## 28. Confirmation (sixth refresh)
+
+No model or HTTP call occurred during this review. No campaign was created, resumed, or modified — Attempt 5's artifacts were inspected read-only throughout. No production file changed. No fixture or Family A/B/C definition was altered. No remedy was selected. The Completion Review document itself was not modified by this review beyond what the Completion Review's own sixth refresh (Section 0/25–31 there) already states.

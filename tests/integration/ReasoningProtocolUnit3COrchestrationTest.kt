@@ -256,6 +256,167 @@ private fun buildTimeoutRecord(
         checkpointStatus = checkpointStatus,
     )
 
+// ============================================================
+// Durable observation encoding (Plan Section 16, completed-observation
+// schema). Governance defect correction: prior to this fix,
+// [encodeObservation] persisted only three of the ~26 fields
+// [Unit3CObservation] already computes (`campaignId`/`family`/`fixtureId`),
+// silently discarding `actualAction`, `semanticCorrect`,
+// `representationValid`, `parserResult`, `parserFailure`, `latencyNanos`,
+// `transportOutcome`, and every other already-computed field at the one
+// function responsible for turning the correct in-memory object into a
+// durable record (Evidence Completeness and Durability Determination
+// Review, Section 3, and its Independent Constitutional Review). `prompt`,
+// `rawRequest`, and `rawResponse` are deliberately excluded here, not
+// omitted by oversight: the Determination's own Section 8 minimum-evidence
+// analysis, independently re-confirmed by its ICR Section 9, found every
+// currently-governed question fully answerable from the structured fields
+// alone, and `rawRequest`/`rawResponse` are not even computed in memory
+// today (hardcoded `null` in `buildModelInvokingExecutor`) -- capturing
+// them would be a separate, larger, currently-unauthorized change. No
+// field below is fabricated: every value is exactly what
+// [Unit3CObservation]'s own constructor already computed; encoding never
+// invents or infers a value the object itself does not already hold.
+// ============================================================
+
+private fun jsonQuote(value: String): String = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+private fun jsonUnquote(value: String): String = value.replace("\\\"", "\"").replace("\\\\", "\\")
+
+private fun jsonStringField(name: String, value: String?): String =
+    "\"$name\":" + (value?.let { jsonQuote(it) } ?: "null")
+
+private fun jsonBooleanField(name: String, value: Boolean?): String =
+    "\"$name\":" + (value?.toString() ?: "null")
+
+private fun jsonLongField(name: String, value: Long?): String =
+    "\"$name\":" + (value?.toString() ?: "null")
+
+/** Serializes every governed Plan Section 16 field [Unit3CObservation]
+ * already computes, `prompt`/`rawRequest`/`rawResponse` excepted (see
+ * block comment above). This is the durable payload passed to
+ * [Unit3CArmLedger.appendObservation]; it round-trips exactly through
+ * [decodeObservationPayload] below. */
+private fun encodeObservation(observation: Unit3CObservation): String = "{" +
+    jsonStringField("campaignId", observation.campaignId) + "," +
+    jsonStringField("family", observation.family.name) + "," +
+    jsonStringField("arm", observation.arm) + "," +
+    jsonStringField("fixtureId", observation.fixtureId) + "," +
+    jsonStringField("fixtureCategory", observation.fixtureCategory.name) + "," +
+    jsonStringField("contextProfileId", observation.contextProfileId) + "," +
+    "\"trialSequence\":${observation.trialSequence}," +
+    jsonStringField("expectedAction", observation.expectedAction.name) + "," +
+    jsonStringField("actualAction", observation.actualAction?.name) + "," +
+    jsonBooleanField("semanticCorrect", observation.semanticCorrect) + "," +
+    jsonBooleanField("representationValid", observation.representationValid) + "," +
+    jsonStringField("contentFidelity", observation.contentFidelity?.name) + "," +
+    jsonStringField("modelName", observation.modelName) + "," +
+    jsonStringField("modelDigest", observation.modelDigest) + "," +
+    jsonStringField("runtimeIdentity", observation.runtimeIdentity) + "," +
+    jsonStringField("endpointIdentifier", observation.endpointIdentifier) + "," +
+    jsonLongField("timeoutMs", observation.timeoutMs) + "," +
+    jsonStringField("inferenceConfigIdentity", observation.inferenceConfigIdentity) + "," +
+    jsonStringField("promptIdentity", observation.promptIdentity) + "," +
+    jsonStringField("parserResult", observation.parserResult) + "," +
+    jsonStringField("parserFailure", observation.parserFailure) + "," +
+    jsonLongField("latencyNanos", observation.latencyNanos) + "," +
+    jsonStringField("transportOutcome", observation.transportOutcome) + "," +
+    jsonStringField("candidateMechanismIdentity", observation.candidateMechanismIdentity) + "," +
+    jsonStringField("stableInputHash", observation.stableInputHash) + "," +
+    jsonStringField("repositoryCommit", observation.repositoryCommit) +
+    "}"
+
+/** Reads one field's raw token out of an [encodeObservation]-produced
+ * payload: a quoted, unescaped string for string-typed fields, or the bare
+ * literal (`null`, `true`/`false`, or a number) for every other field.
+ * Used only by tests, to prove durable values are genuinely interpretable
+ * from the raw payload text alone -- not by trusting the in-memory
+ * [Unit3CObservation] that produced it. */
+private fun payloadField(payload: String, field: String): String? {
+    val stringMatch = Regex("\"$field\":\"((?:\\\\.|[^\"])*)\"").find(payload)
+    if (stringMatch != null) return jsonUnquote(stringMatch.groupValues[1])
+    val rawMatch = Regex("\"$field\":([^,}]+)").find(payload)
+        ?: error("field \"$field\" not present in payload: $payload")
+    val raw = rawMatch.groupValues[1]
+    return if (raw == "null") null else raw
+}
+
+/** Fully-typed decode of a durable observation payload, proving every
+ * governed field is genuinely re-interpretable from the raw text alone,
+ * not merely present as an opaque substring. */
+private data class DecodedObservationPayload(
+    val campaignId: String,
+    val family: String,
+    val arm: String,
+    val fixtureId: String,
+    val fixtureCategory: String,
+    val contextProfileId: String,
+    val trialSequence: Int,
+    val expectedAction: String,
+    val actualAction: String?,
+    val semanticCorrect: Boolean?,
+    val representationValid: Boolean,
+    val contentFidelity: String?,
+    val modelName: String?,
+    val modelDigest: String?,
+    val runtimeIdentity: String?,
+    val endpointIdentifier: String?,
+    val timeoutMs: Long?,
+    val inferenceConfigIdentity: String?,
+    val promptIdentity: String?,
+    val parserResult: String?,
+    val parserFailure: String?,
+    val latencyNanos: Long?,
+    val transportOutcome: String?,
+    val candidateMechanismIdentity: String?,
+    val stableInputHash: String,
+    val repositoryCommit: String,
+)
+
+private fun decodeObservationPayload(payload: String): DecodedObservationPayload {
+    fun str(field: String) = payloadField(payload, field)
+    fun bool(field: String) = str(field)?.toBooleanStrict()
+    fun long(field: String) = str(field)?.toLong()
+    return DecodedObservationPayload(
+        campaignId = str("campaignId")!!,
+        family = str("family")!!,
+        arm = str("arm")!!,
+        fixtureId = str("fixtureId")!!,
+        fixtureCategory = str("fixtureCategory")!!,
+        contextProfileId = str("contextProfileId")!!,
+        trialSequence = str("trialSequence")!!.toInt(),
+        expectedAction = str("expectedAction")!!,
+        actualAction = str("actualAction"),
+        semanticCorrect = bool("semanticCorrect"),
+        representationValid = bool("representationValid")!!,
+        contentFidelity = str("contentFidelity"),
+        modelName = str("modelName"),
+        modelDigest = str("modelDigest"),
+        runtimeIdentity = str("runtimeIdentity"),
+        endpointIdentifier = str("endpointIdentifier"),
+        timeoutMs = long("timeoutMs"),
+        inferenceConfigIdentity = str("inferenceConfigIdentity"),
+        promptIdentity = str("promptIdentity"),
+        parserResult = str("parserResult"),
+        parserFailure = str("parserFailure"),
+        latencyNanos = long("latencyNanos"),
+        transportOutcome = str("transportOutcome"),
+        candidateMechanismIdentity = str("candidateMechanismIdentity"),
+        stableInputHash = str("stableInputHash")!!,
+        repositoryCommit = str("repositoryCommit")!!,
+    )
+}
+
+/** Extracts and unescapes the `payload` field of one raw.jsonl line
+ * (`{"trialId":"...","payload":"..."}`), mirroring
+ * [Unit3CArmLedger]'s own private `readRawIds` extraction pattern for
+ * `trialId`. Used only by tests to reach the durable payload text exactly
+ * as it exists on disk, with no dependency on any in-memory object. */
+private fun extractRawPayload(rawLine: String): String {
+    val match = Regex("\"payload\":\"((?:\\\\.|[^\"])*)\"").find(rawLine)
+        ?: error("no payload field found in raw line: $rawLine")
+    return jsonUnquote(match.groupValues[1])
+}
+
 /** True exactly when Plan Section 18's non-numeric trigger condition is
  * met: a false-positive REMEMBER or GOAL result on a fixture drawn from
  * the adversarial/negative-control surface (`ADVERSARIAL`, or `REPLY`/`GOAL`
@@ -521,9 +682,6 @@ class Unit3COrchestrationDriver(
             Unit3CArmResult(family, Unit3CArmOutcome.HALTED, 0)
         }
     }
-
-    private fun encodeObservation(observation: Unit3CObservation): String =
-        "campaignId=${observation.campaignId}|family=${observation.family}|fixtureId=${observation.fixtureId}"
 }
 
 // ============================================================
@@ -1307,6 +1465,184 @@ class ReasoningProtocolUnit3COrchestrationTest {
         assertEquals(220, Unit3CCampaignDefinition.familyATrials.size)
         assertEquals(115, Unit3CCampaignDefinition.familyBTrials.size)
         assertEquals(29, Unit3CCampaignDefinition.familyCTrials.size)
+    }
+
+    // ---- Durable observation encoding (Evidence Completeness and
+    // Durability Determination correction). Prior to this fix,
+    // `encodeObservation` persisted only campaignId/family/fixtureId --
+    // every field proven here was already computed correctly in memory but
+    // silently discarded at the one function responsible for writing it
+    // durably. ----
+
+    private fun richObservation(): Unit3CObservation = Unit3CObservation(
+        campaignId = "unit3c-remedy-experiments-durability-test",
+        family = Unit3CFamily.CONTROL,
+        arm = "CONTROL",
+        fixtureId = "r01-direct",
+        fixtureCategory = FixtureCategory.REMEMBER,
+        contextProfileId = "minimal-production-context",
+        trialSequence = 3,
+        expectedAction = ExpectedAction.REMEMBER,
+        actualAction = ExpectedAction.REMEMBER,
+        semanticCorrect = true,
+        representationValid = true,
+        contentFidelity = null,
+        modelName = "qwen2.5-coder:7b",
+        modelDigest = "sha256:deadbeef",
+        runtimeIdentity = "runtime-x",
+        endpointIdentifier = "http://127.0.0.1:11434",
+        timeoutMs = 90_000L,
+        inferenceConfigIdentity = "default-ollama-request-shape",
+        promptIdentity = "control",
+        prompt = "irrelevant to durability -- deliberately excluded from the persisted schema",
+        rawRequest = null,
+        rawResponse = null,
+        parserResult = "REMEMBER",
+        parserFailure = null,
+        latencyNanos = 4_123_456_789L,
+        transportOutcome = "ok",
+        candidateMechanismIdentity = null,
+        stableInputHash = "hash-r01-direct",
+        repositoryCommit = "4430e8b7eeb281d936ca3266fff13df7ed6bcc87",
+    )
+
+    @Test
+    fun `a completed observation containing every governed field survives encode-decode round trip`() {
+        val observation = richObservation()
+        val decoded = decodeObservationPayload(encodeObservation(observation))
+        assertEquals(observation.campaignId, decoded.campaignId)
+        assertEquals(observation.family.name, decoded.family)
+        assertEquals(observation.arm, decoded.arm)
+        assertEquals(observation.fixtureId, decoded.fixtureId)
+        assertEquals(observation.fixtureCategory.name, decoded.fixtureCategory)
+        assertEquals(observation.contextProfileId, decoded.contextProfileId)
+        assertEquals(observation.trialSequence, decoded.trialSequence)
+        assertEquals(observation.expectedAction.name, decoded.expectedAction)
+        assertEquals(observation.actualAction?.name, decoded.actualAction)
+        assertEquals(observation.semanticCorrect, decoded.semanticCorrect)
+        assertEquals(observation.representationValid, decoded.representationValid)
+        assertEquals(observation.contentFidelity?.name, decoded.contentFidelity)
+        assertEquals(observation.modelName, decoded.modelName)
+        assertEquals(observation.modelDigest, decoded.modelDigest)
+        assertEquals(observation.runtimeIdentity, decoded.runtimeIdentity)
+        assertEquals(observation.endpointIdentifier, decoded.endpointIdentifier)
+        assertEquals(observation.timeoutMs, decoded.timeoutMs)
+        assertEquals(observation.inferenceConfigIdentity, decoded.inferenceConfigIdentity)
+        assertEquals(observation.promptIdentity, decoded.promptIdentity)
+        assertEquals(observation.parserResult, decoded.parserResult)
+        assertEquals(observation.parserFailure, decoded.parserFailure)
+        assertEquals(observation.latencyNanos, decoded.latencyNanos)
+        assertEquals(observation.transportOutcome, decoded.transportOutcome)
+        assertEquals(observation.candidateMechanismIdentity, decoded.candidateMechanismIdentity)
+        assertEquals(observation.stableInputHash, decoded.stableInputHash)
+        assertEquals(observation.repositoryCommit, decoded.repositoryCommit)
+    }
+
+    @Test
+    fun `the durable raw jsonl file on disk -- not the in-memory object -- contains the governed values`(@TempDir dir: Path) {
+        val observation = richObservation()
+        val ledger = Unit3CArmLedger(dir, setOf("control/r01-direct/main/03"))
+        ledger.appendObservation("control/r01-direct/main/03", encodeObservation(observation))
+        // Read only from disk from here on -- the original `observation`
+        // reference is not consulted again except to state the expected
+        // values, proving durable interpretability independent of any
+        // still-live in-memory object.
+        val diskLine = Files.readAllLines(dir.resolve("raw.jsonl")).single { it.isNotBlank() }
+        val decoded = decodeObservationPayload(extractRawPayload(diskLine))
+        assertEquals("REMEMBER", decoded.actualAction)
+        assertEquals(true, decoded.semanticCorrect)
+        assertEquals(true, decoded.representationValid)
+        assertEquals("REMEMBER", decoded.parserResult)
+        assertEquals(null, decoded.parserFailure)
+        assertEquals(4_123_456_789L, decoded.latencyNanos)
+        assertEquals("ok", decoded.transportOutcome)
+        assertEquals("qwen2.5-coder:7b", decoded.modelName)
+        assertEquals("sha256:deadbeef", decoded.modelDigest)
+        // Regression guard: the pre-fix format persisted exactly this
+        // pipe-delimited three-field string and nothing else -- the fix
+        // must not silently regress back to it.
+        assertFalse(diskLine.contains("campaignId=unit3c-remedy-experiments-durability-test|family=CONTROL|fixtureId=r01-direct"))
+    }
+
+    @Test
+    fun `a representation failure preserves null actualAction and semanticCorrect, plus the real parserFailure message, through durable encoding`(@TempDir dir: Path) {
+        val observation = richObservation().copy(
+            actualAction = null,
+            semanticCorrect = null,
+            representationValid = false,
+            parserResult = null,
+            parserFailure = "no recognized tag found in model output",
+            transportOutcome = "unclassifiable",
+        )
+        val trialId = "control/r01-direct/main/03"
+        val ledger = Unit3CArmLedger(dir, setOf(trialId))
+        ledger.appendObservation(trialId, encodeObservation(observation))
+        val diskLine = Files.readAllLines(dir.resolve("raw.jsonl")).single { it.isNotBlank() }
+        val decoded = decodeObservationPayload(extractRawPayload(diskLine))
+        assertEquals(null, decoded.actualAction, "no actualAction may be fabricated for an unclassifiable response")
+        assertEquals(null, decoded.semanticCorrect, "semanticCorrect must stay null whenever actualAction is null")
+        assertEquals(false, decoded.representationValid)
+        assertEquals(null, decoded.parserResult)
+        assertEquals("no recognized tag found in model output", decoded.parserFailure)
+        assertEquals("unclassifiable", decoded.transportOutcome)
+    }
+
+    @Test
+    fun `Family C's null model-call fields durably survive encoding exactly as the schema requires`(@TempDir dir: Path) {
+        val trial = Unit3CCampaignDefinition.familyCTrials.first { it.fixture.id == "p03-ambiguous-memory" }
+        val observation = fakeObservationFor(trial, ExpectedAction.REMEMBER) // the known Candidate-C1 false positive
+        val ledger = Unit3CArmLedger(dir, setOf(trial.id))
+        ledger.appendObservation(trial.id, encodeObservation(observation))
+        val diskLine = Files.readAllLines(dir.resolve("raw.jsonl")).single { it.isNotBlank() }
+        val decoded = decodeObservationPayload(extractRawPayload(diskLine))
+        assertEquals("REMEMBER", decoded.actualAction, "Family C's actual signal must be durably, definitively knowable -- not merely deducible")
+        assertEquals(false, decoded.semanticCorrect, "REMEMBER against this fixture's REPLY expectation is a false positive")
+        assertEquals("candidate-c1", decoded.candidateMechanismIdentity)
+        assertEquals(null, decoded.modelName)
+        assertEquals(null, decoded.modelDigest)
+        assertEquals(null, decoded.runtimeIdentity)
+        assertEquals(null, decoded.endpointIdentifier)
+        assertEquals(null, decoded.timeoutMs)
+        assertEquals(null, decoded.inferenceConfigIdentity)
+        assertEquals(null, decoded.promptIdentity)
+        assertEquals(null, decoded.parserResult)
+        assertEquals(null, decoded.latencyNanos)
+        assertEquals(null, decoded.transportOutcome)
+    }
+
+    @Test
+    fun `a full campaign run durably preserves actualAction for every trial, including the one that triggers the safety checkpoint`(@TempDir dir: Path) {
+        // Control's own g03-later-action GOAL fixture: force a REMEMBER
+        // response on its second attempt, matching the exact deduction the
+        // Determination Review could previously only narrow to "REMEMBER"
+        // by inference from the checkpoint trigger condition -- this test
+        // proves it is now durably, directly readable instead.
+        val triggerTrialId = "control/g03-later-action/main/02"
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial ->
+                val forced = if (trial.id == triggerTrialId) ExpectedAction.REMEMBER else trial.fixture.expectedAction
+                fakeObservationFor(trial, forced)
+            },
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertEquals(Unit3CArmOutcome.SAFETY_CHECKPOINT, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        val controlLines = Files.readAllLines(dir.resolve("control").resolve("raw.jsonl")).filter { it.isNotBlank() }
+        val triggerLine = controlLines.single { it.contains("\"trialId\":\"$triggerTrialId\"") }
+        val decoded = decodeObservationPayload(extractRawPayload(triggerLine))
+        assertEquals("REMEMBER", decoded.actualAction, "the checkpoint-triggering trial's real actualAction must now be durably present, not merely inferable from the checkpoint firing")
+        assertEquals(false, decoded.semanticCorrect)
+        assertEquals("g03-later-action", decoded.fixtureId)
+        assertEquals("GOAL", decoded.expectedAction)
+        // Every other, non-triggering Control observation must also carry
+        // its real, correct actualAction -- durability was not selectively
+        // fixed for only the checkpoint case.
+        val otherLine = controlLines.first { !it.contains("\"trialId\":\"$triggerTrialId\"") }
+        val otherDecoded = decodeObservationPayload(extractRawPayload(otherLine))
+        assertEquals(true, otherDecoded.semanticCorrect, "every non-triggering trial in this scenario was executed with its own expectedAction as actualAction")
     }
 
     // ---- Live-execution guard ----
