@@ -774,10 +774,15 @@ object Unit3CLiveEntryPoint {
      * gate, then the real orchestration driver with real, live-calling
      * executors for Control/Family A/Family B and the offline classifier
      * for Family C. Every gate must pass, in order, before the first HTTP
-     * call can occur. Never invoked by any test in this codebase; reachable
-     * only via the detached `unit3cControlledRemedyExperiments` Gradle task
-     * with complete, explicit live environment configuration, which this
-     * task does not supply anywhere. */
+     * call can occur. Reached with real arguments only by the gated live
+     * trigger test below (`live Unit 3-C campaign is skipped...`), which
+     * itself is skipped -- not merely non-failing, genuinely never
+     * constructing configuration -- unless both the Gradle-set
+     * `parker.reasoning.unit3c.enabled` system property and a real
+     * campaign-ID environment variable are present. Under every other
+     * invocation path (`./gradlew test`, `./gradlew check`, `./gradlew
+     * build`, or this detached task run without live environment
+     * configuration), this function is never called. */
     fun run(environment: Map<String, String>, repositoryRoot: Path) {
         requireDownstreamIsolated()
         val config = Unit3CConfigLoader.load(environment, repositoryRoot)
@@ -1422,6 +1427,120 @@ class ReasoningProtocolUnit3CControlledRemedyExperimentsTest {
         )
         assumeTrue(runCatching { LiveEvaluationConfigLoader.load(environment, Path.of(".")) }.getOrNull() is EvaluationConfigLoad.Present, "requires the shared PARKER_REASONING_EVAL_* loader to accept this fixture environment")
         assertFailsWith<IllegalArgumentException> { Unit3CConfigLoader.load(environment, Path.of(".")) }
+    }
+
+    // ---- Live trigger: gated, real-environment-driven invocation ----
+    //
+    // The trigger below is the sole caller of Unit3CLiveEntryPoint.run with real
+    // System.getenv() anywhere in this repository. It is skipped -- not merely
+    // non-failing, genuinely never loading configuration or constructing a client
+    // -- unless both `assumeTrue` gates pass. Under ordinary offline execution
+    // (this file's own detached task run without live environment configuration,
+    // or any accidental attempt to reach it via `./gradlew test`, which cannot:
+    // this file is structurally excluded from the `test` source set), the
+    // Gradle-set property is absent, so the first gate always skips first.
+
+    @Test
+    fun `live Unit 3-C trigger requires a real campaign ID even when the detached task's own property is already set`() {
+        // The unit3cControlledRemedyExperiments Gradle task always sets
+        // parker.reasoning.unit3c.enabled=true for its own execution scope --
+        // that alone is not, and must not be, sufficient to reach the entry
+        // point. Only a real, explicit, operator-supplied campaign-ID
+        // environment variable -- never set during ordinary offline execution
+        // of this task -- can satisfy the trigger's second gate.
+        assertNull(
+            System.getenv(Unit3CConfigLoader.CAMPAIGN_ID),
+            "no real Unit 3-C campaign ID may be present during ordinary offline test execution",
+        )
+    }
+
+    @Test
+    fun `live Unit 3-C campaign is skipped before any configuration is loaded unless the Gradle-set property and a real campaign ID are both present`() {
+        assumeTrue(System.getProperty(UNIT_3C_PROPERTY) == "true", "Unit 3-C live property absent; no configuration or client constructed")
+        val campaignId = System.getenv(Unit3CConfigLoader.CAMPAIGN_ID)
+        assumeTrue(!campaignId.isNullOrBlank(), "complete explicit Unit 3-C configuration absent; no live client constructed")
+        Unit3CLiveEntryPoint.run(System.getenv(), Path.of("."))
+    }
+
+    @Test
+    fun `live Unit 3-C trigger source calls the real entry point with real environment exactly once, gated by exactly two assumeTrue checks`() {
+        val source = Files.readString(Path.of("tests/integration/ReasoningProtocolUnit3CControlledRemedyExperimentsTest.kt"))
+        val marker = "fun `live Unit 3-C campaign is skipped before any configuration is loaded unless the Gradle-set property and a real campaign ID are both present`()"
+        val start = source.indexOf(marker)
+        assertTrue(start >= 0, "trigger function must exist in this file's own source")
+        val bodyStart = source.indexOf('{', start)
+        val bodyEnd = source.indexOf("\n    }\n", bodyStart)
+        val body = source.substring(bodyStart, bodyEnd)
+        val realEntryPointCall = "Unit3CLiveEntryPoint.run(System.getenv(), Path.of(\".\"))"
+        assertEquals(1, Regex(Regex.escape(realEntryPointCall)).findAll(body).count(), "the trigger must invoke the real entry point with real environment exactly once")
+        assertEquals(2, Regex("assumeTrue\\(").findAll(body).count(), "the trigger must be gated by exactly two assumeTrue checks before invoking the entry point")
+    }
+
+    @Test
+    fun `live entry point wires config directly into the real orchestration driver and calls run with all four family executors`() {
+        val source = Files.readString(Path.of("tests/integration/ReasoningProtocolUnit3CControlledRemedyExperimentsTest.kt"))
+        val objectStart = source.indexOf("object Unit3CLiveEntryPoint")
+        assertTrue(objectStart >= 0)
+        val objectEnd = source.indexOf("\n}\n", objectStart)
+        val body = source.substring(objectStart, objectEnd)
+        assertTrue(body.contains("Unit3COrchestrationDriver(config.campaignId, artifactRoot, config.identity)"), "must construct the real, already-governed orchestration driver")
+        assertTrue(body.contains("driver.run(executors)"), "must invoke the driver exactly via its own run(executors) entry point")
+        assertTrue(body.contains("Unit3CFamily.CONTROL to"), "must wire a Control executor")
+        assertTrue(body.contains("Unit3CFamily.FAMILY_A to"), "must wire a Family A executor")
+        assertTrue(body.contains("Unit3CFamily.FAMILY_B to"), "must wire a Family B executor")
+        assertTrue(body.contains("Unit3CFamily.FAMILY_C to"), "must wire a Family C executor")
+    }
+
+    private fun completeUnit3CEnvironment(): Map<String, String> = mapOf(
+        LiveEvaluationConfigLoader.ENDPOINT to "http://127.0.0.1:11434/api/generate",
+        LiveEvaluationConfigLoader.MODEL to "qwen2.5-coder:7b",
+        LiveEvaluationConfigLoader.TIMEOUT to "30000",
+        LiveEvaluationConfigLoader.OUTPUT to "build/unit3c-trigger-test-output-unused",
+        LiveEvaluationConfigLoader.COMMIT to "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        LiveEvaluationConfigLoader.DIGEST to "a".repeat(64),
+        Unit3CConfigLoader.CAMPAIGN_ID to "unit3c-remedy-experiments-triggertest",
+        Unit3CConfigLoader.ARTIFACT_ROOT to UNIT_3C_ARTIFACT_ROOT_PREFIX,
+    )
+
+    @Test
+    fun `live entry point accepts a fully valid environment through configuration and artifact-root resolution before any driver is constructed`() {
+        val environment = completeUnit3CEnvironment()
+        val config = Unit3CConfigLoader.load(environment, Path.of("."))
+        assertEquals("unit3c-remedy-experiments-triggertest", config.campaignId)
+        val resolved = Unit3CArtifactRootPolicy.resolve(environment.getValue(Unit3CConfigLoader.ARTIFACT_ROOT), config.campaignId)
+        assertEquals("$UNIT_3C_ARTIFACT_ROOT_PREFIX/unit3c-remedy-experiments-triggertest", resolved.toString())
+    }
+
+    @Test
+    fun `live entry point rejects a wrong model name before any artifact root or driver interaction`() {
+        val environment = completeUnit3CEnvironment() + mapOf(LiveEvaluationConfigLoader.MODEL to "llama3.2:3b")
+        assertFailsWith<IllegalArgumentException> {
+            Unit3CLiveEntryPoint.run(environment, Path.of("."))
+        }
+    }
+
+    @Test
+    fun `live entry point rejects a blank model digest before any artifact root or driver interaction`() {
+        val environment = completeUnit3CEnvironment() + mapOf(LiveEvaluationConfigLoader.DIGEST to "   ")
+        assertFailsWith<EvaluationConfigurationException> {
+            Unit3CLiveEntryPoint.run(environment, Path.of("."))
+        }
+    }
+
+    @Test
+    fun `live entry point rejects a malformed campaign identity before any artifact root or driver interaction`() {
+        val environment = completeUnit3CEnvironment() + mapOf(Unit3CConfigLoader.CAMPAIGN_ID to "Unit3C_Not_Machine_Safe")
+        assertFailsWith<IllegalArgumentException> {
+            Unit3CLiveEntryPoint.run(environment, Path.of("."))
+        }
+    }
+
+    @Test
+    fun `live entry point rejects a wrong artifact root before any driver is constructed`() {
+        val environment = completeUnit3CEnvironment() + mapOf(Unit3CConfigLoader.ARTIFACT_ROOT to "/tmp/wrong-unit3c-root")
+        assertFailsWith<Unit3CArtifactRootViolationException> {
+            Unit3CLiveEntryPoint.run(environment, Path.of("."))
+        }
     }
 
     // ---- Helpers ----
