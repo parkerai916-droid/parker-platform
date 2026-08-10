@@ -1,90 +1,80 @@
-**Status:** Unit 3-C Controlled Remedy Experiments — Implementation Readiness Review — **REFRESHED (fourth refresh). READY.** The prior refresh's Section 2a table proved every link it enumerated, but — as this refresh now states plainly rather than glossing over — it never enumerated the disk-space gate as a distinct link at all, which is exactly why the first genuine live-execution attempt still halted despite that "proof." This refresh adds the missing link explicitly (Section 2a) and corrects it (Section 6). This document does not authorize execution.
+**Status:** Unit 3-C Controlled Remedy Experiments — Implementation Readiness Review — **REFRESHED (fifth refresh). READY.** Every prior refresh was superseded by a live-execution attempt or a subsequent review finding a gap the prior refresh's own "proof" had not actually covered. This refresh explicitly re-enumerates the full path a fifth time, now including the timeout/durability governance implemented in this task, rather than treating it as a footnote to the pre-existing links. This document does not authorize execution.
 
 # Unit 3-C Controlled Remedy Experiments — Implementation Readiness Review
 
 ## 1. Question
 
-Is the implemented instrument technically and constitutionally ready to proceed to the separate, future Explicit Execution Approval governance step? Prior refreshes answered "READY" twice before, each time superseded by a live-execution attempt finding a gap the review's own "proof" had not actually covered: first, warm-ups counted but never run; second, no caller reaching the entry point at all; third — the immediately prior refresh's own gap, only now visible — a full path table (Section 2a) that proved trigger reachability, config validation, artifact-root validation, and driver/executor wiring, but never listed the disk-space gate as its own link, so its failure against a real, not-yet-created campaign directory was never caught by that "proof." This refresh does not assume any prior "READY" verdict; it re-derives readiness fresh, explicitly re-enumerating every link in the path, including the one the immediately prior refresh omitted.
+Is the corrected implementation genuinely ready for a future, fresh Explicit Execution Approval Review? This refresh does not assume any prior "READY" verdict — it re-derives readiness fresh, dimension by dimension, with the timeout value, warm-up campaign-halt semantics, scored-trial continuation semantics, and intent/terminal durability now added as their own explicit, individually-proven dimensions, exactly the discipline every prior refresh's own failure (warm-ups counted but unrun; no trigger caller; disk-space gate omitted from the path table) has repeatedly shown is required.
 
-## 2. Clean exact call schedule
+## 2. Executable timeout
 
-**Ready — and now more rigorously so than at any prior point in this programme.** 483 is independently derived by the schedule's own driver-free arithmetic (unchanged) *and*, for the first time, by direct measurement of the orchestration driver's own executor-invocation count during a full run (`exact 483-call total is genuinely executed by the orchestration driver, including the 3 warm-ups`). This closes exactly the gap between "the schedule says 483" and "the driver does 483" that the failed Approval Review identified.
+**Ready.** `UNIT_3C_TIMEOUT_MS = 90_000L`, independently re-confirmed the active value `Unit3CConfigLoader.load` enforces via `require(live.timeoutMs == UNIT_3C_TIMEOUT_MS)`. Every fixture-driven test environment (`completeUnit3CEnvironment()`, the campaign-ID-rejection test's own environment) supplies `"90000"`, re-verified consistent with the constant — a mismatch here would have caused those tests to fail at the timeout check before ever reaching their own intended assertion, and they do not.
 
-## 2a. Full executable path — proven, not assumed
+## 3. Model identity / campaign identity / artifact root / disk space
 
-This is the specific gap the immediately prior "READY" verdict did not close, discovered only when a live-execution attempt tried to exercise it for real. Each link below is proven by direct, offline, structural evidence gathered in this task — not inferred from any single link's own internal correctness in isolation.
+**Ready, unchanged from the fourth refresh.** None of these dimensions is touched by this task's diff; independently re-confirmed via `git diff` showing no hunk in `Unit3CConfigLoader`, `Unit3CArtifactRootPolicy`, or the disk-space gate's own target-path logic.
 
-| Link | Evidence | Proof type |
-|---|---|---|
-| Detached Gradle task exists and is isolated from ordinary lifecycle | `build.gradle.kts` `unit3cControlledRemedyExperiments` registration; `./gradlew test --rerun-tasks` produces zero Unit 3-C test-result files | Fresh source read + fresh operational run |
-| Detached task's test filter reaches the new trigger method | `includeTestsMatching("parker.integration.ReasoningProtocolUnit3CControlledRemedyExperimentsTest")` is a whole-class pattern; the task's own re-run reports 49 tests from that class (40 prior + 9 new, including the trigger) | Fresh operational run, count reconciliation |
-| Trigger is gated, not unconditional | Trigger test result is `skipped` under this task's own execution (property true, campaign ID absent) — a status reachable only via a genuinely-thrown `assumeTrue` abort | Fresh operational run, JUnit XML inspection |
-| Trigger calls the real entry point, exactly once, with real environment | Source-scan test independently counts exactly one occurrence of `Unit3CLiveEntryPoint.run(System.getenv(), Path.of("."))` inside the trigger function body, gated by exactly two `assumeTrue` calls | Structural/source-level test, independently re-read |
-| Entry point performs config validation before anything else | `Unit3CConfigLoader.load` is the first call inside `Unit3CLiveEntryPoint.run`; four new negative tests independently confirm it fails closed (wrong model, blank digest, malformed campaign ID) before any artifact-root or driver code runs | Fresh test run + source read |
-| Entry point performs artifact-root validation next | `Unit3CArtifactRootPolicy.resolve` is the second call; one new negative test independently confirms it fails closed (wrong root) before any driver is constructed | Fresh test run + source read |
-| Entry point constructs the real, already-governed orchestration driver and invokes it with all four family executors | Source-scan test independently confirms the entry point's body contains `Unit3COrchestrationDriver(config.campaignId, artifactRoot, config.identity)`, `driver.run(executors)`, and executor entries for all four `Unit3CFamily` values | Structural/source-level test |
-| **Disk-space gate, on a real, existing filesystem, succeeds even though the campaign directory does not yet exist** — *the link the immediately prior refresh's own table omitted entirely* | `driver.run()`'s literal first statement now checks `artifactRoot.parent`, the already-existing, already-governed durable root, not the not-yet-created campaign subdirectory; proven both by a fake-lambda test asserting the checked path equals the parent, and by a second test using the real, unmocked `Files.getFileStore` default against a genuinely non-existent child directory | Fresh test run, both fake and real filesystem call |
-| Driver includes warm-ups, then Control/Family A/Family B/Family C in frozen order, totaling 483 | Unaffected by this task's diff; independently re-run `exact 483-call total is genuinely executed by the orchestration driver, including the 3 warm-ups` — unchanged, still passing | Fresh test run (pre-existing test, unaffected) |
-| Durable artifacts | `Unit3CArmLedger` (unmodified) writes exact-once, sealed, recoverable ledgers; unaffected by this task's diff | Unaffected pre-existing coverage |
+## 4. Intent durability
 
-No live call is required to establish any row above: every row is either a source-level structural fact (independently re-read, not merely quoted from a prior review) or the result of an offline test using fake or, for the disk-space row specifically, real (non-network) filesystem calls. **This table now explicitly includes the disk-space gate as its own link, corrected specifically because its absence from the immediately prior refresh's own version of this table is exactly why that refresh's "proven, not assumed" verdict still missed the defect the first genuine live attempt found.** This refresh does not repeat that omission for any other link: every step between the Gradle task and the first possible live HTTP call has now been individually enumerated and individually proven.
+**Ready — proven, not assumed.** `ledger.recordIntent(...)` is called, synchronously, immediately before `executor.execute(trial)`, in both `runWarmups` and `runArm`, for every trial with `makesModelCall == true`. Proven via: (a) direct source reading of both call sites; (b) a dedicated source-scan test independently confirming the textual ordering within each function's own body; (c) a dedicated coverage test confirming exactly 145 intent records exist for Control's own 145 scored trials, including the one that times out in that test; (d) a dedicated test confirming Family C, which makes no model call, receives zero intent records of any kind.
 
-## 3. Live task isolation
+## 5. Terminal durability
 
-**Ready**: detached Gradle task, structural source-set exclusion, config-gated entry point; the config gate is proven (Section 2a) to be reached by a real caller. **Additionally corrected this refresh:** the detached task's own test selection previously included one offline-only verification test (asserting no real campaign ID is present) unconditionally, which would necessarily fail during any genuine live-configured run of that exact task. Now excluded from that task's selection via `@Tag("unit3cLiveTaskIncompatible")` + `excludeTags`, while remaining selected and passing under the general offline `reasoningProtocolLiveModelEvaluation` task — independently re-confirmed via a fresh run showing 49 tests (including the tagged one) there, versus 48 (excluding it) under the live task.
+**Ready.** `Unit3CTimeoutRecord` is written whenever `Unit3CTransportException` is caught, for every classification, in both warm-up and scored-trial paths. Contains no field capable of holding a parser result or semantic classification — independently provable at the type level via reflection (a dedicated test does exactly this), not only by inspecting the code that populates it.
 
-## 4. Model/config identity requirements
+## 6. Exact-once (four-state)
 
-**Ready**, unchanged.
+**Ready.** `Unit3CArmLedger.recover()` independently tracks intent/raw/timeout IDs, resolves state (B)+(C) as "do not retry," and fails closed on state (D) (an intent with neither a raw nor a timeout resolution). A dedicated crash-recovery test proves a timed-out trial is not re-issued by a second, independent driver instance. A dedicated test proves state (A) remains distinguishable from (B)/(C)/(D) via `hasIntent`. A dedicated test proves state (D) fails closed on `recover()` directly. Backward compatibility with four pre-existing standalone ledger tests (which call `appendObservation` without ever calling `recordIntent`) is independently re-confirmed intact, because the intent-before-call *policy* lives at the orchestration call-site level, not inside the ledger's own generic, policy-agnostic API.
 
-## 5. Artifact-root requirements
+## 7. Warm-up behavior
 
-**Ready**, unchanged from the immediately prior refresh; unaffected by the warm-up correction, which added a new sub-directory (`control/warmup/`) beneath the same, already-restricted parent, not a new root.
+**Ready — and now covers the specific failure mode Attempt 3 actually hit, not only the pre-existing identity-mismatch case.** A genuine model-side timeout, transport/provider failure, or ambiguous terminal state during any of the three warm-up trials now durably records the timeout and returns `Unit3CArmOutcome.CAMPAIGN_HALT_WARMUP_TRANSPORT`, which `Unit3COrchestrationDriver.run()`'s own loop is independently confirmed to detect and act on: every subsequent arm is marked `NOT_ATTEMPTED_CAMPAIGN_HALTED` without its own executor ever being invoked. Three dedicated tests (one per classification) independently prove this, including a direct assertion that Family A's own executor is never called.
 
-## 6. Disk-space requirements
+## 8. Scored-trial behavior
 
-**Ready — corrected this refresh, and now proven against the exact real-world condition that previously halted execution.** The gate still runs once, before the arm loop begins, still enforces the unchanged 2 GiB minimum, and still fails closed on any unreadable filesystem state. What changed: it now checks the campaign directory's already-existing, durable *parent* rather than the not-yet-created campaign directory itself — the first genuine live-execution attempt discovered that checking the campaign directory directly meant the gate could never pass on a first-ever campaign, since nothing creates that directory before the gate runs. Proven both by a fake-lambda test asserting the correct path is checked, and by a second test exercising the real, unmocked `Files.getFileStore` default against a genuinely non-existent directory.
+**Ready.** A genuine model-side timeout on a scored Control/Family A/Family B trial durably records the timeout and continues to the next trial, the arm, and the campaign — independently proven per-arm via three dedicated tests. A transport/provider failure or ambiguous state on a scored trial durably records the timeout and halts the affected arm only (reusing the pre-existing, unmodified isolation guarantee every other measurement-invalidating cause already has) — independently proven via two dedicated tests, each confirming every other arm still seals.
 
-## 7. Exact-once/recovery
+## 9. Infrastructure/transport handling
 
-**Ready, and now genuinely exercised by warm-up-specific scenarios it was not exercised by before.** The correction reuses `Unit3CArmLedger` entirely unchanged, but this task added dedicated tests proving exact-once behavior specifically for the warm-up sub-ledger: exactly-once execution, order preservation, idempotent crash-recovery (a second full run re-invokes the executor for none of the three already-completed warm-ups), and correct arm-scoped failure isolation (a corrupted warm-up identity halts only Control, not Family A/B/C). This is strictly more verification than existed before this task, not merely a re-confirmation.
+**Ready, with an honestly-stated limitation carried forward, not concealed.** Classification is derived from actual exception type (`TimeoutCancellationException` vs. `IOException` vs. anything else), never a message string. Sub-cases 2 (transport failure) and 3 (provider unavailable) are not distinguishable from each other at this layer and share one classification value (`TRANSPORT_OR_PROVIDER_FAILURE`) — this is not a gap relative to what was governed; the Scored-Trial Timeout Semantics Determination's own Section 4 already accepted this collapse as reasonable specifically for Unit 3-C's loopback-only endpoint.
 
-## 8. Campaign identity
+## 10. Live trigger / Gradle filtering / downstream isolation
 
-**Ready**, unchanged.
+**Ready, unchanged.** None of these is touched by this task's diff; independently re-confirmed via `git diff --stat -- build.gradle.kts` (empty) and a fresh re-run of the existing trigger/isolation tests, all still passing.
 
-## 9. Supplemental fixtures
+## 11. Safety checkpoint
 
-**Ready**, unchanged; not touched by this task's correction.
+**Ready, unaffected.** The adversarial-category false-positive checkpoint is untouched; independently re-confirmed its own existing tests still pass and that the new timeout-handling code path is entirely separate from (runs before, in the same loop, but is a structurally distinct branch from) the checkpoint-triggering branch.
 
-## 10. Family C safety coverage
+## 12. No campaign mutation
 
-**Ready**, unchanged; the corrected Plan trace (24/29, four false positives including `P12`, one false negative) remains correctly reflected, re-verified by a fresh test run, untouched by this task's diff.
+**Ready, independently re-verified specifically for this task.** Attempt 3's own preserved campaign directory (`unit3c-remedy-experiments-20260810/control/warmup/identity.txt`) was re-hashed before and after this task's entire implementation and test-running process: `56af7ca3fa84b1e3c6aca3d4fdd2a23f5884cc5a0ff5a7b574fe2d663d62c9c8`, unchanged. No new campaign directory exists anywhere under the artifact root.
 
-## 11. Downstream isolation
+## 13. Full path, re-proven a fifth time, with every link this refresh is aware could be silently omitted
 
-**Ready**, unchanged, re-verified across both files including the new warm-up code.
+| Link | Evidence |
+|---|---|
+| Detached Gradle task, structurally isolated | Unchanged; fresh `./gradlew test` contains zero Unit 3-C result files |
+| Live trigger reachable, gated | Unchanged; trigger test still reports `skipped` under offline runs |
+| Config validation (now against 90,000 ms) | `Unit3CConfigLoader.load`'s own timeout check, re-verified against the new constant |
+| Artifact-root validation | Unchanged |
+| Disk-space gate (against the durable parent) | Unchanged |
+| Driver construction, all four family executors wired | Unchanged |
+| **Intent recorded before every live call** | New this refresh — Section 4 |
+| Warm-ups execute, and a warm-up transport failure halts the whole campaign | New this refresh — Section 7 |
+| Scored trials execute, and a scored-trial model timeout does not halt the arm | New this refresh — Section 8 |
+| **Terminal timeout record durably written, never a fabricated semantic action** | New this refresh — Section 5 |
+| Exact-once recovery correctly resolves all four states on any restart | New this refresh — Section 6 |
+| Durable artifacts | Unchanged, `Unit3CArmLedger`'s own core sealing logic untouched |
 
-## 12. Stop conditions
+## 14. The residual note, carried forward, honestly unchanged in substance
 
-**Ready**, unchanged in substance; the warm-up correction adds one new, narrow application of the already-existing fail-closed pattern (a corrupted warm-up ledger halts Control) rather than a new stop-condition category.
+The real, live-calling HTTP request itself remains structurally unexercised by any test in this codebase, exactly as every prior refresh has stated — no test bound by a no-live-calls constraint can exercise it. What is new in this refresh: the code path that would run *immediately after* that HTTP call fails (timeout/transport handling) is now, for the first time, independently proven correct entirely offline, using fakes that raise the exact exception types the real production code would raise. This narrows what remains genuinely unverified to the live HTTP call's own success or failure and Ollama's own real-world response timing — not the handling code that consumes the outcome, which is now covered.
 
-## 13. Sealing
-
-**Ready**, unchanged; warm-ups now participate in the same seal discipline as every other ledger, verified by a dedicated test confirming Control's own scored ledger is never even created if the warm-up gate fails.
-
-## 14. Evidence integrity
-
-**Ready**, unchanged.
-
-## 15. The residual note, re-derived and materially narrowed, and honestly corrected where the immediately prior version overstated it
-
-**The immediately prior refresh's own version of this note claimed "every gate before the HTTP call is now independently proven reachable" — that claim was false, though not dishonestly so: it was true of every link the prior refresh's own Section 2a table actually enumerated, but that table omitted the disk-space gate as a distinct link, so its failure mode was simply never checked by the "proof" the note relied on.** This refresh does not repeat that overstatement. With the disk-space gate now explicitly enumerated (Section 2a) and corrected (Section 6) and proven against the real, unmocked filesystem call, the claim can now honestly be made with that gate included: the path from the detached Gradle task through the trigger, config validation, artifact-root validation, the disk-space gate, and into the real orchestration driver is genuinely reachable and genuinely passable. What remains unexercised — and structurally must remain unexercised under this task's own no-live-calls constraint — is exactly and only the actual HTTP request `buildModelInvokingExecutor`'s live executor issues once the driver calls it, and the actual response the runtime returns. This residual is not smaller than what the prior refresh *claimed*, but it is, for the first time, actually true as claimed, rather than true-except-for-one-unenumerated-gate.
-
-## 16. Readiness determination
+## 15. Readiness determination
 
 ```text
 READY
 ```
 
-**All dimensions independently re-derived as ready**, not assumed, with the disk-space gate now explicitly included as its own dimension rather than folded silently into "driver reachability" the way the immediately prior refresh did. The warm-up defect, the live-trigger defect, the disk-space-gate defect, and the live-test-scoping defect are all independently confirmed corrected and independently re-verified; every other dimension is either unchanged and re-confirmed, or more rigorously verified than before. The one residual note (Section 15) remains, and for the first time can be stated without a hidden gap: only the live HTTP call's own success or failure is unverified. Every gate and every caller between the Gradle task and that HTTP call — including, now, the disk-space gate specifically — is independently proven to exist, to be reachable, and to actually pass under real (non-network) filesystem conditions.
+All dimensions independently re-derived as ready, including four (intent durability, terminal durability, warm-up transport handling, scored-trial transport handling) that did not exist as separate dimensions in any prior refresh because the code they cover did not exist before this task. The one residual note (Section 14) remains, narrower than at any prior point in this programme: only the live HTTP call's own real-world success or failure is unverified; every gate, every caller, and now every timeout-handling branch downstream of a failed call is independently proven to exist, to be reachable, and to behave as governed.

@@ -47,7 +47,14 @@ import parker.core.runtime.UnclassifiableModelResponseException
  * file is imported by, or wired into, any production path.
  */
 
-private const val UNIT_3C_TIMEOUT_MS = 30_000L
+// Timeout + Durability Scope Lock Amendment / Implementation Plan Amendment
+// (committed): the Unit 3-C governed live-model timeout is 90,000 ms, not
+// ModelReasoningProvider's own 30_000 ms default -- derived from measured
+// percentiles/margin (26 preserved qwen observations, all completed within
+// 90,000 ms historically; worst warm ~27.99 s; cold ~39.92 s/48.57 s), not
+// a conventional round number. Cold-start causation for the original
+// 30,000 ms timeout failure remains STRONGLY SUPPORTED, NOT CONFIRMED.
+private const val UNIT_3C_TIMEOUT_MS = 90_000L
 private const val UNIT_3C_MODEL_NAME = "qwen2.5-coder:7b"
 private const val UNIT_3C_PROPERTY = "parker.reasoning.unit3c.enabled"
 
@@ -558,9 +565,23 @@ class Unit3CArmLedger(private val directory: Path, private val registeredTrialId
     private val manifestFile = directory.resolve("manifest.txt")
     private val sealFile = directory.resolve("SEALED")
     private val identityFile = directory.resolve("identity.txt")
+    private val intentFile = directory.resolve("intent.jsonl")
+    private val timeoutFile = directory.resolve("timeouts.jsonl")
 
     fun isSealed(): Boolean = sealFile.exists()
 
+    /** Four-state distinction (Timeout + Durability Plan Amendment Section
+     * 4): a trial ID with an intent record but neither a raw observation
+     * nor a timeout record is state (D), ambiguous terminal transport
+     * state, and fails closed here exactly like any other artifact-
+     * integrity violation -- never silently retried, never silently
+     * treated as complete. The returned set is every trial ID that must
+     * not be attempted again: completed (state B) union timed-out (state
+     * C, "must not be automatically repeated" per the governed rule).
+     * Callers that never call [recordIntent] (every pre-existing standalone
+     * ledger test) see no change in behavior at all -- an absent
+     * intent.jsonl yields an empty intent set, so the ambiguous check is
+     * always vacuously satisfied. */
     fun recover(): Set<String> {
         Files.createDirectories(directory)
         val rawIds = readRawIds()
@@ -581,10 +602,90 @@ class Unit3CArmLedger(private val directory: Path, private val registeredTrialId
         if (!checkpointIds.all { it in rawIds }) {
             throw Unit3CArtifactIntegrityException("checkpoint without raw record in ${directory.fileName}")
         }
+        val timeoutIds = readTimeoutIds()
+        if (timeoutIds.size != timeoutIds.distinct().size) {
+            throw Unit3CArtifactIntegrityException("duplicate timeout record ID in ${directory.fileName}")
+        }
+        if (!timeoutIds.all { it in registeredTrialIds }) {
+            throw Unit3CArtifactIntegrityException("unknown timeout record ID in ${directory.fileName}")
+        }
+        val overlap = rawIds.toSet().intersect(timeoutIds.toSet())
+        if (overlap.isNotEmpty()) {
+            throw Unit3CArtifactIntegrityException("trial ID recorded as both completed and timed out: $overlap in ${directory.fileName}")
+        }
+        val intentIds = readIntentIds()
+        val resolved = rawIds.toSet() + timeoutIds.toSet()
+        val ambiguous = intentIds.toSet() - resolved
+        if (ambiguous.isNotEmpty()) {
+            throw Unit3CArtifactIntegrityException("ambiguous terminal transport state (intent without resolution) for $ambiguous in ${directory.fileName}")
+        }
         val completed = rawIds.toMutableSet()
         if (rawIds.toSet() != checkpointIds.toSet()) writeCheckpoint(completed)
-        return completed
+        return resolved
     }
+
+    /** State (A) -> (B)/(C)/(D): written strictly before the corresponding
+     * HTTP request is transmitted (Timeout + Durability Plan Amendment
+     * Section 3). fsynced (`StandardOpenOption.SYNC`) because the governed
+     * requirement is specifically "written and fsynced before any HTTP
+     * call is issued" -- deliberately stricter than [appendObservation]'s
+     * own existing, unmodified, ordinary-buffered durability level. */
+    fun recordIntent(record: Unit3CIntentRecord) {
+        require(record.callId in registeredTrialIds) { "cannot record intent for an unregistered trial ID" }
+        Files.createDirectories(directory)
+        val line = "{\"callId\":${quote(record.callId)}," +
+            "\"campaignId\":${quote(record.campaignId)}," +
+            "\"family\":${quote(record.family.name)}," +
+            "\"fixtureId\":${quote(record.fixtureId)}," +
+            "\"trialSequence\":${record.trialSequence}," +
+            "\"expectedAction\":${quote(record.expectedAction.name)}," +
+            "\"modelName\":${quote(record.modelName)}," +
+            "\"modelDigest\":${quote(record.modelDigest)}," +
+            "\"repositoryCommit\":${quote(record.repositoryCommit)}," +
+            "\"promptIdentity\":${quote(record.promptIdentity)}," +
+            "\"timeoutMs\":${record.timeoutMs}," +
+            "\"inferenceConfigIdentity\":${quote(record.inferenceConfigIdentity)}}\n"
+        Files.writeString(
+            intentFile, line,
+            java.nio.file.StandardOpenOption.CREATE,
+            java.nio.file.StandardOpenOption.APPEND,
+            java.nio.file.StandardOpenOption.SYNC,
+        )
+    }
+
+    /** State (C)/(D): the durable terminal-timeout observation. Contains
+     * no parser-result or semantic-classification field of any kind --
+     * there is no field to fabricate a GOAL/REPLY/REMEMBER/NOACTION value
+     * into, even by mistake (Timeout + Durability Plan Amendment Section
+     * 3). */
+    fun recordTimeout(record: Unit3CTimeoutRecord) {
+        require(record.callId in registeredTrialIds) { "cannot record a timeout for an unregistered trial ID" }
+        Files.createDirectories(directory)
+        val line = "{\"callId\":${quote(record.callId)}," +
+            "\"campaignId\":${quote(record.campaignId)}," +
+            "\"family\":${quote(record.family.name)}," +
+            "\"fixtureId\":${quote(record.fixtureId)}," +
+            "\"trialSequence\":${record.trialSequence}," +
+            "\"timeoutMs\":${record.timeoutMs}," +
+            "\"elapsedNanos\":${record.elapsedNanos}," +
+            "\"terminalClassification\":${quote(record.terminalClassification.name)}," +
+            "\"responseBytesReceived\":${record.responseBytesReceived}," +
+            "\"transportDetail\":${quote(record.transportDetail)}," +
+            "\"modelName\":${quote(record.modelName)}," +
+            "\"modelDigest\":${quote(record.modelDigest)}," +
+            "\"inferenceConfigIdentity\":${quote(record.inferenceConfigIdentity)}," +
+            "\"continuationDecision\":${quote(record.continuationDecision)}," +
+            "\"checkpointStatus\":${quote(record.checkpointStatus)}}\n"
+        Files.writeString(
+            timeoutFile, line,
+            java.nio.file.StandardOpenOption.CREATE,
+            java.nio.file.StandardOpenOption.APPEND,
+            java.nio.file.StandardOpenOption.SYNC,
+        )
+    }
+
+    fun hasIntent(callId: String): Boolean = readIntentIds().contains(callId)
+    fun hasTimeout(callId: String): Boolean = readTimeoutIds().contains(callId)
 
     fun checkIdentity(current: Unit3CIdentity) {
         Files.createDirectories(directory)
@@ -640,6 +741,24 @@ class Unit3CArmLedger(private val directory: Path, private val registeredTrialId
         Files.readAllLines(raw).mapIndexed { index, line ->
             Regex("\"trialId\":\"((?:\\\\.|[^\"])*)\"").find(line)?.groupValues?.get(1)?.let(::unquote)
                 ?: throw Unit3CArtifactIntegrityException("malformed ledger record at line ${index + 1} in ${directory.fileName}")
+        }
+    }
+
+    private fun readIntentIds(): List<String> = if (!intentFile.exists()) {
+        emptyList()
+    } else {
+        Files.readAllLines(intentFile).mapIndexed { index, line ->
+            Regex("\"callId\":\"((?:\\\\.|[^\"])*)\"").find(line)?.groupValues?.get(1)?.let(::unquote)
+                ?: throw Unit3CArtifactIntegrityException("malformed intent record at line ${index + 1} in ${directory.fileName}")
+        }
+    }
+
+    private fun readTimeoutIds(): List<String> = if (!timeoutFile.exists()) {
+        emptyList()
+    } else {
+        Files.readAllLines(timeoutFile).mapIndexed { index, line ->
+            Regex("\"callId\":\"((?:\\\\.|[^\"])*)\"").find(line)?.groupValues?.get(1)?.let(::unquote)
+                ?: throw Unit3CArtifactIntegrityException("malformed timeout record at line ${index + 1} in ${directory.fileName}")
         }
     }
 
@@ -713,6 +832,40 @@ private fun buildModelInvokingExecutor(
     } catch (e: UnclassifiableModelResponseException) {
         representationValid = false
         parserFailure = e.message
+    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+        // The request was transmitted and ModelReasoningProvider's own
+        // withTimeout(timeoutMs) elapsed while still awaiting a response --
+        // the provider is presumed to have remained reachable throughout
+        // (governed sub-case 1: model-side timeout). No observation is
+        // fabricated; the caller (runArm/runWarmups) durably records a
+        // terminal timeout observation instead.
+        throw Unit3CTransportException(
+            Unit3CTransportClassification.MODEL_TIMEOUT,
+            System.nanoTime() - started,
+            e::class.qualifiedName ?: "TimeoutCancellationException",
+            e,
+        )
+    } catch (e: java.io.IOException) {
+        // Transport- or provider-level failure (governed sub-cases 2/3 --
+        // not distinguishable from each other at this layer, per the
+        // Scored-Trial Timeout Semantics Determination's own accepted
+        // reasoning for a loopback-only endpoint).
+        throw Unit3CTransportException(
+            Unit3CTransportClassification.TRANSPORT_OR_PROVIDER_FAILURE,
+            System.nanoTime() - started,
+            e::class.qualifiedName ?: "IOException",
+            e,
+        )
+    } catch (e: Exception) {
+        // Ambiguous terminal transport state (governed sub-case 4) --
+        // fails closed exactly like sub-cases 2/3, never silently retried
+        // or silently treated as complete.
+        throw Unit3CTransportException(
+            Unit3CTransportClassification.AMBIGUOUS,
+            System.nanoTime() - started,
+            e::class.qualifiedName ?: "Exception",
+            e,
+        )
     }
     val latencyNanos = System.nanoTime() - started
     Unit3CObservation(
@@ -1170,9 +1323,9 @@ class ReasoningProtocolUnit3CControlledRemedyExperimentsTest {
     // ---- Model/inference identity ----
 
     @Test
-    fun `model and timeout constants match the frozen Plan`() {
+    fun `model and timeout constants match the amended Plan`() {
         assertEquals("qwen2.5-coder:7b", UNIT_3C_MODEL_NAME)
-        assertEquals(30_000L, UNIT_3C_TIMEOUT_MS)
+        assertEquals(90_000L, UNIT_3C_TIMEOUT_MS, "Timeout + Durability Implementation Plan Amendment Section 2: 90,000 ms, not the original 30,000 ms")
     }
 
     @Test
@@ -1428,7 +1581,7 @@ class ReasoningProtocolUnit3CControlledRemedyExperimentsTest {
         val environment = mapOf(
             LiveEvaluationConfigLoader.ENDPOINT to "http://127.0.0.1:11434/api/generate",
             LiveEvaluationConfigLoader.MODEL to "qwen2.5-coder:7b",
-            LiveEvaluationConfigLoader.TIMEOUT to "30000",
+            LiveEvaluationConfigLoader.TIMEOUT to "90000",
             LiveEvaluationConfigLoader.OUTPUT to "/tmp/unit3c-test-output",
             LiveEvaluationConfigLoader.COMMIT to "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
             LiveEvaluationConfigLoader.DIGEST to "a".repeat(64),
@@ -1505,7 +1658,7 @@ class ReasoningProtocolUnit3CControlledRemedyExperimentsTest {
     private fun completeUnit3CEnvironment(): Map<String, String> = mapOf(
         LiveEvaluationConfigLoader.ENDPOINT to "http://127.0.0.1:11434/api/generate",
         LiveEvaluationConfigLoader.MODEL to "qwen2.5-coder:7b",
-        LiveEvaluationConfigLoader.TIMEOUT to "30000",
+        LiveEvaluationConfigLoader.TIMEOUT to "90000",
         LiveEvaluationConfigLoader.OUTPUT to "build/unit3c-trigger-test-output-unused",
         LiveEvaluationConfigLoader.COMMIT to "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
         LiveEvaluationConfigLoader.DIGEST to "a".repeat(64),

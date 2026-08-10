@@ -117,7 +117,144 @@ object Unit3CDiskSpaceGate {
 // Section 18 requires.
 // ============================================================
 
-enum class Unit3CArmOutcome { SEALED, HALTED, SAFETY_CHECKPOINT }
+enum class Unit3CArmOutcome { SEALED, HALTED, SAFETY_CHECKPOINT, CAMPAIGN_HALT_WARMUP_TRANSPORT, NOT_ATTEMPTED_CAMPAIGN_HALTED }
+
+// ============================================================
+// Timeout + durability governance (Timeout and Durability Scope Lock
+// Amendment / Implementation Plan Amendment; Scored-Trial Timeout
+// Semantics Determination). A live call either completes (an
+// [Unit3CObservation] is durably appended, unchanged) or terminates via a
+// transport-layer exception, in which case NO observation is ever
+// fabricated -- the executor throws [Unit3CTransportException] instead of
+// returning a result, and the orchestration layer records a separate,
+// durable terminal-timeout record. Classification is derived from the
+// actual exception type the JVM/coroutines runtime reports, never from a
+// message string: [kotlinx.coroutines.TimeoutCancellationException] means
+// the request was transmitted and the provider remained reachable while
+// the client's own timeout budget elapsed (sub-case 1 of the governed
+// determination); any [java.io.IOException] means a transport- or
+// provider-level failure (sub-cases 2/3, not distinguishable from each
+// other at this layer, per the Determination's own accepted reasoning for
+// a loopback-only endpoint); anything else is ambiguous (sub-case 4) and
+// fails closed exactly like sub-cases 2/3.
+// ============================================================
+
+enum class Unit3CTransportClassification { MODEL_TIMEOUT, TRANSPORT_OR_PROVIDER_FAILURE, AMBIGUOUS }
+
+/** Thrown by a live-calling [Unit3CTrialExecutor] instead of returning an
+ * [Unit3CObservation] when no model response was ever received. Never
+ * caught and converted into a fabricated GOAL/REPLY/REMEMBER/NOACTION
+ * result anywhere in this file. */
+class Unit3CTransportException(
+    val classification: Unit3CTransportClassification,
+    val elapsedNanos: Long,
+    val transportDetail: String,
+    cause: Throwable,
+) : RuntimeException(cause.message, cause)
+
+/** Durable record written before every live model call, strictly before
+ * transmission (Timeout + Durability Plan Amendment Section 3's own
+ * intent-record schema). */
+data class Unit3CIntentRecord(
+    val callId: String,
+    val campaignId: String,
+    val family: Unit3CFamily,
+    val fixtureId: String,
+    val trialSequence: Int,
+    val expectedAction: ExpectedAction,
+    val modelName: String,
+    val modelDigest: String,
+    val repositoryCommit: String,
+    val promptIdentity: String,
+    val timeoutMs: Long,
+    val inferenceConfigIdentity: String,
+)
+
+/** Durable terminal-timeout observation (Timeout + Durability Plan
+ * Amendment Section 3's own terminal-timeout schema). Written if and only
+ * if a call's own intent record exists and no [Unit3CObservation] was
+ * durably persisted for that call. `parserResult`/`semanticClassification`
+ * do not appear in this record at all -- there is no field to fabricate a
+ * GOAL/REPLY/REMEMBER/NOACTION value into. */
+data class Unit3CTimeoutRecord(
+    val callId: String,
+    val campaignId: String,
+    val family: Unit3CFamily,
+    val fixtureId: String,
+    val trialSequence: Int,
+    val timeoutMs: Long,
+    val elapsedNanos: Long,
+    val terminalClassification: Unit3CTransportClassification,
+    val responseBytesReceived: Boolean,
+    val transportDetail: String,
+    val modelName: String,
+    val modelDigest: String,
+    val inferenceConfigIdentity: String,
+    val continuationDecision: String,
+    val checkpointStatus: String,
+)
+
+/** Structurally derives the same prompt-identity vocabulary
+ * [Unit3CLiveEntryPoint]'s own executor-wiring closures already use
+ * (`control`, `family-a-decision`, `family-a-render`, `family-b-candidate`),
+ * directly from [Unit3CTrial]'s own fields -- so the orchestration layer
+ * can populate a durable intent record without depending on the executor
+ * to expose its own internal prompt-selection logic. Never called for
+ * Family C, which makes no model call and therefore has no prompt identity
+ * or intent record at all. */
+private fun promptIdentityFor(trial: Unit3CTrial): String = when (trial.family) {
+    Unit3CFamily.CONTROL -> "control"
+    Unit3CFamily.FAMILY_A -> if (trial.subStep == Unit3CSubStep.DECISION) "family-a-decision" else "family-a-render"
+    Unit3CFamily.FAMILY_B -> "family-b-candidate"
+    Unit3CFamily.FAMILY_C -> error("Family C makes no model call; no prompt identity applies")
+}
+
+private fun buildIntentRecord(trial: Unit3CTrial, campaignId: String, identity: Unit3CIdentity): Unit3CIntentRecord =
+    Unit3CIntentRecord(
+        callId = trial.id,
+        campaignId = campaignId,
+        family = trial.family,
+        fixtureId = trial.fixture.id,
+        trialSequence = trial.attempt,
+        expectedAction = trial.fixture.expectedAction,
+        modelName = identity.modelName,
+        modelDigest = identity.modelDigest,
+        repositoryCommit = identity.repositoryCommit,
+        promptIdentity = promptIdentityFor(trial),
+        timeoutMs = identity.timeoutMs,
+        inferenceConfigIdentity = "default-ollama-request-shape",
+    )
+
+private fun buildTimeoutRecord(
+    trial: Unit3CTrial,
+    campaignId: String,
+    identity: Unit3CIdentity,
+    failure: Unit3CTransportException,
+    continuationDecision: String,
+    checkpointStatus: String,
+): Unit3CTimeoutRecord =
+    Unit3CTimeoutRecord(
+        callId = trial.id,
+        campaignId = campaignId,
+        family = trial.family,
+        fixtureId = trial.fixture.id,
+        trialSequence = trial.attempt,
+        timeoutMs = identity.timeoutMs,
+        elapsedNanos = failure.elapsedNanos,
+        terminalClassification = failure.classification,
+        // The client never observes a partial byte count from
+        // HttpClient.sendAsync(...).BodyHandlers.ofString() -- a
+        // response either fully arrives or the request is cancelled
+        // with nothing readable. This is a genuine limitation of the
+        // current transport layer, stated here rather than guessed at.
+        responseBytesReceived = false,
+        transportDetail = failure.transportDetail,
+        modelName = identity.modelName,
+        modelDigest = identity.modelDigest,
+        inferenceConfigIdentity = "default-ollama-request-shape",
+        continuationDecision = continuationDecision,
+        checkpointStatus = checkpointStatus,
+    )
 
 /** True exactly when Plan Section 18's non-numeric trigger condition is
  * met: a false-positive REMEMBER or GOAL result on a fixture drawn from
@@ -201,7 +338,30 @@ class Unit3COrchestrationDriver(
             "artifact root must have a parent; got $artifactRoot"
         }
         Unit3CDiskSpaceGate.check(spaceCheckTarget, usableSpace)
-        return UNIT_3C_ARM_ORDER.map { family -> runArm(family, executors.getValue(family)) }
+        // Sequential with early exit, not an unconditional map: every
+        // outcome this driver produced before this task's own governance
+        // (SEALED, HALTED, SAFETY_CHECKPOINT) still lets every arm run
+        // independently, exactly as already tested. The one new outcome,
+        // CAMPAIGN_HALT_WARMUP_TRANSPORT, is the sole trigger for skipping
+        // the remaining arms entirely -- a genuine model-side timeout or
+        // transport/provider failure during warm-up means the shared live
+        // bridge Family A/B/C also depend on could not be verified at all,
+        // which is a strictly stronger reason to stop than a per-arm
+        // identity mismatch (Scope Lock Amendment Section 3).
+        val results = mutableListOf<Unit3CArmResult>()
+        var campaignHalted = false
+        for (family in UNIT_3C_ARM_ORDER) {
+            if (campaignHalted) {
+                results += Unit3CArmResult(family, Unit3CArmOutcome.NOT_ATTEMPTED_CAMPAIGN_HALTED, 0)
+                continue
+            }
+            val result = runArm(family, executors.getValue(family))
+            results += result
+            if (result.outcome == Unit3CArmOutcome.CAMPAIGN_HALT_WARMUP_TRANSPORT) {
+                campaignHalted = true
+            }
+        }
+        return results
     }
 
     private fun trialsFor(family: Unit3CFamily): List<Unit3CTrial> = when (family) {
@@ -237,19 +397,41 @@ class Unit3COrchestrationDriver(
         val trials = Unit3CCampaignDefinition.warmupTrials
         val warmupDirectory = artifactRoot.resolve(armDirectoryName(Unit3CFamily.CONTROL)).resolve("warmup")
         val ledger = Unit3CArmLedger(warmupDirectory, trials.map { it.id }.toSet())
-        return try {
+        try {
             ledger.checkIdentity(identity)
             val completed = ledger.recover().toMutableSet()
             for (trial in trials) {
                 if (trial.id in completed) continue
-                val observation = executor.execute(trial)
+                ledger.recordIntent(buildIntentRecord(trial, campaignId, identity))
+                val observation = try {
+                    executor.execute(trial)
+                } catch (e: Unit3CTransportException) {
+                    // Timeout + Durability Scope Lock Amendment Section 3: a
+                    // timeout during any governed warm-up is measurement-
+                    // invalidating and halts the whole campaign, not merely
+                    // this arm -- durably recorded first, never silently
+                    // retried, never classified as remedy-performance
+                    // evidence. Every sub-case (model timeout, transport/
+                    // provider failure, ambiguous) receives the same
+                    // campaign-halting treatment during warm-up specifically,
+                    // because warm-up's own purpose is to verify the shared
+                    // bridge Family A/B/C also depend on.
+                    ledger.recordTimeout(
+                        buildTimeoutRecord(
+                            trial, campaignId, identity, e,
+                            continuationDecision = "CAMPAIGN_HALTED",
+                            checkpointStatus = "NOT_CHECKPOINTED",
+                        ),
+                    )
+                    return Unit3CArmOutcome.CAMPAIGN_HALT_WARMUP_TRANSPORT
+                }
                 ledger.appendObservation(trial.id, encodeObservation(observation))
                 completed += trial.id
             }
             ledger.seal(trials.map { it.id }.toSet())
-            Unit3CArmOutcome.SEALED
+            return Unit3CArmOutcome.SEALED
         } catch (e: Unit3CArtifactIntegrityException) {
-            Unit3CArmOutcome.HALTED
+            return Unit3CArmOutcome.HALTED
         }
     }
 
@@ -278,7 +460,47 @@ class Unit3COrchestrationDriver(
             val completed = ledger.recover().toMutableSet() // exact-once: duplicate prevention via prior completion
             for (trial in trials) {
                 if (trial.id in completed) continue
-                val observation = executor.execute(trial) // Family C: zero model calls, by construction of its own executor
+                if (trial.makesModelCall) {
+                    ledger.recordIntent(buildIntentRecord(trial, campaignId, identity))
+                }
+                val observation = try {
+                    executor.execute(trial) // Family C: zero model calls, by construction of its own executor
+                } catch (e: Unit3CTransportException) {
+                    when (e.classification) {
+                        Unit3CTransportClassification.MODEL_TIMEOUT -> {
+                            // Scored-Trial Timeout Semantics Determination
+                            // Section 5: only this trial terminates; the arm
+                            // continues; the campaign continues. Never
+                            // scored as a semantic answer, never retried.
+                            ledger.recordTimeout(
+                                buildTimeoutRecord(
+                                    trial, campaignId, identity, e,
+                                    continuationDecision = "ARM_CONTINUED",
+                                    checkpointStatus = "NOT_CHECKPOINTED",
+                                ),
+                            )
+                            completed += trial.id
+                            continue
+                        }
+                        Unit3CTransportClassification.TRANSPORT_OR_PROVIDER_FAILURE, Unit3CTransportClassification.AMBIGUOUS -> {
+                            // Measurement-invalidating (Determination Section
+                            // 4, sub-cases 2-4): halts this arm only, per the
+                            // same existing precedent as every other
+                            // measurement-invalidating cause -- never the
+                            // whole campaign for a scored-trial failure.
+                            ledger.recordTimeout(
+                                buildTimeoutRecord(
+                                    trial, campaignId, identity, e,
+                                    continuationDecision = "ARM_HALTED",
+                                    checkpointStatus = "NOT_CHECKPOINTED",
+                                ),
+                            )
+                            throw Unit3CArtifactIntegrityException(
+                                "measurement-invalidating transport failure for trial ${trial.id}: ${e.classification}",
+                            )
+                        }
+                    }
+                }
                 ledger.appendObservation(trial.id, encodeObservation(observation))
                 completed += trial.id
                 if (isAdversarialCategoryFalsePositive(observation.fixtureCategory, observation.expectedAction, observation.actualAction)) {
@@ -778,6 +1000,313 @@ class ReasoningProtocolUnit3COrchestrationTest {
         val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
         driver.run(executors)
         assertTrue(warmupRan, "warm-ups must run unconditionally as part of the Control arm -- there is no flag or configuration path that skips them")
+    }
+
+    // ---- Timeout + durability governance ----
+
+    private fun simulatedTransportException(classification: Unit3CTransportClassification): Unit3CTransportException =
+        Unit3CTransportException(classification, elapsedNanos = 90_000_000_000L, transportDetail = "SimulatedFailure", cause = RuntimeException("simulated"))
+
+    private fun timeoutOnceExecutor(
+        classification: Unit3CTransportClassification,
+        matches: (Unit3CTrial) -> Boolean,
+        onCall: (Unit3CTrial) -> Unit = {},
+    ): Unit3CTrialExecutor = Unit3CTrialExecutor { trial ->
+        onCall(trial)
+        if (matches(trial)) throw simulatedTransportException(classification)
+        fakeObservationFor(trial, trial.fixture.expectedAction)
+    }
+
+    private fun allSucceedExecutor(): Unit3CTrialExecutor = Unit3CTrialExecutor { trial -> fakeObservationFor(trial, trial.fixture.expectedAction) }
+
+    private fun isFirstWarmup(trial: Unit3CTrial): Boolean = trial.fixture.id == "warmup-acknowledgement" && trial.attempt == 1
+    private fun isFirstControlScored(trial: Unit3CTrial): Boolean = trial.family == Unit3CFamily.CONTROL && trial.fixture.id == "r01-direct" && trial.attempt == 1
+
+    @Test
+    fun `a genuine warm-up model timeout halts the whole campaign, not merely the Control arm`(@TempDir dir: Path) {
+        var familyAAttempted = false
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.MODEL_TIMEOUT, ::isFirstWarmup),
+            Unit3CFamily.FAMILY_A to timeoutOnceExecutor(Unit3CTransportClassification.MODEL_TIMEOUT, { false }, { familyAAttempted = true }),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertEquals(Unit3CArmOutcome.CAMPAIGN_HALT_WARMUP_TRANSPORT, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        assertEquals(Unit3CArmOutcome.NOT_ATTEMPTED_CAMPAIGN_HALTED, results.single { it.family == Unit3CFamily.FAMILY_A }.outcome)
+        assertEquals(Unit3CArmOutcome.NOT_ATTEMPTED_CAMPAIGN_HALTED, results.single { it.family == Unit3CFamily.FAMILY_B }.outcome)
+        assertEquals(Unit3CArmOutcome.NOT_ATTEMPTED_CAMPAIGN_HALTED, results.single { it.family == Unit3CFamily.FAMILY_C }.outcome)
+        assertFalse(familyAAttempted, "no arm after a campaign-halting warm-up failure may have its own executor invoked at all")
+        // Control's own scored ledger must never have been touched.
+        assertFalse(Files.exists(dir.resolve("control").resolve("raw.jsonl")))
+        // Durable timeout record exists for the warm-up trial, never a fabricated observation.
+        val warmupLedger = Unit3CArmLedger(dir.resolve("control").resolve("warmup"), Unit3CCampaignDefinition.warmupTrials.map { it.id }.toSet())
+        val warmupTimeoutLine = Files.readString(dir.resolve("control").resolve("warmup").resolve("timeouts.jsonl"))
+        assertTrue(warmupTimeoutLine.contains("MODEL_TIMEOUT"))
+        assertTrue(warmupTimeoutLine.contains("CAMPAIGN_HALTED"))
+        assertFalse(warmupLedger.isSealed())
+    }
+
+    @Test
+    fun `a genuine warm-up transport failure halts the whole campaign identically to a model timeout`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.TRANSPORT_OR_PROVIDER_FAILURE, ::isFirstWarmup),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertEquals(Unit3CArmOutcome.CAMPAIGN_HALT_WARMUP_TRANSPORT, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        assertTrue(results.filter { it.family != Unit3CFamily.CONTROL }.all { it.outcome == Unit3CArmOutcome.NOT_ATTEMPTED_CAMPAIGN_HALTED })
+        val warmupTimeoutLine = Files.readString(dir.resolve("control").resolve("warmup").resolve("timeouts.jsonl"))
+        assertTrue(warmupTimeoutLine.contains("TRANSPORT_OR_PROVIDER_FAILURE"))
+    }
+
+    @Test
+    fun `an ambiguous warm-up terminal state halts the whole campaign and fails closed`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.AMBIGUOUS, ::isFirstWarmup),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertEquals(Unit3CArmOutcome.CAMPAIGN_HALT_WARMUP_TRANSPORT, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        val warmupTimeoutLine = Files.readString(dir.resolve("control").resolve("warmup").resolve("timeouts.jsonl"))
+        assertTrue(warmupTimeoutLine.contains("AMBIGUOUS"))
+    }
+
+    @Test
+    fun `a scored Control-trial model timeout terminates only that trial -- the arm and campaign continue`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.MODEL_TIMEOUT, ::isFirstControlScored),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        // Control still SEALS -- one scored trial resolved as a timeout,
+        // the other 144 completed normally, all 145 accounted for.
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_A }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_B }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_C }.outcome)
+        val controlRaw = Files.readAllLines(dir.resolve("control").resolve("raw.jsonl")).count { it.isNotBlank() }
+        assertEquals(144, controlRaw, "144 of Control's 145 scored trials completed normally")
+        val timeoutLines = Files.readAllLines(dir.resolve("control").resolve("timeouts.jsonl")).filter { it.isNotBlank() }
+        assertEquals(1, timeoutLines.size)
+        assertTrue(timeoutLines.single().contains("MODEL_TIMEOUT"))
+        assertTrue(timeoutLines.single().contains("ARM_CONTINUED"))
+        assertTrue(timeoutLines.single().contains("control/r01-direct/main/01"))
+        // No fabricated semantic action anywhere in the timeout record --
+        // the type itself has no field capable of holding one.
+        for (forbidden in listOf("GOAL", "REPLY", "REMEMBER", "NOACTION")) {
+            assertFalse(timeoutLines.single().contains("\"actualAction\":\"$forbidden\""))
+        }
+    }
+
+    @Test
+    fun `a scored Family A-trial model timeout does not halt Family A or block Family B`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_A to timeoutOnceExecutor(
+                Unit3CTransportClassification.MODEL_TIMEOUT,
+                matches = { it.family == Unit3CFamily.FAMILY_A && it.fixture.id == "r01-direct" && it.subStep == Unit3CSubStep.DECISION && it.attempt == 1 },
+            ),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertTrue(results.all { it.outcome == Unit3CArmOutcome.SEALED })
+        val familyARaw = Files.readAllLines(dir.resolve("family-a").resolve("raw.jsonl")).count { it.isNotBlank() }
+        assertEquals(219, familyARaw, "219 of Family A's 220 scored trials completed normally")
+    }
+
+    @Test
+    fun `a scored Family B-trial model timeout does not halt Family B`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to timeoutOnceExecutor(
+                Unit3CTransportClassification.MODEL_TIMEOUT,
+                matches = { it.family == Unit3CFamily.FAMILY_B && it.fixture.id == "r01-direct" && it.attempt == 1 },
+            ),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertTrue(results.all { it.outcome == Unit3CArmOutcome.SEALED })
+        val familyBRaw = Files.readAllLines(dir.resolve("family-b").resolve("raw.jsonl")).count { it.isNotBlank() }
+        assertEquals(114, familyBRaw, "114 of Family B's 115 scored trials completed normally")
+    }
+
+    @Test
+    fun `a scored-trial transport failure is measurement-invalidating and halts only that arm`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.TRANSPORT_OR_PROVIDER_FAILURE, ::isFirstControlScored),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertEquals(Unit3CArmOutcome.HALTED, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        // Other arms unaffected -- scored-trial infrastructure failures halt
+        // only the affected arm, never the whole campaign (unlike warm-up).
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_A }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_B }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_C }.outcome)
+    }
+
+    @Test
+    fun `a scored-trial ambiguous terminal state fails closed and halts only that arm`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.AMBIGUOUS, ::isFirstControlScored),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val results = driver.run(executors)
+        assertEquals(Unit3CArmOutcome.HALTED, results.single { it.family == Unit3CFamily.CONTROL }.outcome)
+        assertEquals(Unit3CArmOutcome.SEALED, results.single { it.family == Unit3CFamily.FAMILY_A }.outcome)
+    }
+
+    @Test
+    fun `intent record exists for every scored Control trial before either a raw observation or a timeout record is written`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.MODEL_TIMEOUT, ::isFirstControlScored),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        driver.run(executors)
+        val intentIds = Files.readAllLines(dir.resolve("control").resolve("intent.jsonl")).filter { it.isNotBlank() }
+        assertEquals(145, intentIds.size, "an intent record exists for every one of Control's 145 scored trials, including the one that timed out")
+        val rawIds = Files.readAllLines(dir.resolve("control").resolve("raw.jsonl")).filter { it.isNotBlank() }
+        val timeoutIds = Files.readAllLines(dir.resolve("control").resolve("timeouts.jsonl")).filter { it.isNotBlank() }
+        assertEquals(145, rawIds.size + timeoutIds.size, "every intent resolves to exactly a raw observation or a timeout record")
+    }
+
+    @Test
+    fun `Family C never receives an intent record, since it makes no model call`(@TempDir dir: Path) {
+        val executors = mapOf(
+            Unit3CFamily.CONTROL to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val driver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        driver.run(executors)
+        assertFalse(Files.exists(dir.resolve("family-c").resolve("intent.jsonl")), "Family C makes zero model calls; no intent record of any kind may exist for it")
+    }
+
+    @Test
+    fun `a timed-out trial is never automatically retried on crash-recovery resume`(@TempDir dir: Path) {
+        var controlExecutorCallCount = 0
+        val firstRunExecutors = mapOf(
+            Unit3CFamily.CONTROL to timeoutOnceExecutor(Unit3CTransportClassification.MODEL_TIMEOUT, ::isFirstControlScored) { controlExecutorCallCount++ },
+            Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+            Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+        )
+        val firstDriver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        firstDriver.run(executors = firstRunExecutors)
+        assertEquals(148, controlExecutorCallCount, "3 warm-ups + 145 scored, including the one that timed out")
+        // A second, independent driver instance resumes over the same,
+        // already-sealed root -- the timed-out trial must not be re-issued.
+        var secondRunControlCallCount = 0
+        val secondDriver = Unit3COrchestrationDriver("unit3c-remedy-experiments-test", dir, sampleIdentity()) { UNIT_3C_MINIMUM_FREE_BYTES + 1 }
+        val secondResults = secondDriver.run(
+            mapOf(
+                Unit3CFamily.CONTROL to Unit3CTrialExecutor { trial -> secondRunControlCallCount++; fakeObservationFor(trial, trial.fixture.expectedAction) },
+                Unit3CFamily.FAMILY_A to allSucceedExecutor(),
+                Unit3CFamily.FAMILY_B to allSucceedExecutor(),
+                Unit3CFamily.FAMILY_C to Unit3CTrialExecutor { trial -> fakeObservationFor(trial, null) },
+            ),
+        )
+        assertEquals(0, secondRunControlCallCount, "the executor must not be invoked again for any already-resolved trial, including the timed-out one")
+        assertTrue(secondResults.all { it.outcome == Unit3CArmOutcome.SEALED }, "idempotent recovery over an already-fully-resolved campaign must not fail")
+    }
+
+    @Test
+    fun `an intent record without any resolution is ambiguous and fails closed on recovery`(@TempDir dir: Path) {
+        val ledger = Unit3CArmLedger(dir, setOf("t1", "t2"))
+        ledger.recordIntent(
+            Unit3CIntentRecord(
+                callId = "t1", campaignId = "c", family = Unit3CFamily.CONTROL, fixtureId = "f",
+                trialSequence = 1, expectedAction = ExpectedAction.REPLY, modelName = "qwen2.5-coder:7b",
+                modelDigest = "d", repositoryCommit = "r", promptIdentity = "control", timeoutMs = 90_000L,
+                inferenceConfigIdentity = "default-ollama-request-shape",
+            ),
+        )
+        // No raw observation and no timeout record were ever written for
+        // "t1" -- an ambiguous terminal transport state (D), which must
+        // fail closed, not be silently treated as never-attempted or as
+        // complete.
+        assertFailsWith<Unit3CArtifactIntegrityException> { ledger.recover() }
+    }
+
+    @Test
+    fun `never-transmitted trial IDs remain distinguishable from transmitted ones via intent presence`(@TempDir dir: Path) {
+        val ledger = Unit3CArmLedger(dir, setOf("t1", "t2"))
+        assertFalse(ledger.hasIntent("t1"))
+        ledger.recordIntent(
+            Unit3CIntentRecord(
+                callId = "t1", campaignId = "c", family = Unit3CFamily.CONTROL, fixtureId = "f",
+                trialSequence = 1, expectedAction = ExpectedAction.REPLY, modelName = "qwen2.5-coder:7b",
+                modelDigest = "d", repositoryCommit = "r", promptIdentity = "control", timeoutMs = 90_000L,
+                inferenceConfigIdentity = "default-ollama-request-shape",
+            ),
+        )
+        assertTrue(ledger.hasIntent("t1"))
+        assertFalse(ledger.hasIntent("t2"), "state (A), never transmitted, remains distinguishable from state (B)/(C)/(D) for a different trial ID")
+    }
+
+    @Test
+    fun `intent is durable before the executor is ever invoked -- source order proves no path can transmit first`() {
+        val thisFile = Path.of("tests/integration/ReasoningProtocolUnit3COrchestrationTest.kt")
+        val text = Files.readString(thisFile)
+        for (marker in listOf("private fun runWarmups", "private fun runArm(")) {
+            val start = text.indexOf(marker)
+            assertTrue(start >= 0, "$marker must exist in this file's own source")
+            val end = text.indexOf("\n    private fun ", start + 1).let { if (it < 0) text.indexOf("\n}\n", start) else it }
+            val body = text.substring(start, end)
+            val intentIndex = body.indexOf("ledger.recordIntent(")
+            val executeIndex = body.indexOf(".execute(trial)")
+            assertTrue(intentIndex in 0 until executeIndex, "$marker must call ledger.recordIntent(...) before executor.execute(trial)")
+        }
+    }
+
+    @Test
+    fun `timeout record type has no field capable of holding a semantic action, structurally ruling out fabrication`() {
+        val record = Unit3CTimeoutRecord(
+            callId = "x", campaignId = "c", family = Unit3CFamily.CONTROL, fixtureId = "f", trialSequence = 1,
+            timeoutMs = 90_000L, elapsedNanos = 1L, terminalClassification = Unit3CTransportClassification.MODEL_TIMEOUT,
+            responseBytesReceived = false, transportDetail = "d", modelName = "qwen2.5-coder:7b", modelDigest = "d",
+            inferenceConfigIdentity = "default-ollama-request-shape", continuationDecision = "ARM_CONTINUED", checkpointStatus = "NOT_CHECKPOINTED",
+        )
+        val fieldNames = Unit3CTimeoutRecord::class.java.declaredFields.map { it.name }
+        for (forbidden in listOf("parserResult", "actualAction", "semanticCorrect", "semanticClassification")) {
+            assertFalse(forbidden in fieldNames, "Unit3CTimeoutRecord must have no field capable of holding a fabricated semantic result")
+        }
+        assertEquals(Unit3CTransportClassification.MODEL_TIMEOUT, record.terminalClassification)
+    }
+
+    @Test
+    fun `483-call schedule and arithmetic remain unaffected by the timeout and durability implementation`() {
+        assertEquals(483, Unit3CCampaignDefinition.liveModelCallCount)
+        assertEquals(3, Unit3CCampaignDefinition.warmupTrials.size)
+        assertEquals(145, Unit3CCampaignDefinition.controlTrials.size)
+        assertEquals(220, Unit3CCampaignDefinition.familyATrials.size)
+        assertEquals(115, Unit3CCampaignDefinition.familyBTrials.size)
+        assertEquals(29, Unit3CCampaignDefinition.familyCTrials.size)
     }
 
     // ---- Live-execution guard ----
