@@ -1,4 +1,4 @@
-**Status:** Unit 3-C Controlled Remedy Experiments — Execution Evidence Review — **EXECUTION HAS NOT YET OCCURRED, across two independent attempts.** This document records two separate halted attempts, in chronological order, each discovering a distinct blocking structural defect before any live call succeeded. Neither attempt produced a campaign, evidence, or a completed `/api/generate` call. Attempt 1 (below, preserved unmodified in substance) discovered the live-execution trigger did not exist and was corrected in a separate, later task. Attempt 2 (new, appended below) used the corrected trigger — independently confirmed to work exactly as designed, reaching the real orchestration driver — but discovered a second, previously undetected defect in the disk-space gate that halted execution before any warm-up or model call. No code, test, or Gradle file was modified during either attempt's own governance task.
+**Status:** Unit 3-C Controlled Remedy Experiments — Execution Evidence Review — **NO COMPLETE CAMPAIGN HAS YET PRODUCED EVIDENCE, across three independent attempts.** Attempt 1 discovered the live-execution trigger did not exist (corrected in a later task). Attempt 2, using the corrected trigger, discovered the disk-space gate checked a not-yet-created path (corrected in a later task). **Attempt 3 (new, appended below) is the first attempt in this programme's history to genuinely reach a real `/api/generate` call** — every gate before it (trigger, config validation, artifact-root validation, disk-space gate, ledger identity check) passed for the first time, and a campaign directory now exists on disk for the first time. The live call itself did not complete within the frozen 30,000 ms timeout; the resulting exception propagated uncaught and crashed the task before any observation was durably recorded. Zero observations exist; zero arms sealed; Unit 3-D evidence remains not yet available. No code, test, or Gradle file was modified during any of the three attempts' own governance tasks.
 
 # Unit 3-C Controlled Remedy Experiments — Execution Evidence Review
 
@@ -228,3 +228,130 @@ EXECUTION DID NOT OCCUR — NEW BLOCKING STRUCTURAL DEFECT DISCOVERED (DISK-SPAC
 ```
 
 Explicit Execution Approval Review 3's own `AUTHORIZED` verdict is not itself invalidated by this finding — the campaign it authorized remains authorized in principle, under the same boundary, once the disk-space gate defect is corrected and passes fresh review. This document records that the attempt to actually exercise that authorization discovered a second, previously undetected structural defect, unrelated to the trigger mechanism that Approval Review 3 specifically verified, and that this task correctly stopped rather than working around, retrying, or fixing it outside its own authorized scope.
+
+---
+
+# Attempt 3 — first real `/api/generate` call attempted; timed out before any observation was durably recorded
+
+**New record, added by this task.** This is the first attempt in this programme's entire history in which every gate before the live HTTP call passed and a real call was genuinely issued.
+
+## B1. Baseline commit
+
+`db9c612c4092b438582e61447e6fdab2c2dd37b5` — `HEAD` = `origin/main`, clean, independently re-confirmed at this task's start.
+
+## B2. Authorization
+
+Explicit Execution Approval Review 4, verdict `AUTHORIZED`, authorizing exactly one campaign under campaign ID `unit3c-remedy-experiments-20260810`, repository commit `db9c612c4092b438582e61447e6fdab2c2dd37b5` (the exact commit this task examined and executed against), model digest `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`, artifact parent `/var/lib/parker/reasoning-protocol-live-model`.
+
+## B3. Pre-execution checkpoint (Phase 4, this task)
+
+Every item independently re-verified and **passed**, fresh, before configuration:
+
+| Item | Result |
+|---|---|
+| Repository | PASS — clean, matches `db9c612...` |
+| Authorization | PASS — Approval Review 4 genuinely tied to `db9c612` (its own working-tree description matches this commit's diff file-for-file) |
+| Campaign absent | PASS |
+| Model name | `qwen2.5-coder:7b` — PASS |
+| Model digest | `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364` — PASS |
+| Runtime identity | hostname `parker`, Ollama `0.32.5` — PASS |
+| Inference configuration | unchanged — PASS |
+| Timeout | 30,000 ms — PASS |
+| Artifact root | `/var/lib/parker/reasoning-protocol-live-model` — PASS |
+| Ownership/permissions | `steve:steve`, `700` — PASS |
+| Disk space | 3,927,314,432 bytes available (≥ 2 GiB) — PASS |
+| Unit 2 artifact integrity | re-hashed, matches — PASS |
+| Unit 2-D artifact integrity | all four re-hashed, match — PASS |
+| Family C governed trace | 24/29, FP P03/P04/P05/P12, FN R03 — PASS |
+| Live trigger reachability | PASS (offline pre-check: 79 tests, 1 skip, 0 failures) |
+| Disk-space gate reachability | PASS (two new tests passing) |
+| Live-task test filtering | PASS (tagged test absent from this task's own offline pre-check results) |
+| Exact-once, safety checkpoint, downstream isolation | PASS (offline tests) |
+| Executable call schedule | 483, PASS (offline, pre-existing test) |
+
+**Every item passed.** Execution proceeded to Phase 5–7.
+
+## B4. Configuration exported
+
+`PARKER_REASONING_EVAL_ENDPOINT_URL=http://127.0.0.1:11434/api/generate`; `PARKER_REASONING_EVAL_MODEL_NAME=qwen2.5-coder:7b`; `PARKER_REASONING_EVAL_TIMEOUT_MS=30000`; `PARKER_REASONING_EVAL_OUTPUT_PATH=build/unit3c-legacy-output-unused`; `PARKER_REASONING_EVAL_REPOSITORY_COMMIT=db9c612c4092b438582e61447e6fdab2c2dd37b5`; `PARKER_REASONING_EVAL_MODEL_DIGEST=dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`; `PARKER_REASONING_UNIT3C_CAMPAIGN_ID=unit3c-remedy-experiments-20260810`; `PARKER_REASONING_UNIT3C_ARTIFACT_ROOT=/var/lib/parker/reasoning-protocol-live-model`. Exported into exactly one background shell invocation; that shell terminated when the command finished.
+
+## B5. Exact command
+
+```
+./gradlew unit3cControlledRemedyExperiments --rerun-tasks --info
+```
+
+`--rerun-tasks` was deliberately chosen (Phase 6) because the task's declared inputs would otherwise be identical to the offline pre-check run performed immediately before, risking a false UP-TO-DATE no-op. Run exactly once. Not re-run after the failure below.
+
+## B6. What actually happened
+
+The Gradle task started, recompiled (forced by `--rerun-tasks`), and began executing the 79-test class set under live configuration. The gated live trigger test's two `assumeTrue` checks both passed for the first time under genuine live configuration (property `true`, campaign ID present). Execution proceeded into `Unit3CLiveEntryPoint.run`: `Unit3CConfigLoader.load` succeeded; `Unit3CArtifactRootPolicy.resolve` succeeded; `Unit3CDiskSpaceGate.check` — now checking the durable parent per the disk-space-gate correction — succeeded; `Unit3COrchestrationDriver` was constructed and `run()` was called; `runArm(CONTROL)` called `runWarmups`, which called `ledger.checkIdentity(identity)` — **this succeeded and wrote `control/warmup/identity.txt`, independently re-confirmed to contain exactly `db9c612c4092b438582e61447e6fdab2c2dd37b5|qwen2.5-coder:7b|dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364|http://127.0.0.1:11434/api/generate|30000` — a byte-for-byte match to the authorized configuration.**
+
+`runWarmups` then called `executor.execute(trial)` for the first warm-up trial, which invokes `ModelReasoningProvider.reason` → `LocalHttpModelInferenceClient.infer`, issuing the first genuine `/api/generate` HTTP request in this programme's history. The call did not return within the frozen 30,000 ms timeout:
+
+```
+kotlinx.coroutines.TimeoutCancellationException: Timed out waiting for 30000 ms
+    at parker.core.runtime.LocalHttpModelInferenceClient.infer(ModelInferenceClient.kt:150)
+    at parker.core.runtime.ModelReasoningProvider$reason$raw$1.invokeSuspend(ModelReasoningProvider.kt:73)
+    at parker.core.runtime.ModelReasoningProvider.reason(ModelReasoningProvider.kt:73)
+    at parker.integration.ReasoningProtocolUnit3CControlledRemedyExperimentsTestKt$buildModelInvokingExecutor$1$response$1.invokeSuspend(...)
+```
+
+Independently re-confirmed via the JUnit XML report: the failing test's own reported `time="30.861"` seconds, and the suite's own `timestamp="2026-08-10T06:28:22"`, are consistent with a genuine ~30-second wait for an HTTP response, not an instant connection failure.
+
+**This exception was never caught.** Independently re-read `runWarmups`'s own `try { ... } catch (e: Unit3CArtifactIntegrityException) { HALTED }` — it catches exactly one exception type (artifact-integrity/identity drift), not generic transport or timeout failures. `TimeoutCancellationException` propagated uncaught through `runWarmups`, `runArm`, `driver.run()`, `Unit3CLiveEntryPoint.run()`, and the trigger test itself, causing the test to `FAILED` and the whole Gradle task to `FAILED`. No `HALTED` or `SAFETY_CHECKPOINT` outcome was ever recorded, because the driver's own code never reached the point of returning one for this arm — the crash occurred one level below that handling.
+
+## B7. Corroborating evidence for a genuine, real network call (not a connection failure)
+
+Independently checked, read-only, immediately after the failure: `ps aux` showed the Ollama `llama-server` subprocess for `qwen2.5-coder:7b` (PID `53349`) running since `06:28` — the exact same time the campaign started — consuming `88.9`–`160%` CPU and `~75%` of system memory, consistent with active model loading/inference, not an idle or crashed process. `/api/tags` remained responsive throughout and after. This is consistent with genuine cold-start model-loading latency (the model had not been resident in memory before this campaign; no prior warm-up request had been issued to this specific model in this session) exceeding the frozen 30-second timeout, rather than a connectivity or code defect. This is offered as a plausible explanation, not a confirmed root cause — no code change is proposed or made based on it.
+
+## B8. Actual model-call accounting (durable evidence)
+
+Derived from durable evidence, not from any in-memory counter or the Gradle result alone:
+
+| Arm | Actual (durable) |
+|---|---|
+| Warm-up | 0 completed/recorded; exactly 1 real HTTP request believed transmitted (B7), never completing within the governed timeout, never durably recorded |
+| Control (scored) | 0 — never reached, since the warm-up gate did not return `SEALED` |
+| Family A | 0 — never reached |
+| Family B | 0 — never reached |
+| Family C | 0 — never reached (would have been zero regardless, by design) |
+| **Total durably recorded** | **0** |
+
+Independently verified by direct inspection: `find /var/lib/parker/reasoning-protocol-live-model/unit3c-remedy-experiments-20260810 -mindepth 1` returns exactly one file, `control/warmup/identity.txt`. No `raw.jsonl` exists anywhere under the campaign directory (the file `Unit3CArmLedger.appendObservation` would have created), confirming zero observations were ever durably appended, for any arm.
+
+## B9. Campaign state
+
+Campaign directory `/var/lib/parker/reasoning-protocol-live-model/unit3c-remedy-experiments-20260810` **now exists** — the first Unit 3-C campaign directory ever created. Contains exactly `control/warmup/identity.txt`. No `raw.jsonl`, `checkpoint.txt`, `SEALED`, `manifest.txt`, or `SAFETY_CHECKPOINT` marker exists anywhere under it. State is neither sealed nor gracefully halted; it is a genuine mid-flight crash, preserved exactly as produced, not repaired or resumed.
+
+## B10. Descriptive experiment results
+
+**Not applicable — zero observations of any kind exist for any arm.** No semantic-correctness, representation-validity, content-fidelity, false-positive, false-negative, parser-failure, or latency data exists to report for Control, Family A, Family B, or Family C.
+
+## B11. Safety checkpoint, exact-once, downstream isolation
+
+Safety checkpoint: not reached (no scored trial was ever attempted). Exact-once: not exercised past the single `checkIdentity` write; no duplicate or missing record exists to evaluate. Downstream isolation: unaffected; no code path this attempt exercised references any forbidden symbol.
+
+## B12. Anomalies
+
+One: a raw network/timeout failure (as opposed to an artifact-integrity failure) during a live call is not caught by `runWarmups`/`runArm`'s own exception handling and crashes the entire Gradle task rather than producing a graceful `HALTED` or similar arm-level outcome. This is recorded as an observation for a future task's own consideration, not diagnosed as a defect or corrected here — this task is execution-and-evidence-review only and does not modify code, tests, timeout, or retry behavior.
+
+## B13. Prohibited interpretations
+
+This finding must not be read as: a defect in the live-trigger, disk-space-gate, or live-test-scoping corrections (all three are independently confirmed to have worked exactly as designed — B6 traces the successful path through every one of them, further than any prior attempt reached); evidence that the model, endpoint, or digest are misconfigured (identity.txt's exact match rules this out); or campaign evidence of any kind (zero observations exist, so no descriptive or comparative claim about Control, Family A, Family B, or Family C can be made).
+
+## B14. Readiness for Unit 3-D
+
+**Not applicable, and not reached.** Zero observations exist. Unit 3-D may not begin.
+
+## B15. Exact next required step (not performed in this task)
+
+Outside this task's own scope: an operator/governance decision on whether the frozen 30,000 ms timeout is sufficient for a cold-start (not-yet-resident) model load on this hardware, and whether `runWarmups`/`runArm` should catch transport/timeout failures gracefully (e.g., as a new `Unit3CArmOutcome` category) rather than crashing the whole task. Any such change is itself a frozen-governance-touching decision and must go through this programme's own Scope Lock / Plan amendment process, not be made inside an execution task.
+
+## B16. Attempt 3 verdict
+
+```text
+EXECUTION DID NOT PRODUCE EVIDENCE — FIRST GENUINE LIVE CALL ATTEMPTED, TIMED OUT BEFORE COMPLETION, ZERO OBSERVATIONS DURABLY RECORDED
+```
+
+Explicit Execution Approval Review 4's own `AUTHORIZED` verdict is not itself invalidated by this finding: every mechanism it verified (trigger reachability, disk-space gate, live-test scoping, config/artifact-root validation) is independently confirmed in this attempt to have worked correctly, for the first time, all the way to a genuine live HTTP call. This document records that the call itself did not complete within the frozen timeout, that this task correctly stopped rather than repairing, retrying, or resuming, and that campaign state was preserved exactly as produced.

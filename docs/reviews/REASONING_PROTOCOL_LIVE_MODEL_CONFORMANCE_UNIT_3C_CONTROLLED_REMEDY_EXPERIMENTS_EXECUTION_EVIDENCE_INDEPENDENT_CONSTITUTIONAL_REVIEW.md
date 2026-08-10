@@ -1,4 +1,4 @@
-**Status:** Independent Constitutional Review of the Unit 3-C Execution Evidence Review — **ACCEPTED (halt confirmed independently; no evidence exists to evaluate).** This review does not merely accept the Execution Evidence Review's own account of Attempt 2 — it independently re-derives the halt from raw source, the actual background-run output log, and a fresh filesystem listing, before agreeing with it. No live model call, no HTTP call beyond none (this review made none), no campaign, and no repository mutation beyond this document occurred.
+**Status:** Independent Constitutional Review of the Unit 3-C Execution Evidence Review — **UPDATED. ACCEPTED for both Attempt 2 (preserved below, unmodified) and the new Attempt 3.** This review does not merely accept the Execution Evidence Review's own account — for Attempt 3 specifically, it independently re-derives the actual call outcome, the campaign directory's real on-disk contents, and the exact failure point from raw evidence (the campaign directory itself, the JUnit XML report, and direct source re-reading), not from the Execution Evidence Review's own narrative. No live model call, no HTTP call of any kind, no campaign mutation, and no repository mutation beyond this document occurred during this review.
 
 # Unit 3-C Controlled Remedy Experiments — Execution Evidence Independent Constitutional Review
 
@@ -102,3 +102,67 @@ The Execution Evidence Review's account of Attempt 2 is independently confirmed 
 ## 22. Confirmation
 
 No model or HTTP call occurred during this review. No campaign was created, resumed, or modified. No production, test, or Gradle file changed. No fixture or Family A/B/C definition was altered. No remedy was selected. The Execution Evidence Review document itself was not modified by this review.
+
+---
+
+# Attempt 3 Independent Review — first genuine live call, timed out before completion
+
+**New section, added by this task. Attempt 2's own review above (Sections 1–22) is preserved unmodified.**
+
+## 23. Method
+
+Independently re-derived, before reading the Execution Evidence Review's own Attempt 3 narrative in detail: fresh `find`/`cat` of the campaign directory's actual current contents; fresh extraction of the failing test's exact XML record (`time`, `timestamp`, failure message, stack trace); fresh re-read of `runWarmups`'s exact try/catch scope; fresh re-read of `LocalHttpModelInferenceClient.infer` to independently confirm no retry logic exists at that layer, so exactly one HTTP request — not more — was issued.
+
+## 24. Campaign identity and directory — independently re-derived
+
+Independently confirmed via fresh, direct filesystem access: `/var/lib/parker/reasoning-protocol-live-model/unit3c-remedy-experiments-20260810/` exists, contains exactly one subpath, `control/warmup/identity.txt` (165 bytes, timestamped `Aug 10 06:28`). No other file exists anywhere under the campaign directory — independently confirmed via `find ... -mindepth 1` producing exactly two lines (the `warmup` directory and the one file inside it).
+
+## 25. Identity record — independently re-derived, not accepted from the Evidence Review's own quotation
+
+Independently read `identity.txt` directly: `db9c612c4092b438582e61447e6fdab2c2dd37b5|qwen2.5-coder:7b|dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364|http://127.0.0.1:11434/api/generate|30000`. Independently cross-checked each field against Approval Review 4's own Section 20 configuration table: repository commit, model name, model digest, endpoint, and timeout all match exactly, field for field. This independently confirms the entry point, config loader, artifact-root policy, disk-space gate, and the warm-up ledger's own `checkIdentity` call all executed correctly, in order, against the real filesystem, for the first time in this programme's history — not asserted from the Evidence Review's own claim, but re-derived from the one durable artifact that exists.
+
+## 26. Actual call count — independently re-derived from durable evidence only
+
+**Zero durably recorded, independently confirmed.** No `raw.jsonl` exists anywhere under the campaign directory (independently confirmed via the same `find` in Section 24) — this is the only file `Unit3CArmLedger.appendObservation` would ever create, and its total absence, for every arm, independently proves zero observations were recorded for Warm-up, Control, Family A, Family B, or Family C. This review does not rely on the Gradle console output or any in-memory counter for this conclusion — only the absence of the one file type that would prove otherwise.
+
+**Exactly one real HTTP request independently confirmed transmitted** (not merely asserted): `LocalHttpModelInferenceClient.infer`, independently re-read in full, issues one `HttpClient.sendAsync` call per `infer` invocation, with no retry, no loop, and no re-send anywhere in its body; `runWarmups`'s trial loop calls `executor.execute(trial)` once per trial and does not catch the resulting timeout to retry it. Since the failure occurred on the very first trial (no prior `raw.jsonl` entry exists to indicate an earlier trial completed first), exactly one request was issued, exactly once.
+
+## 27. Failure point — independently re-traced
+
+Independently re-read `runWarmups`'s exact `try { ... } catch (e: Unit3CArtifactIntegrityException) { ... }` block: it catches precisely one exception type. `kotlinx.coroutines.TimeoutCancellationException` (independently confirmed, via the JDK/Kotlin coroutines library's own class hierarchy, not to be a subtype of `Unit3CArtifactIntegrityException`) is therefore not caught here, and independently confirmed — by direct re-reading of the full stack trace in the XML report — to propagate through every intervening frame (`ModelReasoningProvider.reason`, the executor lambda, `runWarmups`, `runArm`, `driver.run()`, `Unit3CLiveEntryPoint.run()`) uncaught, reaching the JUnit test method itself and failing it. Independently confirmed via the XML report's own `time="30.861"` attribute that this is consistent with a genuine ~30-second wait, not an immediate failure (which would show a time near `0`).
+
+## 28. Was this a measurement-invalidating failure that should have failed closed more gracefully?
+
+Independently assessed, adversarially: the codebase's own established "fail closed" pattern (used for identity drift, wrong artifact root, wrong digest, etc.) converts a specific, anticipated failure into either an exception at the entry point (before any campaign state exists) or a `HALTED`/`SAFETY_CHECKPOINT` result at the arm level (after campaign state exists, but without crashing the whole process). A raw transport timeout during a live call falls into neither category currently — it crashes the whole task. Independently judged: this is not itself a violation of any frozen governance property (no frozen document specifies that transport failures must produce a graceful per-arm outcome rather than a task-level failure; "fail closed" is satisfied in the weaker but still valid sense that no misleading success was reported and no partial state was silently accepted as complete), but it is a real, now-observed gap between what the codebase's own existing categories handle gracefully and what a real live environment actually produces. Independently confirms the Evidence Review's own decision not to characterize this as a "defect requiring correction inside this task" — correcting it would require touching production code and/or the frozen timeout, both explicitly out of this task's authorized scope.
+
+## 29. Is the corroborating cold-start-latency explanation reasonable, or asserted without support?
+
+Independently re-derived, not accepted on the Evidence Review's word: at review time, `ps aux` independently re-run, confirms the `llama-server` process for this exact model is still present, still consuming substantial CPU. Independently judged plausible given no prior request had been made to `qwen2.5-coder:7b` in this session before this campaign (Unit 2/Unit 2-D's own preserved evidence pertains to earlier, separate sessions, and no `/api/generate` call of any kind is recorded anywhere in this programme's history before this attempt) — a genuinely cold model load for a 7-billion-parameter model can plausibly exceed 30 seconds on commodity hardware. This review agrees with the Evidence Review's own framing: plausible explanation, not a confirmed root cause, and not acted upon.
+
+## 30. Discrepancies between this review and the Execution Evidence Review
+
+None found. Every quantitative claim in the Evidence Review's Attempt 3 section (directory contents, identity-file content, call counts, failure trace, timing) is independently reproduced from raw evidence in this review and found accurate.
+
+## 31. Blocking defects
+
+None *requiring correction by this task*. One real, now-documented gap (Section 28) exists in the implementation's own exception handling for transport-layer failures during a live call; it is explicitly deferred to a future, separately-scoped task per this task's own authorization boundary.
+
+## 32. Non-blocking qualifications
+
+The `unit3cLiveTaskIncompatible`-tagged test scoping fix and the disk-space-gate fix are both independently confirmed to have worked exactly as intended in this genuine live attempt (Sections 24–25) — this is the strongest possible confirmation available for either fix, stronger than any offline test could provide, since it is drawn from the real, authorized, live-configured run itself.
+
+## 33. Verdict
+
+```text
+ACCEPTED
+```
+
+The Execution Evidence Review's account of Attempt 3 is independently confirmed accurate in every material respect: the live-trigger, disk-space-gate, and live-test-scoping corrections all worked exactly as designed for the first time under genuine live configuration; a campaign directory and an identity record now exist for the first time in this programme's history, exactly matching the authorized configuration; exactly one real HTTP request was issued and did not complete within the frozen 30-second timeout; zero observations were durably recorded for any arm; and this task correctly preserved the resulting state exactly, without repairing, retrying, or resuming.
+
+## 34. Unit 3-D readiness
+
+**NO.** Zero observations of any kind exist for any arm. There is no exploratory evidence for Unit 3-D to evaluate.
+
+## 35. Confirmation
+
+No model or HTTP call occurred during this review. No campaign was created, resumed, or modified — the campaign directory was inspected read-only. No production, test, or Gradle file changed. No fixture or Family A/B/C definition was altered. No remedy was selected. The Execution Evidence Review document itself was not modified by this review.
