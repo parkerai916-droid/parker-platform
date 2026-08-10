@@ -146,6 +146,20 @@ tasks.register<Test>("reasoningProtocolUnit2DDiagnostic") {
     shouldRunAfter(tasks.test)
 }
 
+tasks.register<Test>("unit3cControlledRemedyExperiments") {
+    description = "Runs the explicit opt-in Reasoning Protocol Unit 3-C controlled remedy experiments instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.ReasoningProtocolUnit3CControlledRemedyExperimentsTest")
+        includeTestsMatching("parker.integration.ReasoningProtocolUnit3COrchestrationTest")
+    }
+    systemProperty("parker.reasoning.unit3c.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         allWarningsAsErrors.set(false)
