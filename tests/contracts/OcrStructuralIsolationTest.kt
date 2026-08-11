@@ -332,7 +332,7 @@ class OcrStructuralIsolationTest {
         val implementers = srcRoot.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .filter { file -> implementsPattern.containsMatchIn(file.readText()) }
-            .map { it.path }
+            .map { it.path.replace('\\', '/') }
             .toList()
 
         assertEquals(listOf("src/runtime/OcrExecutionSequencer.kt"), implementers, "exactly one class must implement OcrMechanism -- found: $implementers")
