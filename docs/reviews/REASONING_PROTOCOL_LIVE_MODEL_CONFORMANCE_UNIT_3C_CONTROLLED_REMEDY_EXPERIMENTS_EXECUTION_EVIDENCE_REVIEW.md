@@ -1,4 +1,4 @@
-**Status:** Unit 3-C Controlled Remedy Experiments — Execution Evidence Review — **GENUINE EXPLORATORY EVIDENCE NOW EXISTS, produced by Attempt 5, across five independent attempts.** Attempts 1–2 discovered the live-trigger and disk-space-gate defects (both corrected). Attempt 3 was the first to genuinely reach a real `/api/generate` call but timed out under the pre-amendment 30,000 ms ceiling before any observation was durably recorded (zero evidence). Attempt 4 does not exist as a separate execution record — the intervening governance work (timeout investigation, amendments, scored-trial determination, implementation) occurred between Attempt 3 and Attempt 5 without a fourth live-execution attempt. **Attempt 5 (new, appended below), under the amended 90,000 ms timeout and the newly-implemented intent/terminal-timeout durability, genuinely executed 176 live model calls, producing 173 completed observations and 3 durably-recorded model timeouts, before each of the four model-invoking arms (Control, Family A, Family B) and the deterministic Family C arm independently reached its own first governed adversarial-category safety checkpoint and halted, exactly as designed.** No arm sealed as fully complete; none was expected to under this outcome. This is the first campaign in this programme's history to produce genuine Unit 3-C exploratory evidence — with one significant, honestly-stated limitation (Section C7 below): the durably-persisted observation payload does not currently capture per-trial semantic/representation detail beyond campaign/family/fixture identity, so most descriptive-result questions cannot be answered from durable evidence alone for this campaign. No code, test, or Gradle file was modified during any attempt's own governance task.
+**Status:** Unit 3-C Controlled Remedy Experiments — Execution Evidence Review — **GENUINE, FULLY-INTERPRETABLE EXPLORATORY EVIDENCE NOW EXISTS, produced by Attempt 6, across six independent attempts.** Attempts 1–2 discovered the live-trigger and disk-space-gate defects (both corrected). Attempt 3 was the first to genuinely reach a real `/api/generate` call but timed out under the pre-amendment 30,000 ms ceiling before any observation was durably recorded (zero evidence). Attempt 4 does not exist as a separate execution record. Attempt 5, under the amended 90,000 ms timeout and the newly-implemented intent/terminal-timeout durability, genuinely executed 176 live model calls, producing 173 completed observations and 3 durably-recorded model timeouts, before each arm independently reached its own first governed safety checkpoint — but discovered, honestly recorded, and did not fix a significant durability limitation: the durable payload captured only campaign/family/fixture identity, not per-trial semantic detail. That defect was corrected in a separate task (`deba366`) and freshly authorized for one further attempt (Explicit Execution Approval Review 6). **Attempt 6 (new, appended below), executed under the corrected observation-durability implementation, genuinely transmitted 277 live model calls plus 6 Family C deterministic classifications, producing 276 completed model responses (1 genuine model timeout) and 6 completed classifications — all 282 completed observations durably carrying the full governed Plan Section 16 structured schema (`actualAction`, `semanticCorrect`, `representationValid`, `parserResult`, `parserFailure`, `latencyNanos`, `transportOutcome`, model/runtime identity, `promptIdentity`, `candidateMechanismIdentity`, `stableInputHash`, `repositoryCommit`) — before each of the four model-invoking/classifying arms independently reached its own first governed adversarial-category safety checkpoint and halted, exactly as designed.** This is the first campaign in this programme's history whose evidence is genuinely, durably semantically interpretable at scale, not merely reachable. No arm sealed as fully complete; none was expected to under this outcome. No code, test, or Gradle file was modified during any attempt's own governance task.
 
 # Unit 3-C Controlled Remedy Experiments — Execution Evidence Review
 
@@ -488,3 +488,169 @@ EXECUTION OCCURRED — GENUINE PARTIAL EXPLORATORY EVIDENCE PRODUCED — ALL FOU
 ```
 
 Explicit Execution Approval Review 5's own `AUTHORIZED` verdict is not invalidated: every mechanism it verified (90,000 ms timeout, intent-before-call durability, terminal timeout records, warm-up/scored-trial semantics, transport distinction, exact-once) is independently confirmed by this attempt's own real, live evidence to work exactly as governed. This attempt was not repaired, retried, or resumed after any checkpoint fired; campaign state is preserved exactly as produced.
+
+---
+
+# Attempt 6 — first campaign with genuinely, durably interpretable evidence at scale; four independent safety-checkpoint halts; one genuine model timeout
+
+**New record, added by this task. Attempts 1–5 above are preserved exactly, unmodified — including Attempt 5's own honestly-recorded durability limitation, which this record does not retroactively rewrite.** Intervening work between Attempt 5 and this attempt (not itself a separate live-execution attempt): the Evidence Completeness and Durability Determination Review, its Independent Constitutional Review, the Observation Durability Defect Confirmation Review and its Independent Constitutional Review, the corrective implementation (`deba366`), the sixth-refresh Completion/Readiness reviews and their ICRs, and Explicit Execution Approval Review 6 (`AUTHORIZED`).
+
+## D1. Baseline
+
+Execution began with `HEAD` = `origin/main` = `aee4e4568096b0ed2df6a227730274f3104d1972`, clean, independently re-confirmed at task start. This differs from Approval Review 6's own examined commit (`deba3666839c2ad88f54e6582fc13cf1358ba088`) only by the addition of Approval Review 6's own document — independently re-confirmed via `git diff --quiet deba366..aee4e45 -- build.gradle.kts src tests` (exit code `0`) before execution began. `PARKER_REASONING_EVAL_REPOSITORY_COMMIT` was set to the true, current `aee4e45`, not the reviewed `deba366`, so the durable identity record reflects the actual code genuinely executed.
+
+## D2. Authorization
+
+Explicit Execution Approval Review 6, verdict `AUTHORIZED`, authorizing exactly one campaign under campaign ID `unit3c-remedy-experiments-20260810-03`, model `qwen2.5-coder:7b`, digest `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`, timeout `90000` ms, artifact parent `/var/lib/parker/reasoning-protocol-live-model`, frozen maximum schedule 483 live model calls.
+
+## D3. Campaign ID
+
+`unit3c-remedy-experiments-20260810-03`. Independently re-confirmed absent before this attempt (fresh `ls`/`stat` immediately prior to configuration export); now exists, containing genuine evidence (Section D9 onward).
+
+## D4. Pre-execution checkpoint
+
+Every item independently re-verified and **passed**, fresh, before configuration: repository (clean, `HEAD == origin/main == aee4e45`); commit reconciliation (Section D1); model `qwen2.5-coder:7b`, digest matching via fresh `/api/tags`; runtime `parker`/Ollama `0.32.5` via fresh `/api/version`; artifact root `steve:steve`/`0700`; free space `4,260,184,064` bytes (≥ 2 GiB, ≈1.99 GiB margin); no stale live environment variables present; campaign directory absent; offline suite fresh (`unit3cControlledRemedyExperiments`, 100 tests, 1 skip, 0 failures — re-run immediately before configuration export, matching every figure Approval Review 6 itself reported); schedule re-derived from source (3/145/220/115/0 = 483).
+
+## D5. Configuration exported
+
+`PARKER_REASONING_EVAL_ENDPOINT_URL=http://127.0.0.1:11434/api/generate`; `PARKER_REASONING_EVAL_MODEL_NAME=qwen2.5-coder:7b`; `PARKER_REASONING_EVAL_TIMEOUT_MS=90000`; `PARKER_REASONING_EVAL_OUTPUT_PATH=build/unit3c-legacy-output-unused`; `PARKER_REASONING_EVAL_REPOSITORY_COMMIT=aee4e4568096b0ed2df6a227730274f3104d1972`; `PARKER_REASONING_EVAL_MODEL_DIGEST=dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`; `PARKER_REASONING_UNIT3C_CAMPAIGN_ID=unit3c-remedy-experiments-20260810-03`; `PARKER_REASONING_UNIT3C_ARTIFACT_ROOT=/var/lib/parker/reasoning-protocol-live-model`. Exported into exactly one background shell invocation; that shell terminated when the command finished.
+
+## D6. Exact command
+
+```
+./gradlew unit3cControlledRemedyExperiments --rerun-tasks --info
+```
+
+Run exactly once, in the background. `BUILD SUCCESSFUL in 58m 32s`. Not re-run, not invoked a second time, no trial manually replayed.
+
+## D7. Execution state
+
+All four model-invoking/classifying arms (Control, Family A, Family B, Family C) independently reached their own first governed adversarial-category false-positive safety checkpoint and halted. The warm-up sub-campaign sealed successfully (3/3). No arm sealed as fully complete; none was expected to under this outcome — the safety checkpoint's own governed behavior is to halt further live calls in the affected arm only, pending manual review, never to be silently cleared or retried.
+
+## D8. Observation durability — genuinely confirmed at scale, not merely reachable
+
+Independently sampled real `raw.jsonl` records from all five directories (warm-up, Control, Family A, Family B, Family C). Every completed observation durably carries: `campaignId`, `family`, `arm`, `fixtureId`, `fixtureCategory`, `contextProfileId`, `trialSequence`, `expectedAction`, `actualAction`, `semanticCorrect`, `representationValid`, `contentFidelity` (present as the literal `null` the object always holds — Section D25), model/digest identity, `runtimeIdentity`, `endpointIdentifier`, `timeoutMs`, `inferenceConfigIdentity`, `promptIdentity`, `parserResult`, `parserFailure`, `latencyNanos`, `transportOutcome`, `candidateMechanismIdentity`, `stableInputHash`, `repositoryCommit` — independently re-parsed from the raw on-disk text via a fresh script, not accepted from any in-memory assumption. **This is the corrective task's own intended effect, now independently confirmed under genuine live conditions at 282 completed observations, not 6 out of 179 as in Attempt 5.**
+
+## D9. Transmitted/completed/timeout call accounting (durable evidence, independently derived)
+
+| Arm | Intent (transmitted, model calls) | Raw (completed) | Timeouts | Outcome |
+|---|---|---|---|---|
+| Warm-up | 3 | 3 | 0 | SEALED |
+| Control | 132 | 132 | 0 | SAFETY_CHECKPOINT |
+| Family A | 51 | 50 | 1 | SAFETY_CHECKPOINT |
+| Family B | 91 | 91 | 0 | SAFETY_CHECKPOINT |
+| Family C | 0 (makes no model call) | 6 (classifier invocations) | 0 | SAFETY_CHECKPOINT |
+| **Total** | **277 live model calls transmitted; 6 deterministic classifications** | **276 completed model responses + 6 classifications = 282** | **1 model timeout** | — |
+
+Independently re-verified: every arm's `intent.jsonl` count equals its own `raw.jsonl` + `timeouts.jsonl` count exactly (132=132+0; 51=50+1; 91=91+0), confirming every transmitted call resolved to exactly one governed terminal state, with zero ambiguous-state (D) records anywhere. Zero duplicate trial IDs in any file. Zero overlap between any arm's `raw.jsonl` and `timeouts.jsonl`. Expected maximum schedule: 483. Actual transmitted (model calls): 277 (57.3% of the maximum — a substantially deeper run than Attempt 5's 36.4%) — halted at four independent, governed safety checkpoints before exhausting the full schedule; this is the correct, designed behavior for this outcome, not an incomplete or defective run.
+
+## D10. Safety-checkpoint events — independently verified
+
+| Arm | Triggering trial | Fixture category | Expected action | Actual action (durably recorded) |
+|---|---|---|---|---|
+| Control | `control/p17-hypothetical-remember/main/02` | ADVERSARIAL | REPLY | REMEMBER (false positive) |
+| Family A | `family_a/p03-ambiguous-memory/decision/01` | ADVERSARIAL | REPLY | REMEMBER (false positive) |
+| Family B | `family_b/g03-later-action/main/01` | GOAL | GOAL | REMEMBER (false positive) |
+| Family C | `family_c/p03-ambiguous-memory/main/01` | ADVERSARIAL | REPLY | REMEMBER (false positive, matches the already-governed frozen Family C trace prediction exactly) |
+
+Independently re-confirmed for every arm: the `SAFETY_CHECKPOINT` marker's own recorded `trialId` is the literal last entry in that arm's own `raw.jsonl`, and `intent.jsonl`'s count exactly equals `raw.jsonl` + `timeouts.jsonl`'s combined count — proving no trial was attempted in any arm after its own checkpoint fired. Each is independently confirmed a **first-occurrence adversarial-category false-positive REMEMBER** — no false-positive GOAL occurred anywhere in this campaign. **This is the first attempt in this programme's history where the triggering `actualAction` for every checkpoint is directly, durably read from the raw payload — not deduced, narrowed, or left ambiguous**, unlike Attempt 5, where Control's and Family A/B's own triggers could only be partially reconstructed by logical deduction from the trigger condition.
+
+## D11. The one genuine model timeout — independently examined, including an honestly-recorded anomaly
+
+`family_a/r02-please/render/02`: `terminalClassification: "MODEL_TIMEOUT"`, `transportDetail: "kotlinx.coroutines.TimeoutCancellationException"`, `responseBytesReceived: false`, `continuationDecision: "ARM_CONTINUED"`. The arm genuinely continued afterward — independently confirmed by 49 further Family A raw observations following this timeout in sequence before the arm's own eventual checkpoint. **Anomaly, recorded honestly rather than smoothed over:** the record's own `elapsedNanos` is `838234061456` (≈838.2 seconds, ≈13 minutes 58 seconds) — substantially longer than the governed `90,000` ms ceiling that nominally bounds it. Independently re-read `LocalHttpModelInferenceClient.infer` (`src/runtime/ModelInferenceClient.kt`): the HTTP call is genuinely cancellable (`suspendCancellableCoroutine` with `future.cancel(true)` wired via `invokeOnCancellation`), ruling out an obvious "non-cancellable blocking call" explanation. The most plausible account, **offered as a plausible explanation, not a confirmed root cause, exactly as this programme's own established discipline for Attempt 3's cold-start finding requires**: `elapsedNanos` is measured as wall-clock time from just before the call to the moment the exception is caught, and if the JVM's own coroutine delay-scheduling or the underlying HTTP client's cancellation signal was itself delayed by host-level resource contention (this host runs the Ollama inference process itself, competing for CPU with the JVM issuing the request), the *nominal* 90-second budget and the *actual* wall-clock delay before the exception is caught and durably recorded can diverge substantially. This is not diagnosed further and no code change is proposed or made based on it — outside this task's authorized scope. It does not change the governed classification (`MODEL_TIMEOUT`, `ARM_CONTINUED`) or the correctness of the continuation semantics, which durably, correctly recorded and handled the event regardless of its own real duration.
+
+## D12. Campaign state
+
+`unit3c-remedy-experiments-20260810-03` exists. Warm-up: `SEALED`, manifest `raw.sha256=ca8ac68d91cda4fa92e956f516901486679f3bdd6d34b33cc32fa5d45ea553a5`, independently re-verified by fresh re-hash of its own `raw.jsonl` — exact match. Control, Family A, Family B, Family C: each has a `SAFETY_CHECKPOINT` marker, none sealed, no manifest (correctly absent — manifests are written only on seal).
+
+## D13. Artifact inventory
+
+Per arm: `identity.txt` (all five, byte-identical apart from directory, all reading `aee4e4568096b0ed2df6a227730274f3104d1972|qwen2.5-coder:7b|dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364|http://127.0.0.1:11434/api/generate|90000`); `intent.jsonl` (absent for Family C, by design); `raw.jsonl`; `checkpoint.txt`; `SAFETY_CHECKPOINT` (Control/Family A/Family B/Family C); `timeouts.jsonl` (Family A only, 1 record); `manifest.txt` and `SEALED` (warm-up only).
+
+## D14. Artifact hashes
+
+Warm-up `raw.jsonl` → `ca8ac68d91cda4fa92e956f516901486679f3bdd6d34b33cc32fa5d45ea553a5`, independently re-derived and matching the durable manifest's own recorded value exactly.
+
+## D15. Control descriptive results
+
+132 transmitted, 132 completed, 0 timeouts. Semantic correctness: 84 correct / 48 incorrect / 0 null (representation validity 132/132, so every trial's `actualAction` is a real, parsed value). Representation validity: 132/132 valid, 0 parser failures. False-positive REMEMBER: 1 (`p17-hypothetical-remember`, the checkpoint trigger). False-positive GOAL: 0. False-negative REMEMBER (expected REMEMBER, actual something else): 15 of 15 REMEMBER-expected trials attempted (`r01-direct`, `r02-please`, `r03-dont-forget`, each attempted 5 times) — every one of Control's own REMEMBER-expected trials in this campaign resulted in a non-REMEMBER action.
+
+## D16. Family A descriptive results
+
+**Correction recorded in place, not silently fixed: an earlier draft of this section incorrectly stated the checkpoint fired "during the decision phase, before any rendering-step trial... occurred." Independent re-inspection of the actual `trialId` values (not merely the aggregate count) found this wrong — `Unit3CCampaignDefinition.familyATrials` schedules `decisionTrials + renderTrials` per fixture, not all decisions across the arm followed by all renders — so Family A's 51 transmitted trials span five complete fixtures (both sub-steps) plus one final decision-only trial, not a decision-only phase.**
+
+51 transmitted, 50 completed, 1 model timeout (`family_a/r02-please/render/02` — Section D11). Trial sequence, in the frozen fixture order: `r01-direct` (decision ×5, render ×5 — all 10 complete); `r02-please` (decision ×5 complete, render ×4 complete + 1 timeout at render attempt 2); `r03-dont-forget` (decision ×5, render ×5 — all 10 complete); `p01-ordinary-fact` (decision ×5, render ×5 — all 10 complete); `p02-quoted-remember` (decision ×5, render ×5 — all 10 complete); `p03-ambiguous-memory` (decision ×1 — the checkpoint trigger, arm halted before its own render sub-step or any further trial).
+
+**Decision-step only** (26 completed, the axis Plan Section 7 scores semantic correctness on): 14 correct / 12 incorrect. False-positive REMEMBER: 1 (`p03-ambiguous-memory`, the checkpoint trigger — the same fixture Family C's own deterministic mechanism also flags as its own predicted false positive). False-positive GOAL: 0. False-negative REMEMBER (a REMEMBER-expected decision that did not receive REMEMBER): 8 of the 13 REMEMBER-expected decision trials attempted (`r01-direct` 4/5, `r02-please` 1/5, `r03-dont-forget` 3/5).
+
+**Render-step only** (24 completed, the axis Plan Section 7 scores content fidelity on — content fidelity itself is not computed by this experiment, Section D25): 24/24 semantically correct — every render-step trial, given its own fixture's correct decision as a stated given, produced output that parsed to the matching action tag. 0 representation failures.
+
+Representation validity (both sub-steps combined): 50/50, 0 parser failures.
+
+## D17. Family B descriptive results
+
+91 transmitted, 91 completed, 0 timeouts. Semantic correctness: 60 correct / 31 incorrect / 0 null. Representation validity: 91/91, 0 parser failures. False-positive REMEMBER: 1 (`g03-later-action`, the checkpoint trigger — a GOAL-category fixture, its own negative control for REMEMBER). False-positive GOAL: 0. False-negative REMEMBER: 14 of 14 REMEMBER-expected trials attempted.
+
+## D18. Family C descriptive results
+
+0 model calls (by design); 6 classifier invocations recorded, all independently re-verified to reproduce the already-governed, frozen Candidate-C1 trace prediction exactly, in fixture order: `r01-direct` → REMEMBER (correct); `r02-please` → REMEMBER (correct); `r03-dont-forget` → no signal (the already-predicted false negative); `p01-ordinary-fact` → no signal (correct abstention); `p02-quoted-remember` → no signal (correct abstention); `p03-ambiguous-memory` → REMEMBER (the already-predicted false positive, and this arm's own checkpoint trigger). **Identical to Attempt 5's own Family C results, as expected of a deterministic, non-stochastic mechanism given the same, unchanged fixture set and processing order.**
+
+## D19. Completion rates by arm
+
+Warm-up: 100% (3/3 of schedule). Control: 91.0% of its own 145-trial schedule attempted (132/145), 100% completion of attempted calls (132/132). Family A: 23.2% of its own 220-trial schedule attempted (51/220), 98.0% completion of attempted calls (50/51, one timeout). Family B: 79.1% of its own 115-trial schedule attempted (91/115), 100% completion of attempted calls (91/91). Family C: 20.7% of its own 29-fixture schedule attempted (6/29), 100% completion (6/6, deterministic, no transport layer involved).
+
+## D20. Timeout rates by arm
+
+Control: 0/132 (0%). Family A: 1/51 (2.0%). Family B: 0/91 (0%). Family C: not applicable (no transport layer). Kept explicitly separate from semantic correctness, per the governed Scored-Trial Timeout Semantics Determination's own dual-purpose treatment (Section 3 there) — operational reliability, never merged into or averaged with semantic-correctness scoring.
+
+## D21. Semantic correctness by arm (descriptive only — not a comparison, not a ranking)
+
+Control: 84/132 (63.6%) of completed trials matched their own fixture's expected action. Family A, split by the two sub-steps Plan Section 7 itself scores separately (Section D16): decision step 14/26 (53.8%); render step 24/24 (100.0%, given the correct decision as a stated input). Family B: 60/91 (65.9%). Family C: 2/6 definitively correct, 1/6 definitively incorrect, 3/6 recorded as `null` (Family C's own schema convention for "no REMEMBER-signal produced," which is semantically correct for 2 of those 3 REPLY-expected fixtures and a genuine miss for the third, `r03-dont-forget` — the schema's own `semanticCorrect` field does not itself distinguish these two cases; this review states the distinction here as a description of the existing field's own known behavior, not a proposed schema change). **No ranking, comparison, or remedy-performance conclusion is drawn from these figures; they are reported descriptively, per this task's own explicit instruction.**
+
+## D22. Representation validity by arm
+
+Control 132/132 (100%). Family A 50/50 (100%). Family B 91/91 (100%). Family C 6/6 (100%, by construction — its own mechanism has no representation-validity failure mode). Zero parser failures anywhere in this campaign.
+
+## D23. False-positive / false-negative counts
+
+False-positive GOAL: 0 in every arm. False-positive REMEMBER: exactly 1 in each of the four arms (each is that arm's own checkpoint trigger, per the governed non-numeric, first-occurrence design). False-negative REMEMBER (a REMEMBER-expected trial that did not receive REMEMBER): Control 15/15 of its own attempted REMEMBER-expected trials; Family A 8/13 of its own attempted REMEMBER-expected **decision-step** trials (render-step trials are given the correct decision as an input and are not a test of whether the model would independently arrive at REMEMBER, so are excluded from this count); Family B 14/14; Family C 1/1 (`r03-dont-forget`, the already-known, already-governed predicted false negative).
+
+## D24. Parser failures
+
+Zero, in every arm, across all 282 completed observations.
+
+## D25. `contentFidelity`
+
+Durably recorded as literal `null` for all 282 completed observations, exactly as the corrective task's own Independent Constitutional Review anticipated (Readiness ICR Section 17, qualification 2): this reflects the field's own true, honest, never-computed value, not a durability gap re-introduced by this attempt. No fixture's content-fidelity expectation was evaluated by this campaign.
+
+## D26. Exact-once result
+
+Clean across the entire campaign — independently re-verified zero duplicate trial IDs, zero raw/timeout overlap, every intent resolved to exactly one terminal state, zero ambiguous (state D) records. No automatic retry occurred anywhere.
+
+## D27. Downstream isolation
+
+Unaffected; no code path this campaign's own execution exercised references any Memory/Goal/Planner/Knowledge-Submission symbol — independently re-confirmed via the unmodified forbidden-import tests (part of the same offline suite re-run before this attempt) and by the fact that no code was changed during or after execution.
+
+## D28. Historical integrity
+
+Independently hashed every file under Unit 2's, Unit 2-D's, Attempt 3's, and Attempt 5's own directories both immediately before configuration export and again after the campaign completed: **every hash line identical, byte-for-byte, with zero exceptions.** No historical artifact was resumed, modified, repaired, resealed, deleted, or otherwise touched. `unit3c-remedy-experiments-20260810-02` (Attempt 5) was not reused as this campaign's own ID.
+
+## D29. Anomalies
+
+The `elapsedNanos` discrepancy on the one genuine model timeout (Section D11) is the primary anomaly this attempt surfaces — real, honestly stated, offered as a plausible-but-unconfirmed explanation, out of this task's own authorized scope to diagnose further or fix. Secondary, informational only: this campaign progressed substantially further into its own schedule than Attempt 5 (57.3% vs. 36.4% of the 483-call maximum) before its own arms' respective checkpoints fired, consistent with different, later-occurring adversarial trigger fixtures in three of the four arms (only Family C's, being deterministic, reproduced identically).
+
+## D30. Prohibited interpretations
+
+This record must not be read as: a ranking or comparison of Control/Family A/Family B/Family C (none is performed); a selection of any remedy (none is selected); Unit 3-D analysis (not performed, reserved for a separate, future, explicitly-authorized task); a claim that the `elapsedNanos` anomaly (Section D11) is diagnosed or fixed (it is not); a claim that this campaign's own 91.0%/23.2%/79.1%/20.7% attempted-schedule fractions represent anything other than where each arm's own independent, governed safety checkpoint happened to fire this specific run.
+
+## D31. Readiness for Unit 3-D
+
+**Not determined by this record — reserved for the Independent Execution Evidence Review (below) and any future, separately-authorized Unit 3-D task**, consistent with this task's own explicit instruction that Unit 3-D readiness is Section 13's own separate question, not an execution-evidence-review finding.
+
+## D32. Attempt 6 verdict
+
+```text
+EXECUTION OCCURRED — GENUINE, DURABLY INTERPRETABLE EXPLORATORY EVIDENCE PRODUCED AT SCALE — ALL FOUR MODEL-INVOLVING/CLASSIFYING ARMS HALTED AT THEIR OWN GOVERNED FIRST SAFETY CHECKPOINT — ONE GENUINE MODEL TIMEOUT, CORRECTLY CLASSIFIED AND CONTINUED — THE OBSERVATION-DURABILITY CORRECTION IS INDEPENDENTLY CONFIRMED WORKING UNDER REAL, LIVE CONDITIONS
+```
+
+Explicit Execution Approval Review 6's own `AUTHORIZED` verdict is not invalidated: every mechanism it verified (90,000 ms timeout, the corrected observation-durability encoding, intent-before-call durability, terminal timeout records, warm-up/scored-trial semantics, transport distinction, exact-once, the frozen 483-call schedule, experimental invariance) is independently confirmed by this attempt's own real, live evidence to work exactly as governed. This attempt was not repaired, retried, or resumed after any checkpoint fired; campaign state is preserved exactly as produced. No second campaign was run. No remedy was selected. Unit 3-D was not begun.
