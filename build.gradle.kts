@@ -77,7 +77,7 @@ kotlin {
 sourceSets {
     main {
         kotlin {
-            srcDirs("src/contracts", "src/interfaces", "src/runtime", "src/composition")
+            srcDirs("src/contracts", "src/interfaces", "src/runtime", "src/composition", "src/ui")
             exclude(
                 "Agent.kt",
                 "AuditService.kt",
@@ -89,7 +89,7 @@ sourceSets {
     }
     test {
         kotlin {
-            srcDirs("tests/contracts", "tests/runtime", "tests/composition")
+            srcDirs("tests/contracts", "tests/runtime", "tests/composition", "tests/ui")
         }
     }
 }
