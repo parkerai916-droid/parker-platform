@@ -19,4 +19,3 @@ The real factory uses `ParkerRuntimeConfigLoader.load(environment)` and derives 
 ## Verdict
 
 The launcher is a composition root, not a coordinator or alternative runtime path. It adds no Parker authority and preserves the CLI, offline launcher, Compose isolation, and Unit 4 capability boundary.
-

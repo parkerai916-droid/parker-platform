@@ -37,4 +37,3 @@ Existing tests continue to cover blank and concurrent rejection, all disposition
 ## Verdict
 
 The existing implementation is outcome-complete for the Unit 3 contract and now has direct regression evidence for the remaining indirect paths. It is ready for Unit 4 planning.
-

@@ -43,4 +43,3 @@ The adapter belongs under `src/composition`, requires no Compose types, and pres
 ## 9. Stop boundary
 
 Unit 4 stops after adapter implementation, offline verification, completion review, and independent constitutional review. No Unit 5 execution, commit, push, merge, or deployment is authorised.
-

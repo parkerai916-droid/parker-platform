@@ -165,4 +165,3 @@ Native installer/distribution work and upstream publication remain non-blocking 
 ## 23. Exact next step
 
 Request separate authorization to install or configure a Windows-local compatible model service and model, and separate authorization to correct real-mode copy and define safe error presentation. After those prerequisites are resolved and offline gates remain green, repeat this live-verification plan from the same fresh-main baseline. Do not use the Parker server or its Ollama/Qwen endpoint.
-

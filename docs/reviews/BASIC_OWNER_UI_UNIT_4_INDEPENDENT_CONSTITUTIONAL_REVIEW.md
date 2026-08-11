@@ -45,4 +45,3 @@ Ten focused adapter tests and the full 2,054-test offline suite pass with zero f
 ## Independent verdict
 
 PASS. No authority escalation, lifecycle leak, authorship defect, runtime bypass, Compose leak, CLI regression, or experiment interference remains within Unit 4 scope.
-

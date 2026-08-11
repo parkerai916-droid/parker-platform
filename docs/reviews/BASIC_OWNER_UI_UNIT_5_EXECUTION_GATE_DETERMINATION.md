@@ -21,4 +21,3 @@
 ## Gate decision
 
 The Unit 3-C isolation constraint remains active. Every real-execution item is deferred. Unit 5 may complete implementation and offline verification only; it must not claim live end-to-end verification.
-

@@ -90,4 +90,3 @@ The endpoint/model remains external to the UI and separately configured through 
 ## Boundary conclusion
 
 The proposed implementation surface is proportionate: five production files, all in `src/ui`, `ui-desktop`, or the existing UI adapter in `src/composition`; no runtime file outside that boundary. Subject to the qualifications above, implementation does not require new constitutional/runtime governance and may proceed only after a separate implementation authorization.
-

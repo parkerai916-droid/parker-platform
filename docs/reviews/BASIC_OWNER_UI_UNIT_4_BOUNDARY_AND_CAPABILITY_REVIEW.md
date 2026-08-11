@@ -24,4 +24,3 @@ The adapter and bridge are composition code without Compose types. `parker.ui` r
 ## Verdict
 
 The capability shape is narrow enough to prevent access to all other ParkerRuntime public methods by type. No generic runtime facade, semantic judgement, lifecycle ownership, Compose coupling, or real-runtime construction is necessary.
-

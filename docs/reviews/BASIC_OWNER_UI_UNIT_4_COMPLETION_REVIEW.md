@@ -71,4 +71,3 @@ No real runtime/model execution occurred. No HTTP endpoint, Ollama, Qwen, Parker
 ## Verdict
 
 Unit 4 is complete. The adapter exposes exactly one governed conversation submission capability and preserves notification-only reply authorship, offline verification, lifecycle separation, CLI behavior, and Compose isolation.
-

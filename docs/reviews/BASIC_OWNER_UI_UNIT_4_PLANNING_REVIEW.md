@@ -25,4 +25,3 @@ It will never hold a `ParkerRuntime` reference. This makes every non-conversatio
 ## Notification/lifecycle determination
 
 The bridge temporarily binds the one active UI reply receiver while submission is in flight. This follows the frozen single-flight rule and does not add correlation to `OwnerNotificationSink`. The adapter neither starts nor stops ParkerRuntime. A real graphical runtime launcher is deferred to Unit 5 because it adds lifecycle/configuration wiring that Unit 4 may not execute end to end.
-

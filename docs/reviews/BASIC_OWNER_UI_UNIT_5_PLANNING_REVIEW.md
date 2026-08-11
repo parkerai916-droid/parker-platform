@@ -17,4 +17,3 @@ The existing root `Main.kt`, offline launcher, runtime internals, adapter contra
 ## Launcher location
 
 The real graphical entry point belongs in `ui-desktop` because only that isolated subproject may own Compose types. Its runtime factory belongs in `parker.composition`, where configuration and ParkerRuntime construction already belong. The existing one-way desktop-to-root dependency supports this without moving Compose into Parker core.
-

@@ -91,4 +91,3 @@ These steps require separate explicit authorization after Unit 3-C isolation is 
 ## Verdict
 
 Unit 5 implementation and all safe offline verification are complete. Live graphical end-to-end verification remains explicitly deferred and unclaimed.
-

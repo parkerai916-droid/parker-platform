@@ -13,4 +13,3 @@
 ## Verdict
 
 Approved. The scope lock exposes the minimum composition capability and fully supports offline Unit 4 verification.
-

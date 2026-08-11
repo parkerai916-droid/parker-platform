@@ -19,4 +19,3 @@
 ## Change budget
 
 No production-code change is authorized unless focused evidence reveals a genuine Unit 3 defect. The expected change set is tests and governance documentation only.
-

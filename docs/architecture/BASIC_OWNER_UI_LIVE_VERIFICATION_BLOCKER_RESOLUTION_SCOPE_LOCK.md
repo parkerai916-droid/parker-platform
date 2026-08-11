@@ -209,4 +209,3 @@ Live verification may not be retried until all are true:
 This lock does not authorize implementation, endpoint provisioning, model choice, live verification, runtime/error/logging redesign, new UI features, production reasoning changes, Memory/Goal/Planner/Knowledge/tool changes, Unit 3-C work, remedy work, merge, deployment, commit, or push.
 
 Stop after the Scope Lock, focused Boundary Review, and independent review.
-

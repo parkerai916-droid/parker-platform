@@ -15,4 +15,3 @@ Approved. The lock is narrower than the requested behavioural surface because in
 ## Verdict
 
 The scope is coherent, minimal, reversible, and constitutionally safe. Proceed with verification-only implementation.
-
