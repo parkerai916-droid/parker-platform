@@ -1,7 +1,7 @@
 # Basic Owner UI Post-Experiment Reconciliation and Live-Verification Planning Review
 
-Date: 2026-08-11 (Pacific/Auckland)  
-Scope: Windows development checkout inspection and planning only  
+Date: 2026-08-11 (Pacific/Auckland)
+Scope: Windows development checkout inspection and planning only
 Repository: `parkerai916-droid/parker-platform`
 
 ## 1. Windows environment confirmation

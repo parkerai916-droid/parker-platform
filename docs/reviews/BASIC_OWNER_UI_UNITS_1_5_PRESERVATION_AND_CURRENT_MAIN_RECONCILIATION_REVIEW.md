@@ -1,7 +1,7 @@
 # Basic Owner UI Units 1–5 Preservation and Current-Main Reconciliation Review
 
-Date: 2026-08-11 (Pacific/Auckland)  
-Repository: `parkerai916-droid/parker-platform`  
+Date: 2026-08-11 (Pacific/Auckland)
+Repository: `parkerai916-droid/parker-platform`
 Scope: Windows preservation, current-main reconciliation, and offline verification only
 
 ## 1. Windows environment
