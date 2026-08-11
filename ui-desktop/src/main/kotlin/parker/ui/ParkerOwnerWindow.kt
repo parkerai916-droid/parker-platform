@@ -49,14 +49,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun ParkerOwnerWindow(controller: OwnerUiController) {
+fun ParkerOwnerWindow(
+    controller: OwnerUiController,
+    presentationMode: OwnerWindowPresentationMode,
+) {
     val state by controller.state.collectAsState()
-    ParkerOwnerWindowContent(state = state, onSubmit = controller::submit)
+    ParkerOwnerWindowContent(
+        state = state,
+        presentationMode = presentationMode,
+        onSubmit = controller::submit,
+    )
 }
 
 @Composable
 internal fun ParkerOwnerWindowContent(
     state: OwnerUiState,
+    presentationMode: OwnerWindowPresentationMode,
     onSubmit: (String) -> OwnerSubmissionAttempt,
 ) {
     var draft by remember { mutableStateOf("") }
@@ -79,11 +87,11 @@ internal fun ParkerOwnerWindowContent(
     ParkerTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = ParkerBackground) {
             Column(modifier = Modifier.fillMaxSize()) {
-                ParkerHeader(state.status)
+                ParkerHeader(state.status, presentationMode)
                 Divider(color = Color.White.copy(alpha = 0.08f))
 
                 if (state.transcript.isEmpty()) {
-                    EmptyConversation(modifier = Modifier.weight(1f))
+                    EmptyConversation(presentationMode, modifier = Modifier.weight(1f))
                 } else {
                     LazyColumn(
                         state = listState,
@@ -159,7 +167,7 @@ internal fun ParkerOwnerWindowContent(
 }
 
 @Composable
-private fun ParkerHeader(status: OwnerUiStatus) {
+private fun ParkerHeader(status: OwnerUiStatus, presentationMode: OwnerWindowPresentationMode) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -172,7 +180,7 @@ private fun ParkerHeader(status: OwnerUiStatus) {
         }
         Column(modifier = Modifier.padding(start = 12.dp)) {
             Text("Parker", style = MaterialTheme.typography.h6, fontWeight = FontWeight.SemiBold)
-            Text("Owner conversation · local offline preview", color = ParkerMuted, fontSize = 12.sp)
+            Text(ownerConversationHeader(presentationMode), color = ParkerMuted, fontSize = 12.sp)
         }
         Spacer(Modifier.weight(1f))
         StatusPill(status)
@@ -198,12 +206,15 @@ private fun StatusPill(status: OwnerUiStatus) {
 }
 
 @Composable
-private fun EmptyConversation(modifier: Modifier = Modifier) {
+private fun EmptyConversation(
+    presentationMode: OwnerWindowPresentationMode,
+    modifier: Modifier = Modifier,
+) {
     Box(modifier.fillMaxWidth().fillMaxHeight(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("Start a conversation", fontSize = 22.sp, fontWeight = FontWeight.Medium)
             Text(
-                "Messages in this preview use Parker’s deterministic offline interaction.",
+                ownerConversationEmptyState(presentationMode),
                 modifier = Modifier.padding(top = 8.dp).widthIn(max = 440.dp),
                 color = ParkerMuted,
                 textAlign = TextAlign.Center,

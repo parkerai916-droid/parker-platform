@@ -35,6 +35,6 @@ fun main() = application {
         title = "Parker",
         state = WindowState(width = 980.dp, height = 720.dp),
     ) {
-        ParkerOwnerWindow(controller)
+        ParkerOwnerWindow(controller, OwnerWindowPresentationMode.OFFLINE_PREVIEW)
     }
 }

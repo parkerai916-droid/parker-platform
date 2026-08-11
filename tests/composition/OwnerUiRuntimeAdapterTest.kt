@@ -75,35 +75,47 @@ class OwnerUiRuntimeAdapterTest {
     }
 
     @Test
-    fun `NotAccepted preserves reason`() = runTest {
-        val disposition = adapter { ParkerRuntimeOutcome.NotAccepted("sender does not resolve") }
+    fun `NotAccepted replaces arbitrary reason with fixed owner-safe status`() = runTest {
+        val rawReason = "sender does not resolve at C:\\secret\\identity.json endpoint model=qwen"
+        val disposition = adapter { ParkerRuntimeOutcome.NotAccepted(rawReason) }
             .submit("hello") {}
 
-        assertEquals(OwnerSubmissionDisposition.NotAccepted("sender does not resolve"), disposition)
+        assertEquals(
+            OwnerSubmissionDisposition.NotAccepted("Parker did not accept this message."),
+            disposition,
+        )
+        assertTrue(rawReason !in disposition.toString())
     }
 
     @Test
-    fun `Failed preserves stage and available message`() = runTest {
+    fun `reasoning failure replaces arbitrary cause with fixed owner-safe status`() = runTest {
+        val rawMessage = "POST http://127.0.0.1:11434/api/generate returned raw provider response"
         val disposition = adapter {
-            ParkerRuntimeOutcome.Failed(PipelineStage.REASONING, IllegalStateException("model unavailable"))
+            ParkerRuntimeOutcome.Failed(PipelineStage.REASONING, IllegalStateException(rawMessage))
         }.submit("hello") {}
 
         assertEquals(
-            OwnerSubmissionDisposition.Failed("REASONING", "model unavailable"),
+            OwnerSubmissionDisposition.Failed(
+                "REASONING",
+                "Parker could not complete reasoning for this message.",
+            ),
             disposition,
         )
+        assertTrue(rawMessage !in disposition.toString())
     }
 
     @Test
-    fun `Failed without a cause message uses fixed presentation-safe fallback`() = runTest {
+    fun `unknown failure replaces filesystem credential and exception detail`() = runTest {
+        val rawMessage = "/srv/parker/private/token.txt credential=secret model=qwen raw=NOACTION"
         val disposition = adapter {
-            ParkerRuntimeOutcome.Failed(PipelineStage.UNKNOWN, object : RuntimeException() {})
+            ParkerRuntimeOutcome.Failed(PipelineStage.UNKNOWN, IllegalStateException(rawMessage))
         }.submit("hello") {}
 
         assertEquals(
-            OwnerSubmissionDisposition.Failed("UNKNOWN", "Parker Runtime failed without a message"),
+            OwnerSubmissionDisposition.Failed("UNKNOWN", "Parker could not complete this message."),
             disposition,
         )
+        assertTrue(rawMessage !in disposition.toString())
     }
 
     @Test

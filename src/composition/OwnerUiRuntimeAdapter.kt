@@ -95,11 +95,14 @@ class OwnerUiRuntimeAdapter(
         is ParkerRuntimeOutcome.Delivered ->
             OwnerSubmissionDisposition.Delivered(outcome.executionResult.status.name)
         is ParkerRuntimeOutcome.NotAccepted ->
-            OwnerSubmissionDisposition.NotAccepted(outcome.reason)
+            OwnerSubmissionDisposition.NotAccepted("Parker did not accept this message.")
         is ParkerRuntimeOutcome.Failed ->
             OwnerSubmissionDisposition.Failed(
                 stage = outcome.stage.name,
-                safeMessage = outcome.cause.message ?: "Parker Runtime failed without a message",
+                safeMessage = when (outcome.stage) {
+                    PipelineStage.REASONING -> "Parker could not complete reasoning for this message."
+                    else -> "Parker could not complete this message."
+                },
             )
         is ParkerRuntimeOutcome.Planned ->
             OwnerSubmissionDisposition.Planned(planningResultCategory(outcome.outcome))

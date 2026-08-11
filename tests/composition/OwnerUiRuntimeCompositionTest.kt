@@ -88,6 +88,11 @@ class OwnerUiRuntimeCompositionTest {
         assertTrue("runOfflineOwnerUi" in desktopBuild)
         assertTrue("parker.ui.OfflineOwnerUiMainKt" in desktopBuild)
         assertTrue("createOwnerUiRuntimeSession(System.getenv())" in realLauncher)
+        assertTrue(
+            "ParkerOwnerWindow(state.controller, OwnerWindowPresentationMode.PARKER_RUNTIME)" in realLauncher,
+        )
+        assertTrue("Starting Parker Runtime..." in realLauncher)
+        assertTrue("Parker could not start" in realLauncher)
         assertTrue("ParkerRuntime" !in offlineLauncher)
         assertTrue("OwnerUiMain" !in main)
         assertTrue("mainClass.set(\"parker.composition.MainKt\")" in File("build.gradle.kts").readText())
@@ -115,6 +120,7 @@ class OwnerUiRuntimeCompositionTest {
         assertTrue("ModuleId(config.localTextChannelModuleId)" in composition)
         assertTrue("submitOwnerMessage = runtime::submitOwnerMessage" in composition)
         assertTrue("OwnerUiController(result.interaction)" in launcher)
+        assertTrue("OwnerWindowPresentationMode.PARKER_RUNTIME" in launcher)
         assertTrue(forbiddenLauncherTerms.none { it in launcher })
         assertTrue("runtime.start()" !in adapter && "runtime.shutdown()" !in adapter)
         assertTrue("androidx.compose" !in composition && "androidx.compose" !in adapter)

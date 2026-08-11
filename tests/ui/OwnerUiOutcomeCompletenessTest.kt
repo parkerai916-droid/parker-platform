@@ -14,7 +14,7 @@ class OwnerUiOutcomeCompletenessTest {
     fun `sequential submissions preserve transcript order after terminal cleanup`() = runTest {
         val interaction = OfflineOwnerInteraction(
             listOf(
-                OfflineOwnerScenario.NotAccepted("first reason"),
+                OfflineOwnerScenario.NotAccepted("Parker did not accept this message."),
                 OfflineOwnerScenario.Planned("Completed"),
             ),
         )
@@ -31,7 +31,7 @@ class OwnerUiOutcomeCompletenessTest {
         assertEquals(
             listOf(
                 OwnerTranscriptEntry.Owner("first"),
-                OwnerTranscriptEntry.System("Not accepted: first reason"),
+                OwnerTranscriptEntry.System("Not accepted: Parker did not accept this message."),
                 OwnerTranscriptEntry.Owner("second"),
                 OwnerTranscriptEntry.System("Planned: Completed"),
             ),
@@ -46,7 +46,10 @@ class OwnerUiOutcomeCompletenessTest {
         val controller = OwnerUiController(
             OfflineOwnerInteraction(
                 listOf(
-                    OfflineOwnerScenario.Failed("REASONING", "safe failure"),
+                    OfflineOwnerScenario.Failed(
+                        "REASONING",
+                        "Parker could not complete reasoning for this message.",
+                    ),
                     OfflineOwnerScenario.Delivered(),
                 ),
             ),
@@ -66,7 +69,9 @@ class OwnerUiOutcomeCompletenessTest {
         assertEquals(
             listOf(
                 OwnerTranscriptEntry.Owner("first"),
-                OwnerTranscriptEntry.System("Failed (REASONING): safe failure"),
+                OwnerTranscriptEntry.System(
+                    "Failed (REASONING): Parker could not complete reasoning for this message.",
+                ),
                 OwnerTranscriptEntry.Owner("retry"),
             ),
             controller.state.value.transcript,

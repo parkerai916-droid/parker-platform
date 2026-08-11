@@ -8,6 +8,37 @@ import kotlin.test.assertTrue
 class OwnerWindowPresentationTest {
 
     @Test
+    fun `closed presentation modes provide exact truthful copy`() {
+        assertEquals(
+            "Owner conversation · deterministic offline preview",
+            ownerConversationHeader(OwnerWindowPresentationMode.OFFLINE_PREVIEW),
+        )
+        assertEquals(
+            "Messages in this preview use Parker’s deterministic offline interaction.",
+            ownerConversationEmptyState(OwnerWindowPresentationMode.OFFLINE_PREVIEW),
+        )
+        assertEquals(
+            "Owner conversation · Parker Runtime",
+            ownerConversationHeader(OwnerWindowPresentationMode.PARKER_RUNTIME),
+        )
+        assertEquals(
+            "Messages are submitted through the local Parker Runtime.",
+            ownerConversationEmptyState(OwnerWindowPresentationMode.PARKER_RUNTIME),
+        )
+        assertEquals(2, OwnerWindowPresentationMode.entries.size)
+    }
+
+    @Test
+    fun `presentation copy makes no model server provider or production claim`() {
+        val copy = OwnerWindowPresentationMode.entries.flatMap {
+            listOf(ownerConversationHeader(it), ownerConversationEmptyState(it))
+        }.joinToString(" ").lowercase()
+
+        listOf("model", "server", "provider", "production", "qwen", "ollama", "unit 3-c", "remedy")
+            .forEach { forbidden -> assertFalse(forbidden in copy) }
+    }
+
+    @Test
     fun `typed transcript authorship maps directly to three distinct presentation roles`() {
         assertEquals(TranscriptPresentationRole.OWNER, presentationRole(OwnerTranscriptEntry.Owner("owner")))
         assertEquals(TranscriptPresentationRole.PARKER, presentationRole(OwnerTranscriptEntry.Parker("parker")))

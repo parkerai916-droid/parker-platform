@@ -13,7 +13,8 @@ class OfflineOwnerUiLauncherIsolationTest {
 
         assertTrue("OfflineOwnerInteraction(" in source)
         assertTrue("OwnerUiController(interaction)" in source)
-        assertTrue("ParkerOwnerWindow(controller)" in source)
+        assertTrue("ParkerOwnerWindow(controller, OwnerWindowPresentationMode.OFFLINE_PREVIEW)" in source)
+        assertTrue("OwnerWindowPresentationMode.PARKER_RUNTIME" !in source)
 
         listOf(
             "ParkerRuntime",

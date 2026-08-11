@@ -7,6 +7,26 @@ enum class TranscriptPresentationRole {
     SYSTEM,
 }
 
+/** Selects copy only; it carries no runtime capability or health information. */
+enum class OwnerWindowPresentationMode {
+    OFFLINE_PREVIEW,
+    PARKER_RUNTIME,
+}
+
+fun ownerConversationHeader(mode: OwnerWindowPresentationMode): String = when (mode) {
+    OwnerWindowPresentationMode.OFFLINE_PREVIEW ->
+        "Owner conversation · deterministic offline preview"
+    OwnerWindowPresentationMode.PARKER_RUNTIME ->
+        "Owner conversation · Parker Runtime"
+}
+
+fun ownerConversationEmptyState(mode: OwnerWindowPresentationMode): String = when (mode) {
+    OwnerWindowPresentationMode.OFFLINE_PREVIEW ->
+        "Messages in this preview use Parker’s deterministic offline interaction."
+    OwnerWindowPresentationMode.PARKER_RUNTIME ->
+        "Messages are submitted through the local Parker Runtime."
+}
+
 fun presentationRole(entry: OwnerTranscriptEntry): TranscriptPresentationRole = when (entry) {
     is OwnerTranscriptEntry.Owner -> TranscriptPresentationRole.OWNER
     is OwnerTranscriptEntry.Parker -> TranscriptPresentationRole.PARKER

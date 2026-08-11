@@ -79,9 +79,9 @@ class OwnerUiControllerTest {
     }
 
     @Test
-    fun `NotAccepted is system status preserving reason`() = runTest {
+    fun `owner-safe NotAccepted status remains System text`() = runTest {
         val controller = OwnerUiController(
-            OfflineOwnerInteraction(listOf(OfflineOwnerScenario.NotAccepted("sender does not resolve"))),
+            OfflineOwnerInteraction(listOf(OfflineOwnerScenario.NotAccepted("Parker did not accept this message."))),
             coroutineContext,
         )
 
@@ -90,14 +90,21 @@ class OwnerUiControllerTest {
 
         assertTrue(controller.state.value.transcript.none { it is OwnerTranscriptEntry.Parker })
         assertTrue(controller.state.value.transcript.filterIsInstance<OwnerTranscriptEntry.System>()
-            .any { it.text == "Not accepted: sender does not resolve" })
+            .any { it.text == "Not accepted: Parker did not accept this message." })
         assertEquals(OwnerUiStatus.READY, controller.state.value.status)
     }
 
     @Test
-    fun `Failed preserves stage and safe message as system status`() = runTest {
+    fun `owner-safe failure remains System text`() = runTest {
         val controller = OwnerUiController(
-            OfflineOwnerInteraction(listOf(OfflineOwnerScenario.Failed("REASONING", "model unavailable"))),
+            OfflineOwnerInteraction(
+                listOf(
+                    OfflineOwnerScenario.Failed(
+                        "REASONING",
+                        "Parker could not complete reasoning for this message.",
+                    ),
+                ),
+            ),
             coroutineContext,
         )
 
@@ -106,7 +113,7 @@ class OwnerUiControllerTest {
 
         assertTrue(controller.state.value.transcript.none { it is OwnerTranscriptEntry.Parker })
         assertTrue(controller.state.value.transcript.filterIsInstance<OwnerTranscriptEntry.System>()
-            .any { it.text == "Failed (REASONING): model unavailable" })
+            .any { it.text == "Failed (REASONING): Parker could not complete reasoning for this message." })
         assertEquals(OwnerUiStatus.ERROR, controller.state.value.status)
         assertFalse(controller.state.value.submissionActive)
     }

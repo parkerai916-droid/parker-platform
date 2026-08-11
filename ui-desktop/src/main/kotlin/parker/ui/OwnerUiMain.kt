@@ -83,7 +83,8 @@ fun main() = application {
     ) {
         when (val state = launchState) {
             is OwnerUiLaunchState.Starting -> OwnerUiStarting()
-            is OwnerUiLaunchState.Ready -> ParkerOwnerWindow(state.controller)
+            is OwnerUiLaunchState.Ready ->
+                ParkerOwnerWindow(state.controller, OwnerWindowPresentationMode.PARKER_RUNTIME)
             is OwnerUiLaunchState.Failed -> OwnerUiStartupFailure(state.safeMessage)
         }
     }
