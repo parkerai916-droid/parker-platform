@@ -2555,9 +2555,17 @@ own submissions).
 
 ### 54. `KnowledgeSubmission.submit` cannot resolve, and therefore cannot promote, any candidate in the live, composed runtime, for any caller
 
-**Status: Open. Newly discovered, not yet closed. Highest-priority open
-governance work** -- full record, root-cause trace, blast radius, and
-requirements a resolution must satisfy:
+**Status: Memory Retrieval Operationalisation RESOLVED.** Closed by
+`docs/reviews/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_OPERATIONALISATION_PROGRAMME_CLOSURE_DETERMINATION.md`
+("GAP #54 MEMORY RETRIEVAL OPERATIONALISATION: COMPLETE"), following
+accepted Units 1-5 of
+`docs/implementation/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_OPERATIONALISATION_IMPLEMENTATION_PLAN.md`
+and their respective Completion Reviews and Independent Constitutional
+Reviews (`docs/reviews/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_OPERATIONALISATION_UNIT_5_COMPLETION_REVIEW.md`,
+`PASS`; `docs/reviews/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_OPERATIONALISATION_UNIT_5_INDEPENDENT_CONSTITUTIONAL_REVIEW.md`, `ACCEPTED`).
+Full original root-cause trace, discovery context, blast radius, and
+requirements the resolution was required to satisfy remain the
+historical governance record:
 `docs/architecture/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_GATING_BLOCKER.md`.
 
 `DefaultKnowledgeCandidateEvaluator`, as actually composed in
@@ -2571,6 +2579,9 @@ target resource type to be a member of that set -- an empty set can never
 contain any member, so every retrieval this decorator issues is denied,
 regardless of Action Vocabulary registration, regardless of who is
 asking, and regardless of whether the referenced record genuinely exists.
+This remains an accurate description of the mechanism's default,
+fail-closed behaviour; it is no longer an accurate description of the
+outcome for every caller -- see "Resolution," below.
 
 Discovered by the Parker Conversational Memory Bridge, Admission Unit's
 own mandatory live, end-to-end verification -- the first time this path
@@ -2584,21 +2595,55 @@ independently correct and fully tested in isolation
 (`docs/reviews/CONVERSATIONAL_MEMORY_ADMISSION_INDEPENDENT_CONSTITUTIONAL_REVIEW.md`,
 `ACCEPTED`).
 
-**Blocks:** Knowledge Memory's own promotion pipeline (`KnowledgeSubmission.submit`,
-every caller); Evidence Intelligence's own knowledge dispatch in
-principle (additionally gated today by a separate, disclosed issue --
-`EvidenceAnalysisResult.CandidateRecordProduced` is declared but never
-constructed anywhere in `src/`, so this path is not independently
-confirmed reachable in production for a distinct reason, not
-investigated further here); the Parker Conversational Memory Bridge,
-Admission Unit (confirmed blocked, live); any future Conversational
-Memory Bridge Retrieval Unit (transitively blocked -- nothing would be
-promoted for it to retrieve).
-
-Investigated directly for a narrow, in-scope fix; none exists without
+Investigated directly for a narrow, in-scope fix; none existed without
 altering `DefaultPermissionPolicy`, `ActionMapper`, or Memory Core's own
 Resource-representation choice (Errata 004) -- each a genuine,
 Contract-Design-tier architectural change to frozen Trust Framework
 components, not an implementation-tier patch. See the linked blocker
 document's own Section 6 for the full trace and Section 7 for the
-requirements a future resolution must satisfy.
+requirements the resolution below was required to satisfy.
+
+**Resolution, as actually implemented and independently verified:** a
+governed Authorization Purpose dimension
+(`docs/architecture/TRUST_FRAMEWORK_AUTHORIZATION_PURPOSE_PROGRAMME.md`)
+now lets `PermissionFilteredMemoryRetrieval` resolve `memory.retrieve`/
+`memory.retrieve_document` for a purpose-bound caller
+(`PermissionFilteredMemoryRetrieval.forAuthorizationPurpose`) without
+registering Memory Core records as Resource Registry entries -- exactly
+the Contract-Design-tier change Section 6/7 of the blocker document
+above anticipated would be required. `DefaultKnowledgeCandidateEvaluator`
+now genuinely resolves evidence and promotes a `KnowledgeItem` into
+`InMemoryKnowledgeItemPersistence` for a real, composed owner Remember
+instruction bound to the `knowledge-memory.candidate-evaluation`
+Authorization Purpose, while `EvidenceIntelligenceInputResolver`'s own
+retrieval (bound to `evidence-intelligence.input-resolution`) remains
+correctly, provably denied -- Evidence Intelligence's candidate
+authority was not widened as a side effect.
+
+**Blocks, as resolved:** Knowledge Memory's own promotion pipeline
+(`KnowledgeSubmission.submit`) is no longer blocked for the
+registered-owner, explicit-instruction case; the Parker Conversational
+Memory Bridge, Admission Unit is no longer blocked, live -- both
+superseding the original finding above. Evidence Intelligence's own
+knowledge dispatch remains additionally gated by the separate, disclosed
+issue that `EvidenceAnalysisResult.CandidateRecordProduced` is declared
+but never constructed anywhere in `src/`, so this path remains not
+independently confirmed reachable in production, for the same distinct
+reason, unchanged and not investigated further here. Any future
+Conversational Memory Bridge Retrieval Unit remains blocked -- no longer
+by this gap's own promotion failure, but by the discoverability/
+Reasoning-Context-consumption exclusions named immediately below.
+
+**Explicitly still outside this gap's resolution -- not claimed, not
+implemented:** discoverability of a promoted `KnowledgeItem` by its own
+content; injection of promoted Knowledge into `ReasoningContext`; any
+conversational recall of a remembered proposition; and durability of
+`KnowledgeItem` persistence across a runtime restart
+(`InMemoryKnowledgeItemPersistence` remains a plain, non-durable,
+runtime-lifetime map). **Parker does not currently have conversational
+memory recall.** This remaining work is already, separately identified
+as future governed work by
+`docs/reviews/TRUST_FRAMEWORK_MEMORY_RETRIEVAL_OPERATIONALISATION_PROGRAMME_CLOSURE_DETERMINATION.md`
+Section 5 ("Knowledge discoverability and governed retrieval into
+Reasoning Context") -- not given its own gap number or programme
+identity by this entry.
