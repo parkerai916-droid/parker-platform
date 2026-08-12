@@ -18,6 +18,19 @@ Review or Contract Design. Gap #54 is complete and is not reopened.
 
 ---
 
+**Amendment Note (Timing Scope Correction).** Independent Contract Design review found that
+Section 6's original, absolute "prevents... timing from becoming observable" wording conflicted
+with this same section's own "passes the act-level authorization gate before any persistence
+inspection occurs" requirement: act denial and an authorized retrieval necessarily perform
+different amounts of work, and therefore can honestly differ in elapsed wall-clock time, in any
+in-process architecture this repository has ever built. This amendment narrows only the timing
+claim (Section 6, below); it does not weaken the content, match-existence, result-count,
+authorization, Purpose, or Memory Core non-disclosure guarantees Section 6 and Section 8 already
+fix, all of which remain unchanged. Gap #54 remains complete and is not reopened by this
+amendment. No implementation is introduced by this amendment.
+
+---
+
 ## 1. Governing Context
 
 Documents read fresh, in full or in every relevant section, for this
@@ -237,11 +250,28 @@ that:
   existing Unit 9.4 behaviour);
 - resolves referenced Memory Core evidence through a governed path
   before content relevance can be evaluated at all;
-- prevents denied content, match existence, result counts, or timing
-  from becoming observable to an unauthorised caller;
+- prevents denied content, match existence, or result counts from
+  becoming observable to an unauthorised caller, and prevents any
+  explicit timing metadata or deliberately encoded timing signal from
+  doing so — the wall-clock-latency component of this requirement is
+  narrowed by amendment, immediately below;
 - applies item-level Knowledge Retrieval authorization and result
   bounds (`KnowledgeRetrievalQuery.maximumResults`) in an explicitly
   justified order, not an incidental one.
+
+**Timing scope, narrowed by amendment.** Elapsed wall-clock latency can
+honestly vary between act denial, authorized-empty retrieval, candidate
+filtering, and evidence resolution, because each performs a genuinely
+different amount of work. Current in-process architecture provides no
+constant-time execution or padding mechanism, and this Planning Review
+does not authorise adding one. The absence of explicit timing metadata
+in a result does not, by itself, eliminate an observer's ability to
+measure how long a call took — that variance is an accepted and
+explicitly disclosed limitation of this first same-runtime retrieval
+programme, never a concealed one. This programme must not claim
+resistance to active timing analysis. Adding constant-time padding,
+batching, or other timing-channel mitigation would require separate
+governance and is not authorised here.
 
 This Planning Review does not adopt a final ordering for any of the
 above.
