@@ -20,6 +20,19 @@ a Contract Design. Gap #54 remains complete and is not reopened.
 
 ---
 
+**Amendment Note (Timing Scope Correction).** Independent Contract Design review found that
+Section 6's original, absolute "timing must not leak unauthorized knowledge" wording conflicted
+with this same section's own "act-level authorization occurs before persistence inspection"
+requirement: act denial and an authorized retrieval necessarily perform different amounts of work,
+and therefore can honestly differ in elapsed wall-clock time, in any in-process architecture this
+repository has ever built. This amendment narrows only the timing claim (Section 6, below); it does
+not weaken the content, identity, count, match, denial-detail, authorization, Purpose, or Memory
+Core non-disclosure guarantees Section 6 already fixes, all of which remain unchanged. Gap #54
+remains complete and is not reopened by this amendment. No implementation is introduced by this
+amendment.
+
+---
+
 ## 1. Governing Input
 
 This Boundary Review's sole governing input is
@@ -170,13 +183,33 @@ programme adds; it does not describe, replace, or reorder the write path.
   read flow may inspect, enumerate, or reason about candidate `KnowledgeItem`s,
   referenced Memory Core content, or any other persisted state before the calling
   principal's act-level authorization for the governed retrieval verb is established.
-- **Content, match existence, counts, identifiers, denial reasons, and timing must
-  not leak unauthorized knowledge.** No stage of the read flow, and no error, denial,
+- **Content, match existence, counts, identifiers, and denial reasons must not leak
+  unauthorized knowledge; explicit timing metadata and deliberately encoded timing
+  signals must not either.** No stage of the read flow, and no error, denial,
   empty-result, or partial-result path through it, may allow an unauthorized caller
-  to infer the existence, content, count, identity, or resolution timing of
-  knowledge it is not authorized to see. This restates, without weakening, the
-  "evaluate before disclose" discipline `PermissionFilteredMemoryRetrieval` already
-  establishes (Planning Review Section 6).
+  to infer the existence, content, count, identity, or denial reason of knowledge it
+  is not authorized to see, or to have a deliberate delay, count, or signal encode
+  that same protected state. This restates, without weakening, the "evaluate before
+  disclose" discipline `PermissionFilteredMemoryRetrieval` already establishes
+  (Planning Review Section 6). Ordinary elapsed wall-clock latency is addressed
+  separately, immediately below, and is not absolutely prohibited from varying.
+- **Timing scope, narrowed by amendment.** Elapsed wall-clock latency can honestly
+  vary between act denial, authorized-empty retrieval, candidate filtering, and
+  Memory Core evidence resolution, because each performs a genuinely different
+  amount of work — no in-process architecture this repository has built provides
+  constant-time execution or artificial padding, and this Boundary Review does not
+  authorise adding one. The absence of explicit timing metadata in a result does
+  not, by itself, eliminate an observer's ability to measure how long a call took;
+  that limitation is accepted and explicitly disclosed, never concealed. This
+  programme must not claim resistance to active timing analysis, and Contract
+  Design must not claim wall-clock latency is structurally indistinguishable across
+  these paths. Contract Design must instead: prevent explicit timing metadata and
+  deliberately encoded timing signals from crossing this boundary; disclose
+  naturally variable execution latency honestly; and confine verification to
+  proving the absence of explicit timing fields and deliberate timing encoding,
+  never to proving constant-time behaviour from an ordinary elapsed-time threshold.
+  Adding constant-time padding, batching, or other timing-channel mitigation is a
+  distinct, separately governed decision, not authorised here.
 - **Item-level visibility remains independently governed.** Passing act-level
   authorization for the retrieval verb does not itself authorize visibility of any
   specific `KnowledgeItem` or its referenced content. Item-level visibility is a
@@ -371,6 +404,13 @@ twelfth item.
   without explicit upstream authorization.
 - Halt if live verification cannot inspect real `ReasoningContext` entries
   or the real assembled model prompt.
+- Halt if implementation introduces an intentional timing signal, a deliberate
+  delay, or explicit protected-state timing metadata — never merely because
+  authorized and denied paths naturally perform different amounts of work and
+  therefore take different amounts of time.
+- Halt if any review claims constant-time execution or resistance to timing
+  analysis without a separately governed mitigation mechanism and its own,
+  matching verification.
 
 ---
 
