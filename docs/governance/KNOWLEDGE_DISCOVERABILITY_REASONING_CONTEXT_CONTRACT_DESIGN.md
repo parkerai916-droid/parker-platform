@@ -456,7 +456,8 @@ private fun escapeForPrompt(normalized: String): String = buildString {
             c == '\n' -> append("\\n")
             c == '\r' -> append("\\r")
             c == '\t' -> append("\\t")
-            c.code <= 0x1F || c.code == 0x7F || c.code in 0x80..0x9F -> append("\\u" + c.code.toString(16).uppercase().padStart(4, '0'))
+            c.code <= 0x1F || c.code == 0x7F || c.code in 0x80..0x9F || c.code == 0x2028 || c.code == 0x2029 ->
+                append("\\u" + c.code.toString(16).uppercase().padStart(4, '0'))
             else -> append(c)
         }
     }
@@ -470,15 +471,29 @@ private fun renderKnowledgeEntry(entry: SafeKnowledgeResultEntry): String =
 Fixed field order: `content` (escaped), then `evidentialState`, then `status`, then `staleness`. Enum values
 render via Kotlin's own stable, unlocalized `.name` property, never a phrased or translated string --
 `evidentialState`/`status`/`staleness` therefore never vary by platform locale. Escaping covers, at minimum,
-backslash, LF, CR, TAB, every remaining C0 control character (`0x00`-`0x1F`), DEL (`0x7F`), and every C1
-control character (`0x80`-`0x9F`), each as a deterministic, zero-padded, four-hex-digit `\uXXXX` form except
-the four two-character forms named explicitly above. Because every LF, CR, and other control character
-`content` could carry is escaped to a literal, non-control character sequence before it ever reaches
-`ReasoningContext.entries`, no authorized proposition's own text can inject an additional prompt entry or an
-additional structural line -- each rendered `String` remains exactly one line, always, by construction. This
-replaces today's `memorySource.recall(memoryQuery).forEach { ... }` block
+backslash, LF, CR, TAB, every remaining C0 control character (`0x00`-`0x1F`), DEL (`0x7F`), every C1 control
+character (`0x80`-`0x9F`), **Unicode LINE SEPARATOR `U+2028`, and Unicode PARAGRAPH SEPARATOR `U+2029`** --
+neither of the latter two is a C0/C1 control character, so both require their own explicit, named coverage
+here, never left to fall under the control-character range alone. Every one of these escapes to a
+deterministic, zero-padded, four-hex-digit `\uXXXX` form -- literally `\u2028` and `\u2029` for the two named
+above -- except the four two-character forms named explicitly above. Because every LF, CR, `U+2028`, `U+2029`,
+and other control or line-boundary character `content` could carry is escaped to a literal, non-control
+character sequence before it ever reaches `ReasoningContext.entries`, no authorized proposition's own text can
+inject an additional prompt entry or an additional structural line -- each rendered `String` remains exactly
+one line, always, by construction, only once every character capable of creating a line boundary is covered,
+as it now is. This replaces today's `memorySource.recall(memoryQuery).forEach { ... }` block
 (`src/runtime/DefaultReasoningContextAssembler.kt` lines 309-312) with an equivalent block calling
 `renderKnowledgeEntry` per `SafeKnowledgeResultEntry`. An empty result renders no entries, exactly as today.
+
+**Line-boundary audit, closed.** Every character any common text-processing convention
+(Kotlin/Java/JavaScript/Python line-splitting, terminal rendering) treats as a line or paragraph boundary is now
+covered: NEL (`U+0085`) already falls inside the escaped C1 range (`0x80`-`0x9F`); VT, FF, and the
+File/Group/Record/Unit Separators (`0x0B`, `0x0C`, `0x1C`-`0x1F`) already fall inside the escaped C0 range
+(`0x00`-`0x1F`); `U+2028`/`U+2029` are now escaped explicitly, above. No further character remains capable of
+creating a line boundary this escaping scheme leaves open. This audit does not broaden into general Unicode
+sanitization: every other authorized Unicode character -- accented letters, combining marks, right-to-left text,
+characters outside the Basic Multilingual Plane, emoji -- passes through `escapeForPrompt` unchanged, exactly as
+Section 5's own "every character... preserved unchanged" normalization guarantee already requires.
 
 ---
 
@@ -638,8 +653,10 @@ Restated here as a single, checkable list -- each already argued individually ab
 10. `DefaultKnowledgeRetrieval`'s own existing contract and authorization behaviour are unmodified (Section 3,
     Section 7, Section 10).
 11. Authorized content can never reach `ReasoningContext.entries` as more than one structural line: every LF,
-    CR, and other control character is deterministically escaped at render time (Section 8) before crossing
-    that boundary -- no authorized proposition can inject an additional prompt entry or structural line.
+    CR, TAB, backslash, every C0/C1/DEL control character, Unicode LINE SEPARATOR (`U+2028`), and Unicode
+    PARAGRAPH SEPARATOR (`U+2029`) are each deterministically escaped at render time (Section 8) before
+    crossing that boundary -- no authorized proposition can inject an additional prompt entry or structural
+    line, regardless of which line-boundary character its own text carries.
 12. No explicit timing field, count, denial marker, deliberate delay, or deliberately encoded protected-state
     timing signal crosses the `recall` result boundary (Section 9, Section 11); naturally variable elapsed
     latency across paths is disclosed, never claimed to be eliminated, and no constant-time or
@@ -664,10 +681,14 @@ bounds (`maximumResults` applied last, never truncates before relevance filterin
 
 Rendering tests (`tests/runtime/DefaultReasoningContextAssemblerTest.kt`, extended): the exact fixed format
 string and field order (content, evidentialState, status, staleness); backslash, LF, CR, TAB, every remaining
-C0 control character, DEL, and every C1 control character each escape to their exact defined form (Section 8),
-including the deterministic four-hex-digit `\uXXXX` case; a rendered entry containing an embedded LF or CR in
-its source content still yields exactly one `ReasoningContext` entry -- direct proof of Invariant 11's
-line-injection prevention.
+C0 control character, DEL, every C1 control character, Unicode LINE SEPARATOR (`U+2028`), and Unicode PARAGRAPH
+SEPARATOR (`U+2029`) each escape to their exact defined form (Section 8), including the deterministic
+four-hex-digit `\uXXXX` case; content containing `U+2028` or `U+2029` produces the literal six-character escape
+sequence (`\u2028`/`\u2029`) in the rendered `String`, never the real separator character itself; a rendered
+entry whose source content embeds a raw LF, CR, `U+2028`, or `U+2029` still yields exactly one
+`ReasoningContext` entry, with no additional prompt line or entry created by the embedded character -- direct
+proof of Invariant 11's line-injection prevention, now covering every character capable of creating a line
+boundary, not only ASCII LF/CR.
 
 Authorization tests: act-level denial produces `emptyList()` with zero `persistence.findAll()` calls (a
 fake/mock persistence proving zero invocations, mirroring Unit 9.5's own "must never read
@@ -786,12 +807,12 @@ which remains a later, separate document's responsibility.
 | 3 | Interface and adapter shape | RESOLVED | 3 | Widening `KnowledgeRetrieval` itself to carry content (reopens the frozen Unit 9 "never copies Memory Core content" guarantee for every current and future consumer, not only Reasoning Context). A new, narrow, additive `ReasoningKnowledgeSource` contract, reusing the frozen `KnowledgeRetrievalQuery` request shape unchanged, is adopted. |
 | 4 | Principal and correlation propagation | RESOLVED | 6 | Reusing or minting a system-level principal for the retrieval call (would substitute away owner visibility, Boundary Review Section 5's own explicit prohibition). Owner principal propagation, unchanged correlation identifier propagation, and per-evaluation-only fresh request identifiers are adopted, mirroring `DefaultKnowledgeRetrieval`'s and `DefaultReasoningContextAssembler`'s own existing conventions exactly. |
 | 5 | Authorization Purpose and policy specificity | RESOLVED | 7 | Narrowing the existing `knowledge.retrieve` verb itself (would retroactively deny every other current/future `KnowledgeRetrieval` consumer, none of which sets a Purpose today); leaving the coarse `(READ, MEMORY)` rule as the sole gate (the exact unconditional-permissiveness gap the Planning Review identified, Section 8). A new verb, `knowledge.retrieve_for_reasoning_context`, a new registered Purpose, `knowledge-memory.reasoning-context-retrieval`, and four new specificity-ranked `PermissionPolicyRule` entries mirroring the already-adopted Gap #54 pattern are adopted. |
-| 6 | Safe result representation and evidential metadata | RESOLVED | 8 | Including `KnowledgeId`/`KnowledgeReference` (not constitutionally necessary, larger surface than required); including a raw `ProvenanceReference` (functions as a reusable retrieval handle in substance, Representation-Engine-tier decision, out of scope); deferring the internal rendering format to Implementation Plan (leaves the safe-projection contract incomplete, and risks an unescaped line-injection vector). `SafeKnowledgeResultEntry` (content, evidentialState, status, staleness), a fixed one-line format string, fixed field order, and a fully specified control-character escaping scheme are all adopted -- reusing every existing frozen value type it references. |
+| 6 | Safe result representation and evidential metadata | RESOLVED | 8 | Including `KnowledgeId`/`KnowledgeReference` (not constitutionally necessary, larger surface than required); including a raw `ProvenanceReference` (functions as a reusable retrieval handle in substance, Representation-Engine-tier decision, out of scope); deferring the internal rendering format to Implementation Plan (leaves the safe-projection contract incomplete, and risks an unescaped line-injection vector); an escaping scheme covering only ASCII control characters (leaves Unicode LINE SEPARATOR `U+2028` and PARAGRAPH SEPARATOR `U+2029` -- neither a C0/C1 control character -- capable of creating an unescaped line boundary). `SafeKnowledgeResultEntry` (content, evidentialState, status, staleness), a fixed one-line format string, fixed field order, and a fully specified escaping scheme covering backslash, every C0/C1/DEL control character, and both Unicode line-boundary separators are all adopted -- reusing every existing frozen value type it references. |
 | 7 | Failure and partial-result semantics | RESOLVED | 9 | Fail-whole on any single candidate's evidence-resolution failure (unjustified availability regression, no governing requirement behind it); claiming durable auditability of direct `permissionEngine.evaluate` decisions (unsupported -- `DefaultPermissionEngine` retains no decision history, Section 9). Authorized-partial, with denial and authorized-empty both externally represented as the identical, non-distinguishable empty `List`, and an honest, non-durable characterisation of internal control-flow knowledge, are both adopted. |
 | 8 | Lifecycle and supersession | RESOLVED | 10 | A new "superseded" status or field (would misrepresent supersession as a lifecycle status the constitutional model does not recognise, Contract Design Version 2 §3); conflating the binding Memory-Core-record-status gate (Section 5) with `KnowledgeItem` lifecycle filtering. Reuse of `KnowledgeItem.status`/`evidentialState` unchanged, with `DefaultKnowledgeRetrieval`'s own `RETIRED`-excluded-by-default rule mirrored exactly and the two gates kept explicitly distinct, is adopted; `DefaultKnowledgeRetrieval` itself remains completely unmodified. |
 | 9 | Ordering, limits, and side channels | RESOLVED | 11 | Any ranking or scoring step (never authorised anywhere in this repository's governance); claiming the result type's own absence of a timing field eliminates observable wall-clock latency variance (a category error between an explicit metadata field and a genuine timing side channel). Insertion-order preservation through every filter, bounding applied last, and a return type structurally incapable of carrying count/identifier/denial/explicit-timing information are adopted, together with an honest, disclosed acknowledgement that natural latency variance is not eliminated and no constant-time claim is made. |
 | 10 | Legacy retirement | RESOLVED | 12 | Deleting `KnowledgeSource`/`KnowledgeStore`/`InMemoryKnowledgeStore` (direct repository evidence shows real, non-production test consumers remain -- deletion is not authorised). Retiring only the one production wiring site, leaving the legacy interfaces and implementation in place for their existing test consumers, is adopted. |
-| 11 | Test and live-verification seams | RESOLVED | 14 | Tests attempting to prove constant-time behaviour from an elapsed-time threshold (would misrepresent a disclosed limitation as a guarantee, Section 9). Contract, rendering, authorization, referenced-evidence, side-channel, composition, regression, and same-runtime end-to-end seams are all adopted, each confined to proving absence of explicit metadata/intentional encoding, never constant-time behaviour; the Planning Review's own end-to-end proof discipline (Section 11) is adopted unchanged. |
+| 11 | Test and live-verification seams | RESOLVED | 14 | Tests attempting to prove constant-time behaviour from an elapsed-time threshold (would misrepresent a disclosed limitation as a guarantee, Section 9); rendering tests that stop at ASCII control characters (would leave the `U+2028`/`U+2029` line-injection vector unverified). Contract, rendering (including explicit `U+2028`/`U+2029` escape and non-injection proof), authorization, referenced-evidence, side-channel, composition, regression, and same-runtime end-to-end seams are all adopted, each confined to proving absence of explicit metadata/intentional encoding, never constant-time behaviour; the Planning Review's own end-to-end proof discipline (Section 11) is adopted unchanged. |
 
 No item remains TBD, deferred, or ambiguous.
 
@@ -821,9 +842,10 @@ No item remains TBD, deferred, or ambiguous.
   document explicitly authorises (Section 13's own invariant list).
 - Halt if live verification cannot inspect real `ReasoningContext.entries` or the real assembled model prompt
   directly.
-- Halt if unescaped content, or content containing an unescaped LF/CR or other unescaped control character, is
-  found reaching `ReasoningContext.entries` -- the render-time escaping contract (Section 8) is binding, not
-  optional.
+- Halt if unescaped content, or content containing an unescaped LF/CR, other unescaped control character, or
+  an unescaped Unicode LINE SEPARATOR (`U+2028`) or PARAGRAPH SEPARATOR (`U+2029`), is found reaching
+  `ReasoningContext.entries` -- the render-time escaping contract (Section 8), covering every character
+  capable of creating a line boundary, is binding, not optional.
 - Halt if the `ACTIVE`-only Memory Core record-status gate (Section 5) is treated as freely revisable,
   configurable, or implementation-defined without a future Contract Design revision.
 - Halt if implementation introduces an intentional timing signal, a deliberate delay, or explicit
