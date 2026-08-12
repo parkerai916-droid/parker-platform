@@ -141,15 +141,24 @@ PermissionPolicyRule(
     authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
     proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
 )
-PermissionPolicyRule(
-    action = PermissionAction.READ, resourceType = ResourceType.DOCUMENT,
-    outcome = PermissionDecisionOutcome.APPROVED, level = PermissionLevel.AUTOMATIC,
-    authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
-    proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
-)
 ```
 
-Exactly four new `PermissionPolicyRule` entries -- no fewer, no more, no fifth rule invented.
+Exactly three new `PermissionPolicyRule` entries -- no fewer, no more, no fourth rule invented.
+
+**Least authority: no `memory.retrieve_document` rule, and none is authorised.** A fourth rule -- a
+specificity-2 `APPROVED` rule for `PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME`
+(`"memory.retrieve_document"`) and `ResourceType.DOCUMENT` -- is **not locked and is not authorised**
+(Contract Design Section 7's own least-authority decision, Contract Invariant 13). No
+`memory.retrieve_document` authority is granted to `knowledge-memory.reasoning-context-retrieval`, at
+all. `MemoryCoreRecordReference.ToDocument` and `ToRelationship` remain structurally excluded from the
+locked algorithm (Section 5, below) -- `getDocument` is never invoked anywhere in this design; only
+`getEntity` and `getAssertion`, both through `memory.retrieve`, are ever called. The pre-existing Gap
+#54 Unit 2 verb-only `DENIED` guard for `memory.retrieve_document` remains completely untouched and
+applicable to this Purpose exactly as to every other Purpose lacking its own specificity-2 override --
+an accidental future document call therefore fails closed, by the existing mechanism, with no new code.
+`KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE`'s own existing Document authority remains completely unchanged
+and is not precedent for granting one here: that Purpose's evaluator genuinely calls `getDocument`,
+exercised authority, structurally unlike this design's own never-reached `ToDocument` branch.
 
 ---
 
@@ -248,7 +257,7 @@ character.
 - **Purpose registration.** `knowledge-memory.reasoning-context-retrieval` must be registered and
   `ACTIVE` at composition time for `DefaultPermissionPolicy`'s own `isActive` check to fold it into
   `effectivePurpose`.
-- **Purpose-specific approval and verb-specific denial guard.** Frozen exactly as Section 4's four
+- **Purpose-specific approval and verb-specific denial guard.** Frozen exactly as Section 4's three
   `PermissionPolicyRule` entries above: a specificity-1 `DENIED` guard for
   `knowledge.retrieve_for_reasoning_context`, outranked only by a specificity-2 `APPROVED` rule
   naming both the verb and the exact, active Purpose.
@@ -256,9 +265,14 @@ character.
   (`DefaultPermissionPolicy`'s own existing, unmodified mechanism), which cannot satisfy the
   specificity-2 rule, leaving only the specificity-1 `DENIED` guard applicable -- denied,
   automatically, with no new code.
-- **Memory Core purpose-bound approvals.** Two new specificity-2 `APPROVED` rules for
-  `memory.retrieve`/`memory.retrieve_document`, narrowed to the same Purpose -- the existing Gap #54
-  Unit 2 `DENIED` guards for those two verbs already govern every other Purpose state unchanged.
+- **Memory Core purpose-bound approval.** Exactly one new specificity-2 `APPROVED` rule, for
+  `memory.retrieve` alone, narrowed to the same Purpose -- the existing Gap #54 Unit 2 `DENIED` guard
+  for `memory.retrieve_document` already governs this Purpose, and every other Purpose lacking its own
+  specificity-2 override, unchanged (Section 4, above).
+- **Least authority, as an invariant.** Only operations the locked algorithm actually reaches may be
+  approved under `knowledge-memory.reasoning-context-retrieval` --
+  `knowledge.retrieve_for_reasoning_context` and `memory.retrieve` -- and no operation beyond that; no
+  document-retrieval authority (`memory.retrieve_document`) exists under this Purpose, at all.
 - **Evidence Intelligence non-widening.** `EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE` and
   `knowledge-memory.reasoning-context-retrieval` are distinct values; no rule this programme adds can
   ever satisfy Evidence Intelligence's own Purpose, and no rule it already relies on is modified --
@@ -309,8 +323,9 @@ Lock amendment:**
 - `src/runtime/DefaultReasoningKnowledgeSource.kt` -- new file.
 - `src/runtime/DefaultReasoningContextAssembler.kt` -- constructor signature change; `assemble`'s
   memory-rendering block replaced with the fixed rendering contract (Section 6, above).
-- `src/composition/ParkerRuntime.kt` -- new Purpose constant and registration; the four locked
-  `PermissionPolicyRule` entries; one new `ActionVocabularyEntry`; `DefaultReasoningKnowledgeSource`
+- `src/composition/ParkerRuntime.kt` -- new Purpose constant and registration; the three locked
+  `PermissionPolicyRule` entries (no `memory.retrieve_document` approval -- Section 4's own
+  least-authority decision); one new `ActionVocabularyEntry`; `DefaultReasoningKnowledgeSource`
   construction; retirement of the `InMemoryKnowledgeStore`/`memorySource` production binding only.
 
 **Tests, exactly these two named files, plus a provisional composition-test allowance:**
@@ -367,6 +382,12 @@ Frozen from Contract Design Section 14, condensed to the seams the Implementatio
 - Denied, missing, deleted, and unsupported-reference-kind evidence (silent exclusion, no exception).
 - Authorized-partial results (one candidate resolves, another is denied).
 - Evidence Intelligence non-widening, same runtime, immediately after a successful `recall`.
+- Least-authority proof: `memory.retrieve_document` under `knowledge-memory.reasoning-context-retrieval`
+  is `DENIED` (a direct `DefaultPermissionPolicy.evaluate` proof, not merely inferred); a direct
+  `getDocument(...)` call through the real, purpose-bound `MemoryRetrieval` view
+  `DefaultReasoningKnowledgeSource` itself holds returns no document, against a genuine, existing
+  `Document` record; `KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE`'s own existing Document-approval
+  behaviour continues to pass unmodified; Evidence Intelligence remains denied under this Purpose.
 - Composition cutover proof: `DefaultReasoningContextAssembler` never receives a `KnowledgeSource`;
   no production path constructs `InMemoryKnowledgeStore`; no two production knowledge feeds active
   simultaneously.
@@ -430,6 +451,10 @@ Every Contract Design stop condition (its own Section 18) is frozen, uncondition
   genuine promotion-to-recall end-to-end proof (Section 2, above) -- the required proof is real
   `MemoryAdmissionCoordinator` promotion through real `DefaultReasoningKnowledgeSource.recall`, never
   a fixture standing in for either.
+- Halt if `knowledge-memory.reasoning-context-retrieval` gains `memory.retrieve_document` or any other
+  operation not reachable in the locked algorithm (Section 4, Section 5, above).
+- Halt if implementation adds a `ToDocument`/`getDocument` path to this design without a future
+  Contract Design revision and its own corresponding Scope Lock amendment.
 
 ---
 
@@ -437,7 +462,10 @@ Every Contract Design stop condition (its own Section 18) is frozen, uncondition
 
 Scope Lock completion, and therefore this programme's own Closure Determination, requires:
 
-- Every locked production contract (Section 4, above) implemented exactly as frozen.
+- Every locked production contract (Section 4, above) implemented exactly as frozen, including exactly
+  three new `PermissionPolicyRule` entries and no `memory.retrieve_document` authority granted under
+  `knowledge-memory.reasoning-context-retrieval` -- confirmed by both the implementation units
+  themselves and their own required Completion and Constitutional Reviews, below.
 - All required tests (Section 11, above) passing.
 - No excluded file (Section 10, above) changed.
 - An independent Completion Review and an Independent Constitutional Review for every
@@ -456,8 +484,8 @@ Scope Lock completion, and therefore this programme's own Closure Determination,
 - It does not begin an Implementation Plan, and does not sequence implementation units.
 - It does not redesign, reinterpret, or relitigate any Contract Design decision -- every value
   above is transcribed, not chosen, by this document.
-- It does not add capability, a new file, or a new alternative beyond what the Contract Design
-  already adopted.
+- It does not authorize an additional implementation file, capability, or alternative beyond the
+  Contract Design's proposed set.
 - It does not reopen Gap #54, which remains complete.
 - It does not create or reserve a new numbered gap, or a new programme identity.
 - It does not claim restart durability, in any form.
