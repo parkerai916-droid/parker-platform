@@ -348,7 +348,7 @@ unjustified, undisclosed reopening of Decision Register item 8's own preservatio
 leaves `knowledge.retrieve` and `DefaultKnowledgeRetrieval`'s own existing authorization behaviour completely
 untouched.
 
-**Four new `PermissionPolicyRule` entries**, added alongside the existing rule list in
+**Three new `PermissionPolicyRule` entries**, added alongside the existing rule list in
 `src/composition/ParkerRuntime.kt` (after line 675), mirroring the already-adopted Gap #54 Unit 2/4
 verb-guard-plus-purpose-override pattern (lines 617-656) exactly:
 
@@ -368,35 +368,45 @@ PermissionPolicyRule(
     authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
     proposedAction = DefaultReasoningKnowledgeSource.RETRIEVE_FOR_REASONING_CONTEXT_ACTION_NAME,
 )
-// Memory Core evidence resolution: the existing Gap #54 Unit 2 DENIED guards for memory.retrieve /
-// memory.retrieve_document (lines 623-636) already govern every Purpose without a specificity-2
-// override -- only the two new specificity-2 APPROVED rules below are added, mirroring
-// KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE's own identical pair (lines 641-656) exactly.
+// Memory Core evidence resolution: the existing Gap #54 Unit 2 DENIED guard for memory.retrieve (lines
+// 623-629) already governs every Purpose without a specificity-2 override -- only this one rule is added.
+// No memory.retrieve_document rule is added -- see "Least authority," immediately below.
 PermissionPolicyRule(
     action = PermissionAction.READ, resourceType = ResourceType.MEMORY,
     outcome = PermissionDecisionOutcome.APPROVED, level = PermissionLevel.AUTOMATIC,
     authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
     proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
 )
-PermissionPolicyRule(
-    action = PermissionAction.READ, resourceType = ResourceType.DOCUMENT,
-    outcome = PermissionDecisionOutcome.APPROVED, level = PermissionLevel.AUTOMATIC,
-    authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
-    proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
-)
 ```
 
-**Denial behaviour.** `DefaultPermissionPolicy.ruleOutcomeFor`'s own existing, unmodified maximal-specificity
-mechanism (`src/runtime/DefaultPermissionPolicy.kt` lines 228-244) already guarantees: absent, unregistered,
-retired, or wrong Purpose folds to "no purpose" (lines 195-200), which cannot satisfy the specificity-2 rules
-above, leaving only the specificity-1 DENIED guard applicable -- denied, automatically, with no code this
-design adds. This is the existing mechanism applied to new rule data, never a new mechanism.
+**Least authority: no Document approval.** A fourth rule -- a specificity-2 `APPROVED` rule for
+`PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME` (`"memory.retrieve_document"`) and `ResourceType.DOCUMENT`, mirroring the pair above --
+was considered and is **not adopted**. The locked retrieval algorithm (Section 4, above) resolves only `MemoryCoreRecordReference.ToAssertion` and
+`ToEntity`, both exclusively through `PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME` (`"memory.retrieve"`) and `ResourceType.MEMORY` --
+`getEntity` and `getAssertion` are the only two `MemoryRetrieval` methods `resolveContent` ever calls
+(`src/composition/PermissionFilteredMemoryRetrieval.kt` lines 136, 160). `ToDocument` and `ToRelationship` are structurally excluded (Section 5, above):
+`resolveContent`'s own `when` branch for both returns `null` immediately, with no Memory Core call of any kind -- `getDocument` is never invoked anywhere
+in this design. A Document-approval rule for this Purpose would therefore grant authority the accepted algorithm cannot reach: latent, unused authority on
+the purpose-bound `MemoryRetrieval` view, which implements the full `MemoryRetrieval` interface regardless of which methods the current, frozen algorithm
+actually calls -- exactly what a future, out-of-contract `getDocument` call could silently exploit if this rule existed. Without it, the pre-existing Gap
+#54 Unit 2 verb-only `DENIED` guard for `memory.retrieve_document` (lines 630-636) remains untouched and applicable to this Purpose exactly as to every
+other Purpose lacking its own specificity-2 override -- an accidental future Document call fails closed, by the existing mechanism, with no new code.
+`KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE`'s own Document approval (lines 641-656) is not a precedent here: `DefaultKnowledgeCandidateEvaluator.resolve()`
+genuinely resolves `ToDocument` via a real `getDocument` call (`src/runtime/DefaultKnowledgeCandidateEvaluator.kt` lines 364-367) -- exercised authority,
+not latent authority, structurally unlike this design.
 
-**Proof Evidence Intelligence remains denied.** `EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE` and
-`REASONING_CONTEXT_RETRIEVAL_PURPOSE` are distinct `AuthorizationPurposeId` values; `DefaultPermissionPolicy`'s
-own rule filter requires `rule.authorizationPurpose == purpose` exactly (line 235) -- no rule this design adds
-can ever satisfy Evidence Intelligence's own Purpose, and no rule Evidence Intelligence already relies on is
-modified. This is a structural, not merely observed, non-widening proof.
+**Denial behaviour.** `DefaultPermissionPolicy.ruleOutcomeFor`'s own existing, unmodified maximal-specificity mechanism
+(`src/runtime/DefaultPermissionPolicy.kt` lines 228-244) already guarantees: absent, unregistered, retired, or wrong Purpose folds to "no
+purpose" (lines 195-200), which cannot satisfy the specificity-2 rules above, leaving only the specificity-1 DENIED guard applicable --
+denied, automatically, with no code this design adds (including, per the paragraph above, for `memory.retrieve_document`, which has no
+specificity-2 rule under this Purpose at all).
+
+**Proof Evidence Intelligence remains denied, and least authority is preserved.** `EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE` and
+`REASONING_CONTEXT_RETRIEVAL_PURPOSE` are distinct `AuthorizationPurposeId` values; `DefaultPermissionPolicy`'s own rule filter requires
+`rule.authorizationPurpose == purpose` exactly (line 235) -- no rule this design adds can ever satisfy Evidence Intelligence's own Purpose,
+and no rule Evidence Intelligence already relies on is modified. This is a structural, not merely observed, non-widening proof. The stronger
+least-authority invariant this correction adopts -- approval only for reachable operations, no document-retrieval authority at all -- is
+stated formally as Contract Invariant 13, below.
 
 **Resource/vocabulary registration.** No new `Resource` -- `RETRIEVE_FOR_REASONING_CONTEXT_ACTION_NAME` reuses
 the already-registered `DefaultKnowledgeRetrieval.KNOWLEDGE_RETRIEVAL_RESOURCE_ID`
@@ -661,6 +671,10 @@ Restated here as a single, checkable list -- each already argued individually ab
     timing signal crosses the `recall` result boundary (Section 9, Section 11); naturally variable elapsed
     latency across paths is disclosed, never claimed to be eliminated, and no constant-time or
     timing-analysis-resistance claim is made anywhere in this design.
+13. `knowledge-memory.reasoning-context-retrieval` receives an `APPROVED` policy rule only for operations the locked
+    algorithm actually reaches -- `knowledge.retrieve_for_reasoning_context` and `memory.retrieve` (Section 7) -- and for no operation
+    beyond that; no document-retrieval authority (`memory.retrieve_document`) is granted under this Purpose, at all, stronger than
+    mere Evidence Intelligence non-widening (Invariant 6) and satisfying least authority directly.
 
 ---
 
@@ -698,10 +712,19 @@ the specificity-1 DENIED guard (Section 7); a request carrying `KNOWLEDGE_CANDID
 `EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE` against `knowledge.retrieve_for_reasoning_context` is denied
 (coarse-rule/cross-Purpose fall-through prevention, direct proof of Section 7's specificity argument).
 
-Referenced-evidence tests: denied Assertion/Entity produces silent exclusion, not an exception or a
-distinguishable denial marker; missing (deleted) evidence produces the same; a resolved but non-`ACTIVE`-status
-record produces the same; a `ToDocument`/`ToRelationship` reference never enters the matched set regardless of
-query content.
+Least-authority tests (`memory.retrieve_document` non-widening, Section 7): a direct `DefaultPermissionPolicy.evaluate` call carrying `proposedAction =
+PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME` and `authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE` is `DENIED` -- direct
+proof no specificity-2 rule exists for that pair, and the pre-existing verb-only guard governs unchanged; a call to
+`reasoningContextMemoryRetrieval.getDocument(...)` (the real, purpose-bound `MemoryRetrieval` view `DefaultReasoningKnowledgeSource` itself holds) against
+a genuine, existing `Document` record returns `null` -- proof the permission boundary itself denies Document access under this Purpose, called directly
+against the real purpose-bound view, never through a reachable path added to `DefaultReasoningKnowledgeSource` merely to exercise it.
+`KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE`'s own existing Document-approval tests continue to pass unmodified -- direct proof this correction narrows only
+the new Purpose, never the existing one. Evidence Intelligence remains denied under this Purpose exactly as the existing Evidence Intelligence non-widening
+test, below, already proves.
+
+Referenced-evidence tests: denied Assertion/Entity produces silent exclusion, not an exception or a distinguishable denial marker; missing
+(deleted) evidence produces the same; a resolved but non-`ACTIVE`-status record produces the same; a `ToDocument`/`ToRelationship` reference
+never enters the matched set regardless of query content.
 
 Side-channel and timing-scope tests: `SafeKnowledgeResultEntry` and the rendered `String` each expose no count,
 identifier, or denial field, verified by structural/reflection inspection of the type itself; act-denied and
@@ -752,9 +775,10 @@ verification matrix authorises (Boundary Review Section 10's own exclusion, unch
 - `src/runtime/DefaultReasoningKnowledgeSource.kt` -- new file.
 - `src/runtime/DefaultReasoningContextAssembler.kt` -- constructor signature change; `assemble`'s memory-
   rendering block replaced with the fixed rendering contract (Section 8).
-- `src/composition/ParkerRuntime.kt` -- new Purpose constant and registration; four new
-  `PermissionPolicyRule` entries; new `ActionVocabularyEntry`; `DefaultReasoningKnowledgeSource` construction;
-  retirement of the `InMemoryKnowledgeStore`/`memorySource` production binding.
+- `src/composition/ParkerRuntime.kt` -- new Purpose constant and registration; three new `PermissionPolicyRule`
+  entries (no `memory.retrieve_document` approval -- Section 7's own least-authority decision); new
+  `ActionVocabularyEntry`; `DefaultReasoningKnowledgeSource` construction; retirement of the
+  `InMemoryKnowledgeStore`/`memorySource` production binding.
 - `tests/runtime/DefaultReasoningKnowledgeSourceTest.kt` -- new file.
 - `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- extended.
 - `tests/composition/` -- extended or new composition tests (Section 14).
@@ -806,7 +830,7 @@ which remains a later, separate document's responsibility.
 | 2 | Authorization and dereference sequence | RESOLVED | 4 | An always-dereference-first ordering (wastes Memory Core reads on items the caller cannot see); bounding before filtering (would leak that a bound was applied before visibility was known, `DefaultKnowledgeRetrieval`'s own already-rejected shape). The ten-step ordering in Section 4 is adopted, with item-level authorization placed before dereference and bounding placed last. |
 | 3 | Interface and adapter shape | RESOLVED | 3 | Widening `KnowledgeRetrieval` itself to carry content (reopens the frozen Unit 9 "never copies Memory Core content" guarantee for every current and future consumer, not only Reasoning Context). A new, narrow, additive `ReasoningKnowledgeSource` contract, reusing the frozen `KnowledgeRetrievalQuery` request shape unchanged, is adopted. |
 | 4 | Principal and correlation propagation | RESOLVED | 6 | Reusing or minting a system-level principal for the retrieval call (would substitute away owner visibility, Boundary Review Section 5's own explicit prohibition). Owner principal propagation, unchanged correlation identifier propagation, and per-evaluation-only fresh request identifiers are adopted, mirroring `DefaultKnowledgeRetrieval`'s and `DefaultReasoningContextAssembler`'s own existing conventions exactly. |
-| 5 | Authorization Purpose and policy specificity | RESOLVED | 7 | Narrowing the existing `knowledge.retrieve` verb itself (would retroactively deny every other current/future `KnowledgeRetrieval` consumer, none of which sets a Purpose today); leaving the coarse `(READ, MEMORY)` rule as the sole gate (the exact unconditional-permissiveness gap the Planning Review identified, Section 8). A new verb, `knowledge.retrieve_for_reasoning_context`, a new registered Purpose, `knowledge-memory.reasoning-context-retrieval`, and four new specificity-ranked `PermissionPolicyRule` entries mirroring the already-adopted Gap #54 pattern are adopted. |
+| 5 | Authorization Purpose and policy specificity | RESOLVED | 7 | Narrowing the existing `knowledge.retrieve` verb itself (would retroactively deny every other current/future `KnowledgeRetrieval` consumer, none of which sets a Purpose today); leaving the coarse `(READ, MEMORY)` rule as the sole gate (the exact unconditional-permissiveness gap the Planning Review identified, Section 8); a fourth rule approving `memory.retrieve_document`/`ResourceType.DOCUMENT` for this Purpose (rejected on least-authority grounds -- the locked algorithm resolves only `ToAssertion`/`ToEntity` through `memory.retrieve`, never calls `getDocument`, and such a rule would grant unreachable latent authority the existing verb-only `DENIED` guard already fail-closes without it). A new verb, `knowledge.retrieve_for_reasoning_context`, a new registered Purpose, `knowledge-memory.reasoning-context-retrieval`, and exactly three specificity-ranked `PermissionPolicyRule` entries mirroring the already-adopted Gap #54 pattern are adopted. |
 | 6 | Safe result representation and evidential metadata | RESOLVED | 8 | Including `KnowledgeId`/`KnowledgeReference` (not constitutionally necessary, larger surface than required); including a raw `ProvenanceReference` (functions as a reusable retrieval handle in substance, Representation-Engine-tier decision, out of scope); deferring the internal rendering format to Implementation Plan (leaves the safe-projection contract incomplete, and risks an unescaped line-injection vector); an escaping scheme covering only ASCII control characters (leaves Unicode LINE SEPARATOR `U+2028` and PARAGRAPH SEPARATOR `U+2029` -- neither a C0/C1 control character -- capable of creating an unescaped line boundary). `SafeKnowledgeResultEntry` (content, evidentialState, status, staleness), a fixed one-line format string, fixed field order, and a fully specified escaping scheme covering backslash, every C0/C1/DEL control character, and both Unicode line-boundary separators are all adopted -- reusing every existing frozen value type it references. |
 | 7 | Failure and partial-result semantics | RESOLVED | 9 | Fail-whole on any single candidate's evidence-resolution failure (unjustified availability regression, no governing requirement behind it); claiming durable auditability of direct `permissionEngine.evaluate` decisions (unsupported -- `DefaultPermissionEngine` retains no decision history, Section 9). Authorized-partial, with denial and authorized-empty both externally represented as the identical, non-distinguishable empty `List`, and an honest, non-durable characterisation of internal control-flow knowledge, are both adopted. |
 | 8 | Lifecycle and supersession | RESOLVED | 10 | A new "superseded" status or field (would misrepresent supersession as a lifecycle status the constitutional model does not recognise, Contract Design Version 2 §3); conflating the binding Memory-Core-record-status gate (Section 5) with `KnowledgeItem` lifecycle filtering. Reuse of `KnowledgeItem.status`/`evidentialState` unchanged, with `DefaultKnowledgeRetrieval`'s own `RETIRED`-excluded-by-default rule mirrored exactly and the two gates kept explicitly distinct, is adopted; `DefaultKnowledgeRetrieval` itself remains completely unmodified. |
@@ -855,6 +879,9 @@ No item remains TBD, deferred, or ambiguous.
   separately governed mitigation mechanism and its own, matching verification.
 - Halt if durable audit persistence or event publication for `permissionEngine.evaluate` decisions
   is added without separate, future governance authorising it.
+- Halt if `knowledge-memory.reasoning-context-retrieval` is granted `memory.retrieve_document` or any other operation not reachable in the
+  adopted algorithm (Section 4, Section 7's own least-authority decision), or if a future implementation adds a `ToDocument`/`getDocument`
+  path without a new Contract Design revision and its own corresponding Scope Lock amendment.
 
 ---
 
