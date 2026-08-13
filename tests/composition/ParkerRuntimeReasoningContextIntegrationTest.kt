@@ -25,8 +25,11 @@ import kotlin.test.assertTrue
  * (`docs/architecture/CONVERSATION_HISTORY_SOURCE_CONTRACT_DESIGN.md`
  * Section 5 -- a second message in the same Conversation carries the
  * first message's text as history; the first message carries none) and,
- * Sprint 11 Unit 7 (Memory Source Integration), that `KnowledgeSource` is
- * wired into the real composition root without fault -- all hold against
+ * Knowledge Discoverability and Reasoning Context Implementation Unit 3, that
+ * `ReasoningKnowledgeSource` is wired into the real composition root without
+ * fault, extended by Implementation Unit 5 with the required genuine
+ * end-to-end proof (a real promoted proposition, later recalled and safely
+ * rendered in the real assembled prompt of a separate turn) -- all hold against
  * the real, running [ParkerRuntime] -- not merely against
  * [DefaultReasoningContextAssembler] or [InMemoryConversationEngine] in
  * isolation (see `tests/runtime/DefaultReasoningContextAssemblerTest.kt`
@@ -268,22 +271,21 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         runtime.shutdown()
     }
 
-    // --- Sprint 11 Unit 7: Runtime wiring for Memory Source Integration ---
+    // --- Knowledge Discoverability and Reasoning Context Implementation Units 3/5: Runtime
+    // wiring for Reasoning Context Knowledge retrieval ---
 
     @Test
-    fun `KnowledgeSource is wired into the real ParkerRuntime and renders no Memory entries, since nothing in this Unit's own scope creates memories`() = runBlocking<Unit> {
-        // KnowledgeSource Contract Design Section 9: nothing in this Unit's own scope calls
-        // KnowledgeStore.remember (Scope Lock's own exclusion, "changing how memories are
-        // created"), so the InMemoryKnowledgeStore ParkerRuntime constructs is always empty in
-        // production -- this test confirms the real wiring reaches this new dependency without
-        // fault and correctly renders nothing, exactly as "no tools" and "no prior Turns"
-        // already render nothing elsewhere in this same prompt. A full end-to-end test of a
-        // populated memory rendering through the real ParkerRuntime is not achievable within
-        // this Unit's own scope (no seeding hook exists, and adding one would itself be
-        // out-of-scope "changing how memories are created") -- see
-        // `tests/runtime/DefaultReasoningContextAssemblerTest.kt`'s own real-InMemoryKnowledgeStore
-        // test (Assembler-level, not ParkerRuntime-level) for this Unit's best available
-        // substitute, disclosed in `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 10.
+    fun `ReasoningKnowledgeSource is wired into the real ParkerRuntime and renders no Memory entries when nothing has been promoted`() = runBlocking<Unit> {
+        // Implementation Unit 3 cut the assembler over from the legacy KnowledgeSource/
+        // InMemoryKnowledgeStore feed to the real, governed ReasoningKnowledgeSource -- no
+        // production path constructs InMemoryKnowledgeStore any longer (Unit 3's own composition
+        // cutover; Unit 4's own structural composition proof). This test confirms the real wiring
+        // reaches this new dependency without fault and correctly renders nothing when nothing has
+        // been promoted, exactly as "no tools" and "no prior Turns" already render nothing
+        // elsewhere in this same prompt. The genuine, populated case -- a real promoted
+        // proposition later recalled and rendered through this same real ParkerRuntime -- is
+        // proven separately, immediately below (Implementation Unit 5's own required genuine
+        // end-to-end proof).
         val stub = startStub("REPLY: sure thing")
         val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
         runtime.start()
@@ -293,6 +295,47 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         assertEquals(1, stub.receivedRequestBodies.size)
         val prompt = stub.receivedRequestBodies.single()
         assertTrue(!prompt.contains("Memory:"), "no memory exists yet in production, so no Memory entry should render: $prompt")
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `a distinctive proposition promoted through a real owner Remember turn is later recalled and safely rendered in the real assembled prompt of a genuinely separate query turn`() = runBlocking<Unit> {
+        val proposition = "the owner's favourite hiking trail is Widow's Peak Ridge"
+        // Mirrors ParkerRuntimeConversationalMemoryAdmissionCompositionTest.kt's own established
+        // "REMEMBER: <proposition>" stub-response convention exactly -- the real
+        // TaggedReasoningResponseParser parses the model's own reply for this tag, driving the
+        // real ConversationReplyCoordinator -> real MemoryAdmissionCoordinator -> real
+        // DurableMemoryCore -> real DefaultKnowledgeSubmission promotion path. No synthetic or
+        // hand-constructed KnowledgeItem, and no direct persistence seeding, is used anywhere in
+        // this test.
+        val stub = startStub("REMEMBER: $proposition")
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        // owner Remember X: a real submitOwnerMessage turn reaches the existing, genuine
+        // Remember/promotion path.
+        runtime.submitOwnerMessage(
+            message(text = "Remember that the owner's favourite hiking trail is Widow's Peak Ridge.", correlationId = "corr-unit-5-remember"),
+        )
+
+        // A genuinely separate later submitOwnerMessage turn, carrying text that overlaps X's own
+        // remembered content -- KnowledgeRetrievalQuery.relevance is exactly this message's own
+        // text, matched as a case-insensitive substring of the resolved Assertion's own content
+        // (Contract Design Section 5), driving the real, same-runtime
+        // DefaultReasoningKnowledgeSource.recall path.
+        runtime.submitOwnerMessage(message(text = "Widow's Peak Ridge", correlationId = "corr-unit-5-recall"))
+
+        // The real assembled model request -- the most recent entry in stub.receivedRequestBodies
+        // -- must carry a safely rendered "Memory: " entry with X's own distinctive content. A
+        // friendly reply is not evidence and is not inspected anywhere in this test; only the
+        // real, assembled prompt request itself.
+        assertEquals(2, stub.receivedRequestBodies.size)
+        val recallPrompt = stub.receivedRequestBodies[1]
+        assertTrue(
+            "Memory: $proposition" in recallPrompt,
+            "the real assembled prompt for the separate recall turn must carry a genuine Memory: entry for the promoted proposition: $recallPrompt",
+        )
 
         runtime.shutdown()
     }
