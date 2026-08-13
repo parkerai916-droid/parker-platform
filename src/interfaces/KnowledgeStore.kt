@@ -1597,3 +1597,14 @@ sealed interface KnowledgeRetrievalDisposition {
 interface KnowledgeRetrieval {
     suspend fun retrieve(requestingPrincipalId: PrincipalId, query: KnowledgeRetrievalQuery): KnowledgeRetrievalDisposition
 }
+
+interface ReasoningKnowledgeSource {
+    suspend fun recall(requestingPrincipalId: PrincipalId, query: KnowledgeRetrievalQuery): List<SafeKnowledgeResultEntry>
+}
+
+data class SafeKnowledgeResultEntry(
+    val content: String,
+    val evidentialState: EvidentialState,
+    val status: KnowledgeItemStatus,
+    val staleness: StalenessDisclosure,
+)
