@@ -328,17 +328,41 @@ Lock amendment:**
   least-authority decision); one new `ActionVocabularyEntry`; `DefaultReasoningKnowledgeSource`
   construction; retirement of the `InMemoryKnowledgeStore`/`memorySource` production binding only.
 
-**Tests, exactly these two named files, plus a provisional composition-test allowance:**
+**Tests, exactly these six files -- the prior provisional `tests/composition/` allowance is now
+resolved and closed, not open-ended:**
 
-- `tests/runtime/DefaultReasoningKnowledgeSourceTest.kt` -- new file.
-- `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- extended.
-- `tests/composition/` -- provisionally, only the minimum existing/new composition test files the
-  Implementation Plan itself names.
+- `tests/runtime/DefaultReasoningKnowledgeSourceTest.kt` -- existing (added by merged Implementation
+  Unit 2; named as a new file when this Scope Lock was first accepted, before Unit 2 merged).
+- `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- existing; extended.
+- `tests/composition/ParkerRuntimeAuthorizationPurposeCompositionTest.kt` -- existing. Authorised in
+  Implementation Unit 3 only for compatibility corrections to the two stale closed-world assertions
+  this file itself carries (of four total, across both files below) that this programme's own locked
+  third Purpose and three-rule production contract (Section 4, above) directly and foreseeably
+  invalidates. No new behaviour, proof responsibility, reflection mechanism, or production change is
+  authorised in this file.
+- `tests/composition/ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt` -- existing.
+  Authorised in Implementation Unit 3 for the identical, narrow compatibility-only purpose as the file
+  immediately above -- correcting the other two of the same four stale assertions (the file
+  immediately above carries the first two), no more.
+- `tests/composition/ParkerRuntimeReasoningKnowledgeSourceCompositionTest.kt` -- new file, authorised
+  only for Implementation Unit 4, not before.
+- `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` -- existing; extended, authorised
+  only for Implementation Unit 5, not before.
 
-**The Implementation Plan must replace this provisional `tests/composition/` allowance with the
-exact composition test file names before any implementation unit may begin** -- a directory-level
-allowance is not itself an authorised file scope. No other production or test file is authorised
-without a Scope Lock amendment.
+**Resolution of the prior provisional allowance.** This Scope Lock's own Section 12 stop condition --
+"Halt if any proposed implementation unit requires a file outside the locked scope (Section 9, above)
+-- a discovered need is a stop condition requiring a return to this Scope Lock, not implied authority
+to proceed" -- was triggered during Implementation Unit 3: `ParkerRuntimeAuthorizationPurposeCompositionTest.kt`
+and `ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt` are existing files the
+Implementation Plan's own Section 3 resolution did not name, although both carry closed-world
+assertions (exact registered-Purpose-set counts, exact Purpose-bound-rule counts) that the third
+Purpose and three-rule contract this Scope Lock already locked (Section 4, above) directly and
+foreseeably invalidates. That stop condition functioned exactly as designed -- Unit 3 halted rather
+than editing either file without authorisation. This correction resolves it by naming both files
+above, narrowly, for compatibility correction only. It authorises no additional capability, Purpose,
+rule, or production change beyond what Section 4 (above) already locked, and no `memory.retrieve_document`
+approval of any kind. No other production or test file is authorised without a further Scope Lock
+amendment.
 
 ---
 

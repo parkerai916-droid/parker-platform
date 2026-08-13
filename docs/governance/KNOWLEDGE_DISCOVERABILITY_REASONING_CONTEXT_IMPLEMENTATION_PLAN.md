@@ -118,16 +118,62 @@ below), and neither of the three checked classes is `DefaultReasoningContextAsse
 own assertion remains true, unconditionally, after every unit below -- confirmed by direct inspection,
 not assumed.
 
+**Correction to this section's own prior resolution** (governance correction, discovered during
+Implementation Unit 3). The frozen Unit 3 production changes (Section 4, Section 8, below) were
+implemented in the preserved, uncommitted Unit 3 working tree, sufficiently to run the full local
+Gradle suite against them; that run exposed exactly four stale test assertions -- not a defect in the
+production change itself. The Unit 3 implementation has not yet been committed, independently
+reviewed, or accepted, and this governance amendment makes no such claim; this correction is scoped
+strictly to the file-boundary resolution below, never to Unit 3's own acceptance. This section's
+original resolution, above, states it was reached "by direct inspection of `tests/composition/`
+(every existing file in the directory listed...)" and concludes "no directory-level allowance
+remains." That inspection was incomplete: two further existing files in `tests/composition/` --
+`ParkerRuntimeAuthorizationPurposeCompositionTest.kt` and
+`ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt` -- were not enumerated or analysed
+above, although both carry closed-world assertions (exact registered-Purpose-set counts, exact
+Purpose-bound-rule counts) that this Plan's own locked third Purpose and three-rule production
+contract (Section 4, below; Section 8, below) directly and foreseeably invalidates. This was confirmed
+empirically: Unit 3's production composition, implemented exactly as Section 4/Section 8 (below)
+freeze it, causes exactly four pre-existing test assertions across these two files to fail, with no
+other test anywhere in the repository affected.
+
+Both files are hereby added to this section's own resolved file set, as **existing files**, authorised
+in Unit 3 (Section 8, below) only for compatibility correction to the four specific stale assertions
+this discovery exposed -- never for new composition behaviour, new proof responsibility, or a
+production change beyond what Section 4/Section 8 (below) already lock. This brings the resolved
+composition-test boundary to four files, total: the two named originally above, plus these two.
+`ParkerRuntimeKnowledgeRetrievalCompositionTest.kt` was re-inspected as part of this correction and
+confirmed, again, unaffected and out of scope -- its own only Knowledge-shaped assertion (quoted
+immediately above) checks two type names, neither of which is `DefaultReasoningContextAssembler`,
+`ReasoningKnowledgeSource`, or any Purpose/rule count, and remains true, unconditionally, after Unit 3.
+
+This correction amends only this Implementation Plan and the Scope Lock (Scope Lock Section 9, as
+separately corrected); it does not amend Contract Design. Contract Design's own Section 14
+("Composition tests... extending or mirroring `ParkerRuntimeKnowledgeRetrievalCompositionTest.kt`")
+and Section 15 ("`tests/composition/` -- extended or new composition tests (Section 14)... a later,
+separate document's responsibility") already delegate exact composition-test file naming downstream to
+this Implementation Plan and never themselves claim a closed, exhaustive composition-test inventory --
+the incompleteness corrected here originated in this Plan's own Section 3 resolution, not in Contract
+Design's disclosure.
+
 ---
 
 ## 4. Locked File Boundary — Confirmed Complete
+
+**Correction** (governance correction, discovered during Implementation Unit 3): this section's own
+original claim, below -- reached from Section 3's own then-incomplete resolution -- undercounted the
+resolved test-file boundary. It is corrected here, in place, to the now fully resolved ten-file
+boundary (Section 3, above, as corrected). The verification method below (direct inspection of every
+`DefaultReasoningContextAssembler(` construction site) remains valid, unchanged, and still confirms
+the production boundary; only the independently discovered composition-test gap required widening the
+test-file count.
 
 Verified by direct inspection (every construction site of `DefaultReasoningContextAssembler(` in the
 whole repository is one of the three files already in this list; no other file constructs it) against
 Scope Lock Section 9. No file beyond this list is authorized; a discovered need for another file is a
 stop condition (Section 19), not implementation discretion.
 
-**Production (exactly four):**
+**Production (exactly four, unchanged by this correction):**
 
 ```text
 src/interfaces/KnowledgeStore.kt                      (additive only)
@@ -136,16 +182,18 @@ src/runtime/DefaultReasoningContextAssembler.kt       (constructor + rendering c
 src/composition/ParkerRuntime.kt                      (composition cutover)
 ```
 
-**Tests (exactly four, two named by the Scope Lock, two resolved in Section 3, above):**
+**Tests (exactly six, two named by the Scope Lock, four resolved in Section 3, above, as corrected):**
 
 ```text
-tests/runtime/DefaultReasoningKnowledgeSourceTest.kt                    (new file)
-tests/runtime/DefaultReasoningContextAssemblerTest.kt                   (extended)
-tests/composition/ParkerRuntimeReasoningKnowledgeSourceCompositionTest.kt  (new file)
-tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt          (extended)
+tests/runtime/DefaultReasoningKnowledgeSourceTest.kt                               (existing, added by merged Unit 2)
+tests/runtime/DefaultReasoningContextAssemblerTest.kt                              (existing, extended)
+tests/composition/ParkerRuntimeAuthorizationPurposeCompositionTest.kt              (existing, Unit 3 compatibility-only)
+tests/composition/ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt (existing, Unit 3 compatibility-only)
+tests/composition/ParkerRuntimeReasoningKnowledgeSourceCompositionTest.kt          (new file, Unit 4 only)
+tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt                  (existing, extended, Unit 5 only)
 ```
 
-Eight files, total, across the entire programme. No other production or test file may be created or
+Ten files, total, across the entire programme. No other production or test file may be created or
 modified by any unit below.
 
 ---
@@ -156,7 +204,7 @@ modified by any unit below.
 |---|---|---|---|
 | 1 | Knowledge Memory Contract Additions | `src/interfaces/KnowledgeStore.kt` | none |
 | 2 | `DefaultReasoningKnowledgeSource` Implementation | `src/runtime/DefaultReasoningKnowledgeSource.kt` (new); `tests/runtime/DefaultReasoningKnowledgeSourceTest.kt` (new) | Unit 1 |
-| 3 | Atomic Assembler and Production Composition Cutover | `src/runtime/DefaultReasoningContextAssembler.kt`; `tests/runtime/DefaultReasoningContextAssemblerTest.kt`; `src/composition/ParkerRuntime.kt` | Units 1, 2 |
+| 3 | Atomic Assembler and Production Composition Cutover | `src/runtime/DefaultReasoningContextAssembler.kt`; `tests/runtime/DefaultReasoningContextAssemblerTest.kt`; `src/composition/ParkerRuntime.kt`; `tests/composition/ParkerRuntimeAuthorizationPurposeCompositionTest.kt` (compatibility-only); `tests/composition/ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt` (compatibility-only) | Units 1, 2 |
 | 4 | Composition Verification (test-only) | `tests/composition/ParkerRuntimeReasoningKnowledgeSourceCompositionTest.kt` (new) | Unit 3 |
 | 5 | Genuine End-to-End Proof (test-only) | `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` | Unit 4 |
 
@@ -402,9 +450,20 @@ Design Invariant 7 and Scope Lock Section 11's referenced-evidence guarantees.
 ## 8. Unit 3 — Atomic Assembler and Production Composition Cutover
 
 **Files this unit may create or modify:** `src/runtime/DefaultReasoningContextAssembler.kt`;
-`tests/runtime/DefaultReasoningContextAssemblerTest.kt`; `src/composition/ParkerRuntime.kt`. No other
-file. Unit 3's own tests may modify only `tests/runtime/DefaultReasoningContextAssemblerTest.kt` -- no
-composition test file is created or modified by this unit.
+`tests/runtime/DefaultReasoningContextAssemblerTest.kt`; `src/composition/ParkerRuntime.kt`;
+`tests/composition/ParkerRuntimeAuthorizationPurposeCompositionTest.kt`;
+`tests/composition/ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt`. No other file.
+
+**Governance correction to this unit's own original three-file boundary** (Section 3, Section 4,
+above, as corrected): discovered via live Gradle execution, after this unit's original three-file
+production and rendering change was implemented in the preserved, uncommitted Unit 3 working tree
+sufficiently to run the full suite and expose the scope conflict -- not yet committed, independently
+reviewed, or accepted, and not a defect requiring any Kotlin change. The two composition test files
+above are authorised only
+for the four exact compatibility corrections fixed below, in this section -- no other edit to either
+file, and no edit at all to `tests/composition/ParkerRuntimeReasoningKnowledgeSourceCompositionTest.kt`
+(Unit 4 only, not before) or `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` (Unit
+5 only, not before).
 
 **Why this unit now spans both the assembler and the composition root.** This document's own prior
 revision split the assembler's constructor-signature change into a separate, earlier unit from its
@@ -522,9 +581,73 @@ construction (current line 905) or to the `candidateEvaluationMemoryRetrieval`/
 pre-existing Gap #54 `PermissionPolicyRule` entries (current lines 617-656). No change to any Evidence
 Intelligence, Evidence Custodian, or Memory Core Durability wiring. `KnowledgeSource`, `KnowledgeStore`,
 and `InMemoryKnowledgeStore` are not deleted anywhere in this repository by this unit -- only the one
-production wiring site above. No composition test file is created or modified by this unit --
-composition-level verification is exclusively Unit 4's own, later, separately reviewed responsibility
-(Section 9, below).
+production wiring site above. No composition test file, beyond the two named at the top of this
+section and only for the four compatibility corrections fixed immediately below, is created or
+modified by this unit -- composition-level *verification* (proof that Unit 3's production composition
+genuinely holds: construction, shared-instance, positive/negative authorization, least-authority, and
+Purpose-active-at-composition-time proof for `DefaultReasoningKnowledgeSource`, Contract Design Section
+14) remains exclusively Unit 4's own, later, separately reviewed responsibility (Section 9, below);
+this unit's own two compatibility corrections prove nothing new and add no proof responsibility of
+their own.
+
+**Frozen compatibility corrections, exact -- `ParkerRuntimeAuthorizationPurposeCompositionTest.kt`
+and `ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt`.** Both files predate this
+programme (Gap #54 Memory Retrieval Operationalisation) and each carry closed-world assertions this
+programme's own locked third Purpose and three-rule contract (this section, above; Contract Design
+Section 7, Contract Invariant 13; Scope Lock Section 4, Section 7) directly and foreseeably
+invalidates. Exactly four assertions require correction, no more:
+
+1. `ParkerRuntimeAuthorizationPurposeCompositionTest.kt`, `` `exactly the two accepted Memory
+   retrieval Authorization Purpose values are registered` `` (current line 132): the expected, exact
+   registered-Purpose `Set` expands from two entries to three by adding
+   `AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")`, with all three confirmed
+   active where the existing test already confirms activity for the original two. The assertion
+   remains an exact-`Set` equality check -- never loosened to `containsAll`, a subset check, or a
+   size-only check.
+2. `ParkerRuntimeAuthorizationPurposeCompositionTest.kt`, `` `only the two Unit 4 candidate retrieval
+   rules name an authorizationPurpose` `` (current line 151): the expected count of Purpose-bound
+   rules expands from two to four. The rules must partition exactly: the original two
+   `knowledge-memory.candidate-evaluation` rules remain asserted unchanged, by their own existing
+   per-rule checks (outcome `APPROVED`; `proposedAction` in
+   `{PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME, PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME}`);
+   the two new `knowledge-memory.reasoning-context-retrieval` rules are added, asserted `APPROVED`
+   with `proposedAction` in
+   `{DefaultReasoningKnowledgeSource.RETRIEVE_FOR_REASONING_CONTEXT_ACTION_NAME, PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME}`;
+   Evidence Intelligence's own Purpose remains asserted to hold zero Purpose-bound rules, exactly as
+   today.
+3. `ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt`, `` `production registry
+   contains exactly both accepted active real purposes` `` (current line 118): identical correction to
+   item 1, above, in this file's own class scope -- the expected exact registered-Purpose `Set`
+   expands from two entries to three, plus the file's own existing `registry.isActive(...)` style
+   assertion, added for the third Purpose.
+4. `ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt`, `` `production contains exactly
+   two unchanged guards and two candidate-only approval rules` `` (current line 133): the filtered
+   `memoryVerbRules` (rules whose `proposedAction` is `PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME`
+   or `PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME`) expand from four to five,
+   solely by the addition of the one new `knowledge-memory.reasoning-context-retrieval`
+   `memory.retrieve` `APPROVED` rule (this section, above, third rule) -- the other two new rules use
+   the distinct `knowledge.retrieve_for_reasoning_context` verb and remain outside this filter,
+   unchanged. Both original `DENIED` guards and both original candidate-only `APPROVED` rules remain
+   asserted, by exact value, completely unchanged. The file's own separate, standalone Evidence
+   Intelligence isolation assertion (current line 184,
+   `` rules.none { it.authorizationPurpose == evidencePurpose && it.decisionIsApproved() } ``)
+   requires no change and remains true.
+
+**These four corrections, and nothing else, are authorised.** They preserve every original Gap #54
+positive, denial, ambiguity, and Purpose-isolation guarantee these two files already proved, and every
+original least-authority guarantee this programme's own Contract Design and Scope Lock already lock --
+no assertion above is loosened, removed, or weakened; each closed set or count is truthfully widened to
+include a value this programme's own already-frozen Unit 3 production contract, as implemented in the
+preserved working tree and observed during the halted full-suite run, genuinely produces. They do not
+authorise a `memory.retrieve_document`/`ResourceType.DOCUMENT` approval of any kind, under any Purpose.
+They do not authorise any Unit 4 proof -- construction, shared-instance, positive/negative
+authorization, least-authority, or Purpose-active-at-composition-time proof for
+`DefaultReasoningKnowledgeSource` -- inside either file; that proof remains exclusively
+`tests/composition/ParkerRuntimeReasoningKnowledgeSourceCompositionTest.kt`'s own, later, Unit-4-only
+responsibility (Section 9, below). They require no production change beyond what this unit's own
+already-frozen production contract (this section, above), as implemented in the preserved working
+tree, already supplies. Nothing in this governance correction constitutes Unit 3 completion, review,
+acceptance, or authority to bypass its required reviews.
 
 **Required tests, exact** (`tests/runtime/DefaultReasoningContextAssemblerTest.kt`, replacing the
 existing "Memory (Sprint 11 Unit 7)" test block, its own current lines 397-571 (ending immediately
@@ -579,7 +702,9 @@ build passing; direct inspection of the `src/composition/ParkerRuntime.kt` diff,
 confirming the assembler's constructor-signature change and the production composition cutover landed
 together in this unit's own single commit and review boundary, with no broken intermediate commit
 between them; grep-level confirmation that `InMemoryKnowledgeStore(` and `memorySource` no longer
-appear anywhere in `ParkerRuntime.kt`.
+appear anywhere in `ParkerRuntime.kt`; the four frozen compatibility corrections, above, passing, with
+every original Gap #54 guarantee in both files confirmed preserved by direct diff inspection, and no
+edit to either file beyond those four corrections.
 
 **Stop conditions:** halt if any `KnowledgeSource`/`KnowledgeQuery`/`KnowledgeRecord` symbol remains
 referenced anywhere in `DefaultReasoningContextAssembler.kt` or its test after this unit; halt if
@@ -1244,6 +1369,13 @@ with no implementation-stage discretion added that conflicts with any of them:
   `src/composition/ParkerRuntime.kt`, for any reason, including in response to its own failing tests --
   an incomplete or incorrect Unit 3 production composition is a Unit 3 review failure and a stop
   condition, never authority for Unit 4 to edit production.
+- Halt if `ParkerRuntimeAuthorizationPurposeCompositionTest.kt` or
+  `ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt` is found, at implementation time,
+  to require any change beyond the four exact compatibility corrections Section 8, above, freezes --
+  or if any original Gap #54 positive, denial, ambiguity, Purpose-isolation, or least-authority
+  guarantee either file already proved would need to be removed or weakened to make the correction --
+  either finding is itself a governance-scope discovery requiring a return to this document for a
+  further amendment, never silent implementation-time judgment.
 
 ---
 
@@ -1272,7 +1404,7 @@ No step in this sequence is performed, and no claim of its outcome is made, by t
 |---|---|---|---|---|---|---|
 | 1 | Contract Design §4, §8; Scope Lock §4 | `src/interfaces/KnowledgeStore.kt` | none (Section 6) | Unit Completion + Independent Constitutional | none (first unit) | Strictly additive diff; full suite passes unchanged |
 | 2 | Contract Design §4, §5, §7, §9, §13 Invariant 7; Scope Lock §5, §6, §11 | `src/runtime/DefaultReasoningKnowledgeSource.kt` (new); `tests/runtime/DefaultReasoningKnowledgeSourceTest.kt` (new) | Section 7 | Unit Completion + Independent Constitutional | Unit 1 reviews accepted | Every Section 7 test passing as its own distinct test -- item-level denial, denied Assertion reference, denied Entity reference, missing Assertion reference, missing Entity reference, unsupported reference kinds, record-status gating, authorized-partial result, and generic-basis false-match regression each proven separately, with no substitution between them; no excluded call made |
-| 3 | Contract Design §7, §8, §12; Scope Lock §4, §6, §7, §9 | `src/runtime/DefaultReasoningContextAssembler.kt`; `tests/runtime/DefaultReasoningContextAssemblerTest.kt`; `src/composition/ParkerRuntime.kt` | Section 8 | Unit Completion + Independent Constitutional (plus direct `ParkerRuntime.kt` diff inspection and a successful full Gradle suite) | Units 1-2 reviews accepted | Every Section 8 test passing; no legacy symbol remains; assembler constructor change and production cutover committed atomically in this one unit; single-feed cutover confirmed; exactly three new rules; no Document authority |
+| 3 | Contract Design §7, §8, §12; Scope Lock §4, §6, §7, §9 | `src/runtime/DefaultReasoningContextAssembler.kt`; `tests/runtime/DefaultReasoningContextAssemblerTest.kt`; `src/composition/ParkerRuntime.kt`; `tests/composition/ParkerRuntimeAuthorizationPurposeCompositionTest.kt` (compatibility-only); `tests/composition/ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest.kt` (compatibility-only) | Section 8 | Unit Completion + Independent Constitutional (plus direct `ParkerRuntime.kt` diff inspection and a successful full Gradle suite) | Units 1-2 reviews accepted | Every Section 8 test passing; no legacy symbol remains; assembler constructor change and production cutover committed atomically in this one unit; single-feed cutover confirmed; exactly three new rules; no Document authority; the four exact compatibility corrections (Section 8, above) pass, with every original Gap #54 guarantee in both files preserved unweakened; full local Gradle suite passing |
 | 4 | Scope Lock §11; Contract Design §14 | `tests/composition/ParkerRuntimeReasoningKnowledgeSourceCompositionTest.kt` (new) -- test-only, no production file | Section 9 | Unit Completion + Independent Constitutional | Unit 3 reviews accepted | Every Section 9 test passing against Unit 3's already-accepted production composition; this unit's own diff touches no production file; least-authority proof built from an independently constructed, real production object graph, with no reflection into, accessor on, or widened visibility into `ParkerRuntime`'s own private instance; Document-denial proof's own principal confirmed `ACTIVE` before either authorization assertion, both assertions genuinely decided by `DefaultPermissionPolicy`, no invented `resourceType` request field; real `InMemoryActionVocabulary`/`ActionMapper` constructed with the exact transcribed `READ`/`DOCUMENT` mapping, `vocabulary.lookup(...)` precondition and `actionMapper.map(...)` non-vacuity assertion both confirmed passing, so `UNKNOWN_ACTION`/`RESOURCE_TYPE_MISMATCH` are excluded as the cause of the observed `DENIED`; no claim that the real `DefaultPermissionPolicy` produces a mixed per-item outcome |
 | 5 | Planning Review §11; Contract Design §14; Scope Lock §2 | `tests/composition/ParkerRuntimeReasoningContextIntegrationTest.kt` -- test-only | Section 10 | Unit Completion + Independent Constitutional | Unit 4 reviews accepted | Genuine end-to-end proof passing; authorized-empty proof passing; no synthetic substitution; no composed mixed-evidence negative companion attempted or reconstructed by any means |
 
