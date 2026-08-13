@@ -23,7 +23,6 @@ import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeRetrieval
-import parker.core.interfaces.KnowledgeSource
 import parker.core.interfaces.KnowledgeSubmission
 import parker.core.interfaces.MemoryCore
 import parker.core.interfaces.ModuleConnectivityDeclaration
@@ -41,6 +40,7 @@ import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContextAssembler
+import parker.core.interfaces.ReasoningKnowledgeSource
 import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.Resource
 import parker.core.interfaces.ResourceId
@@ -64,6 +64,7 @@ import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
 import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
+import parker.core.runtime.DefaultReasoningKnowledgeSource
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.DurableMemoryCore
@@ -86,7 +87,6 @@ import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
 import parker.core.runtime.InMemoryKnowledgeItemPersistence
-import parker.core.runtime.InMemoryKnowledgeStore
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryPlannerRuntime
 import parker.core.runtime.InMemoryResourceRegistry
@@ -261,18 +261,22 @@ class ParkerRuntime(
      * [ConversationEngine] (`InMemoryConversationEngine`) -- moved ahead of
      * the Assembler's own construction, since the Assembler now also
      * depends on this same instance under its narrower
-     * `ConversationHistorySource` type; (2a-ii, Sprint 11 Unit 7) construct
-     * `InMemoryKnowledgeStore` -- the first production construction of Memory
-     * anywhere in this repository's real, running composition root
-     * (`docs/architecture/MEMORY_SOURCE_GOVERNANCE_REVIEW.md` Finding 1);
-     * (2a-iii, Sprint 11 Unit 8) construct `InMemoryWorldModel` -- the
+     * `ConversationHistorySource` type; (2a-ii, Sprint 11 Unit 8) construct
+     * `InMemoryWorldModel` -- the
      * first production construction of the World Model anywhere in this
      * repository's real, running composition root
      * (`docs/architecture/WORLD_MODEL_SOURCE_GOVERNANCE_REVIEW.md` Finding
-     * 1); (2b, Sprint 11 Unit 3/6/7/8) construct
+     * 1); (2b, Knowledge Discoverability and Governed Retrieval into
+     * Reasoning Context, Implementation Unit 3) construct
+     * `DefaultReasoningKnowledgeSource` from the same, already-shared
+     * `knowledgeItemPersistence` and `permissionEngine` instances
+     * `DefaultKnowledgeRetrieval` itself uses, plus a new Purpose-bound
+     * `MemoryRetrieval` view; (2c, Sprint 11 Unit 3/6/7/8, revised by
+     * Implementation Unit 3) construct
      * the [ReasoningContextAssembler] (`DefaultReasoningContextAssembler`),
      * injecting the already-constructed `identityService`, `toolRegistry`,
-     * `conversationHistorySource`, `memorySource`, and `worldModelSource`;
+     * `conversationHistorySource`, the new `reasoningKnowledgeSource`, and
+     * `worldModelSource`;
      * (3) register and activate this runtime's
      * system Principals (`system.parker`, `system.conversation-engine`,
      * `system.response-composer`) and the configured owner Principal;
@@ -365,6 +369,7 @@ class ParkerRuntime(
         stage("Memory retrieval Authorization Purpose registration") {
             authorizationPurposeRegistry.register(KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE)
             authorizationPurposeRegistry.register(EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE)
+            authorizationPurposeRegistry.register(REASONING_CONTEXT_RETRIEVAL_PURPOSE)
         }
         val toolRegistry = InMemoryToolRegistry(resourceRegistry)
         val moduleRegistry = InMemoryModuleRegistry(toolRegistry, resourceRegistry)
@@ -382,14 +387,19 @@ class ParkerRuntime(
         conversationEngine = inMemoryConversationEngine
         val conversationHistorySource: ConversationHistorySource = inMemoryConversationEngine
 
-        // Sprint 11 Unit 7: InMemoryKnowledgeStore is constructed here for the first time in this
-        // repository's production composition root -- nowhere before this Unit did anything
-        // construct KnowledgeStore/InMemoryKnowledgeStore in the real, running system (Governance
-        // Review Finding 1). This is a new construction step, not a reordering: InMemoryKnowledgeStore
-        // takes only its defaulted DefaultKnowledgePromotionPolicy, so no new ParkerRuntimeConfig
-        // field or ordering constraint is introduced beyond existing before the Assembler.
-        val inMemoryMemoryStore = InMemoryKnowledgeStore()
-        val memorySource: KnowledgeSource = inMemoryMemoryStore
+        // Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation
+        // Unit 3: the legacy InMemoryKnowledgeStore()/memorySource production binding this comment
+        // block, and its own Sprint 11 Unit 7 construction step, previously occupied here is
+        // retired -- no production path constructs InMemoryKnowledgeStore any longer.
+        // DefaultReasoningContextAssembler's own fourth dependency is now a ReasoningKnowledgeSource,
+        // constructed further below (Implementation Plan Section 8), alongside the same, already-
+        // shared knowledgeItemPersistence and permissionEngine instances DefaultKnowledgeRetrieval
+        // itself uses -- neither of which exists yet at this point in construction, so
+        // reasoningContextAssembler's own assignment (its declaration remains the same
+        // private lateinit var field, read only later inside submitOwnerMessage, never during
+        // construction by another coordinator) moves there too, in the same atomic change as this
+        // retirement. KnowledgeSource, KnowledgeStore, and InMemoryKnowledgeStore are not deleted --
+        // only this one production wiring site.
 
         // Sprint 11 Unit 8: InMemoryWorldModel is constructed here for the first time in this
         // repository's production composition root -- nowhere before this Unit did anything
@@ -400,14 +410,10 @@ class ParkerRuntime(
         // constraint is introduced beyond existing before the Assembler. Exactly one instance is
         // constructed and exposed to the Assembler only through the narrower WorldModelSource
         // type -- no duplicate ownership, no duplicate state, mirroring precisely how
-        // InMemoryKnowledgeStore/InMemoryConversationEngine are each constructed once and exposed
-        // through two interfaces on the same instance.
+        // InMemoryConversationEngine is itself constructed once and exposed through two interfaces
+        // on the same instance.
         val inMemoryWorldModel = InMemoryWorldModel()
         val worldModelSource: WorldModelSource = inMemoryWorldModel
-
-        reasoningContextAssembler = stage("Reasoning Context Assembler construction") {
-            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource, memorySource, worldModelSource)
-        }
 
         registerSystemIdentities(identityService)
 
@@ -672,6 +678,44 @@ class ParkerRuntime(
                     outcome = PermissionDecisionOutcome.APPROVED,
                     level = PermissionLevel.AUTOMATIC,
                 ),
+                // Knowledge Discoverability and Governed Retrieval into Reasoning Context,
+                // Implementation Unit 3 (Contract Design Section 7; Scope Lock Section 4). Fail-closed
+                // guard for the new verb -- specificity 1, outranks the existing coarse (READ, MEMORY)
+                // approval above (specificity 0) for this verb only; leaves that coarse rule, and
+                // every other verb it still governs, completely unchanged.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.MEMORY,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = DefaultReasoningKnowledgeSource.RETRIEVE_FOR_REASONING_CONTEXT_ACTION_NAME,
+                ),
+                // Specificity 2: outranks the guard immediately above only for a request carrying
+                // this exact, active Purpose.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.MEMORY,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
+                    proposedAction = DefaultReasoningKnowledgeSource.RETRIEVE_FOR_REASONING_CONTEXT_ACTION_NAME,
+                ),
+                // Memory Core evidence resolution: the existing Gap #54 Unit 2 DENIED guard for
+                // memory.retrieve (above) already governs every Purpose without a specificity-2
+                // override -- only this one rule is added. No memory.retrieve_document rule is added
+                // for this Purpose -- least authority (Contract Invariant 13): the locked algorithm
+                // never calls getDocument, so no Document-retrieval authority is granted; the
+                // pre-existing Gap #54 verb-only DENIED guard for memory.retrieve_document remains
+                // untouched and applicable to this Purpose exactly as to every other Purpose lacking
+                // its own specificity-2 override.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.MEMORY,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
+                    proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+                ),
             ),
         )
         permissionEngine = DefaultPermissionEngine(identityService, permissionPolicy)
@@ -692,9 +736,10 @@ class ParkerRuntime(
         // planning-level convenience, never as a new architectural decision" precedent.
         //
         // InMemoryMemoryCore, recovered below, is the first production construction of MemoryCore
-        // anywhere in this composition root -- InMemoryKnowledgeStore (Programme 3's own Knowledge
-        // layer, already constructed above) is a distinct interface and has never required a live
-        // MemoryCore instance. Plain InMemoryMemoryCore, wrapped by DurableMemoryCore, is used
+        // anywhere in this composition root -- knowledgeItemPersistence (Programme 3's own Knowledge
+        // layer, constructed separately, elsewhere in this same composition sequence) is a distinct
+        // interface and has never required a live MemoryCore instance. Plain InMemoryMemoryCore,
+        // wrapped by DurableMemoryCore, is used
         // deliberately, not the EventPublishingMemoryCore decorator that already exists in this
         // package (src/composition/EventPublishingMemoryCore.kt): wiring Memory Core's own event
         // publication live for the first time remains a separate decision this Unit does not make --
@@ -904,6 +949,40 @@ class ParkerRuntime(
         // this class already does.
         knowledgeRetrieval = DefaultKnowledgeRetrieval(knowledgeItemPersistence, permissionEngine)
 
+        // Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation
+        // Unit 3 (Contract Design Section 7, Section 12; Scope Lock Section 4, Section 7). A third
+        // immutable Purpose-bound view over the same permissionFilteredMemoryRetrieval parent above --
+        // never a second, parallel MemoryRetrieval decorator -- authorizing only this Purpose's own
+        // two reachable verbs (knowledge.retrieve_for_reasoning_context, memory.retrieve); no
+        // Document authority. DefaultReasoningKnowledgeSource reuses the same, already-shared
+        // knowledgeItemPersistence and permissionEngine instances DefaultKnowledgeRetrieval itself
+        // uses immediately above -- never a second, parallel persistence instance -- so anything
+        // knowledgeSubmission successfully promotes is genuinely reachable through this new surface
+        // too. clock is left defaulted (the real system clock).
+        val reasoningContextMemoryRetrieval =
+            permissionFilteredMemoryRetrieval.forAuthorizationPurpose(REASONING_CONTEXT_RETRIEVAL_PURPOSE)
+        val reasoningKnowledgeSource: ReasoningKnowledgeSource = DefaultReasoningKnowledgeSource(
+            knowledgeItemPersistence,
+            permissionEngine,
+            reasoningContextMemoryRetrieval,
+            REASONING_CONTEXT_RETRIEVAL_PURPOSE,
+        )
+
+        // Cutover, atomically, in this same unit and the same reviewable change as
+        // DefaultReasoningContextAssembler's own constructor-signature change: the legacy
+        // InMemoryKnowledgeStore()/memorySource production binding is retired (above), and
+        // DefaultReasoningContextAssembler is constructed here instead with the new
+        // reasoningKnowledgeSource in that position -- there is no intermediate state, and no
+        // separately reviewed unit boundary, at which the assembler declares one dependency type
+        // while production still supplies the other. reasoningContextAssembler is a private
+        // lateinit var field (declared once, near the top of this class) read only later, inside
+        // submitOwnerMessage -- moving its own assignment here, after its now-real dependencies
+        // exist, changes no other coordinator's own construction, since none of them read this
+        // field during construction.
+        reasoningContextAssembler = stage("Reasoning Context Assembler construction") {
+            DefaultReasoningContextAssembler(identityService, toolRegistry, conversationHistorySource, reasoningKnowledgeSource, worldModelSource)
+        }
+
         val evidenceIntelligenceInputResolver = EvidenceIntelligenceInputResolver(defaultEvidenceCustodian, evidenceIntelligenceMemoryRetrieval)
         val evidenceIntelligenceReasoningCoordinator = EvidenceIntelligenceReasoningCoordinator(reasoningProvider)
         evidenceIntelligence = DefaultEvidenceIntelligence(evidenceIntelligenceInputResolver, evidenceIntelligenceReasoningCoordinator)
@@ -1008,6 +1087,16 @@ class ParkerRuntime(
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = DefaultKnowledgeRetrieval.RETRIEVE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.MEMORY)),
+                ),
+            )
+            // Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation
+            // Unit 3 (Contract Design Section 7). No new Resource -- this new verb reuses the same
+            // Knowledge Retrieval resource identity registered immediately above, since both verbs
+            // govern the same conceptual Knowledge Retrieval boundary.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DefaultReasoningKnowledgeSource.RETRIEVE_FOR_REASONING_CONTEXT_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.MEMORY)),
                 ),
             )
@@ -1437,6 +1526,8 @@ class ParkerRuntime(
             AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
         val EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE =
             AuthorizationPurposeId("evidence-intelligence.input-resolution")
+        val REASONING_CONTEXT_RETRIEVAL_PURPOSE =
+            AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
         val SYSTEM_PARKER_PRINCIPAL_ID = PrincipalId("system.parker")
         val CONVERSATION_ENGINE_PRINCIPAL_ID = PrincipalId("system.conversation-engine")
         val RESPONSE_COMPOSER_PRINCIPAL_ID = PrincipalId("system.response-composer")

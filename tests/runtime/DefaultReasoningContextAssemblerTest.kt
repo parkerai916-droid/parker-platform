@@ -1,20 +1,34 @@
 package parker.core.runtime
 
 import kotlinx.coroutines.test.runTest
-import parker.core.interfaces.CandidateKnowledge
+import parker.core.interfaces.AuthorizationPurposeId
+import parker.core.interfaces.CandidateAssertion
+import parker.core.interfaces.CandidateProvenance
+import parker.core.interfaces.ContentNature
 import parker.core.interfaces.ConversationId
 import parker.core.interfaces.CorrelationId
+import parker.core.interfaces.DecisionId
+import parker.core.interfaces.EvidentialState
+import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.InboundOwnerMessage
-import parker.core.interfaces.KnowledgeCategory
-import parker.core.interfaces.KnowledgeId
-import parker.core.interfaces.KnowledgeRecord
-import parker.core.interfaces.KnowledgeSource
+import parker.core.interfaces.KnowledgeCandidate
+import parker.core.interfaces.KnowledgeItemStatus
+import parker.core.interfaces.KnowledgeRetrievalQuery
+import parker.core.interfaces.KnowledgeSubmissionDisposition
+import parker.core.interfaces.MemoryCoreRecordReference
 import parker.core.interfaces.ModuleId
+import parker.core.interfaces.PermissionAction
+import parker.core.interfaces.PermissionDecision
+import parker.core.interfaces.PermissionDecisionOutcome
+import parker.core.interfaces.PermissionLevel
 import parker.core.interfaces.Principal
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
+import parker.core.interfaces.ReasoningKnowledgeSource
 import parker.core.interfaces.ResolvedInboundMessage
+import parker.core.interfaces.SafeKnowledgeResultEntry
+import parker.core.interfaces.StalenessDisclosure
 import parker.core.interfaces.ToolDescriptor
 import parker.core.interfaces.Turn
 import parker.core.interfaces.TurnId
@@ -28,6 +42,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -51,24 +66,26 @@ import kotlin.test.assertTrue
  * a single prior Turn renders one entry; multiple prior Turns render in
  * the exact order returned; a `history` failure propagates unchanged.
  *
- * Plus items added by Sprint 11 Unit 7 (Memory Source Integration): an
- * empty memory result renders no entries but still calls `recall` exactly
- * once; a single returned memory renders one entry; multiple returned
- * memories render in the exact order `recall` returns them, never
- * reordered; confidence is rendered when present and omitted, not
- * fabricated, when absent; the constructed `KnowledgeQuery` carries the
- * sender `PrincipalId`, the request text as `relevance`, and the
- * message's own `correlationId`, with `category` always `null`;
- * `maximumResults` is always positive and caller-supplied, with no
- * specific value architecturally asserted; a `recall` failure propagates
- * unchanged; `KnowledgeSource` exposes no mutation operation; and one
- * real-collaborator test exercises a real [InMemoryKnowledgeStore], not a
- * fake, end-to-end.
+ * Plus items originally added by Sprint 11 Unit 7 (Memory Source Integration) and revised by
+ * Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation Unit 3
+ * (`docs/governance/KNOWLEDGE_DISCOVERABILITY_REASONING_CONTEXT_IMPLEMENTATION_PLAN.md` Section 8),
+ * which replaced the assembler's former legacy memory-source dependency with
+ * [ReasoningKnowledgeSource]: an empty `recall` result renders no entries but still calls `recall`
+ * exactly once; a single returned [SafeKnowledgeResultEntry] renders one entry; multiple returned
+ * entries render in the exact order `recall` returns them, never reordered; `evidentialState`,
+ * `status`, and `staleness` are each rendered via their own `.name`, exactly, never fabricated, never
+ * omitted; the frozen `escapeForPrompt` contract is exercised against every character it defines; the
+ * constructed [KnowledgeRetrievalQuery] carries the request text as `relevance` and the message's own
+ * `correlationId`, while `requestingPrincipalId` is passed as `recall`'s own separate first parameter;
+ * `maximumResults` is always positive and caller-supplied, with no specific value architecturally
+ * asserted; a `recall` failure propagates unchanged; [ReasoningKnowledgeSource] exposes no mutation
+ * operation; and one genuine end-to-end test exercises a real [DefaultReasoningKnowledgeSource],
+ * not a fake, wired to a real [InMemoryKnowledgeItemPersistence], a real [DefaultKnowledgeSubmission],
+ * a real [DefaultKnowledgeCandidateEvaluator], and a real [InMemoryMemoryCore].
  *
  * [FakeIdentityService], [FakeToolRegistry], [FakeConversationHistorySource],
- * and [FakeMemorySource] are used throughout (except where a real
- * [InMemoryKnowledgeStore] is deliberately substituted, Section 13, below),
- * never a real
+ * and [FakeReasoningKnowledgeSource] are used throughout (except where the real collaborators above
+ * are deliberately substituted, Section 13, below), never a real
  * [InMemoryIdentityService]/[InMemoryToolRegistry]/[InMemoryConversationEngine]
  * -- this file exercises [DefaultReasoningContextAssembler] in isolation,
  * exactly as [ConversationTurnReasoningCoordinatorTest] and
@@ -127,7 +144,7 @@ class DefaultReasoningContextAssemblerTest {
         val message = message(text = "what's on my calendar today?")
         val identityService = FakeIdentityService { principalFor -> if (principalFor == ownerPrincipalId) principal(ownerPrincipalId) else null }
         val toolRegistry = FakeToolRegistry { listOf(descriptor("tool.notify", "Notify Owner", "Delivers a text reply to the owner")) }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message))
 
@@ -146,7 +163,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `the returned ReasoningContext's entries are not affected by a later, separate assemble call`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
         val message = message()
 
         val first = assembler.assemble(resolved(message))
@@ -163,7 +180,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `an empty tool catalogue produces no Available tool entries but a still-valid, non-empty ReasoningContext`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -177,7 +194,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `a resolved requesting principal is rendered with its display name and PrincipalId`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId, displayName = "Steven") }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -191,7 +208,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `an unresolvable requesting principal is rendered with an explicit not-resolved fallback, not an exception`() = runTest {
         val identityService = FakeIdentityService { null }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -210,7 +227,7 @@ class DefaultReasoningContextAssemblerTest {
             descriptor("tool.calendar", "Calendar Lookup", "Reads the owner's calendar"),
         )
         val toolRegistry = FakeToolRegistry { tools }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -226,7 +243,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `the message's own timestamp, not wall-clock time, is rendered`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
         val fixedTimestamp = Instant.parse("2026-07-24T14:00:00Z")
 
         val context = assembler.assemble(resolved(message(timestamp = fixedTimestamp)))
@@ -242,7 +259,7 @@ class DefaultReasoningContextAssemblerTest {
         val failure = IllegalStateException("simulated identity resolution failure")
         val identityService = FakeIdentityService { throw failure }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         assertSame(failure, thrown)
@@ -253,7 +270,7 @@ class DefaultReasoningContextAssemblerTest {
         val failure = IllegalStateException("simulated tool registry failure")
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { throw failure }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         assertSame(failure, thrown)
@@ -265,7 +282,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `a dependency failure never produces a degraded ReasoningContext -- assemble either returns a complete one or throws`() = runTest {
         val identityService = FakeIdentityService { throw IllegalStateException("unreachable") }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         // No partial ReasoningContext is observable anywhere -- assemble threw before constructing one.
@@ -277,7 +294,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `two calls with equal-content messages produce equal but reference-distinct ReasoningContext instances`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
         val fixedTimestamp = Instant.parse("2026-01-01T00:00:00Z")
         val first = assembler.assemble(resolved(message(timestamp = fixedTimestamp, correlationId = "corr-fixed")))
         val second = assembler.assemble(resolved(message(timestamp = fixedTimestamp, correlationId = "corr-fixed")))
@@ -294,7 +311,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `the resolved ConversationId is rendered as its own entry, with no dependency call of any kind`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
         val conversationId = ConversationId("conv-rendered-test")
 
         val context = assembler.assemble(resolved(message(), conversationId))
@@ -311,7 +328,7 @@ class DefaultReasoningContextAssemblerTest {
     fun `two different resolved ConversationIds for equal-content messages render different entries`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), FakeWorldModelSource())
         val message = message()
 
         val first = assembler.assemble(resolved(message, ConversationId("conv-1")))
@@ -337,7 +354,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val historySource = FakeConversationHistorySource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeReasoningKnowledgeSource(), FakeWorldModelSource())
         val conversationId = ConversationId("conv-empty-history")
 
         val context = assembler.assemble(resolved(message(), conversationId))
@@ -352,7 +369,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val historySource = FakeConversationHistorySource { listOf(turn("what's the weather like?")) }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -368,7 +385,7 @@ class DefaultReasoningContextAssemblerTest {
         val historySource = FakeConversationHistorySource {
             listOf(turn("first message"), turn("second message"), turn("third message"))
         }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -385,7 +402,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val historySource = FakeConversationHistorySource { throw failure }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeMemorySource(), FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, historySource, FakeReasoningKnowledgeSource(), FakeWorldModelSource())
 
         val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         assertSame(failure, thrown)
@@ -394,69 +411,103 @@ class DefaultReasoningContextAssemblerTest {
     // --- structural: no prohibited dependency slot exists ---
 
     @Test
-    fun `the assembler's constructor accepts exactly five dependencies -- IdentityService, ToolRegistry, ConversationHistorySource, KnowledgeSource, and WorldModelSource`() {
+    fun `the assembler's constructor accepts exactly five dependencies -- IdentityService, ToolRegistry, ConversationHistorySource, ReasoningKnowledgeSource, and WorldModelSource`() {
         val constructor = DefaultReasoningContextAssembler::class.java.declaredConstructors.single()
         val parameterTypes = constructor.parameterTypes.map { it.simpleName }.toSet()
 
         assertEquals(
-            setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "KnowledgeSource", "WorldModelSource"),
+            setOf("IdentityService", "ToolRegistry", "ConversationHistorySource", "ReasoningKnowledgeSource", "WorldModelSource"),
             parameterTypes,
         )
     }
 
-    // --- 12. Sprint 11 Unit 7: Memory rendering ---
+    // --- 12. Knowledge Discoverability and Governed Retrieval into Reasoning Context,
+    // Implementation Unit 3: Memory rendering ---
 
-    private fun memoryRecord(
-        payload: String,
-        sourceSubsystem: String = "test-harness",
-        confidence: Double? = null,
-        memoryId: KnowledgeId = KnowledgeId("memory-${System.nanoTime()}"),
-        promotedAt: Instant = Instant.parse("2026-01-01T08:00:00Z"),
-    ) = KnowledgeRecord(
-        memoryId = memoryId,
-        category = KnowledgeCategory.SEMANTIC,
-        sourceSubsystem = sourceSubsystem,
-        correlationId = "corr-memory-test",
-        promotedAt = promotedAt,
-        knowledgePayload = payload,
-        confidence = confidence,
+    /**
+     * Test-only fake, mirroring [FakeConversationHistorySource]'s lambda-based fake precedent, scoped
+     * to this file since [ReasoningKnowledgeSource] is otherwise only exercised, real, by
+     * `DefaultReasoningKnowledgeSourceTest`. Records every [KnowledgeRetrievalQuery] and requesting
+     * [PrincipalId] `recall` was called with, and how many times -- enough for tests to assert exactly
+     * one call, with the exact constructed query and principal, and no more.
+     */
+    private class FakeReasoningKnowledgeSource(
+        private val entriesFor: (KnowledgeRetrievalQuery) -> List<SafeKnowledgeResultEntry> = { emptyList() },
+    ) : ReasoningKnowledgeSource {
+
+        var recallCallCount: Int = 0
+            private set
+
+        val recallCallArguments: MutableList<KnowledgeRetrievalQuery> = mutableListOf()
+        val recallCallPrincipals: MutableList<PrincipalId> = mutableListOf()
+
+        override suspend fun recall(requestingPrincipalId: PrincipalId, query: KnowledgeRetrievalQuery): List<SafeKnowledgeResultEntry> {
+            recallCallCount++
+            recallCallArguments += query
+            recallCallPrincipals += requestingPrincipalId
+            return entriesFor(query)
+        }
+    }
+
+    private fun knowledgeEntry(
+        content: String,
+        evidentialState: EvidentialState = EvidentialState.VERIFIED_EVIDENCE,
+        status: KnowledgeItemStatus = KnowledgeItemStatus.ACTIVE,
+        staleness: StalenessDisclosure = StalenessDisclosure.INDETERMINATE,
+    ) = SafeKnowledgeResultEntry(
+        content = content,
+        evidentialState = evidentialState,
+        status = status,
+        staleness = staleness,
     )
 
     @Test
-    fun `an empty memory result produces no Memory entries but calls recall exactly once`() = runTest {
+    fun `an empty recall result produces no Memory entries but calls recall exactly once`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val memorySource = FakeMemorySource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), memorySource, FakeWorldModelSource())
+        val knowledgeSource = FakeReasoningKnowledgeSource { emptyList() }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
         assertFalse(context.entries.any { it.startsWith("Memory:") })
-        assertEquals(1, memorySource.recallCallCount)
+        assertEquals(1, knowledgeSource.recallCallCount)
     }
 
     @Test
-    fun `a single returned memory is rendered as one Memory entry`() = runTest {
+    fun `a single returned SafeKnowledgeResultEntry is rendered as one Memory entry in the exact frozen format`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val memorySource = FakeMemorySource { listOf(memoryRecord("the owner prefers window seats")) }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), memorySource, FakeWorldModelSource())
+        val knowledgeSource = FakeReasoningKnowledgeSource {
+            listOf(
+                knowledgeEntry(
+                    "the owner prefers window seats",
+                    evidentialState = EvidentialState.VERIFIED_EVIDENCE,
+                    status = KnowledgeItemStatus.ACTIVE,
+                    staleness = StalenessDisclosure.INDETERMINATE,
+                ),
+            )
+        }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
         val memoryEntries = context.entries.filter { it.startsWith("Memory:") }
         assertEquals(1, memoryEntries.size)
-        assertTrue("the owner prefers window seats" in memoryEntries.single())
+        assertEquals(
+            "Memory: the owner prefers window seats (evidentialState=VERIFIED_EVIDENCE, status=ACTIVE, staleness=INDETERMINATE)",
+            memoryEntries.single(),
+        )
     }
 
     @Test
-    fun `multiple returned memories are rendered in the exact order recall returns them, never reordered`() = runTest {
+    fun `multiple returned entries are rendered in the exact order recall returns them, never reordered`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val memorySource = FakeMemorySource {
-            listOf(memoryRecord("memory C"), memoryRecord("memory A"), memoryRecord("memory B"))
+        val knowledgeSource = FakeReasoningKnowledgeSource {
+            listOf(knowledgeEntry("memory C"), knowledgeEntry("memory A"), knowledgeEntry("memory B"))
         }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), memorySource, FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
@@ -468,100 +519,202 @@ class DefaultReasoningContextAssemblerTest {
     }
 
     @Test
-    fun `a memory's confidence is rendered when present and omitted, not fabricated, when absent`() = runTest {
+    fun `evidentialState, status, and staleness are each rendered via their own name, exactly, never fabricated or omitted`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val memorySource = FakeMemorySource {
+        val knowledgeSource = FakeReasoningKnowledgeSource {
             listOf(
-                memoryRecord("memory with confidence", confidence = 0.9),
-                memoryRecord("the owner dislikes cilantro", confidence = null),
+                knowledgeEntry(
+                    "the owner's dog is named Stellar",
+                    evidentialState = EvidentialState.CORROBORATED_EVIDENCE,
+                    status = KnowledgeItemStatus.RETIRED,
+                    staleness = StalenessDisclosure.POSSIBLY_STALE,
+                ),
             )
         }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), memorySource, FakeWorldModelSource())
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
+
+        val context = assembler.assemble(resolved(message()))
+
+        val memoryEntry = context.entries.single { it.startsWith("Memory:") }
+        assertEquals(
+            "Memory: the owner's dog is named Stellar (evidentialState=CORROBORATED_EVIDENCE, status=RETIRED, staleness=POSSIBLY_STALE)",
+            memoryEntry,
+        )
+    }
+
+    @Test
+    fun `backslash, LF, CR, and TAB each escape to their own exact two-character form`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val content = "a\\b\nc\rd\te"
+        val knowledgeSource = FakeReasoningKnowledgeSource { listOf(knowledgeEntry(content)) }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
+
+        val context = assembler.assemble(resolved(message()))
+
+        val memoryEntry = context.entries.single { it.startsWith("Memory:") }
+        assertTrue("a\\\\b\\nc\\rd\\te" in memoryEntry)
+    }
+
+    @Test
+    fun `every C0 control character other than LF, CR, and TAB, DEL, and every C1 control character escapes to its own four-hex-digit u form`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val codePoints = ((0x00..0x1F) + 0x7F + (0x80..0x9F)).toSet() - setOf(0x0A, 0x0D, 0x09)
+
+        for (codePoint in codePoints) {
+            val knowledgeSource = FakeReasoningKnowledgeSource { listOf(knowledgeEntry("x${codePoint.toChar()}y")) }
+            val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
+
+            val context = assembler.assemble(resolved(message()))
+
+            val memoryEntry = context.entries.single { it.startsWith("Memory:") }
+            val expectedEscape = "\\u" + codePoint.toString(16).uppercase().padStart(4, '0')
+            assertTrue(
+                "x$expectedEscape" + "y" in memoryEntry,
+                "codepoint 0x${codePoint.toString(16)} did not escape to $expectedEscape in: $memoryEntry",
+            )
+        }
+    }
+
+    @Test
+    fun `U+2028 and U+2029 each escape to their own deterministic four-hex-digit form`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val content = "line-separator: paragraph-separator: end"
+        val knowledgeSource = FakeReasoningKnowledgeSource { listOf(knowledgeEntry(content)) }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
+
+        val context = assembler.assemble(resolved(message()))
+
+        val memoryEntry = context.entries.single { it.startsWith("Memory:") }
+        assertTrue("line-separator:\\u2028paragraph-separator:\\u2029end" in memoryEntry)
+    }
+
+    @Test
+    fun `a content value containing a raw LF, CR, U+2028, or U+2029 still yields exactly one ReasoningContext entry, never an extra line or entry`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val content = "first\nsecond\rthird fourth fifth"
+        val knowledgeSource = FakeReasoningKnowledgeSource { listOf(knowledgeEntry(content)) }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message()))
 
         val memoryEntries = context.entries.filter { it.startsWith("Memory:") }
-        val withConfidence = memoryEntries.single { "memory with confidence" in it }
-        val withoutConfidence = memoryEntries.single { "the owner dislikes cilantro" in it }
-        assertTrue("0.9" in withConfidence)
-        assertFalse(withoutConfidence.contains(", confidence:"))
+        assertEquals(1, memoryEntries.size)
+        val rendered = memoryEntries.single()
+        assertFalse(rendered.contains('\n'))
+        assertFalse(rendered.contains('\r'))
+        assertFalse(rendered.contains(' '))
+        assertFalse(rendered.contains(' '))
     }
 
     @Test
-    fun `the constructed KnowledgeQuery carries the sender PrincipalId, the request text as relevance, and the message's own correlationId, with a null category`() = runTest {
+    fun `the constructed KnowledgeRetrievalQuery carries the request text as relevance and the message's own correlationId, with requestingPrincipalId passed as recall's own separate first parameter`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val memorySource = FakeMemorySource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), memorySource, FakeWorldModelSource())
+        val knowledgeSource = FakeReasoningKnowledgeSource { emptyList() }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
         val requestMessage = message(text = "what's the capital of France?", correlationId = "corr-memory-query-test")
 
         assembler.assemble(resolved(requestMessage))
 
-        val query = memorySource.recallCallArguments.single()
-        assertEquals(ownerPrincipalId, query.requestingPrincipalId)
+        val query = knowledgeSource.recallCallArguments.single()
+        val principalArgument = knowledgeSource.recallCallPrincipals.single()
         assertEquals("what's the capital of France?", query.relevance)
         assertEquals("corr-memory-query-test", query.correlationId)
-        assertEquals(null, query.category)
+        assertEquals(ownerPrincipalId, principalArgument)
     }
 
     @Test
-    fun `the constructed KnowledgeQuery always carries a positive, caller-supplied maximumResults -- no specific value is architecturally asserted`() = runTest {
+    fun `the constructed KnowledgeRetrievalQuery always carries a positive, caller-supplied maximumResults -- no specific value is architecturally asserted`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val memorySource = FakeMemorySource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), memorySource, FakeWorldModelSource())
+        val knowledgeSource = FakeReasoningKnowledgeSource { emptyList() }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
 
         assembler.assemble(resolved(message()))
 
-        val query = memorySource.recallCallArguments.single()
-        assertTrue(query.maximumResults >= 1, "KnowledgeQuery.maximumResults must be a positive, caller-supplied bound")
+        val query = knowledgeSource.recallCallArguments.single()
+        assertTrue(query.maximumResults >= 1, "KnowledgeRetrievalQuery.maximumResults must be a positive, caller-supplied bound")
     }
 
     @Test
-    fun `a MemorySource_recall failure propagates unchanged, not caught or wrapped`() = runTest {
+    fun `a ReasoningKnowledgeSource_recall failure propagates unchanged, not caught or wrapped`() = runTest {
         val failure = IllegalStateException("simulated memory recall failure")
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val memorySource = FakeMemorySource { throw failure }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), memorySource, FakeWorldModelSource())
+        val knowledgeSource = FakeReasoningKnowledgeSource { throw failure }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
 
         val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         assertSame(failure, thrown)
     }
 
     @Test
-    fun `KnowledgeSource exposes no mutation operation -- no remember, no forget, only recall`() {
-        val functionNames = KnowledgeSource::class.functions.map { it.name }.toSet()
+    fun `ReasoningKnowledgeSource exposes no mutation operation -- no remember, no forget, only recall`() {
+        val functionNames = ReasoningKnowledgeSource::class.functions.map { it.name }.toSet()
 
-        assertTrue("recall" in functionNames, "KnowledgeSource must expose recall")
-        assertFalse("remember" in functionNames, "KnowledgeSource must not expose remember")
-        assertFalse("forget" in functionNames, "KnowledgeSource must not expose forget")
+        assertTrue("recall" in functionNames, "ReasoningKnowledgeSource must expose recall")
+        assertFalse("remember" in functionNames, "ReasoningKnowledgeSource must not expose remember")
+        assertFalse("forget" in functionNames, "ReasoningKnowledgeSource must not expose forget")
     }
 
-    // --- 13. Sprint 11 Unit 7: real-collaborator integration (InMemoryKnowledgeStore, not a fake) ---
+    // --- 13. Knowledge Discoverability and Governed Retrieval into Reasoning Context,
+    // Implementation Unit 3: genuine end-to-end integration (real DefaultReasoningKnowledgeSource,
+    // not a fake) ---
+
+    /** Approves every evaluation unconditionally -- both DefaultKnowledgeSubmission's own act-level
+     * write gate and DefaultReasoningKnowledgeSource's own act- and item-level read gates. */
+    private fun approvingPermissionEngine() = FakePermissionEngine { request ->
+        PermissionDecision(
+            decisionId = DecisionId("decision-assembler-test"),
+            principalId = request.principalId,
+            resourceId = request.targetResources.first(),
+            action = PermissionAction.READ,
+            decision = PermissionDecisionOutcome.APPROVED,
+            level = PermissionLevel.AUTOMATIC,
+            timestamp = Instant.now(),
+        )
+    }
 
     @Test
-    fun `a memory promoted through a real InMemoryKnowledgeStore is retrieved and rendered end-to-end`() = runTest {
+    fun `a KnowledgeItem promoted through a real DefaultKnowledgeSubmission is retrieved through a real DefaultReasoningKnowledgeSource and rendered end-to-end`() = runTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
-        val realMemoryStore = InMemoryKnowledgeStore()
-        realMemoryStore.remember(
-            CandidateKnowledge(
-                knowledgePayload = "the owner's favourite programming language is Kotlin",
-                proposedCategory = KnowledgeCategory.SEMANTIC,
-                sourceSubsystem = "test-harness",
-                correlationId = "corr-seed",
-                originatingPrincipalId = ownerPrincipalId,
-                explicitlyRequested = true,
+        val core = InMemoryMemoryCore()
+        val evaluator = DefaultKnowledgeCandidateEvaluator(core)
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val permissionEngine = approvingPermissionEngine()
+        val submission = DefaultKnowledgeSubmission(evaluator, persistence, permissionEngine)
+
+        val provenance = core.createProvenance(
+            ownerPrincipalId,
+            CandidateProvenance(
+                sourceIdentifier = "test-harness",
+                sourceType = "test-harness",
+                acquisitionTime = Instant.parse("2026-01-01T00:00:00Z"),
+                contentNature = ContentNature.ORIGINAL,
             ),
         )
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), realMemoryStore, FakeWorldModelSource())
-        // The request text becomes KnowledgeQuery.relevance (Contract Design Section 5), and
-        // InMemoryKnowledgeStore.retrieve's own existing, already-tested behaviour requires the
-        // memory's knowledgePayload to *contain* relevance as a substring -- so a short,
-        // substring-matching request text is used here deliberately, not a full sentence, to
-        // exercise the real, unmodified matching behaviour rather than inventing a semantic one.
+        val assertion = core.createAssertion(
+            ownerPrincipalId,
+            CandidateAssertion(
+                statement = "the owner's favourite programming language is Kotlin",
+                provenanceId = provenance.provenanceId,
+                confidence = 0.9,
+            ),
+        )
+        val candidate = KnowledgeCandidate(MemoryCoreRecordReference.ToAssertion(assertion.assertionId), explicitlyRequested = true)
+        val disposition = submission.submit(ownerPrincipalId, candidate)
+        assertIs<KnowledgeSubmissionDisposition.Promoted>(disposition)
+
+        val purpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
+        val reasoningKnowledgeSource = DefaultReasoningKnowledgeSource(persistence, permissionEngine, core, purpose)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), reasoningKnowledgeSource, FakeWorldModelSource())
+
         val context = assembler.assemble(resolved(message(text = "Kotlin")))
 
         val memoryEntries = context.entries.filter { it.startsWith("Memory:") }
@@ -590,7 +743,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val worldModelSource = FakeWorldModelSource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         val context = assembler.assemble(resolved(message()))
 
@@ -603,7 +756,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val worldModelSource = FakeWorldModelSource { listOf(belief(subject = "device-front-door", value = "locked")) }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         val context = assembler.assemble(resolved(message()))
 
@@ -624,7 +777,7 @@ class DefaultReasoningContextAssemblerTest {
                 belief(subject = "subject-B", value = "value-B"),
             )
         }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         val context = assembler.assemble(resolved(message()))
 
@@ -645,7 +798,7 @@ class DefaultReasoningContextAssemblerTest {
                 belief(subject = "device-low-confidence", confidence = 0.4),
             )
         }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         val context = assembler.assemble(resolved(message()))
 
@@ -665,7 +818,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val worldModelSource = FakeWorldModelSource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         assembler.assemble(resolved(message(text = "is the front door locked?")))
 
@@ -678,7 +831,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val worldModelSource = FakeWorldModelSource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         assembler.assemble(resolved(message()))
 
@@ -691,7 +844,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val worldModelSource = FakeWorldModelSource { emptyList() }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         assembler.assemble(resolved(message()))
 
@@ -705,7 +858,7 @@ class DefaultReasoningContextAssemblerTest {
         val identityService = FakeIdentityService { principal(ownerPrincipalId) }
         val toolRegistry = FakeToolRegistry { emptyList() }
         val worldModelSource = FakeWorldModelSource { throw failure }
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), worldModelSource)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), worldModelSource)
 
         val thrown = assertFailsWith<IllegalStateException> { assembler.assemble(resolved(message())) }
         assertSame(failure, thrown)
@@ -726,7 +879,7 @@ class DefaultReasoningContextAssemblerTest {
                 value = "locked",
             ),
         )
-        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeMemorySource(), realWorldModel)
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), FakeReasoningKnowledgeSource(), realWorldModel)
 
         val context = assembler.assemble(resolved(message()))
 

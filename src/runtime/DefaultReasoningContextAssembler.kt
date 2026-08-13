@@ -2,11 +2,12 @@ package parker.core.runtime
 
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.IdentityService
-import parker.core.interfaces.KnowledgeQuery
-import parker.core.interfaces.KnowledgeSource
+import parker.core.interfaces.KnowledgeRetrievalQuery
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningContextAssembler
+import parker.core.interfaces.ReasoningKnowledgeSource
 import parker.core.interfaces.ResolvedInboundMessage
+import parker.core.interfaces.SafeKnowledgeResultEntry
 import parker.core.interfaces.ToolRegistry
 import parker.core.interfaces.WorldModelSource
 import parker.core.interfaces.WorldQuery
@@ -18,9 +19,15 @@ import parker.core.interfaces.WorldQuery
  * described in [ReasoningContextAssembler]'s own KDoc, revised again
  * Sprint 11 Unit 6 (Conversation History Source) to add
  * [conversationHistorySource], revised again Sprint 11 Unit 7 (Memory
- * Source Integration) to add [memorySource], and revised again Sprint 11
- * Unit 8 (World Model Source Integration) to add [worldModelSource].
- * Implements exactly what
+ * Source Integration) to add a memory collaborator, revised again Sprint
+ * 11 Unit 8 (World Model Source Integration) to add [worldModelSource],
+ * and revised again by the Knowledge Discoverability and Governed
+ * Retrieval into Reasoning Context programme's own Implementation Unit 3
+ * (`docs/governance/KNOWLEDGE_DISCOVERABILITY_REASONING_CONTEXT_IMPLEMENTATION_PLAN.md`
+ * Section 8) to replace that memory collaborator's own declared type and
+ * retrieval contract entirely -- [knowledgeSource] is a
+ * [ReasoningKnowledgeSource], the sole memory collaborator this class now
+ * holds. Implements exactly what
  * `docs/architecture/PRODUCTION_REASONING_CONTEXT_CONTRACT_DESIGN.md`
  * ("the Contract Design") Section 4.3 authorises -- constructor injection
  * of [identityService] and [toolRegistry] -- plus the three additional,
@@ -128,53 +135,59 @@ import parker.core.interfaces.WorldQuery
  * call -- no second call, no caching across invocations (Statelessness,
  * Contract Design Section 5 restated).
  *
- * ## Memory (Sprint 11 Unit 7)
+ * ## Memory (Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation Unit 3)
  *
- * One further item is rendered from [memorySource]. Unlike
- * [conversationHistorySource], `KnowledgeSource.recall` requires a full
- * [KnowledgeQuery] -- there is no already-resolved key to read the way
+ * One further item is rendered from [knowledgeSource]. Unlike
+ * [conversationHistorySource], [ReasoningKnowledgeSource.recall] requires a full
+ * [KnowledgeRetrievalQuery] -- there is no already-resolved key to read the way
  * `resolvedMessage.conversationId` already is. This class therefore
- * constructs the [KnowledgeQuery] itself, using no new derived concept, only
+ * constructs the [KnowledgeRetrievalQuery] itself, using no new derived concept, only
  * fields already present on its own input
- * (`docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5):
+ * (`docs/governance/KNOWLEDGE_DISCOVERABILITY_REASONING_CONTEXT_CONTRACT_DESIGN.md` Section 12):
  *
- * - `requestingPrincipalId` = `message.senderPrincipalId` -- the same
- *   `PrincipalId` already used to render "Requesting principal."
- * - `relevance` = `message.text` -- the current request's own text,
- *   reusing [KnowledgeStore][parker.core.interfaces.KnowledgeStore]'s existing,
- *   already-implemented, already-tested case-insensitive substring match.
- *   This is not semantic search and invents no ranking algorithm; it
- *   supplies the one value [KnowledgeQuery.relevance] already, contractually,
- *   requires every caller to provide.
+ * - `relevance` = `message.text` -- the current request's own text, reusing
+ *   [ReasoningKnowledgeSource]'s existing, already-implemented,
+ *   already-tested case-insensitive substring match. This is not semantic
+ *   search and invents no ranking algorithm; it supplies the one value
+ *   [KnowledgeRetrievalQuery.relevance] already, contractually, requires
+ *   every caller to provide.
  * - `correlationId` = `message.correlationId.value`.
  * - `maximumResults` = [MEMORY_QUERY_MAXIMUM_RESULTS] -- an
- *   implementation-defined bound (Contract Design Section 5); not
- *   architecturally significant, and may change without a Contract Design
- *   revision.
- * - `category` = `null` -- no category narrowing (Contract Design
- *   Section 5).
+ *   implementation-defined bound; not architecturally significant, and may
+ *   change without a Contract Design revision.
+ * - `includeRetired` left at its own `false` default -- ordinary
+ *   conversational retrieval never requests retired items.
  *
- * - "Memories" -- [KnowledgeSource.recall], called once with the constructed
- *   `KnowledgeQuery`. Zero or more entries are rendered, one per returned
- *   `KnowledgeRecord`, **in the order [KnowledgeSource.recall] returns them** --
- *   this class does not rank, score, reorder, summarise, or interpret
- *   what it receives (Contract Design Section 6, Section 8). An empty
- *   result renders no entries at all, exactly as "no tools" and "no prior
- *   Turns" already render nothing. Each rendered entry surfaces only
- *   fields [parker.core.interfaces.KnowledgeRecord] already carries
- *   (`knowledgePayload`, `sourceSubsystem`, and `confidence` where
- *   present) -- no confidence is computed, estimated, or defaulted where
- *   absent, and no provenance is fabricated.
+ * The requesting principal -- `message.senderPrincipalId`, the same
+ * `PrincipalId` already used to render "Requesting principal" -- is passed
+ * as [ReasoningKnowledgeSource.recall]'s own separate first parameter,
+ * never folded into [KnowledgeRetrievalQuery] itself, which carries no
+ * principal field of its own.
+ *
+ * - "Memories" -- [ReasoningKnowledgeSource.recall], called once with
+ *   `message.senderPrincipalId` and the constructed
+ *   `KnowledgeRetrievalQuery`. Zero or more entries are rendered, one per
+ *   returned [SafeKnowledgeResultEntry], **in the exact order
+ *   [ReasoningKnowledgeSource.recall] returns them** -- this class does not
+ *   rank, score, reorder, summarise, or interpret what it receives. An
+ *   empty result renders no entries at all, exactly as "no tools" and "no
+ *   prior Turns" already render nothing. Each rendered entry is escaped
+ *   and formatted by [renderKnowledgeEntry] -- the fixed, single internal
+ *   model-prompt projection this Unit's own governing Contract Design
+ *   Section 8 and Scope Lock Section 6 freeze, never final, owner-facing
+ *   Representation Engine wording -- surfacing exactly `content` (escaped
+ *   via [escapeForPrompt]), `evidentialState`, `status`, and `staleness`,
+ *   in that fixed order; no field is fabricated, estimated, or omitted.
  *
  * ## World Model (Sprint 11 Unit 8)
  *
  * One further item is rendered from [worldModelSource]. Unlike
  * [conversationHistorySource], `WorldModelSource.recall` requires a full
  * [WorldQuery] -- there is no already-resolved key to read the way
- * `resolvedMessage.conversationId` already is, and unlike [memorySource],
+ * `resolvedMessage.conversationId` already is, and unlike [knowledgeSource],
  * no field on this method's own input represents a world-model subject:
  * `WorldQuery.subjectMatch` matches a structured topic key, not free-text
- * request content, so reusing the request's own text the way `KnowledgeQuery.relevance`
+ * request content, so reusing the request's own text the way `KnowledgeRetrievalQuery.relevance`
  * does would require inventing a classification step this Unit's own
  * Scope Lock excludes
  * (`docs/architecture/WORLD_MODEL_SOURCE_QUERY_CONSTRUCTION_DECISION.md`).
@@ -206,9 +219,10 @@ import parker.core.interfaces.WorldQuery
  *   and "no memories" already render nothing. Each rendered entry
  *   surfaces only fields [parker.core.interfaces.WorldBelief] already
  *   carries (`subject`, `value`, `confidence`, `source`) -- `confidence`
- *   is a required field on `WorldBelief` (unlike `KnowledgeRecord`'s optional
- *   one), so it is always rendered, never fabricated or computed; no
- *   provenance beyond `source` is invented.
+ *   is a required field on `WorldBelief` (unlike [SafeKnowledgeResultEntry],
+ *   which carries no confidence field of its own at all, only
+ *   `evidentialState`), so it is always rendered, never fabricated or
+ *   computed; no provenance beyond `source` is invented.
  *
  * @param identityService Read use only (`resolve`) -- Contract Design
  *   Section 4.1.
@@ -219,11 +233,13 @@ import parker.core.interfaces.WorldQuery
  *   `ConversationEngine`; [conversationHistorySource] is a separate,
  *   narrower type that cannot reach `resolveConversationId` or
  *   `submitTurn` even if this class wished to.
- * @param memorySource Read use only (`recall`) -- Sprint 11 Unit 7
- *   `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md` Section 5. This
- *   class never calls `KnowledgeStore.remember` or `KnowledgeStore.forget`;
- *   [memorySource] is a separate, narrower type that cannot reach either
- *   even if this class wished to.
+ * @param knowledgeSource Read use only (`recall`) -- Knowledge
+ *   Discoverability and Governed Retrieval into Reasoning Context,
+ *   Implementation Unit 3
+ *   (`docs/governance/KNOWLEDGE_DISCOVERABILITY_REASONING_CONTEXT_CONTRACT_DESIGN.md`
+ *   Section 12). This class never mutates promoted knowledge in any way;
+ *   [knowledgeSource] is a narrow, read-only [ReasoningKnowledgeSource]
+ *   exposing exactly one method, [ReasoningKnowledgeSource.recall].
  * @param worldModelSource Read use only (`recall`) -- Sprint 11 Unit 8
  *   `docs/architecture/WORLD_MODEL_SOURCE_CONTRACT_DESIGN.md` Section 2.
  *   This class never calls `WorldModel.observe`; [worldModelSource] is a
@@ -234,16 +250,16 @@ class DefaultReasoningContextAssembler(
     private val identityService: IdentityService,
     private val toolRegistry: ToolRegistry,
     private val conversationHistorySource: ConversationHistorySource,
-    private val memorySource: KnowledgeSource,
+    private val knowledgeSource: ReasoningKnowledgeSource,
     private val worldModelSource: WorldModelSource,
 ) : ReasoningContextAssembler {
 
     private companion object {
         /**
          * The `maximumResults` bound this Assembler supplies on every
-         * [KnowledgeQuery] it constructs. **Implementation policy, not
-         * architecture** -- `docs/architecture/MEMORY_SOURCE_CONTRACT_DESIGN.md`
-         * Section 5 deliberately does not fix this figure, so that the
+         * [KnowledgeRetrievalQuery] it constructs. **Implementation policy, not
+         * architecture** -- the governing Contract Design deliberately does not
+         * fix this figure, so that the
          * architecture remains neutral to whatever bounding policy a future
          * revision chooses (a fixed limit, a dynamic token budget, a
          * model-specific limit, a configurable policy value). This
@@ -293,22 +309,22 @@ class DefaultReasoningContextAssembler(
             entries += "Prior message: ${turn.message.text} (from ${turn.message.senderPrincipalId.value}, at ${turn.receivedAt})"
         }
 
-        // Sprint 11 Unit 7: memories relevant to the current request, rendered in the exact
-        // order KnowledgeSource.recall returns them -- no ranking, no scoring, no reordering, no
-        // summarisation, no interpretation (Memory Source Contract Design Section 6/8). The
-        // KnowledgeQuery below is constructed entirely from fields already present on this
+        // Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation
+        // Unit 3: memories relevant to the current request, rendered in the exact order
+        // ReasoningKnowledgeSource.recall returns them -- no ranking, no scoring, no reordering, no
+        // summarisation, no interpretation (Contract Design Section 6/8; Scope Lock Section 6). The
+        // KnowledgeRetrievalQuery below is constructed entirely from fields already present on this
         // method's own input; maximumResults is implementation-defined, never architecturally
-        // significant (Contract Design Section 5).
-        val memoryQuery = KnowledgeQuery(
-            requestingPrincipalId = message.senderPrincipalId,
+        // significant (Contract Design Section 5). requestingPrincipalId is passed as recall's own
+        // separate first parameter, equal to message.senderPrincipalId -- KnowledgeRetrievalQuery
+        // itself carries no principal field.
+        val knowledgeRetrievalQuery = KnowledgeRetrievalQuery(
             relevance = message.text,
             correlationId = message.correlationId.value,
             maximumResults = MEMORY_QUERY_MAXIMUM_RESULTS,
-            category = null,
         )
-        memorySource.recall(memoryQuery).forEach { record ->
-            val confidencePart = record.confidence?.let { ", confidence: $it" }.orEmpty()
-            entries += "Memory: ${record.knowledgePayload} (source: ${record.sourceSubsystem}$confidencePart)"
+        knowledgeSource.recall(message.senderPrincipalId, knowledgeRetrievalQuery).forEach { entry ->
+            entries += renderKnowledgeEntry(entry)
         }
 
         // Sprint 11 Unit 8: current world-model beliefs, rendered in the exact order
@@ -333,4 +349,39 @@ class DefaultReasoningContextAssembler(
 
         return ReasoningContext(entries.toList())
     }
+
+    /**
+     * Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation Unit
+     * 3. The fixed, single internal model-prompt escaping contract this class's own governing
+     * Contract Design Section 8 and Scope Lock Section 6 freeze, verbatim -- applied only at this
+     * boundary; [SafeKnowledgeResultEntry.content] itself remains the normalized, unescaped text
+     * [ReasoningKnowledgeSource.recall] returns. Backslash, LF, CR, TAB, every remaining C0 control
+     * character, DEL, every C1 control character, Unicode LINE SEPARATOR (`U+2028`), and Unicode
+     * PARAGRAPH SEPARATOR (`U+2029`) each escape to their own defined form -- the latter two named
+     * explicitly, since neither is a C0/C1 control character -- so no authorized proposition's own
+     * text can ever inject an additional prompt entry or structural line.
+     */
+    private fun escapeForPrompt(normalized: String): String = buildString {
+        for (c in normalized) {
+            when {
+                c == '\\' -> append("\\\\")
+                c == '\n' -> append("\\n")
+                c == '\r' -> append("\\r")
+                c == '\t' -> append("\\t")
+                c.code <= 0x1F || c.code == 0x7F || c.code in 0x80..0x9F || c.code == 0x2028 || c.code == 0x2029 ->
+                    append("\\u" + c.code.toString(16).uppercase().padStart(4, '0'))
+                else -> append(c)
+            }
+        }
+    }
+
+    /**
+     * The fixed, single internal model-prompt format for one [SafeKnowledgeResultEntry] -- never
+     * final, owner-facing Representation Engine wording. Fixed field order: `content` (escaped via
+     * [escapeForPrompt]), then `evidentialState`, then `status`, then `staleness`, each enum value
+     * rendered via Kotlin's own stable, unlocalized `.name` property.
+     */
+    private fun renderKnowledgeEntry(entry: SafeKnowledgeResultEntry): String =
+        "Memory: ${escapeForPrompt(entry.content)} (evidentialState=${entry.evidentialState.name}, " +
+            "status=${entry.status.name}, staleness=${entry.staleness.name})"
 }

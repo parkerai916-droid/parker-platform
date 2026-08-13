@@ -19,6 +19,7 @@ import parker.core.runtime.DefaultEvidenceCustodian
 import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
 import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
+import parker.core.runtime.DefaultReasoningKnowledgeSource
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
 import parker.core.runtime.MemoryAdmissionCoordinator
@@ -129,40 +130,60 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
     // ================= Unit 2 vocabulary registration without consumer adoption =================
 
     @Test
-    fun `exactly the two accepted Memory retrieval Authorization Purpose values are registered`() = runTest {
+    fun `exactly the three accepted Memory retrieval Authorization Purpose values are registered, all active`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val registry = composedPolicy(runtime).privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
         val entries = registry.privateField<Map<*, *>>("entries")
+        val candidateEvaluationPurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
+        val evidenceIntelligencePurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution")
+        val reasoningContextPurpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
 
         assertEquals(
-            setOf(
-                AuthorizationPurposeId("knowledge-memory.candidate-evaluation"),
-                AuthorizationPurposeId("evidence-intelligence.input-resolution"),
-            ),
+            setOf(candidateEvaluationPurpose, evidenceIntelligencePurpose, reasoningContextPurpose),
             entries.keys,
         )
+        assertTrue(registry.isActive(candidateEvaluationPurpose))
+        assertTrue(registry.isActive(evidenceIntelligencePurpose))
+        assertTrue(registry.isActive(reasoningContextPurpose))
 
         runtime.shutdown()
     }
 
     @Test
-    fun `only the two Unit 4 candidate retrieval rules name an authorizationPurpose`() = runTest {
+    fun `exactly the four candidate-evaluation and reasoning-context retrieval rules name an authorizationPurpose, partitioned correctly by Purpose`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val rules = composedPolicy(runtime).privateField<List<PermissionPolicyRule>>("rules")
+        val candidateEvaluationPurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
+        val evidenceIntelligencePurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution")
+        val reasoningContextPurpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
 
-        assertEquals(2, rules.count { it.authorizationPurpose != null })
-        rules.filter { it.authorizationPurpose != null }.forEach { rule ->
-            assertEquals(AuthorizationPurposeId("knowledge-memory.candidate-evaluation"), rule.authorizationPurpose)
+        assertEquals(4, rules.count { it.authorizationPurpose != null })
+
+        val candidateEvaluationRules = rules.filter { it.authorizationPurpose == candidateEvaluationPurpose }
+        assertEquals(2, candidateEvaluationRules.size)
+        candidateEvaluationRules.forEach { rule ->
             assertEquals(PermissionDecisionOutcome.APPROVED, rule.outcome)
             assertTrue(
                 rule.proposedAction == PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME ||
                     rule.proposedAction == PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
             )
         }
+
+        val reasoningContextRules = rules.filter { it.authorizationPurpose == reasoningContextPurpose }
+        assertEquals(2, reasoningContextRules.size)
+        reasoningContextRules.forEach { rule ->
+            assertEquals(PermissionDecisionOutcome.APPROVED, rule.outcome)
+            assertTrue(
+                rule.proposedAction == DefaultReasoningKnowledgeSource.RETRIEVE_FOR_REASONING_CONTEXT_ACTION_NAME ||
+                    rule.proposedAction == PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+            )
+        }
+
+        assertTrue(rules.none { it.authorizationPurpose == evidenceIntelligencePurpose }, "Evidence Intelligence must remain with zero Purpose-bound rules")
 
         runtime.shutdown()
     }
