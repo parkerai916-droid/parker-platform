@@ -50,6 +50,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
 
     private val candidatePurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
     private val evidencePurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution")
+    private val reasoningContextPurpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
     private val owner = PrincipalId("user.owner-gap54-unit2-composition")
 
     private fun config() = ParkerRuntimeConfig(
@@ -115,22 +116,23 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
     }
 
     @Test
-    fun `production registry contains exactly both accepted active real purposes`() = runTest {
+    fun `production registry contains exactly all three accepted active real purposes`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val registry = policy(runtime).privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
         val entries = registry.privateField<Map<*, *>>("entries")
 
-        assertEquals(setOf(candidatePurpose, evidencePurpose), entries.keys)
+        assertEquals(setOf(candidatePurpose, evidencePurpose, reasoningContextPurpose), entries.keys)
         assertTrue(registry.isActive(candidatePurpose))
         assertTrue(registry.isActive(evidencePurpose))
+        assertTrue(registry.isActive(reasoningContextPurpose))
 
         runtime.shutdown()
     }
 
     @Test
-    fun `production contains exactly two unchanged guards and two candidate-only approval rules`() = runTest {
+    fun `production contains exactly two unchanged guards, two candidate-only approval rules, and one reasoning-context memory_retrieve approval`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -140,7 +142,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
                 it.proposedAction == PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME
         }
 
-        assertEquals(4, memoryVerbRules.size)
+        assertEquals(5, memoryVerbRules.size)
         assertEquals(
             setOf(
                 PermissionPolicyRule(
@@ -177,6 +179,14 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
                     PermissionLevel.AUTOMATIC,
                     candidatePurpose,
                     PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    PermissionAction.READ,
+                    ResourceType.MEMORY,
+                    PermissionDecisionOutcome.APPROVED,
+                    PermissionLevel.AUTOMATIC,
+                    reasoningContextPurpose,
+                    PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
                 ),
             ),
             memoryVerbRules.filter { it.outcome == PermissionDecisionOutcome.APPROVED }.toSet(),
