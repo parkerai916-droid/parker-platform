@@ -168,6 +168,28 @@ tasks.register<Test>("unit3cControlledRemedyExperiments") {
     shouldRunAfter(tasks.test)
 }
 
+tasks.register<Test>("reasoningProtocolFamilyFDiagnostic") {
+    description = "Runs the explicit opt-in Reasoning Protocol Unit 3-BF Family F alternative-model diagnostic instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    // "familyFLiveTaskIncompatible" tags tests whose assertion is valid only
+    // under ordinary/offline verification (e.g. asserting the live execution-
+    // approval environment value is absent) and would necessarily fail under
+    // a genuine live run, where that value is intentionally present. This
+    // task excludes them; the general offline live-model-evaluation task
+    // above and every other offline path still runs them.
+    useJUnitPlatform {
+        excludeTags("familyFLiveTaskIncompatible")
+    }
+    filter {
+        includeTestsMatching("parker.integration.ReasoningProtocolFamilyFDiagnosticTest")
+        includeTestsMatching("parker.integration.ReasoningProtocolFamilyFDiagnosticOrchestrationTest")
+    }
+    systemProperty("parker.reasoning.familyf.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         allWarningsAsErrors.set(false)
