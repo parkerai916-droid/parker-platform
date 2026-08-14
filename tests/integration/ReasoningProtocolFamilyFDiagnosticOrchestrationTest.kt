@@ -16,18 +16,35 @@ package parker.integration
  * test in this file.
  */
 
+import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.runBlocking
 import kotlin.test.assertFailsWith
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
+import parker.core.runtime.DefaultReasoningPromptBuilder
+import parker.core.runtime.TaggedReasoningResponseParser
+import parker.core.runtime.UnclassifiableModelResponseException
+import parker.core.runtime.defaultOllamaRequestBody
+import parker.core.runtime.defaultOllamaResponseBody
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFilePermissions
+import java.time.Duration
 import java.time.Instant
+import java.util.Base64
 
 // ---------------------------------------------------------------------
 // Trial schedule (Plan Sections 10, 11)
@@ -391,15 +408,114 @@ private fun familyFJsonEscape(value: String): String = buildString {
     }
 }
 
+// A linear character-by-character scan, deliberately not a backtracking
+// "(?:\\.|[^\"])*"-shaped regex: durable transport records now carry
+// Base64-encoded raw request/response bodies that can be many kilobytes
+// long, and Java's recursive backtracking regex engine can StackOverflow
+// on a single long capture group of that shape. Single-pass, so this
+// scales linearly in line length regardless of field size.
 private fun familyFExtractStringField(line: String, field: String): String {
-    val match = Regex("\"$field\":\"((?:\\\\.|[^\"])*)\"").find(line)
-        ?: throw FamilyFArtifactIntegrityException("record missing required field \"$field\": $line")
-    return match.groupValues[1]
-        .replace("\\\"", "\"")
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
-        .replace("\\\\", "\\")
+    val marker = "\"$field\":\""
+    val start = line.indexOf(marker)
+    if (start < 0) {
+        throw FamilyFArtifactIntegrityException("record missing required field \"$field\": $line")
+    }
+    val builder = StringBuilder()
+    var index = start + marker.length
+    while (index < line.length) {
+        val character = line[index]
+        if (character == '\\' && index + 1 < line.length) {
+            when (line[index + 1]) {
+                '"' -> builder.append('"')
+                '\\' -> builder.append('\\')
+                'n' -> builder.append('\n')
+                'r' -> builder.append('\r')
+                't' -> builder.append('\t')
+                else -> builder.append(line[index + 1])
+            }
+            index += 2
+            continue
+        }
+        if (character == '"') {
+            return builder.toString()
+        }
+        builder.append(character)
+        index += 1
+    }
+    throw FamilyFArtifactIntegrityException("record missing required field \"$field\": $line")
+}
+
+// Same linear-scan approach as familyFExtractStringField above, but
+// tolerant of an absent field (returns the raw, still-escaped JSON
+// token -- null/true/false/"..." -- rather than throwing), for callers
+// that need to decode a nested payload field (e.g. terminal.jsonl's own
+// "payload", which wraps the full EvaluationJsonLines.trial(...) text
+// and can be long enough to make a backtracking-regex extraction risk a
+// StackOverflowError).
+private fun familyFJsonFieldRawToken(line: String, field: String): String? {
+    val marker = "\"$field\":"
+    val start = line.indexOf(marker)
+    if (start < 0) return null
+    var index = start + marker.length
+    if (index >= line.length) return null
+    return when {
+        line.startsWith("null", index) -> "null"
+        line.startsWith("true", index) -> "true"
+        line.startsWith("false", index) -> "false"
+        line[index] == '"' -> {
+            val builder = StringBuilder()
+            builder.append('"')
+            index += 1
+            while (index < line.length) {
+                val character = line[index]
+                if (character == '\\' && index + 1 < line.length) {
+                    builder.append(character).append(line[index + 1])
+                    index += 2
+                    continue
+                }
+                builder.append(character)
+                index += 1
+                if (character == '"') break
+            }
+            builder.toString()
+        }
+        else -> null
+    }
+}
+
+// A single left-to-right pass, deliberately not a chain of sequential
+// String.replace calls: replacing "\n"->newline before "\\"->"\" would
+// corrupt a genuinely double-escaped sequence like "\\n" (an escaped
+// backslash immediately followed by a literal 'n') by misreading its
+// second backslash as the start of a fresh "\n" escape. Payload fields
+// are exactly this double-escaped case -- terminal.jsonl's own "payload"
+// field is itself an already-escaped EvaluationJsonLines.trial(...)
+// string, so unescaping it can encounter literal backslashes adjacent
+// to n/r/t/quote characters that must not be reinterpreted.
+private fun familyFDecodeQuotedField(line: String, field: String): String? {
+    val raw = familyFJsonFieldRawToken(line, field) ?: return null
+    if (raw == "null" || raw == "true" || raw == "false") return null
+    val inner = raw.removeSurrounding("\"")
+    val builder = StringBuilder(inner.length)
+    var index = 0
+    while (index < inner.length) {
+        val character = inner[index]
+        if (character == '\\' && index + 1 < inner.length) {
+            when (inner[index + 1]) {
+                '"' -> builder.append('"')
+                '\\' -> builder.append('\\')
+                'n' -> builder.append('\n')
+                'r' -> builder.append('\r')
+                't' -> builder.append('\t')
+                else -> builder.append(inner[index + 1])
+            }
+            index += 2
+            continue
+        }
+        builder.append(character)
+        index += 1
+    }
+    return builder.toString()
 }
 
 private fun familyFExtractLongField(line: String, field: String): Long? =
@@ -438,6 +554,165 @@ private fun familyFAppendForced(file: Path, line: String) {
 }
 
 private fun familyFSha256File(file: Path): String = familyFSha256Bytes(Files.readAllBytes(file))
+
+// ---------------------------------------------------------------------
+// Durable transport raw-capture encoding (Plan Section 12: complete raw
+// request/response bytes and interpretation-relevant response headers
+// must be durably recorded, not merely their hashes). Every byte value
+// -- request body, response body, header names, header values -- is
+// Base64-encoded so arbitrary bytes (including non-UTF-8-safe content)
+// round-trip losslessly through the canonical UTF-8 JSON-lines ledger.
+// Base64's own alphabet ([A-Za-z0-9+/=]) requires no JSON escaping,
+// so the header encoding below needs no escape/unescape logic at all.
+// ---------------------------------------------------------------------
+
+private fun familyFEncodeHeaders(headers: Map<String, List<String>>): String {
+    val encoder = Base64.getEncoder()
+    val entries = headers.keys.sorted().joinToString(",") { key ->
+        val encodedKey = encoder.encodeToString(key.toByteArray(StandardCharsets.UTF_8))
+        val values = headers.getValue(key).joinToString(",") { value ->
+            "\"" + encoder.encodeToString(value.toByteArray(StandardCharsets.UTF_8)) + "\""
+        }
+        "\"$encodedKey\":[$values]"
+    }
+    return "{$entries}"
+}
+
+// Fails closed on any structural deviation from familyFEncodeHeaders's
+// own exact output shape: reconstructing the matched entries and
+// comparing against the original body catches trailing garbage or
+// malformed structure a permissive regex scan would otherwise silently
+// skip over.
+private fun familyFDecodeHeaders(encoded: String): Map<String, List<String>> {
+    val trimmed = encoded.trim()
+    if (trimmed == "{}") return emptyMap()
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+        throw FamilyFArtifactIntegrityException("malformed encoded response headers: $encoded")
+    }
+    val body = trimmed.substring(1, trimmed.length - 1)
+    val decoder = Base64.getDecoder()
+    val entryPattern = Regex("\"([A-Za-z0-9+/=]*)\":\\[([^\\]]*)\\]")
+    val matches = entryPattern.findAll(body).toList()
+    val reconstructed = matches.joinToString(",") { it.value }
+    if (reconstructed != body) {
+        throw FamilyFArtifactIntegrityException("malformed encoded response headers structure: $encoded")
+    }
+    val result = LinkedHashMap<String, List<String>>()
+    matches.forEach { match ->
+        val key = runCatching { String(decoder.decode(match.groupValues[1]), StandardCharsets.UTF_8) }
+            .getOrElse { throw FamilyFArtifactIntegrityException("invalid base64 header name in: $encoded") }
+        val valuesText = match.groupValues[2]
+        val values = if (valuesText.isBlank()) {
+            emptyList()
+        } else {
+            valuesText.split(",").map { token ->
+                val unquoted = token.trim().removeSurrounding("\"")
+                runCatching { String(decoder.decode(unquoted), StandardCharsets.UTF_8) }
+                    .getOrElse { throw FamilyFArtifactIntegrityException("invalid base64 header value in: $encoded") }
+            }
+        }
+        result[key] = values
+    }
+    return result
+}
+
+// The complete, verified, decoded shape of one durable transport
+// record -- read back from transport.jsonl and independently
+// hash/length-verified before any recovery use (Plan Section 18).
+data class FamilyFDurableTransportRecord(
+    val trialId: String,
+    val exchangeSequence: Long,
+    val startedAt: Instant,
+    val completedAt: Instant,
+    val requestBytes: ByteArray,
+    val requestSha256: String,
+    val responseStatus: Int?,
+    val responseCaptured: Boolean,
+    val responseBytes: ByteArray?,
+    val responseSha256: String?,
+    val responseHeaders: Map<String, List<String>>,
+    val forwardingOutcome: String,
+)
+
+// Decodes and independently re-verifies one raw transport.jsonl line:
+// Base64 validity, decoded byte count against the persisted count, and
+// decoded SHA-256 against the persisted hash -- for both request and
+// (when captured) response bodies. Fails closed on any missing field,
+// invalid Base64, wrong length, or wrong hash; never silently recovers
+// from mismatched evidence.
+private fun familyFDecodeTransportRecord(line: String): FamilyFDurableTransportRecord {
+    val trialId = familyFExtractStringField(line, "trialId")
+    val exchangeSequence = familyFExtractLongField(line, "exchangeSequence")
+        ?: throw FamilyFArtifactIntegrityException("transport record for $trialId missing exchangeSequence")
+    val startedAt = runCatching { Instant.parse(familyFExtractStringField(line, "startedAt")) }
+        .getOrElse { throw FamilyFArtifactIntegrityException("transport record for $trialId has malformed startedAt") }
+    val completedAt = runCatching { Instant.parse(familyFExtractStringField(line, "completedAt")) }
+        .getOrElse { throw FamilyFArtifactIntegrityException("transport record for $trialId has malformed completedAt") }
+
+    val requestByteCount = familyFExtractLongField(line, "requestByteCount")
+        ?: throw FamilyFArtifactIntegrityException("transport record for $trialId missing requestByteCount")
+    val requestBodyBase64 = familyFExtractStringField(line, "requestBodyBase64")
+    val requestSha256 = familyFExtractStringField(line, "requestSha256")
+    val requestBytes = runCatching { Base64.getDecoder().decode(requestBodyBase64) }
+        .getOrElse { throw FamilyFArtifactIntegrityException("transport record for $trialId has invalid base64 request body") }
+    if (requestBytes.size.toLong() != requestByteCount) {
+        throw FamilyFArtifactIntegrityException(
+            "transport record for $trialId request byte count mismatch: expected $requestByteCount, decoded ${requestBytes.size}",
+        )
+    }
+    if (familyFSha256Bytes(requestBytes) != requestSha256) {
+        throw FamilyFArtifactIntegrityException("transport record for $trialId request hash mismatch on decode")
+    }
+
+    val responseStatusRaw = familyFExtractLongField(line, "responseStatus")
+        ?: throw FamilyFArtifactIntegrityException("transport record for $trialId missing responseStatus")
+    val responseStatus = if (responseStatusRaw == -1L) null else responseStatusRaw.toInt()
+    val responseCaptured = Regex("\"responseCaptured\":(true|false)").find(line)?.groupValues?.get(1)?.toBoolean()
+        ?: throw FamilyFArtifactIntegrityException("transport record for $trialId missing responseCaptured")
+    val responseByteCount = familyFExtractLongField(line, "responseByteCount")
+        ?: throw FamilyFArtifactIntegrityException("transport record for $trialId missing responseByteCount")
+    val responseBodyBase64 = familyFExtractStringField(line, "responseBodyBase64")
+    val responseSha256Raw = familyFExtractStringField(line, "responseSha256")
+
+    val responseBytes: ByteArray?
+    val responseSha256: String?
+    if (responseCaptured) {
+        val decoded = runCatching { Base64.getDecoder().decode(responseBodyBase64) }
+            .getOrElse { throw FamilyFArtifactIntegrityException("transport record for $trialId has invalid base64 response body") }
+        if (decoded.size.toLong() != responseByteCount) {
+            throw FamilyFArtifactIntegrityException(
+                "transport record for $trialId response byte count mismatch: expected $responseByteCount, decoded ${decoded.size}",
+            )
+        }
+        if (familyFSha256Bytes(decoded) != responseSha256Raw) {
+            throw FamilyFArtifactIntegrityException("transport record for $trialId response hash mismatch on decode")
+        }
+        responseBytes = decoded
+        responseSha256 = responseSha256Raw
+    } else {
+        responseBytes = null
+        responseSha256 = null
+    }
+
+    val responseHeadersJson = familyFExtractStringField(line, "responseHeadersJson")
+    val responseHeaders = familyFDecodeHeaders(responseHeadersJson)
+    val forwardingOutcome = familyFExtractStringField(line, "forwardingOutcome")
+
+    return FamilyFDurableTransportRecord(
+        trialId = trialId,
+        exchangeSequence = exchangeSequence,
+        startedAt = startedAt,
+        completedAt = completedAt,
+        requestBytes = requestBytes,
+        requestSha256 = requestSha256,
+        responseStatus = responseStatus,
+        responseCaptured = responseCaptured,
+        responseBytes = responseBytes,
+        responseSha256 = responseSha256,
+        responseHeaders = responseHeaders,
+        forwardingOutcome = forwardingOutcome,
+    )
+}
 
 object FamilyFChainedLedger {
     // Builds one chained record (envelope + payload + trailing recordHash),
@@ -633,7 +908,37 @@ class FamilyFCampaignLedger(
         FamilyFChainedLedger.append(dispatchFile, cursorFor(dispatchFile), campaignId, trialId, emptyList())
     }
 
+    // Durably persists the COMPLETE transport exchange -- raw request
+    // bytes, raw response bytes, response headers (including duplicate/
+    // multi-valued ones), status, and forwarding outcome -- not merely
+    // their hashes (Plan Section 12; corrects the confirmed raw-capture
+    // defect). Every byte value is Base64-encoded alongside an explicit
+    // byte count and SHA-256 so arbitrary, non-UTF-8-safe content
+    // round-trips losslessly through this canonical UTF-8 JSON ledger.
+    // Recomputes both hashes from the actual bytes about to be persisted
+    // and fails closed before ever appending if either disagrees with
+    // what the proxy itself claims -- durable evidence is never allowed
+    // to silently diverge from its own hash. Called synchronously from
+    // inside the proxy's listener callback, strictly before the proxy
+    // releases the response to its caller (LocalHttpModelInferenceClient),
+    // and forced to disk by the shared FamilyFChainedLedger.append/
+    // familyFAppendForced mechanism -- so a persistence failure here
+    // (this function throwing) propagates out of the proxy's listener
+    // callback before any response bytes are ever written back to the
+    // caller, and is never treated as a successful release.
     fun recordTransport(trialId: String, record: FamilyFProxyExchangeRecord) {
+        val requestBytes = record.requestBody
+        if (familyFSha256Bytes(requestBytes) != record.requestSha256) {
+            throw FamilyFArtifactIntegrityException("transport capture integrity failure: request hash mismatch for $trialId")
+        }
+        val responseBody = record.responseBody
+        val responseCaptured = record.forwardingOutcome == "FORWARDED" && responseBody != null
+        if (responseBody != null) {
+            if (record.responseSha256 == null || familyFSha256Bytes(responseBody) != record.responseSha256) {
+                throw FamilyFArtifactIntegrityException("transport capture integrity failure: response hash mismatch for $trialId")
+            }
+        }
+        val encoder = Base64.getEncoder()
         FamilyFChainedLedger.append(
             transportFile, cursorFor(transportFile), campaignId, trialId,
             listOf(
@@ -642,12 +947,42 @@ class FamilyFCampaignLedger(
                 // a distinct concept from the proxy's own per-exchange
                 // counter -- never collapsed into one ambiguous field.
                 "exchangeSequence" to record.sequence,
+                "startedAt" to record.startedAt.toString(),
+                "completedAt" to record.completedAt.toString(),
+                "requestByteCount" to requestBytes.size,
+                "requestBodyBase64" to encoder.encodeToString(requestBytes),
                 "requestSha256" to record.requestSha256,
                 "responseStatus" to (record.responseStatus ?: -1),
+                "responseCaptured" to responseCaptured,
+                "responseByteCount" to (responseBody?.size ?: -1),
+                "responseBodyBase64" to (responseBody?.let { encoder.encodeToString(it) } ?: ""),
                 "responseSha256" to (record.responseSha256 ?: ""),
+                "responseHeadersJson" to familyFEncodeHeaders(record.responseHeaders),
                 "forwardingOutcome" to record.forwardingOutcome,
             ),
         )
+    }
+
+    // Reads back and independently re-verifies the exact-one durable
+    // transport record for a trial (fails closed if absent or
+    // duplicated -- duplication is additionally caught, campaign-wide,
+    // by recover()'s own readIdSet check). This is the one read path
+    // genuine offline recovery (Plan Section 18) uses; it never trusts
+    // Base64/length/hash content without re-deriving it from the bytes
+    // actually on disk.
+    fun readDurableTransportRecord(trialId: String): FamilyFDurableTransportRecord {
+        if (!Files.exists(transportFile)) {
+            throw FamilyFArtifactIntegrityException("no transport evidence recorded for $trialId")
+        }
+        val matches = Files.readAllLines(transportFile).filter { it.isNotBlank() }
+            .filter { familyFExtractStringField(it, "trialId") == trialId }
+        if (matches.isEmpty()) {
+            throw FamilyFArtifactIntegrityException("no transport evidence recorded for $trialId")
+        }
+        if (matches.size > 1) {
+            throw FamilyFArtifactIntegrityException("duplicate transport evidence recorded for $trialId")
+        }
+        return familyFDecodeTransportRecord(matches.single())
     }
 
     fun recordTerminal(trialId: String, payload: String) {
@@ -696,6 +1031,26 @@ class FamilyFCampaignLedger(
         return distinct.toSet()
     }
 
+    // A transport record's mere presence is not enough to call it
+    // "a complete durably captured response" (Plan Section 18): a
+    // forwarding-failure exchange (upstream unreachable, etc.) is
+    // captured too, but has no response to classify. Restricting to
+    // responseCaptured==true AND forwardingOutcome=="FORWARDED" is what
+    // separates the genuinely resumable transport-without-terminal state
+    // from a dispatch that must remain ambiguous and permanently halt.
+    private fun readCompleteTransportIdSet(file: Path): Set<String> {
+        if (!Files.exists(file)) return emptySet()
+        return Files.readAllLines(file).filter { it.isNotBlank() }
+            .filter { line ->
+                val captured = Regex("\"responseCaptured\":(true|false)").find(line)?.groupValues?.get(1)?.toBoolean()
+                    ?: throw FamilyFArtifactIntegrityException("transport.jsonl record missing responseCaptured field")
+                val outcome = familyFExtractStringField(line, "forwardingOutcome")
+                captured && outcome == "FORWARDED"
+            }
+            .map { familyFExtractStringField(it, "trialId") }
+            .toSet()
+    }
+
     /**
      * Four-state recovery mirroring the already-proven Unit 3-C model:
      * never attempted (absent everywhere); dispatched-but-unresolved
@@ -711,16 +1066,21 @@ class FamilyFCampaignLedger(
         verifyAllChainsFromDisk()
         val intentIds = readIdSet(intentFile, "intent.jsonl")
         val dispatchIds = readIdSet(dispatchFile, "dispatch.jsonl")
-        val transportIds = readIdSet(transportFile, "transport.jsonl")
+        // readIdSet still runs over every transport record (complete or
+        // not) purely for duplicate/unknown-ID detection; completeness
+        // itself is a separate, additional dimension read by
+        // readCompleteTransportIdSet below.
+        readIdSet(transportFile, "transport.jsonl")
+        val completeTransportIds = readCompleteTransportIdSet(transportFile)
         val terminalIds = readIdSet(terminalFile, "terminal.jsonl")
 
         if (!dispatchIds.all { it in intentIds }) {
             throw FamilyFArtifactIntegrityException("dispatch record without a corresponding intent record")
         }
-        if (!terminalIds.all { it in transportIds }) {
+        if (!terminalIds.all { it in completeTransportIds }) {
             throw FamilyFArtifactIntegrityException("terminal record without complete transport evidence")
         }
-        val ambiguous = dispatchIds - transportIds
+        val ambiguous = dispatchIds - completeTransportIds
         if (ambiguous.isNotEmpty()) {
             throw FamilyFArtifactIntegrityException(
                 "ambiguous dispatched trial(s) with no complete transport evidence, permanently halting: $ambiguous",
@@ -728,7 +1088,7 @@ class FamilyFCampaignLedger(
         }
         return FamilyFRecoveryState(
             dispatched = dispatchIds,
-            pendingOfflineClassification = transportIds - terminalIds,
+            pendingOfflineClassification = completeTransportIds - terminalIds,
             resolved = terminalIds,
         )
     }
@@ -792,6 +1152,192 @@ class FamilyFCampaignLedger(
             val file = directory.resolve(parts[1])
             Files.exists(file) && familyFSha256File(file) == parts[0]
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Genuine offline recovery for a "transport-without-terminal" trial
+// (Plan Section 18: "a complete durably captured response without a
+// terminal record may be classified offline without another model
+// call"). Reuses exactly the unmodified production formatter
+// (defaultOllamaRequestBody), production response extraction
+// (defaultOllamaResponseBody), and TaggedReasoningResponseParser --
+// never a duplicated parsing/formatting protocol. Makes no model call
+// and opens no socket: every input is the already-durable, already
+// hash-verified transport record plus the frozen schedule/fixture/
+// profile metadata.
+// ---------------------------------------------------------------------
+
+private data class FamilyFOfflineClassificationResult(
+    val primaryClassification: PrimaryClassification,
+    val contentFidelity: ContentFidelity,
+    val representationValid: Boolean,
+)
+
+private fun familyFOfflineAction(response: ReasoningProviderResponse): ExpectedAction = when (response) {
+    is ReasoningProviderResponse.Goal -> ExpectedAction.GOAL
+    is ReasoningProviderResponse.Reply -> ExpectedAction.REPLY
+    is ReasoningProviderResponse.Remember -> ExpectedAction.REMEMBER
+    ReasoningProviderResponse.NoAction -> ExpectedAction.NOACTION
+}
+
+private fun familyFOfflineVariantName(response: ReasoningProviderResponse): String = when (response) {
+    is ReasoningProviderResponse.Goal -> "Goal"
+    is ReasoningProviderResponse.Reply -> "Reply"
+    is ReasoningProviderResponse.Remember -> "Remember"
+    ReasoningProviderResponse.NoAction -> "NoAction"
+}
+
+private fun familyFOfflineContentFidelity(fixture: ConformanceFixture, response: ReasoningProviderResponse?): ContentFidelity {
+    val expected = fixture.expectedContent ?: return ContentFidelity.NOT_APPLICABLE
+    val actual = when (response) {
+        is ReasoningProviderResponse.Goal -> response.text
+        is ReasoningProviderResponse.Reply -> response.text
+        is ReasoningProviderResponse.Remember -> response.text
+        else -> return ContentFidelity.INDETERMINATE
+    }
+    return if (actual == expected) ContentFidelity.EXACT else ContentFidelity.DEVIATION_OR_PARAPHRASE
+}
+
+private fun familyFOfflineContainsMultipleTaggedOutputs(raw: String): Boolean =
+    Regex("(?m)^\\s*(?:GOAL:|REPLY:|REMEMBER:|NOACTION(?:\\s*$))").findAll(raw).count() > 1
+
+private fun familyFOfflineClassifyRejected(raw: String): PrimaryClassification {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return PrimaryClassification.G
+    if (familyFOfflineContainsMultipleTaggedOutputs(trimmed)) return PrimaryClassification.F
+    val exactTags = listOf("GOAL:", "REPLY:", "REMEMBER:")
+    if (exactTags.any { trimmed == it } || listOf("GOAL", "REPLY", "REMEMBER", "NOACTION").any { it.startsWith(trimmed) }) {
+        return PrimaryClassification.G
+    }
+    if (trimmed.startsWith("NOACTION")) return PrimaryClassification.C
+    if (!trimmed.matches(Regex("^[A-Z]+:.*", RegexOption.DOT_MATCHES_ALL))) return PrimaryClassification.E
+    return PrimaryClassification.C
+}
+
+// Mirrors ReasoningProtocolLiveModelEvaluationHarness's own private
+// classify() exactly, for the reachable subset of outcomes an already-
+// captured response can produce (a TimeoutCancellationException branch
+// is structurally impossible here: nothing is ever awaited, let alone
+// timed out, during offline recovery).
+private fun familyFOfflineClassify(
+    fixture: ConformanceFixture,
+    extracted: String?,
+    parsed: ReasoningProviderResponse?,
+    failure: Throwable?,
+): FamilyFOfflineClassificationResult {
+    val actualAction = parsed?.let(::familyFOfflineAction)
+    val multiple = extracted?.let(::familyFOfflineContainsMultipleTaggedOutputs) == true
+    val primary = when {
+        failure != null && failure !is UnclassifiableModelResponseException &&
+            !(failure is IllegalArgumentException && extracted != null) -> PrimaryClassification.I
+        multiple -> PrimaryClassification.F
+        failure != null -> familyFOfflineClassifyRejected(extracted.orEmpty())
+        actualAction != fixture.expectedAction -> PrimaryClassification.D
+        familyFOfflineContentFidelity(fixture, parsed) == ContentFidelity.EXACT ||
+            familyFOfflineContentFidelity(fixture, parsed) == ContentFidelity.NOT_APPLICABLE -> PrimaryClassification.A
+        else -> PrimaryClassification.B
+    }
+    val representationValid = failure == null && !multiple
+    return FamilyFOfflineClassificationResult(primary, familyFOfflineContentFidelity(fixture, parsed), representationValid)
+}
+
+private fun familyFOfflineExtractEndpointMetadata(raw: String?): EndpointMetadata {
+    fun number(key: String): Long? = raw?.let {
+        Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*(\\d+)").find(it)?.groupValues?.get(1)?.toLongOrNull()
+    }
+    return EndpointMetadata(
+        promptEvalCount = number("prompt_eval_count"),
+        evalCount = number("eval_count"),
+        totalDuration = number("total_duration"),
+        loadDuration = number("load_duration"),
+        promptEvalDuration = number("prompt_eval_duration"),
+        evalDuration = number("eval_duration"),
+    )
+}
+
+object FamilyFOfflineRecovery {
+    // Recovers the exact terminal payload for one transport-without-
+    // terminal trial: verifies the durable request against the expected
+    // production-formatted request, decodes the durable response text,
+    // runs it through the unmodified production extraction and parser,
+    // and derives a TrialObservation identical in shape to the normal
+    // dispatch path's own EvaluationJsonLines.trial(...) output. Fails
+    // closed -- never fabricates a terminal record -- when the transport
+    // evidence does not represent a complete captured response, or when
+    // the durable request does not match the trial it is claimed for.
+    fun recoverTerminalPayload(
+        trial: FamilyFTrial,
+        transport: FamilyFDurableTransportRecord,
+        roleIdentity: FamilyFRoleIdentity,
+        identity: FamilyFIdentity,
+    ): String {
+        require(transport.trialId == trial.id) { "transport record trial ID does not match the requested trial" }
+        if (!transport.responseCaptured || transport.forwardingOutcome != "FORWARDED" || transport.responseBytes == null) {
+            throw FamilyFArtifactIntegrityException(
+                "transport record for ${trial.id} does not represent a complete captured response; cannot classify offline",
+            )
+        }
+
+        val profileId = trial.profileId ?: ContextProfileId.MINIMAL_PRODUCTION_CONTEXT
+        val input = SyntheticContextProfiles.construct(trial.fixture, profileId)
+        val turn = (input.request.subject as ReasoningSubject.OfTurn).turn
+        val expectedPrompt = DefaultReasoningPromptBuilder().buildPrompt(turn, input.request.reasoningContext)
+        val expectedRequestBody = defaultOllamaRequestBody(expectedPrompt, roleIdentity.modelName)
+        val actualRequestText = String(transport.requestBytes, StandardCharsets.UTF_8)
+        if (actualRequestText != expectedRequestBody) {
+            throw FamilyFArtifactIntegrityException(
+                "durable request for ${trial.id} does not match the expected trial/model/prompt request produced by the production formatter",
+            )
+        }
+
+        val rawEnvelope = String(transport.responseBytes, StandardCharsets.UTF_8)
+        var extracted: String? = null
+        var parsed: ReasoningProviderResponse? = null
+        var failure: Throwable? = null
+        try {
+            extracted = defaultOllamaResponseBody(rawEnvelope)
+            parsed = TaggedReasoningResponseParser().parse(extracted)
+        } catch (throwable: Throwable) {
+            failure = throwable
+        }
+
+        val classification = familyFOfflineClassify(trial.fixture, extracted, parsed, failure)
+        val latencyNanos = Duration.between(transport.startedAt, transport.completedAt).toNanos().coerceAtLeast(0L)
+
+        val observation = TrialObservation(
+            runId = "family-f-diagnostic-offline-recovery",
+            fixtureId = trial.fixture.id,
+            contextProfileId = profileId.externalId,
+            trialSequence = trial.attempt,
+            stableInputHash = input.stableInputHash,
+            repositoryCommit = identity.repositoryCommit,
+            modelName = roleIdentity.modelName,
+            modelDigest = roleIdentity.modelDigest,
+            runtimeImageId = null,
+            endpointIdentifier = identity.dedicatedEndpointIdentifier,
+            timeoutMs = identity.requestTimeoutMs,
+            prompt = expectedPrompt,
+            promptSha256 = sha256(expectedPrompt),
+            requestBody = actualRequestText,
+            rawOllamaEnvelope = rawEnvelope,
+            extractedResponse = extracted,
+            parsedVariant = parsed?.let(::familyFOfflineVariantName),
+            parserExceptionType = failure?.javaClass?.name,
+            parserExceptionClassification = when (failure) {
+                is UnclassifiableModelResponseException -> "UNCLASSIFIABLE_MODEL_RESPONSE"
+                is IllegalArgumentException -> "INVALID_RESPONSE_CONTENT"
+                else -> null
+            },
+            expectedAction = trial.fixture.expectedAction,
+            actualAction = parsed?.let(::familyFOfflineAction),
+            representationValid = classification.representationValid,
+            contentFidelity = classification.contentFidelity,
+            latencyNanos = latencyNanos,
+            endpointMetadata = familyFOfflineExtractEndpointMetadata(rawEnvelope),
+            primaryClassification = classification.primaryClassification,
+        )
+        return EvaluationJsonLines.trial(observation)
     }
 }
 
@@ -1072,6 +1618,16 @@ class FamilyFOrchestrationDriver(
 
         val recoveryState = ledger.recover()
         try {
+            // Resolve every transport-without-terminal trial offline,
+            // strictly before any further model contact, and only then
+            // continue dispatching the remaining schedule (Plan Section
+            // 18: "continue only if all exact-once and integrity gates
+            // pass"). A failure here (fail-closed evidence, a request
+            // that does not match the trial it is claimed for, etc.)
+            // is handled by the identical halt path as any other
+            // integrity failure below -- never a retry, never a partial
+            // seal.
+            recoverPendingOfflineClassifications(recoveryState.pendingOfflineClassification)
             for (block in FamilyFCampaignDefinition.blocks) {
                 runBlock(block, recoveryState.dispatched)
             }
@@ -1103,6 +1659,24 @@ class FamilyFOrchestrationDriver(
         ledger.writeSealedReport(familyFSealedReportDocument(subjectReport, controlReport))
         ledger.sealAfterAdvancementRecorded(FamilyFCampaignDefinition.allTrials.map { it.id }.toSet())
         return FamilyFCampaignOutcome.SEALED
+    }
+
+    // Zero-model-call offline recovery for every trial recover() found
+    // transport-captured-but-unclassified (Plan Section 18). Not
+    // private: exercised directly against a fresh, reconstructed
+    // FamilyFOrchestrationDriver instance by the offline-recovery test
+    // suite below, exactly as a real crash/resume would reconstruct one.
+    fun recoverPendingOfflineClassifications(pending: Set<String>) {
+        if (pending.isEmpty()) return
+        val byId = FamilyFCampaignDefinition.allTrials.associateBy { it.id }
+        pending.sorted().forEach { trialId ->
+            val trial = byId[trialId]
+                ?: throw FamilyFArtifactIntegrityException("pending offline classification for unknown trial ID $trialId")
+            val roleIdentity = if (trial.role == FamilyFRole.SUBJECT) config.identity.subject else config.identity.control
+            val transport = ledger.readDurableTransportRecord(trialId)
+            val payload = FamilyFOfflineRecovery.recoverTerminalPayload(trial, transport, roleIdentity, config.identity)
+            ledger.recordTerminal(trialId, payload)
+        }
     }
 
     private fun runBlock(block: FamilyFBlock, alreadyDispatched: Set<String>) {
@@ -1172,8 +1746,7 @@ class FamilyFOrchestrationDriver(
             val trialId = familyFExtractStringField(line, "trialId")
             val trial = byId[trialId] ?: return@mapNotNull null
             if (trial.role != role || trial.kind != FamilyFTrialKind.SCORED) return@mapNotNull null
-            val payload = Regex("\"payload\":\"((?:\\\\.|[^\"])*)\"").find(line)?.groupValues?.get(1)
-                ?.replace("\\\"", "\"")?.replace("\\\\", "\\") ?: return@mapNotNull null
+            val payload = familyFDecodeQuotedField(line, "payload") ?: return@mapNotNull null
             decodeObservation(payload, role)
         }
     }
@@ -1523,7 +2096,7 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         val state = ledger.recover()
         assertTrue("t1" in state.pendingOfflineClassification)
@@ -1536,12 +2109,32 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         ledger.recordTerminal("t1", "payload")
         val state = ledger.recover()
         assertTrue("t1" in state.resolved)
         assertTrue(state.pendingOfflineClassification.isEmpty())
+    }
+
+    @Test
+    fun `recover treats a captured-but-forwarding-failed exchange as ambiguous, not pending offline classification`(@TempDir dir: Path) {
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        ledger.recordIntent("t1")
+        ledger.recordDispatch("t1")
+        val requestBody = ByteArray(0)
+        // A forwarding-failure exchange IS durably captured (the proxy
+        // records it too), but it is not "a complete durably captured
+        // response" (Plan Section 18) -- no response was ever obtained,
+        // so it must remain ambiguous and permanently halt, never be
+        // treated as offline-classifiable.
+        val record = FamilyFProxyExchangeRecord(
+            1, Instant.now(), Instant.now(), "POST", "/api/generate",
+            requestBody, familyFSha256Bytes(requestBody), null, emptyMap(),
+            null, null, "FORWARDING_FAILURE: java.net.ConnectException: Connection refused",
+        )
+        ledger.recordTransport("t1", record)
+        assertFailsWith<FamilyFArtifactIntegrityException> { ledger.recover() }
     }
 
     @Test
@@ -1586,7 +2179,7 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         writeMinimalMandatoryArtifacts(ledger, "t1")
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         assertFailsWith<FamilyFArtifactIntegrityException> { ledger.sealAfterAdvancementRecorded(setOf("t1")) }
         ledger.recordTerminal("t1", "payload")
@@ -1602,7 +2195,7 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         writeMinimalMandatoryArtifacts(ledger, "t1")
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         ledger.recordTerminal("t1", "payload")
         ledger.writeAdvancementWorksheet("{}")
@@ -1625,7 +2218,7 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         // Deliberately omit writeScheduleOnce/writeCampaignDefinition/etc.
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         ledger.recordTerminal("t1", "payload")
         ledger.writeAdvancementWorksheet("{}")
@@ -1642,7 +2235,7 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         writeMinimalMandatoryArtifacts(ledger, "t1")
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         ledger.recordTerminal("t1", "payload")
         ledger.writeAdvancementWorksheet("{}")
@@ -1884,8 +2477,8 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
             transportRecorder.onExchange(
                 FamilyFProxyExchangeRecord(
                     sequence = 1, startedAt = Instant.now(), completedAt = Instant.now(), method = "POST", path = "/api/generate",
-                    requestBody = ByteArray(0), requestSha256 = "req-hash", responseStatus = 200, responseHeaders = emptyMap(),
-                    responseBody = ByteArray(0), responseSha256 = "resp-hash", forwardingOutcome = "FORWARDED",
+                    requestBody = ByteArray(0), requestSha256 = familyFSha256Bytes(ByteArray(0)), responseStatus = 200, responseHeaders = emptyMap(),
+                    responseBody = ByteArray(0), responseSha256 = familyFSha256Bytes(ByteArray(0)), forwardingOutcome = "FORWARDED",
                 ),
             )
             TrialObservation(
@@ -2440,7 +3033,7 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         writeMinimalMandatoryArtifacts(ledger, "t1")
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         ledger.recordTerminal("t1", "payload")
         ledger.writeAdvancementWorksheet("{}")
@@ -2459,7 +3052,7 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         writeMinimalMandatoryArtifacts(ledger, "t1")
         ledger.recordIntent("t1")
         ledger.recordDispatch("t1")
-        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), "req-hash", 200, emptyMap(), ByteArray(0), "resp-hash", "FORWARDED")
+        val record = FamilyFProxyExchangeRecord(1, Instant.now(), Instant.now(), "POST", "/api/generate", ByteArray(0), familyFSha256Bytes(ByteArray(0)), 200, emptyMap(), ByteArray(0), familyFSha256Bytes(ByteArray(0)), "FORWARDED")
         ledger.recordTransport("t1", record)
         ledger.recordTerminal("t1", "payload")
         val state = ledger.recover()
@@ -2483,5 +3076,688 @@ class ReasoningProtocolFamilyFDiagnosticOrchestrationTest {
         // never substituted for by it.
         Files.writeString(dir.resolve("run").resolve("campaign-definition.json"), "{\"tampered\":true}")
         assertFalse(ledger.verifyChecksums())
+    }
+
+    // =======================================================================
+    // Family F Raw Transport Capture Defect Correction: durable raw
+    // request/response capture, response headers, write- and read-time
+    // hash/length re-verification, and genuine offline recovery for a
+    // transport-without-terminal trial (Plan Sections 12, 18; the
+    // confirmed raw-capture defect).
+    // =======================================================================
+
+    private fun startFakeUpstreamForTransportTest(
+        status: Int,
+        body: ByteArray,
+        headers: Map<String, List<String>> = emptyMap(),
+    ): HttpServer {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            exchange.requestBody.readBytes()
+            headers.forEach { (name, values) -> values.forEach { value -> exchange.responseHeaders.add(name, value) } }
+            exchange.sendResponseHeaders(status, if (body.isEmpty()) -1L else body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        return server
+    }
+
+    // ---- Durable raw byte capture (real proxy, real ledger) ----
+
+    @Test
+    fun `a real proxy exchange connected to the real ledger persists exact non-empty request and response bytes`(@TempDir dir: Path) {
+        val fakeResponseBody = "{\"model\":\"llama3.2:3b\",\"response\":\"REPLY: hello there\",\"done\":true}".toByteArray(StandardCharsets.UTF_8)
+        val upstream = startFakeUpstreamForTransportTest(200, fakeResponseBody)
+        try {
+            val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+            ledger.recordIntent("t1")
+            ledger.recordDispatch("t1")
+            val transportRecorder = FamilyFTrialTransportRecorder(ledger)
+            transportRecorder.currentTrialId = "t1"
+            val proxy = FamilyFCaptureProxy("http://127.0.0.1:${upstream.address.port}", transportRecorder)
+            proxy.start()
+            val requestBody = "{\"model\":\"llama3.2:3b\",\"prompt\":\"hello, world\",\"stream\":false}".toByteArray(StandardCharsets.UTF_8)
+            try {
+                val client = HttpClient.newHttpClient()
+                val response = client.send(
+                    HttpRequest.newBuilder().uri(URI.create("${proxy.url}/api/generate"))
+                        .POST(HttpRequest.BodyPublishers.ofByteArray(requestBody)).build(),
+                    HttpResponse.BodyHandlers.ofByteArray(),
+                )
+                assertEquals(200, response.statusCode())
+            } finally {
+                proxy.stop()
+            }
+            val durable = ledger.readDurableTransportRecord("t1")
+            assertTrue(durable.requestBytes.isNotEmpty())
+            assertTrue(durable.requestBytes.contentEquals(requestBody))
+            assertTrue(durable.responseBytes!!.isNotEmpty())
+            assertTrue(durable.responseBytes.contentEquals(fakeResponseBody))
+            assertEquals("FORWARDED", durable.forwardingOutcome)
+            assertEquals(200, durable.responseStatus)
+        } finally {
+            upstream.stop(0)
+        }
+    }
+
+    private class FamilyFDurabilityWitnessListener(
+        private val ledger: FamilyFCampaignLedger,
+        private val delegate: FamilyFTrialTransportRecorder,
+    ) : FamilyFCaptureListener {
+        var durableAtCallbackTime: FamilyFDurableTransportRecord? = null
+
+        override fun onExchange(record: FamilyFProxyExchangeRecord) {
+            val trialId = delegate.currentTrialId!!
+            // Delegates to the real recorder/ledger first, then reads the
+            // record straight back off disk -- all still inside the
+            // proxy's own onExchange callback, which the proxy (source-
+            // order verified in ReasoningProtocolFamilyFDiagnosticTest.kt)
+            // calls strictly before sendResponseHeaders/the response body
+            // write. Finding the complete, hash-verified record already
+            // readable from disk at this exact point proves durability
+            // before release, not merely in-memory transparency or
+            // in-process ordering.
+            delegate.onExchange(record)
+            durableAtCallbackTime = ledger.readDurableTransportRecord(trialId)
+        }
+    }
+
+    @Test
+    fun `durable transport exists on disk before the response is released to the caller`(@TempDir dir: Path) {
+        val fakeResponseBody = "{\"response\":\"REPLY: before release\",\"done\":true}".toByteArray(StandardCharsets.UTF_8)
+        val upstream = startFakeUpstreamForTransportTest(200, fakeResponseBody)
+        try {
+            val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+            ledger.recordIntent("t1")
+            ledger.recordDispatch("t1")
+            val transportRecorder = FamilyFTrialTransportRecorder(ledger)
+            transportRecorder.currentTrialId = "t1"
+            val witness = FamilyFDurabilityWitnessListener(ledger, transportRecorder)
+            val proxy = FamilyFCaptureProxy("http://127.0.0.1:${upstream.address.port}", witness)
+            proxy.start()
+            try {
+                val client = HttpClient.newHttpClient()
+                client.send(
+                    HttpRequest.newBuilder().uri(URI.create("${proxy.url}/api/generate"))
+                        .POST(HttpRequest.BodyPublishers.ofByteArray(ByteArray(0))).build(),
+                    HttpResponse.BodyHandlers.discarding(),
+                )
+            } finally {
+                proxy.stop()
+            }
+            val witnessed = witness.durableAtCallbackTime
+            assertTrue(witnessed != null, "the durable transport record must already be readable from disk inside the pre-release callback")
+            assertTrue(witnessed!!.responseBytes!!.contentEquals(fakeResponseBody))
+        } finally {
+            upstream.stop(0)
+        }
+    }
+
+    @Test
+    fun `transport persistence failure prevents the response from ever being released as successful`(@TempDir dir: Path) {
+        val fakeResponseBody = "{\"response\":\"REPLY: should never reach the caller\",\"done\":true}".toByteArray(StandardCharsets.UTF_8)
+        val upstream = startFakeUpstreamForTransportTest(200, fakeResponseBody)
+        try {
+            val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+            ledger.recordIntent("t1")
+            ledger.recordDispatch("t1")
+            // Pre-create transport.jsonl as a read-only file: the write
+            // recordTransport attempts strictly after a genuine upstream
+            // dispatch now fails with an IOException, simulating durable-
+            // persistence failure after dispatch (Plan Section 12/18).
+            val transportFile = dir.resolve("transport.jsonl")
+            Files.createFile(transportFile)
+            assertTrue(transportFile.toFile().setWritable(false), "test requires the ability to mark a file read-only")
+            try {
+                val transportRecorder = FamilyFTrialTransportRecorder(ledger)
+                transportRecorder.currentTrialId = "t1"
+                val proxy = FamilyFCaptureProxy("http://127.0.0.1:${upstream.address.port}", transportRecorder)
+                proxy.start()
+                try {
+                    val client = HttpClient.newHttpClient()
+                    // The proxy's own (unmodified) fallback behavior is to
+                    // catch the listener's exception and attempt to record
+                    // a forwarding-failure exchange instead -- which itself
+                    // fails the same way (transport.jsonl is still
+                    // read-only), so the exchange never reaches
+                    // sendResponseHeaders at all and the connection is
+                    // simply closed. Either outcome -- the HTTP call
+                    // itself failing, or a non-200/non-matching-body
+                    // response -- proves the same thing: the real,
+                    // successful upstream response is never released to
+                    // the caller.
+                    val releasedSuccessfully = try {
+                        val response = client.send(
+                            HttpRequest.newBuilder().uri(URI.create("${proxy.url}/api/generate"))
+                                .POST(HttpRequest.BodyPublishers.ofByteArray(ByteArray(0))).build(),
+                            HttpResponse.BodyHandlers.ofByteArray(),
+                        )
+                        response.statusCode() == 200 && response.body().contentEquals(fakeResponseBody)
+                    } catch (_: IOException) {
+                        false
+                    }
+                    assertFalse(
+                        releasedSuccessfully,
+                        "a durable-persistence failure must never be released to the caller as a successful response",
+                    )
+                } finally {
+                    proxy.stop()
+                }
+            } finally {
+                transportFile.toFile().setWritable(true)
+            }
+        } finally {
+            upstream.stop(0)
+        }
+    }
+
+    @Test
+    fun `orchestration halts on the very first dispatch when transport persistence fails, never retries, never seals`(@TempDir dir: Path) {
+        val campaignRoot = dir.resolve("run")
+        val config = fakeConfig(campaignRoot)
+        val ledger = FamilyFCampaignLedger(config.campaignArtifactRoot, FamilyFCampaignDefinition.allTrials.map { it.id }.toSet(), config.campaignId)
+        val transportRecorder = FamilyFTrialTransportRecorder(ledger)
+        var residency = FamilyFResidencyState.ABSENT
+        var modelCallCount = 0
+
+        val modelCaller = FamilyFModelCaller { trial, roleModelName ->
+            modelCallCount += 1
+            residency = if (trial.role == FamilyFRole.SUBJECT) FamilyFResidencyState.SUBJECT_RESIDENT else FamilyFResidencyState.CONTROL_RESIDENT
+            transportRecorder.onExchange(
+                FamilyFProxyExchangeRecord(
+                    sequence = 1, startedAt = Instant.now(), completedAt = Instant.now(), method = "POST", path = "/api/generate",
+                    requestBody = ByteArray(0), requestSha256 = familyFSha256Bytes(ByteArray(0)), responseStatus = 200, responseHeaders = emptyMap(),
+                    responseBody = ByteArray(0), responseSha256 = familyFSha256Bytes(ByteArray(0)), forwardingOutcome = "FORWARDED",
+                ),
+            )
+            TrialObservation(
+                runId = "fake", fixtureId = trial.fixture.id, contextProfileId = (trial.profileId ?: ContextProfileId.MINIMAL_PRODUCTION_CONTEXT).externalId,
+                trialSequence = trial.attempt, stableInputHash = "hash", repositoryCommit = "fakecommit0123456789", modelName = roleModelName,
+                modelDigest = "sha256:fake", runtimeImageId = null, endpointIdentifier = "fake-endpoint", timeoutMs = FAMILY_F_TIMEOUT_MS,
+                prompt = "prompt", promptSha256 = "prompt-sha", requestBody = null, rawOllamaEnvelope = null, extractedResponse = null,
+                parsedVariant = null, parserExceptionType = null, parserExceptionClassification = null,
+                expectedAction = trial.fixture.expectedAction, actualAction = trial.fixture.expectedAction, representationValid = true,
+                contentFidelity = ContentFidelity.NOT_APPLICABLE, latencyNanos = 1_000_000L, endpointMetadata = EndpointMetadata(),
+                primaryClassification = PrimaryClassification.A,
+            )
+        }
+        val dependencies = FamilyFRuntimeDependencies(
+            availableMemory = { 8L * 1024 * 1024 * 1024 },
+            usableSpace = { 8L * 1024 * 1024 * 1024 },
+            residencyQuery = FamilyFResidencyQuery { residency },
+            unloadCommand = FamilyFModelUnloadCommand { residency = FamilyFResidencyState.ABSENT; true },
+            pollResidencyUntilAbsent = { residency },
+            protectedProcesses = listOf(FamilyFProtectedProcess("production-parker", "1", "fake-production-endpoint")),
+            isAlive = { true },
+            dedicatedPid = "2",
+        )
+        val driver = FamilyFOrchestrationDriver(config, ledger, dependencies, modelCaller, transportRecorder)
+
+        // Replicates exactly the directory-creation half of driver.run()
+        // (schedule + intent for all 392 trials, no model contact) so the
+        // driver below sees a genuinely pre-existing campaign and goes
+        // straight to recover()/dispatch, precisely as a real resumed
+        // run would -- then corrupts only transport.jsonl before the
+        // first dispatch is ever attempted.
+        ledger.createDirectory()
+        ledger.writeScheduleOnce(FamilyFCampaignDefinition.allTrials)
+        FamilyFCampaignDefinition.allTrials.forEach { ledger.recordIntent(it.id) }
+        val transportFile = campaignRoot.resolve("transport.jsonl")
+        Files.createFile(transportFile)
+        assertTrue(transportFile.toFile().setWritable(false), "test requires the ability to mark a file read-only")
+        try {
+            val outcome = driver.run()
+            assertEquals(FamilyFCampaignOutcome.HALTED, outcome)
+        } finally {
+            transportFile.toFile().setWritable(true)
+        }
+        assertTrue(ledger.isHalted())
+        assertFalse(ledger.isSealed())
+        assertEquals(1, modelCallCount, "no retry: the model caller must be invoked exactly once for the one trial that failed to persist")
+        val dispatchLines = Files.readAllLines(campaignRoot.resolve("dispatch.jsonl")).filter { it.isNotBlank() }
+        assertEquals(1, dispatchLines.size, "dispatch must not be reissued after a persistence failure")
+    }
+
+    // ---- Durable round-trip fidelity: adversarial bytes, headers, hashes ----
+
+    @Test
+    fun `adversarial unicode, CRLF, quotes, backslashes, NUL, and non-text bytes round-trip losslessly`(@TempDir dir: Path) {
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        ledger.recordIntent("t1")
+        ledger.recordDispatch("t1")
+        val adversarialText = "unicode: éè中文😀 quotes:\" backslash:\\ crlf:\r\n tab:\t"
+        val requestBody = adversarialText.toByteArray(StandardCharsets.UTF_8) + byteArrayOf(0, 1, 2, 255.toByte(), 254.toByte())
+        val responseBody = byteArrayOf(0, 0, 0, 255.toByte(), 128.toByte(), 10, 13, 34, 92) + adversarialText.toByteArray(StandardCharsets.UTF_8)
+        val record = FamilyFProxyExchangeRecord(
+            1, Instant.now(), Instant.now(), "POST", "/api/generate",
+            requestBody, familyFSha256Bytes(requestBody), 200, emptyMap(),
+            responseBody, familyFSha256Bytes(responseBody), "FORWARDED",
+        )
+        ledger.recordTransport("t1", record)
+        val durable = ledger.readDurableTransportRecord("t1")
+        assertTrue(durable.requestBytes.contentEquals(requestBody))
+        assertTrue(durable.responseBytes!!.contentEquals(responseBody))
+    }
+
+    @Test
+    fun `duplicate and multi-valued response headers survive durable capture exactly`(@TempDir dir: Path) {
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        ledger.recordIntent("t1")
+        ledger.recordDispatch("t1")
+        val headers = mapOf(
+            "Set-Cookie" to listOf("a=1; Path=/", "b=2; Path=/x", "c=3"),
+            "X-Custom-Header" to listOf("value-with-\"quote\"-and-\\backslash-and-\ncontrol"),
+        )
+        val requestBody = ByteArray(0)
+        val responseBody = "ok".toByteArray(StandardCharsets.UTF_8)
+        val record = FamilyFProxyExchangeRecord(
+            1, Instant.now(), Instant.now(), "POST", "/api/generate",
+            requestBody, familyFSha256Bytes(requestBody), 200, headers,
+            responseBody, familyFSha256Bytes(responseBody), "FORWARDED",
+        )
+        ledger.recordTransport("t1", record)
+        val durable = ledger.readDurableTransportRecord("t1")
+        assertEquals(headers["Set-Cookie"], durable.responseHeaders["Set-Cookie"])
+        assertEquals(3, durable.responseHeaders["Set-Cookie"]?.size)
+        assertEquals(headers["X-Custom-Header"], durable.responseHeaders["X-Custom-Header"])
+    }
+
+    @Test
+    fun `persisted hashes and byte counts independently recompute from the decoded durable bytes`(@TempDir dir: Path) {
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        ledger.recordIntent("t1")
+        ledger.recordDispatch("t1")
+        val requestBody = ("request body with repeated content " + "x".repeat(500)).toByteArray(StandardCharsets.UTF_8)
+        val responseBody = "{\"response\":\"REPLY: independent recompute\",\"done\":true}".toByteArray(StandardCharsets.UTF_8)
+        val record = FamilyFProxyExchangeRecord(
+            1, Instant.now(), Instant.now(), "POST", "/api/generate",
+            requestBody, familyFSha256Bytes(requestBody), 200, emptyMap(),
+            responseBody, familyFSha256Bytes(responseBody), "FORWARDED",
+        )
+        ledger.recordTransport("t1", record)
+        val durable = ledger.readDurableTransportRecord("t1")
+        assertEquals(requestBody.size, durable.requestBytes.size)
+        assertEquals(familyFSha256Bytes(durable.requestBytes), durable.requestSha256)
+        assertEquals(responseBody.size, durable.responseBytes!!.size)
+        assertEquals(familyFSha256Bytes(durable.responseBytes), durable.responseSha256)
+        // Independently recomputed a second time, directly from the raw
+        // transport.jsonl line on disk, bypassing readDurableTransportRecord
+        // entirely.
+        val line = Files.readAllLines(dir.resolve("transport.jsonl")).single()
+        val rawBase64Request = Regex("\"requestBodyBase64\":\"([^\"]*)\"").find(line)!!.groupValues[1]
+        assertEquals(durable.requestSha256, familyFSha256Bytes(Base64.getDecoder().decode(rawBase64Request)))
+    }
+
+    // ---- Fail-closed evidence handling ----
+
+    @Test
+    fun `reading a missing transport record fails closed`(@TempDir dir: Path) {
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        ledger.recordIntent("t1")
+        assertFailsWith<FamilyFArtifactIntegrityException> { ledger.readDurableTransportRecord("t1") }
+    }
+
+    @Test
+    fun `a transport record missing a required raw-capture field fails closed`(@TempDir dir: Path) {
+        val file = dir.resolve("transport.jsonl")
+        val cursor = FamilyFChainCursor(0L, FAMILY_F_LEDGER_GENESIS_HASH)
+        // Correctly chained envelope, but the requestBodyBase64 payload
+        // field this defect correction requires is entirely absent.
+        FamilyFChainedLedger.append(
+            file, cursor, "test-campaign", "t1",
+            listOf("exchangeSequence" to 1L, "requestSha256" to "abc", "responseStatus" to 200, "forwardingOutcome" to "FORWARDED"),
+        )
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        assertFailsWith<FamilyFArtifactIntegrityException> { ledger.readDurableTransportRecord("t1") }
+    }
+
+    @Test
+    fun `invalid base64 request body fails closed`(@TempDir dir: Path) {
+        val file = dir.resolve("transport.jsonl")
+        val cursor = FamilyFChainCursor(0L, FAMILY_F_LEDGER_GENESIS_HASH)
+        FamilyFChainedLedger.append(
+            file, cursor, "test-campaign", "t1",
+            listOf(
+                "exchangeSequence" to 1L, "startedAt" to Instant.now().toString(), "completedAt" to Instant.now().toString(),
+                "requestByteCount" to 3, "requestBodyBase64" to "not-valid-base64!!!", "requestSha256" to "irrelevant",
+                "responseStatus" to 200, "responseCaptured" to false, "responseByteCount" to -1,
+                "responseBodyBase64" to "", "responseSha256" to "", "responseHeadersJson" to "{}", "forwardingOutcome" to "FORWARDED",
+            ),
+        )
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        assertFailsWith<FamilyFArtifactIntegrityException> { ledger.readDurableTransportRecord("t1") }
+    }
+
+    @Test
+    fun `wrong request byte count fails closed`(@TempDir dir: Path) {
+        val file = dir.resolve("transport.jsonl")
+        val cursor = FamilyFChainCursor(0L, FAMILY_F_LEDGER_GENESIS_HASH)
+        val requestBody = "hello".toByteArray(StandardCharsets.UTF_8)
+        FamilyFChainedLedger.append(
+            file, cursor, "test-campaign", "t1",
+            listOf(
+                "exchangeSequence" to 1L, "startedAt" to Instant.now().toString(), "completedAt" to Instant.now().toString(),
+                "requestByteCount" to 999, "requestBodyBase64" to Base64.getEncoder().encodeToString(requestBody),
+                "requestSha256" to familyFSha256Bytes(requestBody),
+                "responseStatus" to 200, "responseCaptured" to false, "responseByteCount" to -1,
+                "responseBodyBase64" to "", "responseSha256" to "", "responseHeadersJson" to "{}", "forwardingOutcome" to "FORWARDED",
+            ),
+        )
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        assertFailsWith<FamilyFArtifactIntegrityException> { ledger.readDurableTransportRecord("t1") }
+    }
+
+    @Test
+    fun `wrong request hash fails closed`(@TempDir dir: Path) {
+        val file = dir.resolve("transport.jsonl")
+        val cursor = FamilyFChainCursor(0L, FAMILY_F_LEDGER_GENESIS_HASH)
+        val requestBody = "hello".toByteArray(StandardCharsets.UTF_8)
+        FamilyFChainedLedger.append(
+            file, cursor, "test-campaign", "t1",
+            listOf(
+                "exchangeSequence" to 1L, "startedAt" to Instant.now().toString(), "completedAt" to Instant.now().toString(),
+                "requestByteCount" to requestBody.size, "requestBodyBase64" to Base64.getEncoder().encodeToString(requestBody),
+                "requestSha256" to "0".repeat(64),
+                "responseStatus" to 200, "responseCaptured" to false, "responseByteCount" to -1,
+                "responseBodyBase64" to "", "responseSha256" to "", "responseHeadersJson" to "{}", "forwardingOutcome" to "FORWARDED",
+            ),
+        )
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        assertFailsWith<FamilyFArtifactIntegrityException> { ledger.readDurableTransportRecord("t1") }
+    }
+
+    @Test
+    fun `malformed response headers structure fails closed`(@TempDir dir: Path) {
+        val file = dir.resolve("transport.jsonl")
+        val cursor = FamilyFChainCursor(0L, FAMILY_F_LEDGER_GENESIS_HASH)
+        val requestBody = ByteArray(0)
+        val responseBody = "ok".toByteArray(StandardCharsets.UTF_8)
+        FamilyFChainedLedger.append(
+            file, cursor, "test-campaign", "t1",
+            listOf(
+                "exchangeSequence" to 1L, "startedAt" to Instant.now().toString(), "completedAt" to Instant.now().toString(),
+                "requestByteCount" to 0, "requestBodyBase64" to "", "requestSha256" to familyFSha256Bytes(requestBody),
+                "responseStatus" to 200, "responseCaptured" to true, "responseByteCount" to responseBody.size,
+                "responseBodyBase64" to Base64.getEncoder().encodeToString(responseBody),
+                "responseSha256" to familyFSha256Bytes(responseBody),
+                "responseHeadersJson" to "{not-well-formed-at-all",
+                "forwardingOutcome" to "FORWARDED",
+            ),
+        )
+        val ledger = FamilyFCampaignLedger(dir, setOf("t1"))
+        assertFailsWith<FamilyFArtifactIntegrityException> { ledger.readDurableTransportRecord("t1") }
+    }
+
+    @Test
+    fun `offline recovery fails closed when the transport record does not represent a complete captured response`() {
+        val trial = FamilyFCampaignDefinition.allTrials.first { it.kind == FamilyFTrialKind.SCORED }
+        val transport = FamilyFDurableTransportRecord(
+            trialId = trial.id, exchangeSequence = 1, startedAt = Instant.now(), completedAt = Instant.now(),
+            requestBytes = ByteArray(0), requestSha256 = familyFSha256Bytes(ByteArray(0)),
+            responseStatus = null, responseCaptured = false, responseBytes = null, responseSha256 = null,
+            responseHeaders = emptyMap(), forwardingOutcome = "FORWARDING_FAILURE: simulated",
+        )
+        assertFailsWith<FamilyFArtifactIntegrityException> {
+            FamilyFOfflineRecovery.recoverTerminalPayload(trial, transport, FamilyFRoleIdentity(trial.role, trial.role.modelName, "sha256:fake", 1L), fakeIdentityForOfflineRecoveryTests())
+        }
+    }
+
+    @Test
+    fun `offline recovery fails closed when the durable request does not match the expected production-formatted request`() {
+        val trial = FamilyFCampaignDefinition.allTrials.first { it.kind == FamilyFTrialKind.SCORED }
+        val wrongRequestBody = "{\"model\":\"not-the-right-model\",\"prompt\":\"not the real prompt\",\"stream\":false}".toByteArray(StandardCharsets.UTF_8)
+        val responseBody = "{\"response\":\"REPLY: irrelevant\",\"done\":true}".toByteArray(StandardCharsets.UTF_8)
+        val transport = FamilyFDurableTransportRecord(
+            trialId = trial.id, exchangeSequence = 1, startedAt = Instant.now(), completedAt = Instant.now(),
+            requestBytes = wrongRequestBody, requestSha256 = familyFSha256Bytes(wrongRequestBody),
+            responseStatus = 200, responseCaptured = true, responseBytes = responseBody, responseSha256 = familyFSha256Bytes(responseBody),
+            responseHeaders = emptyMap(), forwardingOutcome = "FORWARDED",
+        )
+        assertFailsWith<FamilyFArtifactIntegrityException> {
+            FamilyFOfflineRecovery.recoverTerminalPayload(trial, transport, FamilyFRoleIdentity(trial.role, trial.role.modelName, "sha256:fake", 1L), fakeIdentityForOfflineRecoveryTests())
+        }
+    }
+
+    @Test
+    fun `offline recovery rejects a transport record claimed for the wrong trial`() {
+        val trial = FamilyFCampaignDefinition.allTrials.first { it.kind == FamilyFTrialKind.SCORED }
+        val otherTrial = FamilyFCampaignDefinition.allTrials.first { it.kind == FamilyFTrialKind.SCORED && it.id != trial.id }
+        val transport = FamilyFDurableTransportRecord(
+            trialId = otherTrial.id, exchangeSequence = 1, startedAt = Instant.now(), completedAt = Instant.now(),
+            requestBytes = ByteArray(0), requestSha256 = familyFSha256Bytes(ByteArray(0)),
+            responseStatus = 200, responseCaptured = true, responseBytes = ByteArray(0), responseSha256 = familyFSha256Bytes(ByteArray(0)),
+            responseHeaders = emptyMap(), forwardingOutcome = "FORWARDED",
+        )
+        assertFailsWith<IllegalArgumentException> {
+            FamilyFOfflineRecovery.recoverTerminalPayload(trial, transport, FamilyFRoleIdentity(trial.role, trial.role.modelName, "sha256:fake", 1L), fakeIdentityForOfflineRecoveryTests())
+        }
+    }
+
+    // Reuses fakeConfig's own identity construction rather than
+    // duplicating it -- the campaign root passed in is never touched by
+    // identity-only tests, so an unused placeholder path is sufficient.
+    private fun fakeIdentityForOfflineRecoveryTests(): FamilyFIdentity =
+        fakeConfig(Path.of("build/family-f-offline-recovery-fake-identity-unused")).identity
+
+    // ---- Genuine offline recovery: reconstruction, zero model calls, matches normal path ----
+
+    private fun seedTransportWithoutTerminal(
+        ledger: FamilyFCampaignLedger,
+        trial: FamilyFTrial,
+        roleIdentity: FamilyFRoleIdentity,
+        responseTag: String,
+    ): ByteArray {
+        val profileId = trial.profileId ?: ContextProfileId.MINIMAL_PRODUCTION_CONTEXT
+        val input = SyntheticContextProfiles.construct(trial.fixture, profileId)
+        val turn = (input.request.subject as ReasoningSubject.OfTurn).turn
+        val prompt = DefaultReasoningPromptBuilder().buildPrompt(turn, input.request.reasoningContext)
+        val requestBody = defaultOllamaRequestBody(prompt, roleIdentity.modelName).toByteArray(StandardCharsets.UTF_8)
+        val responseBody = "{\"model\":\"${roleIdentity.modelName}\",\"response\":\"$responseTag\",\"done\":true}".toByteArray(StandardCharsets.UTF_8)
+        val record = FamilyFProxyExchangeRecord(
+            sequence = 1, startedAt = Instant.now(), completedAt = Instant.now().plusMillis(250), method = "POST", path = "/api/generate",
+            requestBody = requestBody, requestSha256 = familyFSha256Bytes(requestBody), responseStatus = 200,
+            responseHeaders = mapOf("Content-Type" to listOf("application/json")),
+            responseBody = responseBody, responseSha256 = familyFSha256Bytes(responseBody), forwardingOutcome = "FORWARDED",
+        )
+        ledger.recordIntent(trial.id)
+        ledger.recordDispatch(trial.id)
+        ledger.recordTransport(trial.id, record)
+        return responseBody
+    }
+
+    private fun normalPathTerminalPayload(trial: FamilyFTrial, roleIdentity: FamilyFRoleIdentity, responseBody: ByteArray, repositoryCommit: String): String {
+        val upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        upstream.createContext("/") { exchange ->
+            exchange.requestBody.readBytes()
+            exchange.sendResponseHeaders(200, responseBody.size.toLong())
+            exchange.responseBody.use { it.write(responseBody) }
+        }
+        upstream.start()
+        try {
+            val config = LiveEvaluationConfig(
+                endpointUrl = "http://127.0.0.1:${upstream.address.port}/api/generate",
+                sanitizedEndpointIdentifier = "http://127.0.0.1:${upstream.address.port}",
+                modelName = roleIdentity.modelName,
+                timeoutMs = FAMILY_F_TIMEOUT_MS,
+                outputPath = Path.of("build/family-f-offline-recovery-test-unused.jsonl"),
+                repositoryCommit = repositoryCommit,
+                modelDigest = roleIdentity.modelDigest,
+                runtimeImageId = null,
+                repetitions = 1,
+            )
+            val profileId = trial.profileId ?: ContextProfileId.MINIMAL_PRODUCTION_CONTEXT
+            val input = SyntheticContextProfiles.construct(trial.fixture, profileId)
+            val harness = ReasoningProtocolLiveModelEvaluationHarness(config)
+            val observation = runBlocking { harness.execute(input, trial.attempt) }
+            return EvaluationJsonLines.trial(observation)
+        } finally {
+            upstream.stop(0)
+        }
+    }
+
+    // Compares only the semantically meaningful fields between a normal-
+    // path terminal payload and an offline-recovered one: fields like
+    // runId, endpointIdentifier, and timeoutMs legitimately differ (the
+    // normal-path comparison call above necessarily uses a throwaway
+    // fake upstream distinct from the campaign's own dedicated endpoint
+    // identity), so a full-string comparison would be a false negative.
+    // Reuses the top-level familyFJsonFieldRawToken (a linear scan, not
+    // a backtracking regex, since these fields can be long).
+    private fun assertSameSemanticTerminalContent(expectedPayload: String, actualPayload: String) {
+        val fields = listOf(
+            "fixtureId", "contextProfileId", "prompt", "promptSha256", "requestBody",
+            "rawOllamaEnvelope", "extractedResponse", "parsedVariant", "parserExceptionType",
+            "parserExceptionClassification", "expectedAction", "actualAction",
+            "representationValid", "contentFidelity", "primaryClassification",
+        )
+        fields.forEach { field ->
+            assertEquals(
+                familyFJsonFieldRawToken(expectedPayload, field),
+                familyFJsonFieldRawToken(actualPayload, field),
+                "field \"$field\" must match between normal-path and offline-recovered terminal output",
+            )
+        }
+    }
+
+    @Test
+    fun `transport-without-terminal is classified offline after reconstructing a new ledger and driver instance, with zero model calls, matching normal-path output`(@TempDir dir: Path) {
+        val trial = FamilyFCampaignDefinition.allTrials.first { it.kind == FamilyFTrialKind.SCORED && it.fixture.expectedAction == ExpectedAction.REPLY }
+        val config = fakeConfig(dir)
+        val roleIdentity = if (trial.role == FamilyFRole.SUBJECT) config.identity.subject else config.identity.control
+
+        val seedingLedger = FamilyFCampaignLedger(dir, FamilyFCampaignDefinition.allTrials.map { it.id }.toSet())
+        val responseBody = seedTransportWithoutTerminal(seedingLedger, trial, roleIdentity, "REPLY: recovered offline")
+        val seededState = seedingLedger.recover()
+        assertTrue(trial.id in seededState.pendingOfflineClassification)
+
+        // Reconstruct an entirely fresh FamilyFCampaignLedger and
+        // FamilyFOrchestrationDriver pointed at the same directory --
+        // exactly what a real crash/resume would do -- rather than
+        // continuing to use the same in-memory instance that seeded the
+        // state above.
+        val reconstructedLedger = FamilyFCampaignLedger(dir, FamilyFCampaignDefinition.allTrials.map { it.id }.toSet())
+        var modelCallCount = 0
+        val throwingModelCaller = FamilyFModelCaller { _, _ ->
+            modelCallCount += 1
+            throw AssertionError("offline recovery must make zero model calls")
+        }
+        val dependencies = FamilyFRuntimeDependencies(
+            availableMemory = { 8L * 1024 * 1024 * 1024 }, usableSpace = { 8L * 1024 * 1024 * 1024 },
+            residencyQuery = FamilyFResidencyQuery { FamilyFResidencyState.ABSENT },
+            unloadCommand = FamilyFModelUnloadCommand { true },
+            pollResidencyUntilAbsent = { FamilyFResidencyState.ABSENT },
+            protectedProcesses = emptyList(), isAlive = { true }, dedicatedPid = "2",
+        )
+        val reconstructedTransportRecorder = FamilyFTrialTransportRecorder(reconstructedLedger)
+        val driver = FamilyFOrchestrationDriver(config, reconstructedLedger, dependencies, throwingModelCaller, reconstructedTransportRecorder)
+
+        val reconstructedState = reconstructedLedger.recover()
+        driver.recoverPendingOfflineClassifications(reconstructedState.pendingOfflineClassification)
+
+        assertEquals(0, modelCallCount)
+        val finalState = reconstructedLedger.recover()
+        assertTrue(trial.id in finalState.resolved)
+        assertTrue(finalState.pendingOfflineClassification.isEmpty())
+
+        val terminalLine = Files.readAllLines(dir.resolve("terminal.jsonl")).single { familyFExtractStringField(it, "trialId") == trial.id }
+        val recoveredPayload = familyFDecodeQuotedField(terminalLine, "payload")!!
+
+        val normalPayload = normalPathTerminalPayload(trial, roleIdentity, responseBody, config.identity.repositoryCommit)
+        assertSameSemanticTerminalContent(normalPayload, recoveredPayload)
+        assertTrue(recoveredPayload.contains("\"extractedResponse\":\"REPLY: recovered offline\""))
+        assertTrue(recoveredPayload.contains("\"primaryClassification\":\"A\""))
+    }
+
+    @Test
+    fun `offline recovery works after copying the campaign directory elsewhere`(@TempDir dir: Path) {
+        val trial = FamilyFCampaignDefinition.allTrials.first { it.kind == FamilyFTrialKind.SCORED && it.fixture.expectedAction == ExpectedAction.NOACTION }
+        val identity = fakeIdentityForOfflineRecoveryTests()
+        val roleIdentity = if (trial.role == FamilyFRole.SUBJECT) identity.subject else identity.control
+
+        val original = dir.resolve("original")
+        val seedingLedger = FamilyFCampaignLedger(original, FamilyFCampaignDefinition.allTrials.map { it.id }.toSet())
+        seedTransportWithoutTerminal(seedingLedger, trial, roleIdentity, "NOACTION")
+
+        val copy = dir.resolve("copy")
+        Files.createDirectories(copy)
+        Files.list(original).use { stream -> stream.forEach { file -> Files.copy(file, copy.resolve(file.fileName)) } }
+
+        val copiedLedger = FamilyFCampaignLedger(copy, FamilyFCampaignDefinition.allTrials.map { it.id }.toSet())
+        var modelCallCount = 0
+        val throwingModelCaller = FamilyFModelCaller { _, _ -> modelCallCount += 1; throw AssertionError("must not be called") }
+        val config = fakeConfig(dir.resolve("unused-campaign-root")).copy(campaignArtifactRoot = copy)
+        val dependencies = FamilyFRuntimeDependencies(
+            availableMemory = { 8L * 1024 * 1024 * 1024 }, usableSpace = { 8L * 1024 * 1024 * 1024 },
+            residencyQuery = FamilyFResidencyQuery { FamilyFResidencyState.ABSENT },
+            unloadCommand = FamilyFModelUnloadCommand { true },
+            pollResidencyUntilAbsent = { FamilyFResidencyState.ABSENT },
+            protectedProcesses = emptyList(), isAlive = { true }, dedicatedPid = "2",
+        )
+        val transportRecorder = FamilyFTrialTransportRecorder(copiedLedger)
+        val driver = FamilyFOrchestrationDriver(config, copiedLedger, dependencies, throwingModelCaller, transportRecorder)
+        val state = copiedLedger.recover()
+        assertTrue(trial.id in state.pendingOfflineClassification)
+        driver.recoverPendingOfflineClassifications(state.pendingOfflineClassification)
+
+        assertEquals(0, modelCallCount)
+        val finalState = copiedLedger.recover()
+        assertTrue(trial.id in finalState.resolved)
+    }
+
+    @Test
+    fun `no duplicate terminal record is created for a trial already resolved`(@TempDir dir: Path) {
+        val trial = FamilyFCampaignDefinition.allTrials.first { it.kind == FamilyFTrialKind.SCORED }
+        val identity = fakeIdentityForOfflineRecoveryTests()
+        val roleIdentity = if (trial.role == FamilyFRole.SUBJECT) identity.subject else identity.control
+        val ledger = FamilyFCampaignLedger(dir, FamilyFCampaignDefinition.allTrials.map { it.id }.toSet())
+        seedTransportWithoutTerminal(ledger, trial, roleIdentity, "REPLY: only once")
+        val driver = FamilyFOrchestrationDriver(
+            fakeConfig(dir.resolve("unused")).copy(campaignArtifactRoot = dir), ledger,
+            FamilyFRuntimeDependencies(
+                availableMemory = { 8L * 1024 * 1024 * 1024 }, usableSpace = { 8L * 1024 * 1024 * 1024 },
+                residencyQuery = FamilyFResidencyQuery { FamilyFResidencyState.ABSENT },
+                unloadCommand = FamilyFModelUnloadCommand { true }, pollResidencyUntilAbsent = { FamilyFResidencyState.ABSENT },
+                protectedProcesses = emptyList(), isAlive = { true }, dedicatedPid = "2",
+            ),
+            FamilyFModelCaller { _, _ -> throw AssertionError("must not be called") },
+            FamilyFTrialTransportRecorder(ledger),
+        )
+        val state = ledger.recover()
+        driver.recoverPendingOfflineClassifications(state.pendingOfflineClassification)
+        val terminalLinesAfterFirstRecovery = Files.readAllLines(dir.resolve("terminal.jsonl")).filter { it.isNotBlank() && familyFExtractStringField(it, "trialId") == trial.id }
+        assertEquals(1, terminalLinesAfterFirstRecovery.size)
+
+        // A fresh recover() pass -- exactly what a second, independent
+        // resume attempt would compute -- no longer includes the
+        // now-resolved trial in pendingOfflineClassification at all, so
+        // a real caller has no way to reach recoverPendingOfflineClassifications
+        // for it a second time; re-driving recovery with that fresh,
+        // correctly-empty set is therefore a no-op, and no duplicate
+        // terminal record is ever created.
+        val secondState = ledger.recover()
+        assertFalse(trial.id in secondState.pendingOfflineClassification)
+        driver.recoverPendingOfflineClassifications(secondState.pendingOfflineClassification)
+        val terminalLines = Files.readAllLines(dir.resolve("terminal.jsonl")).filter { it.isNotBlank() && familyFExtractStringField(it, "trialId") == trial.id }
+        assertEquals(1, terminalLines.size, "exactly one terminal record must exist for the trial, never a duplicate")
+    }
+
+    // ---- All 392 fake-driven calls carry durable, complete transport evidence ----
+
+    @Test
+    fun `all 392 fake-driven calls contain durable complete transport evidence`(@TempDir dir: Path) {
+        val (outcome, ledger) = runFakeCampaign(dir.resolve("run"), subjectAlwaysCorrect = true, controlAlwaysCorrect = true)
+        assertEquals(FamilyFCampaignOutcome.SEALED, outcome)
+        val transportLines = Files.readAllLines(dir.resolve("run").resolve("transport.jsonl")).filter { it.isNotBlank() }
+        assertEquals(392, transportLines.size)
+        val expectedIds = FamilyFCampaignDefinition.allTrials.map { it.id }.toSet()
+        transportLines.forEach { line ->
+            val trialId = familyFExtractStringField(line, "trialId")
+            assertTrue(trialId in expectedIds)
+            val durable = ledger.readDurableTransportRecord(trialId)
+            assertTrue(durable.responseCaptured)
+            assertEquals("FORWARDED", durable.forwardingOutcome)
+            assertEquals(200, durable.responseStatus)
+        }
+        assertEquals(392, transportLines.map { familyFExtractStringField(it, "trialId") }.distinct().size)
     }
 }
