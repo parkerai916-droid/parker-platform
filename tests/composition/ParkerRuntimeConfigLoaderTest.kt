@@ -27,6 +27,8 @@ class ParkerRuntimeConfigLoaderTest {
                 Files.createTempDirectory("config-loader-test-evidence-audit").resolve("audit.log").toString(),
             ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH to
                 Files.createTempDirectory("config-loader-test-memory-core").resolve("memory-core.log").toString(),
+            ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH to
+                Files.createTempDirectory("config-loader-test-knowledge-items").resolve("knowledge-items.log").toString(),
         )
         val merged = base.toMutableMap()
         overrides.forEach { (key, value) ->
@@ -54,6 +56,10 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(
             environment[ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH],
             config.memoryCoreDurabilityLogPath,
+        )
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH],
+            config.knowledgeItemDurabilityLogPath,
         )
     }
 
@@ -116,6 +122,17 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.load(environment)
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH to null),
+        )
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH, thrown.key)
     }
 
     @Test

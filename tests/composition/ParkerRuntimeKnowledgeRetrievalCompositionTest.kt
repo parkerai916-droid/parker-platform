@@ -24,7 +24,7 @@ import parker.core.runtime.CommunicationConversationCoordinator
 import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultKnowledgeRetrieval
-import parker.core.runtime.InMemoryKnowledgeItemPersistence
+import parker.core.runtime.DurableKnowledgeItemPersistence
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -34,7 +34,7 @@ import kotlin.test.assertTrue
 /**
  * Programme 3, Knowledge Memory, Implementation Unit 9.6 ("Runtime
  * Composition"). End-to-end tests against the real, fully-wired
- * production graph -- a real [InMemoryKnowledgeItemPersistence], a real
+ * production graph -- a real [DurableKnowledgeItemPersistence], a real
  * `DefaultPermissionEngine`][parker.core.runtime.DefaultPermissionEngine]
  * resolving this graph's own newly-registered `knowledge.retrieve`
  * convention, and the real, composed [DefaultKnowledgeRetrieval] -- not
@@ -69,6 +69,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("knowledge-retrieval-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("knowledge-retrieval-composition-memory").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
     )
 
     private fun <T> Any.privateField(name: String): T {
@@ -115,7 +116,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
     private fun knowledgeRetrievalFrom(runtime: ParkerRuntime): KnowledgeRetrieval =
         runtime.privateField("knowledgeRetrieval")
 
-    private fun persistenceFrom(knowledgeRetrieval: KnowledgeRetrieval): InMemoryKnowledgeItemPersistence {
+    private fun persistenceFrom(knowledgeRetrieval: KnowledgeRetrieval): DurableKnowledgeItemPersistence {
         val persistence = (knowledgeRetrieval as Any).privateField<Any>("persistence")
         return assertIs(persistence)
     }
@@ -145,7 +146,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
     }
 
     @Test
-    fun `the same InMemoryKnowledgeItemPersistence instance backs both Knowledge Submission and Knowledge Retrieval`() = runTest {
+    fun `the same DurableKnowledgeItemPersistence instance backs both Knowledge Submission and Knowledge Retrieval`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -156,7 +157,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
         val retrievalPersistence = persistenceFrom(knowledgeRetrieval)
 
-        assertIs<InMemoryKnowledgeItemPersistence>(submissionPersistence)
+        assertIs<DurableKnowledgeItemPersistence>(submissionPersistence)
         assertSame(
             submissionPersistence,
             retrievalPersistence,

@@ -61,6 +61,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("gap54-unit2-evidence").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("gap54-unit2-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("gap54-unit2-memory").resolve("memory.log").toString(),
+        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
     )
 
     private fun <T> Any.privateField(name: String): T {

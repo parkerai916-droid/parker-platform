@@ -68,6 +68,7 @@ import parker.core.runtime.DefaultReasoningKnowledgeSource
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.DurableMemoryCore
+import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
@@ -77,6 +78,7 @@ import parker.core.runtime.EvidenceRegistrationOutcome
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
 import parker.core.runtime.FileSystemEvidenceDeletionAudit
 import parker.core.runtime.FileSystemMemoryCoreDurabilityLog
+import parker.core.runtime.FileSystemKnowledgeItemDurabilityLog
 import parker.core.runtime.GoalPlanningHandoffCoordinator
 import parker.core.runtime.GoalPlanningHandoffOutcome
 import parker.core.runtime.InMemoryActionVocabulary
@@ -86,7 +88,6 @@ import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
-import parker.core.runtime.InMemoryKnowledgeItemPersistence
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryPlannerRuntime
 import parker.core.runtime.InMemoryResourceRegistry
@@ -908,13 +909,18 @@ class ParkerRuntime(
             permissionFilteredMemoryRetrieval.forAuthorizationPurpose(EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE)
 
         // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"), and now
-        // also Unit 9.6 ("Runtime Composition"). One long-lived InMemoryKnowledgeItemPersistence
+        // also Unit 9.6 ("Runtime Composition"). One recovered DurableKnowledgeItemPersistence
         // for the lifetime of this ParkerRuntime -- never recreated per invocation, shared
         // unchanged between the write side (knowledgeSubmission, below) and the read side
         // (knowledgeRetrieval, below) -- never a second, parallel persistence instance, so
         // anything knowledgeSubmission successfully promotes is genuinely reachable through
         // knowledgeRetrieval.
-        val knowledgeItemPersistence = InMemoryKnowledgeItemPersistence()
+        val knowledgeItemDurabilityLog = stage("Knowledge Item durability log construction") {
+            FileSystemKnowledgeItemDurabilityLog(Path.of(config.knowledgeItemDurabilityLogPath))
+        }
+        val knowledgeItemPersistence = stage("Knowledge Item recovery") {
+            DurableKnowledgeItemPersistence.create(knowledgeItemDurabilityLog)
+        }
         val knowledgeCandidateEvaluator = DefaultKnowledgeCandidateEvaluator(candidateEvaluationMemoryRetrieval)
         val knowledgeSubmission: KnowledgeSubmission = DefaultKnowledgeSubmission(
             knowledgeCandidateEvaluator,

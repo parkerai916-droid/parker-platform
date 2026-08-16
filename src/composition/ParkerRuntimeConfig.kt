@@ -75,6 +75,7 @@ data class ParkerRuntimeConfig(
     val evidenceStorageRootPath: String,
     val evidenceDeletionAuditLogPath: String,
     val memoryCoreDurabilityLogPath: String,
+    val knowledgeItemDurabilityLogPath: String,
     val logLevel: LogLevel = LogLevel.INFO,
 )
 
@@ -104,6 +105,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_EVIDENCE_STORAGE_ROOT = "PARKER_EVIDENCE_STORAGE_ROOT"
     const val KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH = "PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH"
     const val KEY_MEMORY_CORE_DURABILITY_LOG_PATH = "PARKER_MEMORY_CORE_DURABILITY_LOG_PATH"
+    const val KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH = "PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH"
     const val KEY_LOG_LEVEL = "PARKER_LOG_LEVEL"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
@@ -149,6 +151,7 @@ object ParkerRuntimeConfigLoader {
             evidenceStorageRootPath = requireKey(environment, KEY_EVIDENCE_STORAGE_ROOT),
             evidenceDeletionAuditLogPath = requireKey(environment, KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH),
             memoryCoreDurabilityLogPath = requireKey(environment, KEY_MEMORY_CORE_DURABILITY_LOG_PATH),
+            knowledgeItemDurabilityLogPath = requireKey(environment, KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH),
             logLevel = logLevel,
         )
     }
