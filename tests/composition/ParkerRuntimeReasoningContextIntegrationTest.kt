@@ -341,6 +341,120 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         runtime.shutdown()
     }
 
+    @Test
+    fun `a genuinely related paraphrase does not recall a promoted proposition under the current literal substring retrieval`() = runBlocking<Unit> {
+        val proposition = "the owner's synthetic emergency vet is Harbour Animal Clinic"
+        val stub = StubModelServer.startSequential(
+            "REMEMBER: $proposition",
+            "REPLY: acknowledged",
+        ).also { server = it }
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        runtime.submitOwnerMessage(
+            message(
+                text = "Remember that the owner's synthetic emergency vet is Harbour Animal Clinic.",
+                correlationId = "corr-qmd-control-remember",
+            ),
+        )
+
+        runtime.submitOwnerMessage(
+            message(
+                text = "Which animal clinic did I tell you to use in an emergency?",
+                correlationId = "corr-qmd-control-semantic-recall",
+            ),
+        )
+
+        assertEquals(2, stub.receivedRequestBodies.size)
+        val recallPrompt = stub.receivedRequestBodies[1]
+
+        assertTrue(
+            "Memory: $proposition" !in recallPrompt,
+            "pre-QMD control must prove the current literal substring retrieval does not recover the semantically related proposition: $recallPrompt",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `six genuine promoted memories remain canonically stored while the current retrieval still misses the emergency vet paraphrase`() = runBlocking<Unit> {
+        val propositions = listOf(
+            "the owner's synthetic emergency vet is Harbour Animal Clinic",
+            "the owner's synthetic regular vet is Riverside Veterinary Centre",
+            "the owner's synthetic dog groomer is Central City Grooming",
+            "the owner's synthetic emergency plumber is Wellington Rapid Plumbing",
+            "the owner's synthetic preferred pharmacy is Harbour Pharmacy",
+            "the owner's synthetic favourite hiking trail is Widow's Peak Ridge",
+        )
+
+        val stub = StubModelServer.startSequential(
+            "REMEMBER: ${propositions[0]}",
+            "REMEMBER: ${propositions[1]}",
+            "REMEMBER: ${propositions[2]}",
+            "REMEMBER: ${propositions[3]}",
+            "REMEMBER: ${propositions[4]}",
+            "REMEMBER: ${propositions[5]}",
+            "REPLY: acknowledged",
+        ).also { server = it }
+
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        runtime.submitOwnerMessage(
+            message(
+                text = "Remember that the owner's synthetic emergency vet is Harbour Animal Clinic.",
+                correlationId = "corr-qmd-multi-remember-1",
+            ),
+        )
+        runtime.submitOwnerMessage(
+            message(
+                text = "Remember that the owner's synthetic regular vet is Riverside Veterinary Centre.",
+                correlationId = "corr-qmd-multi-remember-2",
+            ),
+        )
+        runtime.submitOwnerMessage(
+            message(
+                text = "Remember that the owner's synthetic dog groomer is Central City Grooming.",
+                correlationId = "corr-qmd-multi-remember-3",
+            ),
+        )
+        runtime.submitOwnerMessage(
+            message(
+                text = "Remember that the owner's synthetic emergency plumber is Wellington Rapid Plumbing.",
+                correlationId = "corr-qmd-multi-remember-4",
+            ),
+        )
+        runtime.submitOwnerMessage(
+            message(
+                text = "Remember that the owner's synthetic preferred pharmacy is Harbour Pharmacy.",
+                correlationId = "corr-qmd-multi-remember-5",
+            ),
+        )
+        runtime.submitOwnerMessage(
+            message(
+                text = "Remember that the owner's synthetic favourite hiking trail is Widow's Peak Ridge.",
+                correlationId = "corr-qmd-multi-remember-6",
+            ),
+        )
+
+        runtime.submitOwnerMessage(
+            message(
+                text = "Which animal clinic did I tell you to use in an emergency?",
+                correlationId = "corr-qmd-multi-semantic-recall",
+            ),
+        )
+
+        assertEquals(7, stub.receivedRequestBodies.size)
+        val recallPrompt = stub.receivedRequestBodies[6]
+
+        assertTrue(
+            "Memory: the owner's synthetic emergency vet is Harbour Animal Clinic" !in recallPrompt,
+            "pre-QMD control must show that current literal substring retrieval still misses the correct memory among multiple genuine Parker memories: $recallPrompt",
+        )
+
+        runtime.shutdown()
+    }
+
     // --- Sprint 11 Unit 8: Runtime wiring for World Model Source Integration ---
 
     @Test
