@@ -118,14 +118,72 @@
 // instructions do not justify; it remains a disclosed, out-of-scope
 // hardening opportunity for a later unit, not a defect in this one.
 
-import { readFile } from "node:fs/promises";
-import {
-  DEFAULT_MODEL_CACHE_DIR,
-  LlamaCpp,
-  formatDocForEmbedding,
-  formatQueryForEmbedding,
-} from "file:///C:/Projects/Parker/qmd/src/llm.ts";
-import { resolveModelFile } from "file:///C:/Projects/Parker/qmd/node_modules/node-llama-cpp/dist/index.js";
+import { readFile, stat } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// Main-Promotion Gate / Production QMD Bridge Portability Correction
+// (Programme 3 Unit 9.7.6 follow-on). This script previously imported its
+// two QMD implementation dependencies via static ESM imports pinned to
+// Steve's own machine (`file:///C:/Projects/Parker/qmd/src/llm.ts`,
+// `file:///C:/Projects/Parker/qmd/node_modules/node-llama-cpp/dist/index.js`)
+// -- a genuine portability defect, since a static `import ... from "..."`
+// specifier cannot use a runtime variable and this script therefore could
+// never run against any other QMD installation location, on any machine.
+//
+// Corrected shape: both modules are now resolved via `await import(...)`
+// (a dynamic import, the only ESM mechanism that accepts a runtime-computed
+// specifier) from `qmdSourceRoot` -- a new, required field on the request
+// this script already reads from its request-file argument, carrying
+// exactly the same deployment-specific meaning
+// [QmdRelevanceMechanismConfiguration.qmdSourceRoot] documents on the
+// Kotlin side (`src/runtime/QmdRelevanceMechanism.kt`): the local QMD
+// installation/checkout root, never a hard-coded developer path, never a
+// mutable-environment-derived guess, and never anything semantic-identity-
+// relevant (that remains the frozen `embeddingModelUri`/`vectorDimension`/
+// `similarityMetric` fields, unchanged by this correction).
+//
+// `resolveLocalQmdModuleUrl` below builds the final module URL with node's
+// own `path.resolve` (platform-correct on both Windows and Linux, since
+// `node:path` resolves relative to whichever OS actually runs this script)
+// and `url.pathToFileURL` (never manual `file://` string concatenation,
+// per this task's own Phase 4 instruction) -- which can only ever produce a
+// `file:` URL, structurally ruling out a remote import. `assertLocalQmdSourceRoot`
+// additionally rejects any `qmdSourceRoot` value that itself already looks
+// like a URL/remote scheme (e.g. `https://...`), so a misconfigured remote
+// value fails with a clear, specific diagnostic rather than an obscure
+// downstream filesystem error. Both required module files are `stat`-checked
+// before import, so a missing/misconfigured QMD installation fails loudly
+// and diagnostically -- never silently, and never by attempting a download
+// or install of any kind (this script has no such capability at all).
+
+const REMOTE_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+
+function assertLocalQmdSourceRoot(qmdSourceRoot: string): void {
+  if (REMOTE_SCHEME_PATTERN.test(qmdSourceRoot)) {
+    throw new Error(
+      `qmdSourceRoot must be a local filesystem path, not a URL or remote scheme: ${JSON.stringify(qmdSourceRoot)}. ` +
+        `This bridge only ever imports local files -- no remote QMD source is supported.`,
+    );
+  }
+}
+
+async function resolveLocalQmdModuleUrl(qmdSourceRoot: string, ...pathSegments: string[]): Promise<string> {
+  const modulePath = resolve(qmdSourceRoot, ...pathSegments);
+  try {
+    await stat(modulePath);
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `required QMD module not found at ${JSON.stringify(modulePath)}, resolved from configured ` +
+        `qmdSourceRoot ${JSON.stringify(qmdSourceRoot)}. Configure PARKER_QMD_SOURCE_ROOT (or the ` +
+        `equivalent QmdRelevanceMechanismConfiguration.qmdSourceRoot value) to point at a local QMD ` +
+        `installation containing this file. This bridge never downloads or installs QMD itself. ` +
+        `Underlying error: ${cause}`,
+    );
+  }
+  return pathToFileURL(modulePath).href;
+}
 
 type CandidateRequest = {
   token: string;
@@ -138,6 +196,7 @@ type RelevanceBridgeRequest = {
   candidates: CandidateRequest[];
   embeddingModelUri: string;
   modelCacheDir?: string;
+  qmdSourceRoot: string;
 };
 
 const SUPPORTED_PROTOCOL_VERSION = "1";
@@ -180,6 +239,14 @@ function validateRequest(payload: unknown): asserts payload is RelevanceBridgeRe
   if (typeof request.embeddingModelUri !== "string" || request.embeddingModelUri.length === 0) {
     throw new Error("missing or empty embeddingModelUri");
   }
+  // Required (Main-Promotion Gate / Production QMD Bridge Portability
+  // Correction): this script no longer has any hard-coded or default
+  // notion of where QMD's own source/runtime lives -- it must never
+  // silently guess a location (e.g. this file's own directory, or a
+  // well-known developer path) for a request that omitted one.
+  if (typeof request.qmdSourceRoot !== "string" || request.qmdSourceRoot.length === 0) {
+    throw new Error("missing or empty qmdSourceRoot");
+  }
   for (const candidate of request.candidates) {
     if (
       typeof candidate !== "object" ||
@@ -209,8 +276,13 @@ function validateRequest(payload: unknown): asserts payload is RelevanceBridgeRe
  * than falling back to node-llama-cpp's own unrelated default directory
  * when `modelCacheDir` is left unset.
  */
-async function verifyModelIsLocallyAvailable(modelUri: string, modelCacheDir: string | undefined): Promise<void> {
-  const effectiveModelCacheDir = modelCacheDir || DEFAULT_MODEL_CACHE_DIR;
+async function verifyModelIsLocallyAvailable(
+  modelUri: string,
+  modelCacheDir: string | undefined,
+  resolveModelFile: (modelUri: string, options: { directory: string; download: false }) => Promise<unknown>,
+  defaultModelCacheDir: string,
+): Promise<void> {
+  const effectiveModelCacheDir = modelCacheDir || defaultModelCacheDir;
   try {
     await resolveModelFile(modelUri, { directory: effectiveModelCacheDir, download: false });
   } catch (error) {
@@ -236,7 +308,28 @@ async function main(): Promise<void> {
   validateRequest(rawPayload);
   const request = rawPayload;
 
-  await verifyModelIsLocallyAvailable(request.embeddingModelUri, request.modelCacheDir);
+  assertLocalQmdSourceRoot(request.qmdSourceRoot);
+  const llmModuleUrl = await resolveLocalQmdModuleUrl(request.qmdSourceRoot, "src", "llm.ts");
+  const nodeLlamaCppModuleUrl = await resolveLocalQmdModuleUrl(
+    request.qmdSourceRoot,
+    "node_modules",
+    "node-llama-cpp",
+    "dist",
+    "index.js",
+  );
+  // Dynamic imports, resolved entirely from the local, operator-configured
+  // `qmdSourceRoot` -- see this file's own header comment. `as any`: a
+  // dynamic import specifier that is not a compile-time string literal
+  // cannot be statically type-checked by tsx's transpile-only execution
+  // (no separate typecheck step runs this file; see build.gradle.kts, this
+  // script is never Kotlin-/Gradle-compiled), exactly as before this
+  // correction when these same values arrived via static imports that tsx
+  // also only transpiled, never type-checked, at run time.
+  const { DEFAULT_MODEL_CACHE_DIR, LlamaCpp, formatDocForEmbedding, formatQueryForEmbedding } =
+    (await import(llmModuleUrl)) as any;
+  const { resolveModelFile } = (await import(nodeLlamaCppModuleUrl)) as any;
+
+  await verifyModelIsLocallyAvailable(request.embeddingModelUri, request.modelCacheDir, resolveModelFile, DEFAULT_MODEL_CACHE_DIR);
 
   const llm = new LlamaCpp({
     embedModel: request.embeddingModelUri,

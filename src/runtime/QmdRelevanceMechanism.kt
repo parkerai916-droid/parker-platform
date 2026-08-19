@@ -212,6 +212,9 @@ class QmdRelevanceMechanism(
             if (configuration.modelCacheDir != null) {
                 append(""","modelCacheDir":${jsonString(configuration.modelCacheDir)}""")
             }
+            if (configuration.qmdSourceRoot != null) {
+                append(""","qmdSourceRoot":${jsonString(configuration.qmdSourceRoot)}""")
+            }
             append('}')
         }
     }
@@ -235,9 +238,9 @@ class QmdRelevanceMechanism(
  * on a given deployment target.
  *
  * [additionalNodeArguments] exists because `tools/qmd-relevance-bridge.mts`
- * imports QMD's own TypeScript source (`file:///.../qmd/src/llm.ts`)
- * directly, which plain `node` cannot execute without a TypeScript-capable
- * loader -- the pre-existing experimental precedent
+ * imports QMD's own TypeScript source (`.../qmd/src/llm.ts`, resolved from
+ * [qmdSourceRoot] below) directly, which plain `node` cannot execute without
+ * a TypeScript-capable loader -- the pre-existing experimental precedent
  * (`tests/composition/QmdCanonicalMemoryRetrievalExperimentTest.kt`)
  * resolves this the same way, by inserting `tsx`'s own CLI entry point as
  * an argument before the target script (`node .../tsx/dist/cli.mjs
@@ -246,10 +249,35 @@ class QmdRelevanceMechanism(
  * pinned for Unit 9.7.3's own production bridge, rather than being
  * silently hard-coded inside [ProcessBuilderQmdSubprocessInvoker].
  *
- * [embeddingModelFileSha256] and [modelCacheDir] are the two fields this
- * configuration cannot always populate confidently in every environment
- * (Implication #2's own disclosed platform-binary caveat) and are
- * therefore nullable, defaulting to `null` -- never silently inferred
+ * [qmdSourceRoot] (Main-Promotion Gate / Production QMD Bridge Portability
+ * Correction). The local QMD installation/checkout root -- e.g.
+ * `C:\Projects\Parker\qmd` on Steve's own Windows development machine, or
+ * whatever equivalent local path a Linux deployment provides -- that
+ * `tools/qmd-relevance-bridge.mts` resolves its own `src/llm.ts` and
+ * `node_modules/node-llama-cpp/dist/index.js` imports from, dynamically,
+ * at the script's own runtime (a static ESM `import ... from "..."` cannot
+ * accept a runtime variable; see that script's own header comment for the
+ * full account). Before this correction, both of those paths were
+ * hard-coded, absolute, Steve-specific Windows literals inside the bridge
+ * script itself -- a genuine production portability defect, unrelated to
+ * and discovered after Unit 9.7's own closure. Deployment-specific, like
+ * [nodeExecutablePath]/[bridgeScriptPath]/[additionalNodeArguments]/
+ * [modelCacheDir] above -- never semantic mechanism identity (that remains
+ * exactly [mechanismName], [qmdVersion], [embeddingModelUri],
+ * [vectorDimension], [similarityMetric], unaffected by this field).
+ * Nullable, defaulting to `null`, mirroring [additionalNodeArguments]'s own
+ * `tsx` path and [modelCacheDir]'s own reasoning: this composition root
+ * does not, and must not, guess or hard-code a QMD installation location.
+ * When left unset, the mechanism still constructs successfully, but the
+ * real bridge subprocess fails loudly and diagnosably the first time
+ * [rank] is genuinely invoked (`tools/qmd-relevance-bridge.mts`'s own
+ * "missing or empty qmdSourceRoot" fail-closed check), never a silent
+ * empty result and never an on-demand fallback to any default location.
+ *
+ * [embeddingModelFileSha256], [modelCacheDir], and [qmdSourceRoot] are the
+ * fields this configuration cannot always populate confidently in every
+ * environment (Implication #2's own disclosed platform-binary caveat) and
+ * are therefore nullable, defaulting to `null` -- never silently inferred
  * from mutable environment state that could affect retrieval behaviour
  * (this task's own Phase 2 item 7, "Do not silently infer configuration
  * from mutable environment state if it affects retrieval behaviour").
@@ -267,6 +295,7 @@ data class QmdRelevanceMechanismConfiguration(
     val modelCacheDir: String? = null,
     val additionalNodeArguments: List<String> = emptyList(),
     val timeoutMillis: Long = 30_000,
+    val qmdSourceRoot: String? = null,
 ) {
     init {
         require(mechanismName.isNotBlank()) { "QmdRelevanceMechanismConfiguration.mechanismName must not be blank" }
@@ -278,6 +307,9 @@ data class QmdRelevanceMechanismConfiguration(
         require(nodeExecutablePath.isNotBlank()) { "QmdRelevanceMechanismConfiguration.nodeExecutablePath must not be blank" }
         require(bridgeScriptPath.isNotBlank()) { "QmdRelevanceMechanismConfiguration.bridgeScriptPath must not be blank" }
         require(timeoutMillis > 0) { "QmdRelevanceMechanismConfiguration.timeoutMillis must be positive" }
+        require(qmdSourceRoot == null || qmdSourceRoot.isNotBlank()) {
+            "QmdRelevanceMechanismConfiguration.qmdSourceRoot must not be blank when supplied -- use null, not \"\", to leave it unset"
+        }
     }
 }
 

@@ -129,6 +129,31 @@ class QmdRelevanceMechanismTest {
         assertTrue(requestJson.indexOf("\"a\"") < requestJson.indexOf("\"b\""))
     }
 
+    // Main-Promotion Gate / Production QMD Bridge Portability Correction
+    // (this Unit's own follow-on): qmdSourceRoot is a deployment-specific
+    // location, mirroring exactly how modelCacheDir already flows into the
+    // request JSON only when configured -- never a canonical Parker
+    // identifier, never semantic mechanism identity.
+    @Test
+    fun `qmdSourceRoot is omitted from the request JSON when not configured`() = runTest {
+        val invoker = FakeQmdSubprocessInvoker { _, _ -> success("""{"token":"t1","score":1.0}""") }
+        val mechanism = QmdRelevanceMechanism(configuration(), invoker)
+
+        mechanism.rank(RelevanceRequest("q", listOf(candidate("t1", "content"))))
+
+        assertTrue(!invoker.lastRequestJson!!.contains("qmdSourceRoot"))
+    }
+
+    @Test
+    fun `qmdSourceRoot is carried in the request JSON exactly as configured, when present`() = runTest {
+        val invoker = FakeQmdSubprocessInvoker { _, _ -> success("""{"token":"t1","score":1.0}""") }
+        val mechanism = QmdRelevanceMechanism(configuration().copy(qmdSourceRoot = "/opt/parker/qmd"), invoker)
+
+        mechanism.rank(RelevanceRequest("q", listOf(candidate("t1", "content"))))
+
+        assertTrue(invoker.lastRequestJson!!.contains("\"qmdSourceRoot\":\"/opt/parker/qmd\""))
+    }
+
     // ---- C. Response parsing ----
 
     @Test
@@ -357,5 +382,33 @@ class QmdRelevanceMechanismTest {
             listOf("candidate-1", "candidate-2", "candidate-3", "candidate-4", "candidate-5", "candidate-6"),
             result.rankedTokens.map { it.value },
         )
+    }
+
+    // ---- I. Configuration validation (qmdSourceRoot) ----
+    // Main-Promotion Gate / Production QMD Bridge Portability Correction
+    // (this Unit's own follow-on). Construction-only tests -- no rank()
+    // call, no subprocess invoker -- proving QmdRelevanceMechanismConfiguration's
+    // own new field behaves exactly like its existing nullable, deployment-
+    // specific siblings (modelCacheDir, additionalNodeArguments' tsx path):
+    // absent is lawful (the frozen mechanism identity fields below are
+    // completely unaffected), and a supplied-but-blank value is rejected
+    // fail-loud at construction, never silently accepted.
+
+    @Test
+    fun `qmdSourceRoot left unset does not affect construction or frozen mechanism identity`() {
+        val config = configuration()
+        assertEquals(null, config.qmdSourceRoot)
+        assertEquals("QMD", config.mechanismName)
+        assertEquals("2.8.3", config.qmdVersion)
+        assertEquals("hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf", config.embeddingModelUri)
+        assertEquals(768, config.vectorDimension)
+        assertEquals("cosine", config.similarityMetric)
+    }
+
+    @Test
+    fun `a blank qmdSourceRoot is rejected at construction, fail-loud, never silently accepted`() {
+        assertFailsWith<IllegalArgumentException> {
+            configuration().copy(qmdSourceRoot = "   ")
+        }
     }
 }

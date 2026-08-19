@@ -505,6 +505,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
             qmdTsxCliPath = "composition-test-tsx-cli-path",
             qmdModelCacheDir = "composition-test-model-cache-dir",
             qmdTimeoutMillis = 77_777L,
+            qmdSourceRoot = "composition-test-qmd-source-root",
         )
         val runtime = ParkerRuntime(deploymentConfig, RecordingParkerLogger())
         runtime.start()
@@ -518,6 +519,26 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         assertEquals(listOf("composition-test-tsx-cli-path"), qmdConfiguration.additionalNodeArguments)
         assertEquals("composition-test-model-cache-dir", qmdConfiguration.modelCacheDir)
         assertEquals(77_777L, qmdConfiguration.timeoutMillis)
+        assertEquals("composition-test-qmd-source-root", qmdConfiguration.qmdSourceRoot)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `qmdSourceRoot left unset in ParkerRuntimeConfig composes through as null, never a guessed default`() = runTest {
+        // Main-Promotion Gate / Production QMD Bridge Portability Correction
+        // (this Unit's own follow-on): qmdSourceRoot must never be silently
+        // inferred (e.g. from this file's own directory, or a well-known
+        // developer path) -- absent in ParkerRuntimeConfig must compose
+        // through as absent here too.
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val relevanceMechanism = relevanceMechanismFrom(knowledgeRetrievalFrom(runtime))
+        val qmdMechanism = assertIs<QmdRelevanceMechanism>(relevanceMechanism)
+        val qmdConfiguration = (qmdMechanism as Any).privateField<QmdRelevanceMechanismConfiguration>("configuration")
+
+        assertNull(qmdConfiguration.qmdSourceRoot)
 
         runtime.shutdown()
     }

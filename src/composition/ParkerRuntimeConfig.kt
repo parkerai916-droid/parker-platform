@@ -132,6 +132,24 @@ import java.nio.file.Path
  *   (Frozen Boundary #10's disposable-state requirement means no model
  *   stays warm across calls) -- mirroring [modelTimeoutMs]'s own
  *   "restate the evidenced-correct value explicitly" precedent.
+ * @param qmdSourceRoot Main-Promotion Gate / Production QMD Bridge
+ *   Portability Correction (follow-on to Programme 3, Unit 9.7.6). The
+ *   local QMD installation/checkout root -- e.g. `C:\Projects\Parker\qmd`
+ *   on Steve's own Windows development machine -- `tools/qmd-relevance-bridge.mts`
+ *   resolves its own `src/llm.ts` and `node_modules/node-llama-cpp/dist/index.js`
+ *   imports from, dynamically, at that script's own runtime, replacing what
+ *   were previously two hard-coded, Steve-specific, absolute Windows import
+ *   paths baked directly into that script (a genuine production portability
+ *   defect, discovered and corrected after Unit 9.7's own closure). Passed
+ *   unchanged to
+ *   [parker.core.runtime.QmdRelevanceMechanismConfiguration.qmdSourceRoot].
+ *   Nullable, defaults to `null`, for the identical reason [qmdTsxCliPath]
+ *   is nullable: this composition root does not, and must not, guess or
+ *   hard-code a QMD installation location. When left unset, the composed
+ *   mechanism still constructs successfully, but the real bridge subprocess
+ *   fails loudly and diagnosably the first time `RelevanceMechanism.rank`
+ *   is genuinely invoked -- never a silent empty result and never an
+ *   on-demand fallback to any default location (this Unit's own Phase 6).
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -150,6 +168,7 @@ data class ParkerRuntimeConfig(
     val qmdTsxCliPath: String? = null,
     val qmdModelCacheDir: String? = null,
     val qmdTimeoutMillis: Long = 120_000L,
+    val qmdSourceRoot: String? = null,
 )
 
 /**
@@ -185,6 +204,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_QMD_TSX_CLI_PATH = "PARKER_QMD_TSX_CLI_PATH"
     const val KEY_QMD_MODEL_CACHE_DIR = "PARKER_QMD_MODEL_CACHE_DIR"
     const val KEY_QMD_TIMEOUT_MILLIS = "PARKER_QMD_TIMEOUT_MILLIS"
+    const val KEY_QMD_SOURCE_ROOT = "PARKER_QMD_SOURCE_ROOT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -223,10 +243,12 @@ object ParkerRuntimeConfigLoader {
         // qmdVersion, embeddingModelUri, vectorDimension, similarityMetric, bridgeProtocolVersion),
         // which `ParkerRuntime.kt`'s own composition code supplies as fixed literals, never read
         // from this environment map, per this Unit's own governing task (Phase 2: "Do not silently
-        // derive mutable retrieval-relevant values from environment state"). All five keys below are
-        // optional, mirroring [ParkerRuntimeConfig]'s own documented reason on each field: widening
-        // this loader's required-key surface would force every unrelated production/test caller to
-        // also supply QMD-specific configuration it has no reason to care about.
+        // derive mutable retrieval-relevant values from environment state"). All six keys below
+        // (including PARKER_QMD_SOURCE_ROOT, added by the Main-Promotion Gate / Production QMD
+        // Bridge Portability Correction follow-on) are optional, mirroring [ParkerRuntimeConfig]'s
+        // own documented reason on each field: widening this loader's required-key surface would
+        // force every unrelated production/test caller to also supply QMD-specific configuration it
+        // has no reason to care about.
         val qmdTimeoutMillisRaw = environment[KEY_QMD_TIMEOUT_MILLIS]?.takeIf { it.isNotBlank() }
         val qmdTimeoutMillis = if (qmdTimeoutMillisRaw == null) {
             120_000L
@@ -263,6 +285,7 @@ object ParkerRuntimeConfigLoader {
             qmdTsxCliPath = environment[KEY_QMD_TSX_CLI_PATH]?.takeIf { it.isNotBlank() },
             qmdModelCacheDir = environment[KEY_QMD_MODEL_CACHE_DIR]?.takeIf { it.isNotBlank() },
             qmdTimeoutMillis = qmdTimeoutMillis,
+            qmdSourceRoot = environment[KEY_QMD_SOURCE_ROOT]?.takeIf { it.isNotBlank() },
         )
     }
 

@@ -80,6 +80,23 @@ class QmdRelevanceMechanismLiveAcceptanceTest {
         // time.
         val modelCacheDir = System.getenv("QMD_RELEVANCE_MODEL_CACHE_DIR")?.takeIf { it.isNotBlank() }
             ?: "C:\\Projects\\Parker\\qmd-parker-experiment\\cache\\qmd\\models"
+        // Main-Promotion Gate / Production QMD Bridge Portability Correction
+        // (this Unit's own follow-on): `tools/qmd-relevance-bridge.mts` no
+        // longer hard-codes its own QMD source-root import location -- it
+        // now requires `qmdSourceRoot` on every request and resolves its
+        // `src/llm.ts` and `node_modules/node-llama-cpp/dist/index.js`
+        // imports from it dynamically (see that script's own header comment,
+        // and `QmdRelevanceMechanismConfiguration.qmdSourceRoot`'s own
+        // KDoc). Without this, the corrected bridge throws "missing or empty
+        // qmdSourceRoot" and this test's own live subprocess calls would
+        // fail -- this fallback default is the exact same local QMD checkout
+        // root (`C:\Projects\Parker\qmd`) both of the bridge script's own
+        // previously hard-coded import paths already pointed into, so this
+        // test's own real Windows behaviour is unchanged by the correction,
+        // mirroring the identical env-var-with-local-fallback pattern
+        // already used above for `tsxCliPath`.
+        val qmdSourceRoot = System.getenv("QMD_TEST_SOURCE_ROOT")?.takeIf { it.isNotBlank() }
+            ?: "C:\\Projects\\Parker\\qmd"
 
         return QmdRelevanceMechanismConfiguration(
             qmdVersion = "2.8.3",
@@ -90,6 +107,7 @@ class QmdRelevanceMechanismLiveAcceptanceTest {
             bridgeScriptPath = bridgeScriptPath,
             modelCacheDir = modelCacheDir,
             timeoutMillis = 120_000,
+            qmdSourceRoot = qmdSourceRoot,
         )
     }
 

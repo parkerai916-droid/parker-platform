@@ -84,7 +84,7 @@ class ParkerRuntimeConfigLoaderTest {
     // Programme 3, Unit 9.7.5 (Runtime Composition Wiring).
 
     @Test
-    fun `QMD keys absent fall back to their documented defaults -- node, portable bridge script path, and null tsx-cli-path and model-cache-dir`() {
+    fun `QMD keys absent fall back to their documented defaults -- node, portable bridge script path, and null tsx-cli-path, model-cache-dir, and source-root`() {
         val environment = fullEnvironment()
 
         val config = ParkerRuntimeConfigLoader.load(environment)
@@ -94,6 +94,7 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(null, config.qmdTsxCliPath)
         assertEquals(null, config.qmdModelCacheDir)
         assertEquals(120_000L, config.qmdTimeoutMillis)
+        assertEquals(null, config.qmdSourceRoot)
     }
 
     @Test
@@ -105,6 +106,7 @@ class ParkerRuntimeConfigLoaderTest {
                 ParkerRuntimeConfigLoader.KEY_QMD_TSX_CLI_PATH to "C:\\custom\\tsx\\cli.mjs",
                 ParkerRuntimeConfigLoader.KEY_QMD_MODEL_CACHE_DIR to "C:\\custom\\models",
                 ParkerRuntimeConfigLoader.KEY_QMD_TIMEOUT_MILLIS to "45000",
+                ParkerRuntimeConfigLoader.KEY_QMD_SOURCE_ROOT to "C:\\custom\\qmd",
             ),
         )
 
@@ -115,6 +117,21 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals("C:\\custom\\tsx\\cli.mjs", config.qmdTsxCliPath)
         assertEquals("C:\\custom\\models", config.qmdModelCacheDir)
         assertEquals(45_000L, config.qmdTimeoutMillis)
+        assertEquals("C:\\custom\\qmd", config.qmdSourceRoot)
+    }
+
+    // Main-Promotion Gate / Production QMD Bridge Portability Correction
+    // (this Unit's own follow-on).
+
+    @Test
+    fun `a blank PARKER_QMD_SOURCE_ROOT falls back to null, same as absent`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_QMD_SOURCE_ROOT to "   "),
+        )
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(null, config.qmdSourceRoot)
     }
 
     @Test

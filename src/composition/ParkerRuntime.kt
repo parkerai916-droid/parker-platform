@@ -998,16 +998,22 @@ class ParkerRuntime(
         // copies of the same frozen value.
         //
         // Deployment-specific locations (node executable, bridge script, tsx loader, model cache,
-        // timeout) come from `config` -- ParkerRuntimeConfig's own new, narrowly-added
-        // qmdNodeExecutablePath/qmdBridgeScriptPath/qmdTsxCliPath/qmdModelCacheDir/qmdTimeoutMillis
-        // fields (this Unit's own addition; see that class's own KDoc for why each is optional
-        // rather than required-with-no-default) -- mirroring exactly how modelEndpointUrl/modelName
-        // already reach LocalHttpModelInferenceClient below, never a second, parallel configuration
-        // mechanism. No Windows-specific developer path is hard-coded at this site: every path-shaped
-        // value above is either a portable convention (qmdNodeExecutablePath's own "node" default,
-        // qmdBridgeScriptPath's own repository-relative default) or comes from `config`, resolved
-        // from environment/properties exactly as this repository's other local-runtime dependencies
-        // already are.
+        // timeout, QMD source root) come from `config` -- ParkerRuntimeConfig's own new, narrowly-added
+        // qmdNodeExecutablePath/qmdBridgeScriptPath/qmdTsxCliPath/qmdModelCacheDir/qmdTimeoutMillis/
+        // qmdSourceRoot fields (qmdSourceRoot added by the Main-Promotion Gate / Production QMD
+        // Bridge Portability Correction follow-on, mirroring the others exactly; see that class's own
+        // KDoc for why each is optional rather than required-with-no-default) -- mirroring exactly how
+        // modelEndpointUrl/modelName already reach LocalHttpModelInferenceClient below, never a
+        // second, parallel configuration mechanism. No Windows-specific developer path is hard-coded
+        // at this site: every path-shaped value above is either a portable convention
+        // (qmdNodeExecutablePath's own "node" default, qmdBridgeScriptPath's own repository-relative
+        // default) or comes from `config`, resolved from environment/properties exactly as this
+        // repository's other local-runtime dependencies already are. qmdSourceRoot in particular
+        // replaces what were, before this correction, two hard-coded, Steve-specific absolute Windows
+        // import paths inside `tools/qmd-relevance-bridge.mts` itself (see that script's own header
+        // comment, and `QmdRelevanceMechanismConfiguration.qmdSourceRoot`'s own KDoc, for the full
+        // account) -- this composition site never hard-codes that location either, only reads it from
+        // `config`, same as every other deployment-specific QMD value above.
         val qmdConfiguration = QmdRelevanceMechanismConfiguration(
             qmdVersion = "2.8.3",
             embeddingModelUri = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
@@ -1017,6 +1023,7 @@ class ParkerRuntime(
             bridgeScriptPath = config.qmdBridgeScriptPath,
             modelCacheDir = config.qmdModelCacheDir,
             timeoutMillis = config.qmdTimeoutMillis,
+            qmdSourceRoot = config.qmdSourceRoot,
         )
         val qmdInvoker = ProcessBuilderQmdSubprocessInvoker(qmdConfiguration)
         val relevanceMechanism: RelevanceMechanism = QmdRelevanceMechanism(qmdConfiguration, qmdInvoker)
