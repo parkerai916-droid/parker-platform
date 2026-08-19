@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /**
  * Sprint 10, Unit 4 acceptance test: `ParkerRuntimeConfigLoader`'s own
@@ -27,6 +28,8 @@ class ParkerRuntimeConfigLoaderTest {
                 Files.createTempDirectory("config-loader-test-evidence-audit").resolve("audit.log").toString(),
             ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH to
                 Files.createTempDirectory("config-loader-test-memory-core").resolve("memory-core.log").toString(),
+            ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH to
+                Files.createTempDirectory("config-loader-test-knowledge-items").resolve("knowledge-items.log").toString(),
         )
         val merged = base.toMutableMap()
         overrides.forEach { (key, value) ->
@@ -55,6 +58,10 @@ class ParkerRuntimeConfigLoaderTest {
             environment[ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH],
             config.memoryCoreDurabilityLogPath,
         )
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH],
+            config.knowledgeItemDurabilityLogPath,
+        )
     }
 
     @Test
@@ -72,6 +79,61 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(30_000L, config.modelTimeoutMs)
         assertEquals("Owner", config.ownerDisplayName)
         assertEquals("channel.local-text", config.localTextChannelModuleId)
+    }
+
+    // Programme 3, Unit 9.7.5 (Runtime Composition Wiring).
+
+    @Test
+    fun `QMD keys absent fall back to their documented defaults -- node, portable bridge script path, and null tsx-cli-path and model-cache-dir`() {
+        val environment = fullEnvironment()
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals("node", config.qmdNodeExecutablePath)
+        assertTrue(config.qmdBridgeScriptPath.endsWith("tools" + java.io.File.separator + "qmd-relevance-bridge.mts"))
+        assertEquals(null, config.qmdTsxCliPath)
+        assertEquals(null, config.qmdModelCacheDir)
+        assertEquals(120_000L, config.qmdTimeoutMillis)
+    }
+
+    @Test
+    fun `every QMD key present loads exactly the supplied values`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(
+                ParkerRuntimeConfigLoader.KEY_QMD_NODE_EXECUTABLE_PATH to "C:\\custom\\node.exe",
+                ParkerRuntimeConfigLoader.KEY_QMD_BRIDGE_SCRIPT_PATH to "C:\\custom\\bridge.mts",
+                ParkerRuntimeConfigLoader.KEY_QMD_TSX_CLI_PATH to "C:\\custom\\tsx\\cli.mjs",
+                ParkerRuntimeConfigLoader.KEY_QMD_MODEL_CACHE_DIR to "C:\\custom\\models",
+                ParkerRuntimeConfigLoader.KEY_QMD_TIMEOUT_MILLIS to "45000",
+            ),
+        )
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals("C:\\custom\\node.exe", config.qmdNodeExecutablePath)
+        assertEquals("C:\\custom\\bridge.mts", config.qmdBridgeScriptPath)
+        assertEquals("C:\\custom\\tsx\\cli.mjs", config.qmdTsxCliPath)
+        assertEquals("C:\\custom\\models", config.qmdModelCacheDir)
+        assertEquals(45_000L, config.qmdTimeoutMillis)
+    }
+
+    @Test
+    fun `a non-numeric PARKER_QMD_TIMEOUT_MILLIS throws InvalidConfiguration naming that key`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_QMD_TIMEOUT_MILLIS to "not-a-number"))
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_QMD_TIMEOUT_MILLIS, thrown.key)
+    }
+
+    @Test
+    fun `a non-positive PARKER_QMD_TIMEOUT_MILLIS throws InvalidConfiguration`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_QMD_TIMEOUT_MILLIS to "0"))
+
+        assertIs<ParkerRuntimeException.InvalidConfiguration>(
+            assertFailsWith<ParkerRuntimeException> { ParkerRuntimeConfigLoader.load(environment) },
+        )
     }
 
     @Test
@@ -116,6 +178,17 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.load(environment)
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH to null),
+        )
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH, thrown.key)
     }
 
     @Test

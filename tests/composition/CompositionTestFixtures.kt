@@ -110,5 +110,37 @@ class StubModelServer private constructor(private val server: HttpServer) : Auto
             stub = StubModelServer(server)
             return stub
         }
+
+        fun startSequential(vararg responseFieldValues: String): StubModelServer {
+            require(responseFieldValues.isNotEmpty())
+
+            val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+            lateinit var stub: StubModelServer
+            val responseIndex = java.util.concurrent.atomic.AtomicInteger(0)
+
+            server.createContext("/api/generate") { exchange ->
+                try {
+                    val requestText = exchange.requestBody.readBytes().toString(Charsets.UTF_8)
+                    stub.backingRequestBodies.add(requestText)
+
+                    val index = responseIndex.getAndIncrement()
+                    val responseFieldValue =
+                        responseFieldValues.getOrElse(index) { responseFieldValues.last() }
+
+                    val escaped = responseFieldValue.replace("\\", "\\\\").replace("\"", "\\\"")
+                    val body = "{\"response\":\"$escaped\"}".toByteArray(Charsets.UTF_8)
+
+                    exchange.responseHeaders.add("Content-Type", "application/json")
+                    exchange.sendResponseHeaders(200, body.size.toLong())
+                    exchange.responseBody.write(body)
+                } finally {
+                    exchange.close()
+                }
+            }
+
+            server.start()
+            stub = StubModelServer(server)
+            return stub
+        }
     }
 }

@@ -41,6 +41,7 @@ import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ReasoningKnowledgeSource
+import parker.core.interfaces.RelevanceMechanism
 import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.Resource
 import parker.core.interfaces.ResourceId
@@ -68,6 +69,7 @@ import parker.core.runtime.DefaultReasoningKnowledgeSource
 import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.DurableMemoryCore
+import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
@@ -77,6 +79,7 @@ import parker.core.runtime.EvidenceRegistrationOutcome
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
 import parker.core.runtime.FileSystemEvidenceDeletionAudit
 import parker.core.runtime.FileSystemMemoryCoreDurabilityLog
+import parker.core.runtime.FileSystemKnowledgeItemDurabilityLog
 import parker.core.runtime.GoalPlanningHandoffCoordinator
 import parker.core.runtime.GoalPlanningHandoffOutcome
 import parker.core.runtime.InMemoryActionVocabulary
@@ -86,7 +89,6 @@ import parker.core.runtime.InMemoryCommunicationIntake
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
-import parker.core.runtime.InMemoryKnowledgeItemPersistence
 import parker.core.runtime.InMemoryModuleRegistry
 import parker.core.runtime.InMemoryPlannerRuntime
 import parker.core.runtime.InMemoryResourceRegistry
@@ -99,6 +101,9 @@ import parker.core.runtime.LocalTextChannelDeliverTool
 import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.ModelReasoningProvider
 import parker.core.runtime.PermissionPolicyRule
+import parker.core.runtime.ProcessBuilderQmdSubprocessInvoker
+import parker.core.runtime.QmdRelevanceMechanism
+import parker.core.runtime.QmdRelevanceMechanismConfiguration
 import parker.core.runtime.ReplyDeliveryCoordinator
 import parker.core.runtime.ResponseComposer
 import parker.core.runtime.ResponseDelivery
@@ -908,13 +913,18 @@ class ParkerRuntime(
             permissionFilteredMemoryRetrieval.forAuthorizationPurpose(EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE)
 
         // Programme 3, Knowledge Memory, Unit 8 ("Constitutional Knowledge Submission"), and now
-        // also Unit 9.6 ("Runtime Composition"). One long-lived InMemoryKnowledgeItemPersistence
+        // also Unit 9.6 ("Runtime Composition"). One recovered DurableKnowledgeItemPersistence
         // for the lifetime of this ParkerRuntime -- never recreated per invocation, shared
         // unchanged between the write side (knowledgeSubmission, below) and the read side
         // (knowledgeRetrieval, below) -- never a second, parallel persistence instance, so
         // anything knowledgeSubmission successfully promotes is genuinely reachable through
         // knowledgeRetrieval.
-        val knowledgeItemPersistence = InMemoryKnowledgeItemPersistence()
+        val knowledgeItemDurabilityLog = stage("Knowledge Item durability log construction") {
+            FileSystemKnowledgeItemDurabilityLog(Path.of(config.knowledgeItemDurabilityLogPath))
+        }
+        val knowledgeItemPersistence = stage("Knowledge Item recovery") {
+            DurableKnowledgeItemPersistence.create(knowledgeItemDurabilityLog)
+        }
         val knowledgeCandidateEvaluator = DefaultKnowledgeCandidateEvaluator(candidateEvaluationMemoryRetrieval)
         val knowledgeSubmission: KnowledgeSubmission = DefaultKnowledgeSubmission(
             knowledgeCandidateEvaluator,
@@ -947,7 +957,71 @@ class ParkerRuntime(
         // composed here -- this is the sole, already-gated implementation, held directly. clock is
         // left defaulted (the real system clock), exactly as every other production call site of
         // this class already does.
-        knowledgeRetrieval = DefaultKnowledgeRetrieval(knowledgeItemPersistence, permissionEngine)
+        //
+        // Unit 9.7.4 ("Integrity Validation, Canonical Token Re-resolution, and Fresh Pre-disclosure
+        // Re-verification") added RelevanceMechanism as a required DefaultKnowledgeRetrieval
+        // constructor dependency -- structurally unavoidable, since that Unit must be able to call
+        // RelevanceMechanism.rank() from inside DefaultKnowledgeRetrieval.retrieve() itself.
+        //
+        // Programme 3, Unit 9.7.5 ("Runtime Composition Wiring"). This is the sole, separately
+        // authorised unit permitted to construct QmdRelevanceMechanism, its
+        // QmdRelevanceMechanismConfiguration, or any node/model/bridge-path runtime configuration at
+        // this site -- superseding the Unit 9.7.4 -> Unit 9.7.5 compile-preserving fail-closed
+        // placeholder this site previously held (that placeholder threw immediately and
+        // unconditionally on any invocation; it is now fully replaced, not merely widened).
+        //
+        // DefaultKnowledgeRetrieval itself remains mechanism-neutral: it knows only the
+        // RelevanceMechanism interface (Unit 9.7.1), never QmdRelevanceMechanism concretely -- the
+        // concrete QMD composition lives here, and only here, exactly as it did not before this
+        // Unit's own change. No authority transfers to QMD by this wiring: qmdConfiguration and
+        // qmdInvoker below carry no KnowledgeItemPersistence, no PermissionEngine, and no other
+        // canonical-Parker-state handle -- the same architectural-inability-by-omission technique
+        // this file already relies on elsewhere, and QmdRelevanceMechanism.kt's own constructor
+        // shape makes any other composition impossible to express.
+        //
+        // Frozen mechanism identity/version/configuration (Section 13/13.1 spike evidence record;
+        // Contract and Permission Successor Section 3 condition 14; Implementation Plan Section 12).
+        // mechanismName, qmdVersion, embeddingModelUri, vectorDimension, similarityMetric, and
+        // bridgeProtocolVersion are fixed literals here -- never read from `config` or any other
+        // mutable environment state -- because they are retrieval-relevant identity: a changed value
+        // is a disclosed, governed reconfiguration (a new, reviewed ParkerRuntime.kt diff), never
+        // silent per-deployment drift. qmdVersion "2.8.3" and embeddingModelUri
+        // "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf" (768-dimension,
+        // cosine similarity) are exactly the values the spike evidence record's own accepted
+        // six-candidate emergency-vet fixture used, and exactly what
+        // QmdRelevanceMechanismLiveAcceptanceTest.kt's own liveConfiguration() already freezes for
+        // this same mechanism identity -- restated here, not reinvented. embeddingModelFileSha256 is
+        // left at its own class default (`null`): no adopted governance document freezes a specific
+        // file hash, and this Unit does not invent one. similarityMetric and bridgeProtocolVersion
+        // are left at their own class defaults ("cosine", "1"), which already match this exact
+        // identity -- restating them here would only risk a future silent divergence between two
+        // copies of the same frozen value.
+        //
+        // Deployment-specific locations (node executable, bridge script, tsx loader, model cache,
+        // timeout) come from `config` -- ParkerRuntimeConfig's own new, narrowly-added
+        // qmdNodeExecutablePath/qmdBridgeScriptPath/qmdTsxCliPath/qmdModelCacheDir/qmdTimeoutMillis
+        // fields (this Unit's own addition; see that class's own KDoc for why each is optional
+        // rather than required-with-no-default) -- mirroring exactly how modelEndpointUrl/modelName
+        // already reach LocalHttpModelInferenceClient below, never a second, parallel configuration
+        // mechanism. No Windows-specific developer path is hard-coded at this site: every path-shaped
+        // value above is either a portable convention (qmdNodeExecutablePath's own "node" default,
+        // qmdBridgeScriptPath's own repository-relative default) or comes from `config`, resolved
+        // from environment/properties exactly as this repository's other local-runtime dependencies
+        // already are.
+        val qmdConfiguration = QmdRelevanceMechanismConfiguration(
+            qmdVersion = "2.8.3",
+            embeddingModelUri = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
+            vectorDimension = 768,
+            nodeExecutablePath = config.qmdNodeExecutablePath,
+            additionalNodeArguments = listOfNotNull(config.qmdTsxCliPath),
+            bridgeScriptPath = config.qmdBridgeScriptPath,
+            modelCacheDir = config.qmdModelCacheDir,
+            timeoutMillis = config.qmdTimeoutMillis,
+        )
+        val qmdInvoker = ProcessBuilderQmdSubprocessInvoker(qmdConfiguration)
+        val relevanceMechanism: RelevanceMechanism = QmdRelevanceMechanism(qmdConfiguration, qmdInvoker)
+
+        knowledgeRetrieval = DefaultKnowledgeRetrieval(knowledgeItemPersistence, permissionEngine, relevanceMechanism)
 
         // Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation
         // Unit 3 (Contract Design Section 7, Section 12; Scope Lock Section 4, Section 7). A third

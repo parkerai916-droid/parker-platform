@@ -28,7 +28,7 @@ import parker.core.runtime.DefaultKnowledgeSubmission
 import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceRegistrationOutcome
-import parker.core.runtime.InMemoryKnowledgeItemPersistence
+import parker.core.runtime.DurableKnowledgeItemPersistence
 import kotlin.reflect.full.declaredFunctions
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -83,6 +83,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-intelligence-integration-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-intelligence-integration-memory").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
     )
 
     private fun candidateProvenance() = CandidateProvenance(
@@ -179,7 +180,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
     }
 
     @Test
-    fun `only one InMemoryKnowledgeItemPersistence instance is reachable from the composed graph`() = runTest {
+    fun `only one DurableKnowledgeItemPersistence instance is reachable from the composed graph`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -187,7 +188,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         val knowledgeSubmission = acceptanceCoordinator.privateField<Any>("knowledgeSubmission")
         val persistence = knowledgeSubmission.privateField<Any>("persistence")
 
-        assertIs<InMemoryKnowledgeItemPersistence>(persistence)
+        assertIs<DurableKnowledgeItemPersistence>(persistence)
         assertIs<DefaultKnowledgeSubmission>(knowledgeSubmission)
 
         runtime.shutdown()

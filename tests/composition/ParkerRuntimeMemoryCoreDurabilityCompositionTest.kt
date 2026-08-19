@@ -25,6 +25,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 
 /**
@@ -46,7 +47,10 @@ class ParkerRuntimeMemoryCoreDurabilityCompositionTest {
 
     private val ownerPrincipalId = "user.owner-memory-core-durability-composition-test"
 
-    private fun config(memoryCoreDurabilityLogPath: String? = null) = ParkerRuntimeConfig(
+    private fun config(
+        memoryCoreDurabilityLogPath: String? = null,
+        knowledgeItemDurabilityLogPath: String? = null,
+    ) = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by this suite
         modelName = "test-model",
         ownerPrincipalId = ownerPrincipalId,
@@ -56,6 +60,8 @@ class ParkerRuntimeMemoryCoreDurabilityCompositionTest {
             Files.createTempDirectory("memory-core-durability-composition-evidence-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = memoryCoreDurabilityLogPath
             ?: Files.createTempDirectory("memory-core-durability-composition-memory").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = knowledgeItemDurabilityLogPath
+            ?: Files.createTempDirectory("memory-core-durability-composition-knowledge").resolve("items.log").toString(),
     )
 
     private fun candidateProvenance() = CandidateProvenance(
@@ -268,6 +274,22 @@ class ParkerRuntimeMemoryCoreDurabilityCompositionTest {
         // constructed (before the failing step) is left in a state shutdown() cannot handle.
         runtime.shutdown()
         assertEquals(RuntimeLifecycleState.STOPPED, runtime.state)
+    }
+
+    @Test
+    fun `corrupt Knowledge Item recovery aborts startup to FAILED without installing an empty fallback`() = runTest {
+        val corruptLogPath = Files.createTempDirectory("knowledge-item-composition-corrupt").resolve("items.log")
+        Files.writeString(corruptLogPath, "not a valid knowledge item record\n")
+        val runtime = ParkerRuntime(
+            config(knowledgeItemDurabilityLogPath = corruptLogPath.toString()),
+            RecordingParkerLogger(),
+        )
+
+        val thrown = assertFailsWith<ParkerRuntimeException.DependencyConstructionFailed> { runtime.start() }
+        assertEquals("Knowledge Item recovery", thrown.component)
+        assertEquals(RuntimeLifecycleState.FAILED, runtime.state)
+        val field = ParkerRuntime::class.java.getDeclaredField("knowledgeRetrieval").apply { isAccessible = true }
+        assertNull(field.get(runtime), "startup failure must not install an empty fallback retrieval/persistence graph")
     }
 
     @Test

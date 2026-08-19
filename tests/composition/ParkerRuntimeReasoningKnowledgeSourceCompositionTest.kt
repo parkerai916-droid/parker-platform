@@ -66,7 +66,7 @@ import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.InMemoryActionVocabulary
 import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
 import parker.core.runtime.InMemoryIdentityService
-import parker.core.runtime.InMemoryKnowledgeItemPersistence
+import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.InMemoryResourceRegistry
 import parker.core.runtime.PermissionPolicyRule
 import kotlin.test.Test
@@ -107,6 +107,7 @@ class ParkerRuntimeReasoningKnowledgeSourceCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("reasoning-knowledge-source-composition-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("reasoning-knowledge-source-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("reasoning-knowledge-source-composition-memory").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
     )
 
     private fun <T> Any.privateField(name: String): T {
@@ -127,7 +128,7 @@ class ParkerRuntimeReasoningKnowledgeSourceCompositionTest {
     /**
      * Creates a genuine, resolvable Assertion in the runtime's own real, shared Memory Core, then
      * directly stores a promoted [KnowledgeItem] referencing it in the runtime's own real, shared
-     * [InMemoryKnowledgeItemPersistence] -- mirroring
+     * [DurableKnowledgeItemPersistence] -- mirroring
      * [ParkerRuntimeKnowledgeRetrievalCompositionTest]'s own established "reflect to the shared
      * persistence, then store directly" convention (lines 186-208 there), extended here with a genuine
      * Memory Core record since, unlike `DefaultKnowledgeRetrieval`, [DefaultReasoningKnowledgeSource]
@@ -156,7 +157,7 @@ class ParkerRuntimeReasoningKnowledgeSourceCompositionTest {
             owner,
             CandidateAssertion(statement = statement, provenanceId = provenance.provenanceId, confidence = 0.9),
         )
-        val persistence = runtime.privateField<Any>("knowledgeRetrieval").privateField<InMemoryKnowledgeItemPersistence>("persistence")
+        val persistence = runtime.privateField<Any>("knowledgeRetrieval").privateField<DurableKnowledgeItemPersistence>("persistence")
         val evidenceReference = MemoryCoreRecordReference.ToAssertion(assertion.assertionId)
         persistence.store(
             KnowledgeItem(
@@ -207,7 +208,7 @@ class ParkerRuntimeReasoningKnowledgeSourceCompositionTest {
     // ================= 2. Shared instances =================
 
     @Test
-    fun `the same InMemoryKnowledgeItemPersistence instance backs Knowledge Submission, Knowledge Retrieval, and DefaultReasoningKnowledgeSource`() = runTest {
+    fun `the same DurableKnowledgeItemPersistence instance backs Knowledge Submission, Knowledge Retrieval, and DefaultReasoningKnowledgeSource`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -220,7 +221,7 @@ class ParkerRuntimeReasoningKnowledgeSourceCompositionTest {
 
         val reasoningPersistence = reasoningKnowledgeSourceFrom(runtime).privateField<Any>("persistence")
 
-        assertIs<InMemoryKnowledgeItemPersistence>(submissionPersistence)
+        assertIs<DurableKnowledgeItemPersistence>(submissionPersistence)
         assertSame(
             submissionPersistence,
             retrievalPersistence,
