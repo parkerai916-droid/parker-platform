@@ -8,6 +8,7 @@ import kotlin.reflect.KVisibility
 import kotlin.reflect.full.declaredFunctions
 import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.full.primaryConstructor
+import kotlin.reflect.jvm.isAccessible
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.DecisionId
 import parker.core.interfaces.EvidentialState
@@ -30,9 +31,12 @@ import parker.core.interfaces.PermissionLevel
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ProvenanceId
 import parker.core.interfaces.ProvenanceReference
+import parker.core.interfaces.RelevanceCandidate
+import parker.core.interfaces.RelevanceCandidateToken
 import parker.core.interfaces.StalenessDisclosure
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -1350,6 +1354,278 @@ class DefaultKnowledgeRetrievalTest {
             )
         }
     }
+
+    // --- Unit 9.7.2: fallback trigger ---
+
+    @Test
+    fun `one or more structural matches prevent fallback, regardless of the permission outcome on those matches`() = runTest {
+        // Frozen Boundary #2 / adopted Proposal §16: "Permission denial is
+        // not a fallback trigger." A DENIED item-level outcome on the sole
+        // structural match must still short-circuit before the wider
+        // eligible set is ever permission-gated -- proven here by the exact
+        // evaluated intents, not merely by the final (empty) result, so
+        // this test cannot be satisfied merely by fallback happening to
+        // also produce nothing.
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("matched"), basis = "grocery list"))
+        persistence.store(item(KnowledgeId("eligible-but-unmatched"), basis = "unrelated household task"))
+        val evaluatedIntents = mutableListOf<String>()
+        // Defect fix (Windows Verification Failure, bounded correction): the
+        // previous version of this fake denied EVERY evaluation, including
+        // the act-level gate -- so retrieve() returned NotAuthorised before
+        // ever reaching the structural/fallback branching logic this test
+        // exists to prove, and assertIs<Retrieved> failed for a reason
+        // wholly unrelated to fallback triggering. The act-level gate must
+        // approve here (mirroring the existing actLevelApprovingEngine
+        // helper's own established two-tier distinction, above); only the
+        // item-level evaluation of the sole structural match is denied.
+        val engine = FakePermissionEngine { request ->
+            evaluatedIntents.add(request.intent)
+            val outcome = if (request.intent == DefaultKnowledgeRetrieval.ACT_LEVEL_INTENT) {
+                PermissionDecisionOutcome.APPROVED
+            } else {
+                PermissionDecisionOutcome.DENIED
+            }
+            decision(request, outcome)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(
+            emptyList<Any>(),
+            retrieved.result.entries,
+            "the sole structural match was denied at item level -- this must not be conflated with a genuine zero-structural-match fallback trigger",
+        )
+        assertEquals(2, evaluatedIntents.size, "1 act-level + 1 item-level, for the structurally matched item only")
+        assertFalse(
+            evaluatedIntents.any { it.contains("eligible-but-unmatched") },
+            "an item that was lifecycle-eligible but never structurally matched must never be permission-evaluated while at least one structural match exists",
+        )
+    }
+
+    @Test
+    fun `a thrown exception during persistence read never reaches the fallback branch`() = runTest {
+        // Frozen Boundary #2 / adopted Proposal §16: a structural-matching
+        // failure is never treated as a legitimate zero-match outcome.
+        val persistence = ThrowingKnowledgeItemPersistence()
+        val evaluatedIntents = mutableListOf<String>()
+        val engine = FakePermissionEngine { request ->
+            evaluatedIntents.add(request.intent)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        assertFailsWith<IllegalStateException> {
+            retrieval.retrieve(principal, query(relevance = "grocery"))
+        }
+        assertEquals(
+            listOf(DefaultKnowledgeRetrieval.ACT_LEVEL_INTENT),
+            evaluatedIntents,
+            "only the act-level gate may run before a persistence-read failure propagates -- no item-level evaluation, fallback or otherwise, may occur",
+        )
+    }
+
+    // --- Unit 9.7.2: closed candidate set ---
+
+    @Test
+    fun `the fallback branch permission-gates the full lifecycle-eligible set, and only that set, when structural matching finds nothing`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), basis = "unrelated one"))
+        persistence.store(item(KnowledgeId("k2"), basis = "unrelated two"))
+        persistence.store(item(KnowledgeId("retired"), basis = "unrelated retired", status = KnowledgeItemStatus.RETIRED))
+        val evaluatedIntents = mutableListOf<String>()
+        val engine = FakePermissionEngine { request ->
+            evaluatedIntents.add(request.intent)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        assertEquals(
+            3,
+            evaluatedIntents.size,
+            "1 act-level + 2 item-level -- the two lifecycle-eligible items, even though structural matching found zero relevant candidates",
+        )
+        assertTrue(evaluatedIntents.any { it.contains("k1") })
+        assertTrue(evaluatedIntents.any { it.contains("k2") })
+        assertFalse(
+            evaluatedIntents.any { it.contains("retired") },
+            "a RETIRED, lifecycle-ineligible item must never enter even the fallback candidate-set permission gate",
+        )
+    }
+
+    @Test
+    fun `an empty lifecycle-eligible set never triggers fallback candidate-set permission gating`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val engine = approvingEngine()
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(emptyList<Any>(), retrieved.result.entries)
+        assertEquals(1, engine.evaluateCallCount, "no lifecycle-eligible items exist at all -- only the act-level gate is ever evaluated")
+    }
+
+    @Test
+    fun `a denied item within the fallback-eligible set does not prevent fallback candidate-set construction from completing`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        val deniedId = KnowledgeId("denied")
+        val approvedId = KnowledgeId("approved")
+        persistence.store(item(deniedId, basis = "unrelated denied"))
+        persistence.store(item(approvedId, basis = "unrelated approved"))
+        val engine = FakePermissionEngine { request ->
+            val outcome = if (request.intent.contains(deniedId.value)) PermissionDecisionOutcome.DENIED else PermissionDecisionOutcome.APPROVED
+            decision(request, outcome)
+        }
+        val retrieval = DefaultKnowledgeRetrieval(persistence, engine)
+
+        // Unit 9.7.2 does not yet disclose any fallback result -- entries
+        // remain empty regardless of how many candidates survive fallback
+        // permission gating (disclosure is Unit 9.7.4's own, later
+        // responsibility). What this test proves is narrower and already
+        // fully in this Unit's own scope: fallback candidate construction
+        // completes without error over a permission-mixed eligible set,
+        // reusing permissionApprove's own already-tested filtering logic
+        // rather than assuming every fallback batch is uniformly approved.
+        val disposition = retrieval.retrieve(principal, query(relevance = "grocery"))
+
+        val retrieved = assertIs<KnowledgeRetrievalDisposition.Retrieved>(disposition)
+        assertEquals(emptyList<Any>(), retrieved.result.entries)
+    }
+
+    // --- Unit 9.7.2: opaque token / minimum content minting (private, reflection-verified) ---
+
+    @Test
+    fun `mintFallbackCandidates mints exactly one candidate per supplied item, content equal to its own most recent basis`() {
+        val retrieval = DefaultKnowledgeRetrieval(InMemoryKnowledgeItemPersistence(), approvingEngine())
+        val items = listOf(
+            item(KnowledgeId("k1"), basis = "grocery list one"),
+            item(KnowledgeId("k2"), basis = "grocery list two"),
+        )
+
+        val candidates = mintFallbackCandidatesForTest(retrieval, items)
+
+        assertEquals(2, candidates.size)
+        assertEquals(listOf("grocery list one", "grocery list two"), candidates.map { it.content })
+    }
+
+    @Test
+    fun `mintFallbackCandidates tokens never equal or contain the item's own KnowledgeId`() {
+        val retrieval = DefaultKnowledgeRetrieval(InMemoryKnowledgeItemPersistence(), approvingEngine())
+        val items = listOf(item(KnowledgeId("secret-knowledge-id-42"), basis = "grocery list"))
+
+        val candidates = mintFallbackCandidatesForTest(retrieval, items)
+
+        val tokenValue = candidates.single().token.value
+        assertFalse(tokenValue.contains("secret-knowledge-id-42"), "token must not encode or contain the canonical KnowledgeId")
+        assertTrue(tokenValue != "secret-knowledge-id-42")
+    }
+
+    @Test
+    fun `mintFallbackCandidates mints a fresh, distinct token on every separate call -- no stable identity across retrieval preparations`() {
+        val retrieval = DefaultKnowledgeRetrieval(InMemoryKnowledgeItemPersistence(), approvingEngine())
+        val items = listOf(item(KnowledgeId("k1"), basis = "grocery list"))
+
+        val first = mintFallbackCandidatesForTest(retrieval, items).single().token.value
+        val second = mintFallbackCandidatesForTest(retrieval, items).single().token.value
+
+        assertTrue(first != second, "two separate fallback candidate-set constructions for the same item must not reuse the same token")
+    }
+
+    @Test
+    fun `mintFallbackCandidates produces distinct tokens for distinct candidates in the same call`() {
+        val retrieval = DefaultKnowledgeRetrieval(InMemoryKnowledgeItemPersistence(), approvingEngine())
+        val items = listOf(item(KnowledgeId("k1"), basis = "one"), item(KnowledgeId("k2"), basis = "two"))
+
+        val tokens = mintFallbackCandidatesForTest(retrieval, items).map { it.token.value }
+
+        assertEquals(tokens.size, tokens.toSet().size, "every candidate minted in the same request must receive its own distinct token")
+    }
+
+    @Test
+    fun `mintFallbackCandidates over an empty closed candidate set mints nothing`() {
+        val retrieval = DefaultKnowledgeRetrieval(InMemoryKnowledgeItemPersistence(), approvingEngine())
+
+        val candidates = mintFallbackCandidatesForTest(retrieval, emptyList())
+
+        assertEquals(emptyList<RelevanceCandidate>(), candidates)
+    }
+
+    // --- Unit 9.7.2: no persistent relevance state, no mechanism invocation ---
+
+    @Test
+    fun `no class-level field holds fallback candidate, token, or token-map state between retrieve calls`() {
+        val declaredProperties = DefaultKnowledgeRetrieval::class.declaredMemberProperties.map { it.name.lowercase() }
+        listOf("token", "candidate", "fallback").forEach { forbidden ->
+            assertFalse(
+                declaredProperties.any { it.contains(forbidden) },
+                "DefaultKnowledgeRetrieval must not declare a class-level property resembling '$forbidden' -- found: $declaredProperties",
+            )
+        }
+    }
+
+    @Test
+    fun `DefaultKnowledgeRetrieval declares no RelevanceMechanism-typed constructor dependency`() {
+        // Boundary Review item 6 (Unit 9.7.2's own governing task): this
+        // Unit must not invoke RelevanceMechanism.rank(), and QmdRelevanceMechanism
+        // must remain untouched -- verified here at the type level, mirroring
+        // the existing "exactly three constructor dependencies" structural
+        // test's own technique.
+        val constructor = requireNotNull(DefaultKnowledgeRetrieval::class.primaryConstructor)
+        val parameterTypeNames = constructor.parameters.map { it.type.toString().lowercase() }
+        assertFalse(
+            parameterTypeNames.any { it.contains("relevancemechanism") },
+            "found: $parameterTypeNames",
+        )
+    }
+}
+
+/**
+ * Test-only double whose [findAll] always throws, so tests can prove a
+ * genuine structural-matching/persistence-read failure propagates as a
+ * thrown exception rather than silently falling through to Unit 9.7.2's
+ * own fallback branch as though it were a legitimate zero-match outcome
+ * (adopted Proposal §16: "A structural retrieval failure or exception is
+ * not an empty result").
+ */
+private class ThrowingKnowledgeItemPersistence : KnowledgeItemPersistence {
+    override suspend fun store(item: KnowledgeItem): KnowledgeItem = error("not used by this test")
+    override suspend fun find(knowledgeId: KnowledgeId): KnowledgeItem? = error("not used by this test")
+    override suspend fun findAll(): List<KnowledgeItem> = error("simulated persistence-read failure")
+}
+
+/**
+ * Reflection helper for Unit 9.7.2's own private `mintFallbackCandidates`.
+ * Deliberately reflective rather than promoting the method to `internal`
+ * or `public`: [DefaultKnowledgeRetrieval] keeps every one of its helper
+ * methods `private` (mirroring [matches], [isRetrievable], and
+ * [disclosureFor] already), and this suite already establishes the
+ * precedent of using `kotlin.reflect` to verify a private member's
+ * behaviour without widening the class's own visible surface (see the
+ * existing structural tests, above, which reflect on
+ * [DefaultKnowledgeRetrieval]'s declared functions/properties/constructor).
+ * `mintFallbackCandidates` is deliberately a plain, non-`suspend` function,
+ * so an ordinary [kotlin.reflect.KFunction.call] -- no `Continuation`
+ * plumbing -- is sufficient here. Its return type
+ * (`Pair<List<RelevanceCandidate>, Map<RelevanceCandidateToken, KnowledgeItem>>`)
+ * is composed entirely of already-public types, so only the first element
+ * of the pair needs extracting; the token-to-item map itself is exercised
+ * indirectly, by confirming every returned candidate's own token is fresh
+ * and content-correct.
+ */
+@Suppress("UNCHECKED_CAST")
+private fun mintFallbackCandidatesForTest(
+    retrieval: DefaultKnowledgeRetrieval,
+    items: List<KnowledgeItem>,
+): List<RelevanceCandidate> {
+    val function = DefaultKnowledgeRetrieval::class.declaredFunctions.single { it.name == "mintFallbackCandidates" }
+    function.isAccessible = true
+    val (candidates, _) = function.call(retrieval, items) as Pair<List<RelevanceCandidate>, Map<RelevanceCandidateToken, KnowledgeItem>>
+    return candidates
 }
 
 /**

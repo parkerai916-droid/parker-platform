@@ -17,6 +17,8 @@ import parker.core.interfaces.PermissionDecision
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.RelevanceCandidate
+import parker.core.interfaces.RelevanceCandidateToken
 import parker.core.interfaces.RequestId
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
@@ -26,25 +28,91 @@ import parker.core.interfaces.StalenessDisclosure
 /**
  * Programme 3, Knowledge Memory, Implementation Units 9.2 (Deterministic
  * Retrieval Engine), 9.3 (Staleness Disclosure), 9.4 (Retirement and
- * Supersession Retrieval-Shape Decision), and 9.5 (Permission Enforcement
- * Wiring). The sole implementation of
- * [parker.core.interfaces.KnowledgeRetrieval] -- see
+ * Supersession Retrieval-Shape Decision), 9.5 (Permission Enforcement
+ * Wiring), and 9.7.2 (Fallback Trigger and Closed Candidate Set). The sole
+ * implementation of [parker.core.interfaces.KnowledgeRetrieval] -- see
  * `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_IMPLEMENTATION_PLAN.md`
  * §4, Units 9.2 through 9.5, `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_CONTRACT_DESIGN.md`
- * ("the Unit 9 Contract Design"), and
+ * ("the Unit 9 Contract Design"),
  * `docs/governance/PROGRAMME_3_UNIT_9_PERMISSION_ENFORCEMENT_MECHANISM_CLARIFICATION.md`
- * ("the Clarification", Adopted) for the constitutional reasoning this
- * class implements exactly and nothing more.
+ * ("the Clarification", Adopted), and
+ * `docs/governance/PROGRAMME_3_UNIT_9_7_BOUNDED_SEMANTIC_RELEVANCE_IMPLEMENTATION_PLAN.md`
+ * ("the Unit 9.7 Implementation Plan") §7.1-7.2, Unit 9.7.2's own entry in
+ * §8, for the constitutional reasoning this class implements exactly and
+ * nothing more.
  *
  * This class implements query execution, filtering (structural matching
  * and lifecycle-status shaping), one disclosed, consistently-applied
  * ordering rule (Contract Design §8), one disclosed staleness-disclosure
  * heuristic (Contract Design V2 §3, Amendment 7; Unit 9 Contract Design
  * §2), one disclosed retired-item default-inclusion policy (Unit 9
- * Contract Design §6), and the Clarification's own two-tier permission
- * gate. It does not implement runtime composition (Unit 9.6) -- that
- * remains a later, separately authorised Unit's own responsibility,
- * exactly as the Implementation Plan's own ordering fixes.
+ * Contract Design §6), the Clarification's own two-tier permission gate,
+ * and (Unit 9.7.2) the fallback trigger and closed-candidate-set
+ * construction a later unit's Bounded Relevance Computation will consume.
+ * It does not implement runtime composition (Unit 9.6) -- that remains a
+ * later, separately authorised Unit's own responsibility, exactly as the
+ * Implementation Plan's own ordering fixes.
+ *
+ * ## Fallback trigger and closed candidate set (Unit 9.7.2)
+ *
+ * [retrieve] separates the single, combined structural/lifecycle filter
+ * Units 9.2-9.5 used into two steps, exactly as the Unit 9.7 Implementation
+ * Plan §7.1 prescribes: a lifecycle-only eligibility filter ([isRetrievable],
+ * unchanged) over every persisted item, producing the lifecycle-eligible
+ * set; and a structural-match filter ([matches], unchanged) applied only to
+ * that eligible set, producing the structurally-matched set. Because both
+ * predicates are pure, side-effect-free, and combined by conjunction, this
+ * split is behaviourally identical, for every query whose structural match
+ * is non-empty, to the single combined filter it replaces -- the same
+ * items, in the same order, receive the same item-level permission
+ * evaluation via [permissionApprove] (a direct, unchanged extraction of
+ * the pre-Unit-9.7.2 inline loop), the same bounding, and the same
+ * staleness disclosure. **One or more structural matches -- regardless of
+ * how many ultimately survive item-level permission approval -- therefore
+ * continue to produce today's exact, unmodified result, and never trigger
+ * the fallback branch below** (`PROGRAMME_3_UNIT_9_SEMANTIC_RELEVANCE_SCOPE_LOCK_REVISION_PROPOSAL.md`
+ * §16's own bright-line rule: "Permission denial is not a fallback
+ * trigger").
+ *
+ * Only when the structurally-matched set is genuinely empty -- structural
+ * matching having completed successfully, without exception, over the
+ * lifecycle-eligible set, and found nothing -- does the additive Unit
+ * 9.7.2 branch run (Implementation Plan §7.2). It item-level permission-
+ * gates the *full* lifecycle-eligible set (never the empty structurally-
+ * matched set) via the identical [permissionApprove] gate, producing the
+ * Pre-computation-admitted closed candidate set
+ * (`PROGRAMME_3_UNIT_9_7_BOUNDED_SEMANTIC_RELEVANCE_CONTRACT_AND_PERMISSION_SUCCESSOR.md`
+ * §3 condition 4, §5). If that set is itself empty, no candidate exists for
+ * this principal at all. Otherwise, [mintFallbackCandidates] mints one
+ * fresh, opaque [RelevanceCandidateToken] per admitted item, pairs it with
+ * only the item's own governed minimum content (the identical `basis` text
+ * [matches] already isolates -- Implementation Plan §7.3: "no widening of
+ * what content is ever exposed"), and retains the token-to-item
+ * association only in a local, method-scoped map -- never a class-level
+ * field, never persisted, never returned from [retrieve] (Frozen Boundary
+ * #10).
+ *
+ * **This Unit deliberately stops there.** It does not construct a
+ * [parker.core.interfaces.RelevanceRequest], does not hold or accept a
+ * [parker.core.interfaces.RelevanceMechanism] dependency, and does not call
+ * [parker.core.interfaces.RelevanceMechanism.rank] -- that remains later
+ * units' own, separately authorised responsibility (Unit 9.7.4's token
+ * resolution and Pre-disclosure re-verification; Unit 9.7.5's runtime
+ * composition wiring). Consequently, on the zero-structural-match branch,
+ * [retrieve] currently returns exactly the same disposition it always has
+ * for a genuine zero-match query --
+ * `Retrieved(KnowledgeRetrievalResult(emptyList()))` -- regardless of
+ * whether the closed candidate set this Unit computes is itself empty or
+ * not. The fallback candidate/token construction is real, exercised
+ * production behaviour, not a stub: its own governed properties (opaque
+ * per-request identity, minimum content, request-scoped, non-persistent
+ * retention) are proven directly against it. What does not yet exist is
+ * anything that *consumes* those candidates to change what a caller
+ * observes -- that is Unit 9.7.4's and Unit 9.7.5's own, later work,
+ * exactly as `PROGRAMME_3_UNIT_9_7_BOUNDED_SEMANTIC_RELEVANCE_IMPLEMENTATION_PLAN.md`
+ * §17 requires: "Unit 9.7's own completion is not, and must never be
+ * represented as, resolution of Parker's practical semantic-recall
+ * objective."
  *
  * ## Permission enforcement (Unit 9.5) -- the Clarification's own two-tier gate, implemented exactly
  *
@@ -451,26 +519,31 @@ internal class DefaultKnowledgeRetrieval(
             )
         }
 
-        val candidates = persistence.findAll()
-            .filter { item -> matches(item, query.relevance) && isRetrievable(item, query) }
+        val eligible = persistence.findAll().filter { item -> isRetrievable(item, query) }
+        val structurallyMatched = eligible.filter { item -> matches(item, query.relevance) }
 
-        val approved = mutableListOf<KnowledgeItem>()
-        for (item in candidates) {
-            val itemDecision = permissionEngine.evaluate(
-                buildExecutionRequest(
-                    requestingPrincipalId = requestingPrincipalId,
-                    correlationId = query.correlationId,
-                    intent = itemLevelIntent(item),
-                ),
-            )
-            if (isAuthorised(itemDecision)) {
-                approved += item
+        val entries: List<KnowledgeResultEntry> = if (structurallyMatched.isNotEmpty()) {
+            val approved = permissionApprove(structurallyMatched, requestingPrincipalId, query.correlationId)
+            approved
+                .take(query.maximumResults)
+                .map { item -> KnowledgeResultEntry(item = item, staleness = disclosureFor(item)) }
+        } else {
+            // Unit 9.7.2 fallback branch -- see this class's own "Fallback
+            // trigger and closed candidate set" KDoc, above, for the full
+            // reasoning. Structural matching completed successfully (no
+            // exception reached this point) and found nothing in the
+            // lifecycle-eligible set, so the *full* eligible set -- not the
+            // empty structurally-matched set -- is item-level
+            // permission-gated to produce the closed candidate set.
+            val closedCandidateSet = permissionApprove(eligible, requestingPrincipalId, query.correlationId)
+            if (closedCandidateSet.isNotEmpty()) {
+                val (fallbackCandidates, _) = mintFallbackCandidates(closedCandidateSet)
+                check(fallbackCandidates.size == closedCandidateSet.size) {
+                    "fallback candidate minting must produce exactly one RelevanceCandidate per closed-candidate-set member"
+                }
             }
+            emptyList()
         }
-
-        val entries = approved
-            .take(query.maximumResults)
-            .map { item -> KnowledgeResultEntry(item = item, staleness = disclosureFor(item)) }
 
         return KnowledgeRetrievalDisposition.Retrieved(KnowledgeRetrievalResult(entries))
     }
@@ -502,6 +575,98 @@ internal class DefaultKnowledgeRetrieval(
 
     private fun itemLevelIntent(item: KnowledgeItem): String =
         "Disclose Knowledge Item '${item.knowledgeId.value}' in a Knowledge Retrieval result"
+
+    /**
+     * Unit 9.5's own existing item-level permission gate, factored out
+     * unchanged (Unit 9.7.2) so the fallback branch, above, can reuse the
+     * identical gate -- evaluated against the identical fixed
+     * resource/action pair [buildExecutionRequest] already constructs --
+     * rather than duplicating the loop or inventing a second permission
+     * pathway
+     * (`PROGRAMME_3_UNIT_9_7_BOUNDED_SEMANTIC_RELEVANCE_CONTRACT_AND_PERMISSION_SUCCESSOR.md`
+     * §5: "This contract does not reorder, parallelise, or collapse any
+     * step of that frozen order; it adds no new step to it"). [items] are
+     * evaluated in their own supplied order; survivors are returned in
+     * that same order -- preserved by [MutableList.add] alone, never
+     * recomputed or re-sorted, exactly as the pre-Unit-9.7.2 inline loop
+     * this method replaces already guaranteed.
+     */
+    private suspend fun permissionApprove(
+        items: List<KnowledgeItem>,
+        requestingPrincipalId: PrincipalId,
+        correlationId: String,
+    ): List<KnowledgeItem> {
+        val approved = mutableListOf<KnowledgeItem>()
+        for (item in items) {
+            val itemDecision = permissionEngine.evaluate(
+                buildExecutionRequest(
+                    requestingPrincipalId = requestingPrincipalId,
+                    correlationId = correlationId,
+                    intent = itemLevelIntent(item),
+                ),
+            )
+            if (isAuthorised(itemDecision)) {
+                approved += item
+            }
+        }
+        return approved
+    }
+
+    /**
+     * Programme 3, Unit 9.7.2 (Fallback Trigger and Closed Candidate Set).
+     * Mints one fresh, opaque [RelevanceCandidateToken] per member of
+     * [closedCandidateSet] -- valid only for the lifetime of this single
+     * [retrieve] call, never derived from, equal to, or containing the
+     * item's own [KnowledgeItem.knowledgeId] -- and pairs it with only the
+     * item's own minimum governed content ([fallbackCandidateContent]: the
+     * same most-recent-history-entry
+     * [parker.core.interfaces.KnowledgeLifecycleEvent.basis] text [matches]
+     * already isolates as the sole free-text field a [KnowledgeItem]
+     * carries). The returned token-to-item map exists solely so a later
+     * unit (9.7.4) can resolve a mechanism-returned token back to its own
+     * canonical [KnowledgeItem] by direct lookup; this method itself never
+     * invokes [parker.core.interfaces.RelevanceMechanism], never resolves
+     * anything, and never discloses anything -- both remain exclusively a
+     * later unit's own responsibility. Neither the returned list, the
+     * returned map, nor any minted token is stored on `this` or any other
+     * surviving state -- both cease to exist the moment the caller (here,
+     * [retrieve] alone) lets them go out of scope (Frozen Boundary #10).
+     * Token values are freshly randomised ([UUID.randomUUID]) on every
+     * call -- deliberately never a deterministic function of the item's
+     * own identity, so no caller can rely on, or accidentally come to
+     * depend on, token stability across two separate [retrieve]
+     * invocations.
+     */
+    private fun mintFallbackCandidates(
+        closedCandidateSet: List<KnowledgeItem>,
+    ): Pair<List<RelevanceCandidate>, Map<RelevanceCandidateToken, KnowledgeItem>> {
+        val tokenToItem = mutableMapOf<RelevanceCandidateToken, KnowledgeItem>()
+        val candidates = closedCandidateSet.map { candidateItem ->
+            val token = RelevanceCandidateToken(UUID.randomUUID().toString())
+            tokenToItem[token] = candidateItem
+            RelevanceCandidate(token = token, content = fallbackCandidateContent(candidateItem))
+        }
+        return candidates to tokenToItem
+    }
+
+    /**
+     * The exact minimum-content boundary [matches] already relies on --
+     * the most recent
+     * [parker.core.interfaces.KnowledgeLifecycleEvent.basis] text, and
+     * nothing else about the item. Every [KnowledgeItem] reaching this
+     * point has already survived [isRetrievable] and item-level permission
+     * approval via [permissionApprove], so a missing history entry here is
+     * a genuine internal invariant violation (structurally impossible via
+     * this codebase's own precedent construction path -- see this class's
+     * own "Structural matching target" KDoc, above), not caller input to
+     * validate against -- [checkNotNull], not `require`, fails loudly on
+     * an internal invariant rather than treating it as ordinary,
+     * expected-to-sometimes-fail caller input.
+     */
+    private fun fallbackCandidateContent(item: KnowledgeItem): String =
+        checkNotNull(item.history.lastOrNull()?.basis) {
+            "Knowledge Item '${item.knowledgeId.value}' has no history entry to derive fallback relevance content from"
+        }
 
     /**
      * Shared [ExecutionRequest] construction for both the act-level and
