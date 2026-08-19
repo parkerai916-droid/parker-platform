@@ -19,6 +19,9 @@ import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.RelevanceCandidate
 import parker.core.interfaces.RelevanceCandidateToken
+import parker.core.interfaces.RelevanceMechanism
+import parker.core.interfaces.RelevanceRequest
+import parker.core.interfaces.RelevanceResult
 import parker.core.interfaces.RequestId
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
@@ -29,7 +32,9 @@ import parker.core.interfaces.StalenessDisclosure
  * Programme 3, Knowledge Memory, Implementation Units 9.2 (Deterministic
  * Retrieval Engine), 9.3 (Staleness Disclosure), 9.4 (Retirement and
  * Supersession Retrieval-Shape Decision), 9.5 (Permission Enforcement
- * Wiring), and 9.7.2 (Fallback Trigger and Closed Candidate Set). The sole
+ * Wiring), 9.7.2 (Fallback Trigger and Closed Candidate Set), and 9.7.4
+ * (Integrity Validation, Canonical Token Re-resolution, and Fresh
+ * Pre-disclosure Re-verification). The sole
  * implementation of [parker.core.interfaces.KnowledgeRetrieval] -- see
  * `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_IMPLEMENTATION_PLAN.md`
  * §4, Units 9.2 through 9.5, `docs/governance/PROGRAMME_3_UNIT_9_KNOWLEDGE_RETRIEVAL_CONTRACT_DESIGN.md`
@@ -92,27 +97,88 @@ import parker.core.interfaces.StalenessDisclosure
  * field, never persisted, never returned from [retrieve] (Frozen Boundary
  * #10).
  *
- * **This Unit deliberately stops there.** It does not construct a
- * [parker.core.interfaces.RelevanceRequest], does not hold or accept a
- * [parker.core.interfaces.RelevanceMechanism] dependency, and does not call
- * [parker.core.interfaces.RelevanceMechanism.rank] -- that remains later
- * units' own, separately authorised responsibility (Unit 9.7.4's token
- * resolution and Pre-disclosure re-verification; Unit 9.7.5's runtime
- * composition wiring). Consequently, on the zero-structural-match branch,
- * [retrieve] currently returns exactly the same disposition it always has
- * for a genuine zero-match query --
- * `Retrieved(KnowledgeRetrievalResult(emptyList()))` -- regardless of
- * whether the closed candidate set this Unit computes is itself empty or
- * not. The fallback candidate/token construction is real, exercised
- * production behaviour, not a stub: its own governed properties (opaque
- * per-request identity, minimum content, request-scoped, non-persistent
- * retention) are proven directly against it. What does not yet exist is
- * anything that *consumes* those candidates to change what a caller
- * observes -- that is Unit 9.7.4's and Unit 9.7.5's own, later work,
- * exactly as `PROGRAMME_3_UNIT_9_7_BOUNDED_SEMANTIC_RELEVANCE_IMPLEMENTATION_PLAN.md`
- * §17 requires: "Unit 9.7's own completion is not, and must never be
- * represented as, resolution of Parker's practical semantic-recall
- * objective."
+ * **Unit 9.7.2 deliberately stopped there; Unit 9.7.4 is exactly, and
+ * only, the next step -- never runtime composition.** Where the closed
+ * candidate set is non-empty, [retrieve] now constructs a
+ * [RelevanceRequest] from [query]'s own `relevance` text and the freshly
+ * minted [RelevanceCandidate] list, and calls
+ * [RelevanceMechanism.rank] exactly once, on [relevanceMechanism] --
+ * still never [QmdRelevanceMechanism] or any other concrete mechanism by
+ * name; this class knows only the frozen [RelevanceMechanism] contract,
+ * exactly as [permissionEngine] is known only through [PermissionEngine].
+ * The mechanism call happens on the exact-zero-structural-match branch
+ * only, and only when the closed candidate set is itself non-empty --
+ * never otherwise (Unit 9.7 Implementation Plan §7.4, §17: "the mechanism
+ * ... may run only when structural matching produced nothing").
+ *
+ * ## Mechanism candidate discovery is not authority (Unit 9.7.4, Stage B)
+ *
+ * The [RelevanceResult] [RelevanceMechanism.rank] returns is discovery,
+ * never authority (Contract and Permission Successor §8) -- it is
+ * [resolveSemanticResult]'s own job to treat it that way, never [retrieve]
+ * itself constructing a [KnowledgeResultEntry] from it directly. Every
+ * returned [RelevanceCandidateToken] is validated, fail-closed, against
+ * this one request's own local `tokenToItem` map -- the same map
+ * [mintFallbackCandidates] just built and that [retrieve] never lets
+ * escape its own local scope: an unknown token, a duplicate token, or more
+ * tokens than were supplied is treated as a mechanism-level integrity
+ * fault and thrown, never silently dropped, de-duplicated, or truncated
+ * (Unit 9.7 Contract and Permission Successor §6; this Unit's own governing
+ * task explicitly supersedes that document's older "de-duplicated... never
+ * consumes more than one `maximumResults` slot" table language for
+ * duplicates specifically -- see this class's own delivery notes for that
+ * disclosed tension). Because `tokenToItem` is a fresh
+ * [java.util.Map] local to this one [retrieve] invocation, a token minted
+ * by, or surviving from, any other request or any other call cannot appear
+ * in it at all -- stale and cross-request token rejection is therefore
+ * structural, not a separate check this class must additionally perform.
+ * A genuinely empty [RelevanceResult.rankedTokens] for a non-empty supplied
+ * candidate set is not an integrity fault at all -- it is QMD's own
+ * honest "nothing here is relevant" answer, and produces the ordinary,
+ * successful, empty [KnowledgeRetrievalResult] any other zero-match query
+ * already produces.
+ *
+ * ## Canonical re-resolution and fresh Pre-disclosure re-verification (Unit 9.7.4, Stage C)
+ *
+ * A token surviving integrity validation is resolved back to its own
+ * [KnowledgeItem] **only** through `tokenToItem` -- never trusted, never
+ * substituted, and the Pre-computation [KnowledgeItem] snapshot that
+ * `tokenToItem` itself holds is never disclosed directly. Instead, for
+ * every survivor, [resolveSemanticResult] performs a fresh
+ * [KnowledgeItemPersistence.find] by that item's own
+ * [KnowledgeItem.knowledgeId], and, only if that fresh lookup still
+ * returns a value, re-applies [isRetrievable] and a fresh, independent
+ * [PermissionEngine.evaluate] call -- the identical [itemLevelIntent] and
+ * [buildExecutionRequest] the structural path and Unit 9.7.2's own closed
+ * candidate set already use, never a new permission pathway invented for
+ * this branch alone. A candidate whose canonical item can no longer be
+ * found, is no longer lifecycle-eligible, or is no longer permission-
+ * approved is silently excluded -- exactly as an item-level denial already
+ * is on the structural path -- never substituted for, never causing the
+ * whole retrieval to fail (Unit 9.7 Contract and Permission Successor §5,
+ * §9; Scope Lock Revision Proposal §13, §14). The [KnowledgeResultEntry]
+ * this class ultimately constructs is built exclusively from that fresh,
+ * current [KnowledgeItem] -- never from [RelevanceCandidate.content], never
+ * from the Pre-computation snapshot, and never from anything
+ * [relevanceMechanism] itself returned beyond the bare ranked token
+ * identity. **This class still holds no [parker.core.interfaces.MemoryRetrieval]
+ * or [parker.core.interfaces.MemoryCore] dependency of any kind** -- Unit
+ * 9.7.4 resolves against [persistence] alone, exactly as every earlier Unit
+ * here already does; the Reasoning Context sibling path's own, separate
+ * three-check Memory Core dereference discipline has no application here
+ * and was not imported into this class.
+ *
+ * QMD's own ranked order among `rankedTokens` is preserved among survivors
+ * -- [resolveSemanticResult] never re-sorts, re-scores, or re-ranks --
+ * and [KnowledgeRetrievalQuery.maximumResults] bounds the *survivors*,
+ * applied at the identical governed stage (after filtering, before
+ * disclosure) the structural path already uses. A thrown exception from
+ * [RelevanceMechanism.rank] itself -- timeout, subprocess failure,
+ * malformed response, or any other fault [QmdRelevanceMechanism] itself
+ * already documents as a thrown, distinguishable fault -- propagates
+ * unchanged out of [retrieve]; it is never absorbed, and never converted
+ * into a structural retry or a fabricated empty success (Unit 9.7 Contract
+ * and Permission Successor §6).
  *
  * ## Permission enforcement (Unit 9.5) -- the Clarification's own two-tier gate, implemented exactly
  *
@@ -488,7 +554,18 @@ import parker.core.interfaces.StalenessDisclosure
  * @param permissionEngine Evaluated at least once, and never zero times,
  *   per [retrieve] call -- exactly once for the act-level gate, plus once
  *   per candidate item surviving structural matching and lifecycle
- *   shaping, for the item-level gate (Clarification §6.2, §8).
+ *   shaping, for the item-level gate (Clarification §6.2, §8), plus once
+ *   more per mechanism-surfaced candidate surviving Unit 9.7.4's own fresh
+ *   Pre-disclosure re-verification, on the fallback branch only.
+ * @param relevanceMechanism (Unit 9.7.4) The sole, mechanism-neutral seam
+ *   through which [retrieve] may ever reach semantic candidate discovery --
+ *   invoked at most once per call, only on the exact-zero-structural-match
+ *   branch, and only when the closed candidate set Unit 9.7.2 computes is
+ *   itself non-empty. This class constructs the concrete instance for
+ *   neither production nor test use; Unit 9.7.5's own runtime composition
+ *   wiring supplies the real [QmdRelevanceMechanism] instance in
+ *   production, and this Unit's own tests supply narrow fakes -- never a
+ *   live QMD subprocess.
  * @param clock The time source [disclosureFor] reads "now" from. Defaults
  *   to the real system clock in production; tests supply a fixed
  *   [Clock] so staleness assertions remain deterministic and instant,
@@ -497,6 +574,7 @@ import parker.core.interfaces.StalenessDisclosure
 internal class DefaultKnowledgeRetrieval(
     private val persistence: KnowledgeItemPersistence,
     private val permissionEngine: PermissionEngine,
+    private val relevanceMechanism: RelevanceMechanism,
     private val clock: Clock = Clock.systemUTC(),
 ) : KnowledgeRetrieval {
 
@@ -536,13 +614,29 @@ internal class DefaultKnowledgeRetrieval(
             // empty structurally-matched set -- is item-level
             // permission-gated to produce the closed candidate set.
             val closedCandidateSet = permissionApprove(eligible, requestingPrincipalId, query.correlationId)
-            if (closedCandidateSet.isNotEmpty()) {
-                val (fallbackCandidates, _) = mintFallbackCandidates(closedCandidateSet)
+            if (closedCandidateSet.isEmpty()) {
+                emptyList()
+            } else {
+                val (fallbackCandidates, tokenToItem) = mintFallbackCandidates(closedCandidateSet)
                 check(fallbackCandidates.size == closedCandidateSet.size) {
                     "fallback candidate minting must produce exactly one RelevanceCandidate per closed-candidate-set member"
                 }
+                // Unit 9.7.4 -- Stage B (mechanism candidate discovery). Invoked
+                // exactly here: the exact-zero-structural-match branch, and only
+                // once the closed candidate set is confirmed non-empty. A thrown
+                // fault from relevanceMechanism.rank propagates unchanged out of
+                // retrieve -- see this class's own "Mechanism candidate discovery
+                // is not authority" KDoc, above.
+                val relevanceResult = relevanceMechanism.rank(
+                    RelevanceRequest(queryText = query.relevance, candidates = fallbackCandidates),
+                )
+                resolveSemanticResult(
+                    relevanceResult = relevanceResult,
+                    tokenToItem = tokenToItem,
+                    requestingPrincipalId = requestingPrincipalId,
+                    query = query,
+                )
             }
-            emptyList()
         }
 
         return KnowledgeRetrievalDisposition.Retrieved(KnowledgeRetrievalResult(entries))
@@ -610,6 +704,89 @@ internal class DefaultKnowledgeRetrieval(
             }
         }
         return approved
+    }
+
+    /**
+     * Programme 3, Unit 9.7.4 (Integrity Validation, Canonical Token
+     * Re-resolution, and Fresh Pre-disclosure Re-verification). Called
+     * exactly once, from the fallback branch of [retrieve], immediately
+     * after [relevanceMechanism] returns -- never called speculatively,
+     * never called more than once per [retrieve] invocation, and never
+     * called from anywhere the structural branch could also reach. See
+     * this class's own "Mechanism candidate discovery is not authority"
+     * and "Canonical re-resolution and fresh Pre-disclosure
+     * re-verification" KDoc sections, above, for the full constitutional
+     * reasoning; this method is that reasoning's exact, narrow
+     * implementation, and nothing more.
+     *
+     * [tokenToItem] is this one [retrieve] call's own local, request-scoped
+     * closed-candidate-set map -- the same [Map] [mintFallbackCandidates]
+     * built moments earlier for this exact call, never any other request's
+     * own map, and never retained anywhere beyond this method's own
+     * activation record.
+     *
+     * Integrity faults (an unknown token, a duplicate token, or more
+     * tokens than were ever supplied) are thrown -- distinguishable,
+     * diagnosable [IllegalStateException]s -- rather than silently
+     * repaired, exactly mirroring [QmdRelevanceMechanism]'s own established
+     * "faults propagate as thrown exceptions, never absorbed" discipline
+     * at the boundary that actually understands their meaning. A single
+     * candidate that fails fresh canonical re-resolution, fresh lifecycle
+     * re-verification, or fresh permission re-verification is, by
+     * contrast, an entirely ordinary exclusion -- identical in kind to an
+     * item-level permission denial on the structural path -- and never
+     * escalates to a thrown fault or a substituted candidate.
+     */
+    private suspend fun resolveSemanticResult(
+        relevanceResult: RelevanceResult,
+        tokenToItem: Map<RelevanceCandidateToken, KnowledgeItem>,
+        requestingPrincipalId: PrincipalId,
+        query: KnowledgeRetrievalQuery,
+    ): List<KnowledgeResultEntry> {
+        val rankedTokens = relevanceResult.rankedTokens
+
+        check(rankedTokens.size <= tokenToItem.size) {
+            "relevance mechanism returned more tokens (${rankedTokens.size}) than were supplied " +
+                "(${tokenToItem.size}) for this request -- integrity fault, rejected fail-closed"
+        }
+        val seenTokens = mutableSetOf<RelevanceCandidateToken>()
+        for (token in rankedTokens) {
+            check(tokenToItem.containsKey(token)) {
+                "relevance mechanism returned a token that is not a member of this request's own " +
+                    "closed candidate set -- integrity fault, rejected fail-closed (never substituted, " +
+                    "never treated as a low-relevance result): '${token.value}'"
+            }
+            check(seenTokens.add(token)) {
+                "relevance mechanism returned a duplicate token -- integrity fault, rejected " +
+                    "fail-closed (never silently de-duplicated): '${token.value}'"
+            }
+        }
+
+        if (rankedTokens.isEmpty()) {
+            // A genuine, successful "nothing here is relevant" answer over a
+            // non-empty supplied candidate set -- never itself a failure.
+            return emptyList()
+        }
+
+        val freshlyVerified = mutableListOf<KnowledgeItem>()
+        for (token in rankedTokens) {
+            val preComputationItem = tokenToItem.getValue(token)
+            val currentItem = persistence.find(preComputationItem.knowledgeId) ?: continue
+            if (!isRetrievable(currentItem, query)) continue
+            val itemDecision = permissionEngine.evaluate(
+                buildExecutionRequest(
+                    requestingPrincipalId = requestingPrincipalId,
+                    correlationId = query.correlationId,
+                    intent = itemLevelIntent(currentItem),
+                ),
+            )
+            if (!isAuthorised(itemDecision)) continue
+            freshlyVerified += currentItem
+        }
+
+        return freshlyVerified
+            .take(query.maximumResults)
+            .map { item -> KnowledgeResultEntry(item = item, staleness = disclosureFor(item)) }
     }
 
     /**

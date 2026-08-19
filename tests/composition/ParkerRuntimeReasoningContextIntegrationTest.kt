@@ -2,15 +2,22 @@ package parker.composition
 
 import java.nio.file.Files
 import java.time.Instant
+import kotlin.reflect.full.declaredMemberProperties
+import kotlin.reflect.jvm.isAccessible
 import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.RelevanceMechanism
+import parker.core.interfaces.RelevanceRequest
+import parker.core.runtime.DefaultKnowledgeRetrieval
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -480,6 +487,55 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         assertEquals(1, stub.receivedRequestBodies.size)
         val prompt = stub.receivedRequestBodies.single()
         assertTrue(!prompt.contains("World belief:"), "no belief exists yet in production, so no World belief entry should render: $prompt")
+
+        runtime.shutdown()
+    }
+
+    // --- Programme 3, Unit 9.7.4 -> Unit 9.7.5 compile-preserving composition seam ---
+
+    @Test
+    fun `ParkerRuntime constructs a real DefaultKnowledgeRetrieval whose RelevanceMechanism is a fail-closed placeholder, never QmdRelevanceMechanism`() = runBlocking<Unit> {
+        // Bounded correction, not Unit 9.7.5 itself: Unit 9.7.4 added RelevanceMechanism as a
+        // required DefaultKnowledgeRetrieval constructor dependency, so ParkerRuntime's own
+        // construction site (src/composition/ParkerRuntime.kt, immediately above knowledgeRetrieval's
+        // own assignment) now supplies a narrow, fail-closed placeholder until Unit 9.7.5 replaces
+        // it with the real, composed mechanism. knowledgeRetrieval is a private lateinit field --
+        // "no production entry point consumes it yet" (ParkerRuntime's own class-level KDoc) -- so
+        // reflection is the only way to reach the exact instance this ParkerRuntime actually
+        // composed, mirroring tests/runtime/DefaultKnowledgeRetrievalTest.kt's own established
+        // technique for verifying private DefaultKnowledgeRetrieval state.
+        val stub = startStub("REPLY: sure thing")
+        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        runtime.start()
+
+        val knowledgeRetrievalProperty = ParkerRuntime::class.declaredMemberProperties
+            .single { it.name == "knowledgeRetrieval" }
+        knowledgeRetrievalProperty.isAccessible = true
+        val knowledgeRetrieval = assertIs<DefaultKnowledgeRetrieval>(
+            knowledgeRetrievalProperty.get(runtime),
+            "ParkerRuntime must still compose a real DefaultKnowledgeRetrieval instance -- construction " +
+                "itself must not have been weakened to make this compile",
+        )
+
+        val relevanceMechanismProperty = DefaultKnowledgeRetrieval::class.declaredMemberProperties
+            .single { it.name == "relevanceMechanism" }
+        relevanceMechanismProperty.isAccessible = true
+        val relevanceMechanism = assertIs<RelevanceMechanism>(relevanceMechanismProperty.get(knowledgeRetrieval))
+
+        assertFalse(
+            relevanceMechanism::class.qualifiedName.orEmpty().contains("QmdRelevanceMechanism"),
+            "Unit 9.7.5 has not run yet -- the composed RelevanceMechanism must not be " +
+                "QmdRelevanceMechanism, and no QMD runtime configuration may exist here yet",
+        )
+
+        val error = assertFailsWith<IllegalStateException> {
+            relevanceMechanism.rank(RelevanceRequest(queryText = "irrelevant", candidates = emptyList()))
+        }
+        assertTrue(
+            error.message.orEmpty().contains("not runtime-composed until Unit 9.7.5"),
+            "the placeholder must fail loudly and immediately if ever invoked -- never fabricate a " +
+                "relevance result, and never silently succeed with an empty one: ${error.message}",
+        )
 
         runtime.shutdown()
     }

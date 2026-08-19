@@ -41,6 +41,7 @@ import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ReasoningKnowledgeSource
+import parker.core.interfaces.RelevanceMechanism
 import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.Resource
 import parker.core.interfaces.ResourceId
@@ -953,7 +954,34 @@ class ParkerRuntime(
         // composed here -- this is the sole, already-gated implementation, held directly. clock is
         // left defaulted (the real system clock), exactly as every other production call site of
         // this class already does.
-        knowledgeRetrieval = DefaultKnowledgeRetrieval(knowledgeItemPersistence, permissionEngine)
+        //
+        // Compile-preserving composition seam (Unit 9.7.4 -> Unit 9.7.5 boundary; bounded
+        // correction, not Unit 9.7.5 itself). Unit 9.7.4 ("Integrity Validation, Canonical Token
+        // Re-resolution, and Fresh Pre-disclosure Re-verification") added RelevanceMechanism as a
+        // required DefaultKnowledgeRetrieval constructor dependency -- structurally unavoidable,
+        // since that Unit must be able to call RelevanceMechanism.rank() from inside
+        // DefaultKnowledgeRetrieval.retrieve() itself. Unit 9.7.5 ("Runtime Composition of the
+        // Chosen Relevance Mechanism") is the sole, separately authorised unit permitted to
+        // construct QmdRelevanceMechanism, its QmdRelevanceMechanismConfiguration, or any
+        // node/model/bridge-path runtime configuration at this site, and has not run yet. This
+        // placeholder exists solely so ParkerRuntime compiles and every other, already-composed
+        // surface keeps working in the meantime -- it holds no QMD dependency, no canonical
+        // Knowledge Item persistence dependency, no PermissionEngine dependency, and performs no
+        // semantic computation of any kind. If DefaultKnowledgeRetrieval's own exact-zero-
+        // structural-match fallback branch is ever reached against a live ParkerRuntime before
+        // Unit 9.7.5 replaces this value, it fails loudly and immediately -- it never fabricates a
+        // relevance result, and deliberately never returns a successful-looking empty
+        // RelevanceResult instead, which would silently mask a premature invocation as an ordinary
+        // "nothing relevant" outcome rather than the composition gap it actually is.
+        val relevanceMechanism = RelevanceMechanism {
+            throw IllegalStateException(
+                "Semantic relevance mechanism is not runtime-composed until Unit 9.7.5 -- " +
+                    "DefaultKnowledgeRetrieval's own fallback branch must not be reachable against " +
+                    "this ParkerRuntime instance before that unit lands",
+            )
+        }
+
+        knowledgeRetrieval = DefaultKnowledgeRetrieval(knowledgeItemPersistence, permissionEngine, relevanceMechanism)
 
         // Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation
         // Unit 3 (Contract Design Section 7, Section 12; Scope Lock Section 4, Section 7). A third
