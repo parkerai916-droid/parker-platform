@@ -30,13 +30,16 @@ services:
       # directory itself, mirroring PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH's
       # own identical shape.
       PARKER_MEMORY_CORE_DURABILITY_LOG_PATH: /data/memory-core/durability.log
+      PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH: /data/knowledge-items/durability.log
     volumes:
       - evidence-storage:/data/evidence
       - evidence-audit:/data/evidence-audit
       - memory-core-durability:/data/memory-core
+      - knowledge-item-durability:/data/knowledge-items
     restart: unless-stopped
 
 volumes:
   evidence-storage:
   evidence-audit:
   memory-core-durability:
+  knowledge-item-durability:

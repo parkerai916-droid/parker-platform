@@ -14,7 +14,7 @@ import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.RelationshipEndpoint
 import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.DurableMemoryCore
-import parker.core.runtime.InMemoryKnowledgeItemPersistence
+import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.MemoryAdmissionOutcome
 import java.time.Instant
@@ -23,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -57,7 +58,11 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
     private fun startStub(responseFieldValue: String): StubModelServer =
         StubModelServer.start(responseFieldValue).also { server = it }
 
-    private fun configFor(stub: StubModelServer, memoryCoreDurabilityLogPath: String) = ParkerRuntimeConfig(
+    private fun configFor(
+        stub: StubModelServer,
+        memoryCoreDurabilityLogPath: String,
+        knowledgeItemDurabilityLogPath: String = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
+    ) = ParkerRuntimeConfig(
         modelEndpointUrl = stub.endpointUrl,
         modelName = "test-model",
         ownerPrincipalId = ownerPrincipalId,
@@ -67,6 +72,7 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
         evidenceDeletionAuditLogPath =
             Files.createTempDirectory("memory-admission-composition-evidence-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = memoryCoreDurabilityLogPath,
+        knowledgeItemDurabilityLogPath = knowledgeItemDurabilityLogPath,
     )
 
     private fun message(text: String) = InboundOwnerMessage(
@@ -102,7 +108,7 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
         assertEquals(listOf("I'll remember that."), ownerSink.notifications)
 
         val knowledgeRetrieval = runtime.privateField<Any>("knowledgeRetrieval")
-        val persistence = knowledgeRetrieval.privateField<InMemoryKnowledgeItemPersistence>("persistence")
+        val persistence = knowledgeRetrieval.privateField<DurableKnowledgeItemPersistence>("persistence")
         val persistedItems = persistence.findAll()
         assertEquals(1, persistedItems.size, "success must correspond to one item in the authoritative composed persistence")
 
@@ -150,6 +156,54 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
     }
 
     @Test
+    fun `public REMEMBER promotion is recovered by a new complete runtime sharing the durability files`() = runBlocking<Unit> {
+        val proposition = "My restart-proof notebook is green."
+        val stub = startStub("REMEMBER: $proposition")
+        val directory = Files.createTempDirectory("knowledge-item-runtime-restart")
+        val memoryLog = directory.resolve("memory-core.log").toString()
+        val knowledgeLog = directory.resolve("knowledge-items.log").toString()
+
+        val runtimeA = ParkerRuntime(
+            configFor(stub, memoryLog, knowledgeLog),
+            RecordingParkerLogger(),
+            RecordingOwnerNotificationSink(),
+        )
+        runtimeA.start()
+        val delivered = assertIs<ParkerRuntimeOutcome.Delivered>(
+            runtimeA.submitOwnerMessage(message("Remember that my restart-proof notebook is green.")),
+        )
+        assertEquals(ExecutionResultStatus.SUCCESS, delivered.executionResult.status)
+        val itemBeforeRestart = runtimeA.privateField<Any>("knowledgeRetrieval")
+            .privateField<DurableKnowledgeItemPersistence>("persistence").findAll().single()
+        runtimeA.shutdown()
+
+        val runtimeB = ParkerRuntime(
+            configFor(stub, memoryLog, knowledgeLog),
+            RecordingParkerLogger(),
+            RecordingOwnerNotificationSink(),
+        )
+        runtimeB.start()
+
+        val retrieval = runtimeB.privateField<Any>("knowledgeRetrieval")
+        val recoveredPersistence = retrieval.privateField<DurableKnowledgeItemPersistence>("persistence")
+        assertEquals(itemBeforeRestart, recoveredPersistence.findAll().single())
+
+        val acceptanceCoordinator = runtimeB.privateField<Any>("evidenceIntelligenceAcceptanceCoordinator")
+        val submissionPersistence = acceptanceCoordinator.privateField<Any>("knowledgeSubmission")
+            .privateField<Any>("persistence")
+        val reasoningPersistence = runtimeB.privateField<Any>("reasoningContextAssembler")
+            .privateField<Any>("knowledgeSource")
+            .privateField<Any>("persistence")
+        assertSame(recoveredPersistence, submissionPersistence)
+        assertSame(recoveredPersistence, reasoningPersistence)
+
+        val assertionReference = assertIs<MemoryCoreRecordReference.ToAssertion>(itemBeforeRestart.evidenceReference)
+        val recoveredMemoryCore = acceptanceCoordinator.privateField<DurableMemoryCore>("memoryCore")
+        assertNotNull(recoveredMemoryCore.getAssertion(PrincipalId(ownerPrincipalId), assertionReference.assertionId))
+        runtimeB.shutdown()
+    }
+
+    @Test
     fun `an unregistered Principal cannot admit or persist Knowledge through the real composed coordinator`() = runBlocking<Unit> {
         val stub = startStub("REPLY: unused")
         val logPath = Files.createTempDirectory("memory-admission-composition-unregistered").resolve("memory-core.log").toString()
@@ -157,7 +211,7 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
         runtime.start()
 
         val knowledgeRetrieval = runtime.privateField<Any>("knowledgeRetrieval")
-        val persistence = knowledgeRetrieval.privateField<InMemoryKnowledgeItemPersistence>("persistence")
+        val persistence = knowledgeRetrieval.privateField<DurableKnowledgeItemPersistence>("persistence")
         assertTrue(persistence.findAll().isEmpty())
 
         val replyCoordinator = runtime.privateField<ConversationReplyCoordinator>("conversationReplyCoordinator")

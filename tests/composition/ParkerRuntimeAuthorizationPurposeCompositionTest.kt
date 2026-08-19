@@ -71,6 +71,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("authz-purpose-composition-evidence").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("authz-purpose-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("authz-purpose-composition-memory").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
     )
 
     private fun <T> Any.privateField(name: String): T {

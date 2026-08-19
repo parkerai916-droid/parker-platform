@@ -4,6 +4,7 @@ import java.lang.reflect.Field
 import java.nio.file.Files
 import java.time.Duration
 import java.time.Instant
+import kotlin.reflect.full.primaryConstructor
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidentialState
 import parker.core.interfaces.KnowledgeId
@@ -19,22 +20,27 @@ import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ProvenanceId
 import parker.core.interfaces.ProvenanceReference
+import parker.core.interfaces.RelevanceMechanism
 import parker.core.interfaces.StalenessDisclosure
 import parker.core.runtime.CommunicationConversationCoordinator
 import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.ConversationTurnReasoningCoordinator
 import parker.core.runtime.DefaultKnowledgeRetrieval
-import parker.core.runtime.InMemoryKnowledgeItemPersistence
+import parker.core.runtime.DurableKnowledgeItemPersistence
+import parker.core.runtime.QmdRelevanceMechanism
+import parker.core.runtime.QmdRelevanceMechanismConfiguration
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
  * Programme 3, Knowledge Memory, Implementation Unit 9.6 ("Runtime
  * Composition"). End-to-end tests against the real, fully-wired
- * production graph -- a real [InMemoryKnowledgeItemPersistence], a real
+ * production graph -- a real [DurableKnowledgeItemPersistence], a real
  * `DefaultPermissionEngine`][parker.core.runtime.DefaultPermissionEngine]
  * resolving this graph's own newly-registered `knowledge.retrieve`
  * convention, and the real, composed [DefaultKnowledgeRetrieval] -- not
@@ -69,6 +75,21 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("knowledge-retrieval-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("knowledge-retrieval-composition-memory").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
+    )
+
+    // Programme 3, Unit 9.7.5 (Runtime Composition Wiring). A second config() variant, additive to
+    // the pre-existing one above (which every pre-existing test in this file continues to use
+    // unmodified): every QMD deployment-specific field is deliberately left at its own portable
+    // default (never a real node/tsx/model-cache path), because the tests below either (a) prove
+    // pure composition/reflection facts that never invoke RelevanceMechanism.rank() for real, or (b)
+    // deliberately point at a non-existent executable to prove fail-loud behaviour without requiring
+    // a real, locally-provisioned QMD/node/tsx/model installation in this environment -- mirroring
+    // this Unit's own governing task's Phase 7 instruction to prefer pure composition inspection over
+    // a live subprocess wherever possible. A genuine, gated live invocation is Phase 8's own separate
+    // concern (QmdRelevanceMechanismLiveAcceptanceTest.kt), not this file's.
+    private fun configWithUnreachableQmdExecutable(): ParkerRuntimeConfig = config().copy(
+        qmdNodeExecutablePath = "parker-unit-9-7-5-composition-test-nonexistent-node-executable",
     )
 
     private fun <T> Any.privateField(name: String): T {
@@ -115,7 +136,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
     private fun knowledgeRetrievalFrom(runtime: ParkerRuntime): KnowledgeRetrieval =
         runtime.privateField("knowledgeRetrieval")
 
-    private fun persistenceFrom(knowledgeRetrieval: KnowledgeRetrieval): InMemoryKnowledgeItemPersistence {
+    private fun persistenceFrom(knowledgeRetrieval: KnowledgeRetrieval): DurableKnowledgeItemPersistence {
         val persistence = (knowledgeRetrieval as Any).privateField<Any>("persistence")
         return assertIs(persistence)
     }
@@ -145,7 +166,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
     }
 
     @Test
-    fun `the same InMemoryKnowledgeItemPersistence instance backs both Knowledge Submission and Knowledge Retrieval`() = runTest {
+    fun `the same DurableKnowledgeItemPersistence instance backs both Knowledge Submission and Knowledge Retrieval`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -156,7 +177,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
         val retrievalPersistence = persistenceFrom(knowledgeRetrieval)
 
-        assertIs<InMemoryKnowledgeItemPersistence>(submissionPersistence)
+        assertIs<DurableKnowledgeItemPersistence>(submissionPersistence)
         assertSame(
             submissionPersistence,
             retrievalPersistence,
@@ -422,5 +443,176 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
                 "${conversationClass.name} must hold no Knowledge Retrieval dependency -- found fields: $fieldTypeNames",
             )
         }
+    }
+
+    // ================= Programme 3, Unit 9.7.5 (Runtime Composition Wiring) =================
+    // Extends this file additively, per the Implementation Plan's own Section 9 Affected Files
+    // table and Section 8 Unit 9.7.5 "Tests required" entry -- no pre-existing test above is
+    // modified. Confirms the real, composed QmdRelevanceMechanism now backs Knowledge Retrieval
+    // where, until this Unit, a temporary fail-closed placeholder did (Task C bounded correction,
+    // now superseded). Prefers pure composition/reflection inspection throughout, per this Unit's
+    // own governing task's Phase 7 instruction -- a genuine, gated live subprocess invocation
+    // remains QmdRelevanceMechanismLiveAcceptanceTest.kt's own separate, Phase 8 concern.
+
+    private fun relevanceMechanismFrom(knowledgeRetrieval: KnowledgeRetrieval): RelevanceMechanism =
+        (knowledgeRetrieval as Any).privateField("relevanceMechanism")
+
+    @Test
+    fun `the composed Knowledge Retrieval instance is backed by a real QmdRelevanceMechanism, never the former placeholder`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val relevanceMechanism = relevanceMechanismFrom(knowledgeRetrieval)
+
+        assertIs<QmdRelevanceMechanism>(
+            relevanceMechanism,
+            "ParkerRuntime must compose the real, selected QmdRelevanceMechanism -- the Unit 9.7.4 -> " +
+                "Unit 9.7.5 fail-closed placeholder no longer exists anywhere in this composed graph",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `the composed QmdRelevanceMechanismConfiguration carries exactly the frozen mechanism identity`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val relevanceMechanism = relevanceMechanismFrom(knowledgeRetrievalFrom(runtime))
+        val qmdMechanism = assertIs<QmdRelevanceMechanism>(relevanceMechanism)
+        val qmdConfiguration = (qmdMechanism as Any).privateField<QmdRelevanceMechanismConfiguration>("configuration")
+
+        assertEquals("QMD", qmdConfiguration.mechanismName)
+        assertEquals("2.8.3", qmdConfiguration.qmdVersion)
+        assertEquals("hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf", qmdConfiguration.embeddingModelUri)
+        assertEquals(768, qmdConfiguration.vectorDimension)
+        assertEquals("cosine", qmdConfiguration.similarityMetric)
+        assertEquals("1", qmdConfiguration.bridgeProtocolVersion)
+        assertNull(
+            qmdConfiguration.embeddingModelFileSha256,
+            "no adopted governance document freezes a specific model file hash -- this Unit must not invent one",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `deployment-specific QMD paths flow from ParkerRuntimeConfig into the composed configuration unchanged`() = runTest {
+        val deploymentConfig = config().copy(
+            qmdNodeExecutablePath = "composition-test-node-path",
+            qmdBridgeScriptPath = "composition-test-bridge-script-path",
+            qmdTsxCliPath = "composition-test-tsx-cli-path",
+            qmdModelCacheDir = "composition-test-model-cache-dir",
+            qmdTimeoutMillis = 77_777L,
+            qmdSourceRoot = "composition-test-qmd-source-root",
+        )
+        val runtime = ParkerRuntime(deploymentConfig, RecordingParkerLogger())
+        runtime.start()
+
+        val relevanceMechanism = relevanceMechanismFrom(knowledgeRetrievalFrom(runtime))
+        val qmdMechanism = assertIs<QmdRelevanceMechanism>(relevanceMechanism)
+        val qmdConfiguration = (qmdMechanism as Any).privateField<QmdRelevanceMechanismConfiguration>("configuration")
+
+        assertEquals("composition-test-node-path", qmdConfiguration.nodeExecutablePath)
+        assertEquals("composition-test-bridge-script-path", qmdConfiguration.bridgeScriptPath)
+        assertEquals(listOf("composition-test-tsx-cli-path"), qmdConfiguration.additionalNodeArguments)
+        assertEquals("composition-test-model-cache-dir", qmdConfiguration.modelCacheDir)
+        assertEquals(77_777L, qmdConfiguration.timeoutMillis)
+        assertEquals("composition-test-qmd-source-root", qmdConfiguration.qmdSourceRoot)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `qmdSourceRoot left unset in ParkerRuntimeConfig composes through as null, never a guessed default`() = runTest {
+        // Main-Promotion Gate / Production QMD Bridge Portability Correction
+        // (this Unit's own follow-on): qmdSourceRoot must never be silently
+        // inferred (e.g. from this file's own directory, or a well-known
+        // developer path) -- absent in ParkerRuntimeConfig must compose
+        // through as absent here too.
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val relevanceMechanism = relevanceMechanismFrom(knowledgeRetrievalFrom(runtime))
+        val qmdMechanism = assertIs<QmdRelevanceMechanism>(relevanceMechanism)
+        val qmdConfiguration = (qmdMechanism as Any).privateField<QmdRelevanceMechanismConfiguration>("configuration")
+
+        assertNull(qmdConfiguration.qmdSourceRoot)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `no Memory Core, persistence, or PermissionEngine authority reaches QmdRelevanceMechanism through this wiring`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val relevanceMechanism = relevanceMechanismFrom(knowledgeRetrievalFrom(runtime))
+        val qmdMechanism = assertIs<QmdRelevanceMechanism>(relevanceMechanism)
+        val forbiddenTypeNames = setOf(
+            "parker.core.interfaces.KnowledgeItemPersistence",
+            "parker.core.runtime.DurableKnowledgeItemPersistence",
+            "parker.core.interfaces.PermissionEngine",
+            "parker.core.runtime.DefaultPermissionEngine",
+            "parker.core.interfaces.MemoryRetrieval",
+            "parker.core.interfaces.MemoryCore",
+        )
+        val declaredFieldTypeNames = QmdRelevanceMechanism::class.java.declaredFields.map { it.type.name }
+
+        assertTrue(
+            declaredFieldTypeNames.none { it in forbiddenTypeNames },
+            "QmdRelevanceMechanism, as composed by this wiring, must hold no canonical-authority " +
+                "dependency -- found fields: $declaredFieldTypeNames",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `no concrete QMD type leaks into DefaultKnowledgeRetrieval's own constructor contract beyond RelevanceMechanism`() {
+        // kotlin.reflect's own primaryConstructor, not raw java.lang.reflect.Class.declaredConstructors
+        // -- a Kotlin class with a defaulted constructor parameter (clock, here) may carry an extra,
+        // synthetic Java constructor for interop, which would make declaredConstructors.single() throw.
+        // This mirrors DefaultKnowledgeRetrievalTest.kt's own established
+        // "DefaultKnowledgeRetrieval::class.primaryConstructor" structural-test convention exactly --
+        // no live ParkerRuntime needs to be started for this pure type-level check.
+        val constructorParameterClassifiers = requireNotNull(DefaultKnowledgeRetrieval::class.primaryConstructor)
+            .parameters
+            .map { it.type.classifier }
+
+        assertTrue(
+            constructorParameterClassifiers.none { (it as? kotlin.reflect.KClass<*>)?.qualifiedName?.contains("Qmd") == true },
+            "DefaultKnowledgeRetrieval's own constructor must remain mechanism-neutral -- it must " +
+                "declare RelevanceMechanism, never QmdRelevanceMechanism concretely -- found: $constructorParameterClassifiers",
+        )
+        assertTrue(
+            constructorParameterClassifiers.any { it == RelevanceMechanism::class },
+            "found: $constructorParameterClassifiers",
+        )
+    }
+
+    @Test
+    fun `missing deployment configuration -- an unreachable node executable -- fails loudly through the real composed runtime, never a silent empty result`() = runTest {
+        val runtime = ParkerRuntime(configWithUnreachableQmdExecutable(), RecordingParkerLogger())
+        runtime.start()
+        val principal = PrincipalId(ownerPrincipalId)
+        val knowledgeRetrieval = knowledgeRetrievalFrom(runtime)
+        val persistence = persistenceFrom(knowledgeRetrieval)
+        // A non-matching basis, so structural matching finds nothing and the lawful Unit 9.7.2
+        // exact-zero-structural-match fallback branch genuinely triggers RelevanceMechanism.rank().
+        persistence.store(item(KnowledgeId("composed-unreachable-node"), basis = "unrelated household task", occurredAt = Instant.now()))
+
+        val error = assertFailsWith<IllegalStateException> {
+            knowledgeRetrieval.retrieve(principal, query(relevance = "grocery"))
+        }
+        assertTrue(
+            error.message.orEmpty().contains("bridge process failed to start"),
+            "a missing/invalid deployment configuration must fail loudly and diagnosably through the " +
+                "real composed mechanism -- never a silently successful empty result, and never a " +
+                "fallback to a different mechanism: ${error.message}",
+        )
+
+        runtime.shutdown()
     }
 }

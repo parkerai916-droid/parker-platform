@@ -190,6 +190,61 @@ tasks.register<Test>("reasoningProtocolFamilyFDiagnostic") {
     shouldRunAfter(tasks.test)
 }
 
+tasks.register<Test>("qmdRelevanceMechanismLiveAcceptance") {
+    description = "Runs the explicit opt-in Programme 3 Unit 9.7.3 live QMD relevance mechanism acceptance instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.QmdRelevanceMechanismLiveAcceptanceTest")
+    }
+    systemProperty("parker.relevance.qmd.live.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
+// Main-Promotion Gate / QMD Linux Portability Defect correction (Programme 3
+// Unit 9.7.6 follow-on, bounded investigation and correction). Root cause:
+// `QmdCanonicalMemoryRetrievalExperimentTest.kt` (commit `aadd596`) is a
+// disposable, historical Section 13/13.1 mechanism-selection precursor --
+// explicitly self-documented "Experimental composition seam only" -- that
+// invokes a real QMD subprocess via `qmd-authorized-vector-bridge.mts`
+// against a hardcoded, Steve's-machine-specific Windows path
+// (`C:\Projects\Parker\qmd\node_modules\tsx\dist\cli.mjs`, and a
+// `file:///C:/Projects/Parker/qmd/src/store.ts` import inside that bridge
+// script itself). It was never designed for portable execution: even a
+// corrected, configurable path would still fail on Linux, because the
+// underlying QMD `createStore`/`searchVector` API it exercises requires a
+// native `sqlite-vec` binary this repository's own Section 13 evidence
+// record (`docs/reviews/PROGRAMME_3_UNIT_9_7_SECTION_13_MECHANISM_SELECTION_SPIKE_EVIDENCE_RECORD.md`,
+// Section 5) already discloses has no resolved Linux build in this
+// environment's `node_modules` tree. Its positive-ranking evidence
+// (Property 1) has since been reproduced in fully portable, in-process form
+// by the adopted spike (`tests/contracts/RelevanceMechanismSpikeQmdCandidateTest.kt`,
+// over the same captured real embedding vectors, no subprocess); the
+// production adapter (`src/runtime/QmdRelevanceMechanism.kt` /
+// `tools/qmd-relevance-bridge.mts`) deliberately does not use the
+// store/searchVector approach this historical class exercises, precisely to
+// avoid that same native-binary gap (see that production bridge script's
+// own header comment). The class remains fully intact, at its original
+// path, still compiled as part of the ordinary `test` source set (so every
+// existing relative-path reference, package, and internal-visibility
+// relationship to `QmdRealEmbeddingFixtures` is unaffected) -- it is only
+// excluded from ordinary execution below, and remains separately runnable,
+// on Steve's own Windows development machine only, via the explicit opt-in
+// task immediately below.
+tasks.register<Test>("qmdCanonicalMemoryRetrievalExperimentEvidence") {
+    description = "Runs the explicit opt-in, historical Programme 3 Unit 9.7 Section 13 mechanism-selection precursor evidence instrument (QmdCanonicalMemoryRetrievalExperimentTest), Windows development machine only -- requires a sibling C:\\Projects\\Parker\\qmd checkout"
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.composition.QmdCanonicalMemoryRetrievalExperimentTest")
+    }
+    shouldRunAfter(tasks.test)
+}
+
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         allWarningsAsErrors.set(false)
@@ -198,4 +253,10 @@ tasks.withType<KotlinCompile>().configureEach {
 
 tasks.test {
     useJUnitPlatform()
+    // See the historical-experiment correction comment above
+    // `qmdCanonicalMemoryRetrievalExperimentEvidence`: excluded here so
+    // ordinary `test` is platform-portable and does not depend on Steve's
+    // Windows QMD checkout. Still compiled; still separately executable via
+    // that explicit opt-in task.
+    exclude("**/QmdCanonicalMemoryRetrievalExperimentTest.class")
 }

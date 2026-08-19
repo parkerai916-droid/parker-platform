@@ -48,6 +48,7 @@ class ParkerRuntimeEvidenceCustodianIntegrationTest {
         evidenceStorageRootPath = Files.createTempDirectory("evidence-integration-storage").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-integration-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-integration-memory").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
     )
 
     private fun candidateProvenance() = CandidateProvenance(
