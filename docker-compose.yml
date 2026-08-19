@@ -31,11 +31,44 @@ services:
       # own identical shape.
       PARKER_MEMORY_CORE_DURABILITY_LOG_PATH: /data/memory-core/durability.log
       PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH: /data/knowledge-items/durability.log
+
+      # QMD Docker-Runtime Enablement. Points the already-governed,
+      # unmodified production QmdRelevanceMechanism bridge
+      # (tools/qmd-relevance-bridge.mts, packaged into the image by
+      # Dockerfile, never rebuilt or altered here) at the Parker host's
+      # own already-governed QMD 2.8.3 checkout and model cache, mounted
+      # read-only below at fixed in-container paths -- same fixed-path
+      # convention as the durability paths above, not configurable per
+      # deployment, because this compose file's own /opt/qmd and
+      # /opt/qmd-models mount targets are exactly what these variables
+      # name. This container never installs, builds, downloads, or
+      # otherwise provisions QMD or its embedding model itself: both
+      # remain wholly owned and maintained on the host, outside this
+      # compose project, per Unit 9.7's own governance.
+      # PARKER_QMD_BRIDGE_SCRIPT_PATH is deliberately left unset:
+      # ParkerRuntimeConfig's own repository-relative
+      # tools/qmd-relevance-bridge.mts default, resolved from this
+      # image's own WORKDIR, is correct here now that Dockerfile copies
+      # that script into the image at exactly that path.
+      PARKER_QMD_NODE_EXECUTABLE_PATH: "node"
+      PARKER_QMD_TSX_CLI_PATH: "/opt/qmd/node_modules/tsx/dist/cli.mjs"
+      PARKER_QMD_MODEL_CACHE_DIR: "/opt/qmd-models"
+      PARKER_QMD_SOURCE_ROOT: "/opt/qmd"
     volumes:
       - evidence-storage:/data/evidence
       - evidence-audit:/data/evidence-audit
       - memory-core-durability:/data/memory-core
       - knowledge-item-durability:/data/knowledge-items
+      # QMD Docker-Runtime Enablement. The Parker host's own
+      # already-governed QMD 2.8.3 checkout and local embedding-model
+      # cache, mounted read-only -- this compose project never writes
+      # into either, matching the read-only, local-only, no-download
+      # governance QMD's own production bridge script already enforces
+      # at the process level. No persistent QMD semantic index is
+      # created or mounted; Parker's canonical-memory authority and
+      # retrieval rules are unaffected by this deployment-only wiring.
+      - /home/steve/qmd:/opt/qmd:ro
+      - /home/steve/.cache/qmd/models:/opt/qmd-models:ro
     restart: unless-stopped
 
 volumes:
