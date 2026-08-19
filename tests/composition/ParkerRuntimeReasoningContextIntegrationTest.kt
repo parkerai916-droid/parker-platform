@@ -2,22 +2,15 @@ package parker.composition
 
 import java.nio.file.Files
 import java.time.Instant
-import kotlin.reflect.full.declaredMemberProperties
-import kotlin.reflect.jvm.isAccessible
 import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
-import parker.core.interfaces.RelevanceMechanism
-import parker.core.interfaces.RelevanceRequest
-import parker.core.runtime.DefaultKnowledgeRetrieval
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -491,52 +484,16 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         runtime.shutdown()
     }
 
-    // --- Programme 3, Unit 9.7.4 -> Unit 9.7.5 compile-preserving composition seam ---
-
-    @Test
-    fun `ParkerRuntime constructs a real DefaultKnowledgeRetrieval whose RelevanceMechanism is a fail-closed placeholder, never QmdRelevanceMechanism`() = runBlocking<Unit> {
-        // Bounded correction, not Unit 9.7.5 itself: Unit 9.7.4 added RelevanceMechanism as a
-        // required DefaultKnowledgeRetrieval constructor dependency, so ParkerRuntime's own
-        // construction site (src/composition/ParkerRuntime.kt, immediately above knowledgeRetrieval's
-        // own assignment) now supplies a narrow, fail-closed placeholder until Unit 9.7.5 replaces
-        // it with the real, composed mechanism. knowledgeRetrieval is a private lateinit field --
-        // "no production entry point consumes it yet" (ParkerRuntime's own class-level KDoc) -- so
-        // reflection is the only way to reach the exact instance this ParkerRuntime actually
-        // composed, mirroring tests/runtime/DefaultKnowledgeRetrievalTest.kt's own established
-        // technique for verifying private DefaultKnowledgeRetrieval state.
-        val stub = startStub("REPLY: sure thing")
-        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
-        runtime.start()
-
-        val knowledgeRetrievalProperty = ParkerRuntime::class.declaredMemberProperties
-            .single { it.name == "knowledgeRetrieval" }
-        knowledgeRetrievalProperty.isAccessible = true
-        val knowledgeRetrieval = assertIs<DefaultKnowledgeRetrieval>(
-            knowledgeRetrievalProperty.get(runtime),
-            "ParkerRuntime must still compose a real DefaultKnowledgeRetrieval instance -- construction " +
-                "itself must not have been weakened to make this compile",
-        )
-
-        val relevanceMechanismProperty = DefaultKnowledgeRetrieval::class.declaredMemberProperties
-            .single { it.name == "relevanceMechanism" }
-        relevanceMechanismProperty.isAccessible = true
-        val relevanceMechanism = assertIs<RelevanceMechanism>(relevanceMechanismProperty.get(knowledgeRetrieval))
-
-        assertFalse(
-            relevanceMechanism::class.qualifiedName.orEmpty().contains("QmdRelevanceMechanism"),
-            "Unit 9.7.5 has not run yet -- the composed RelevanceMechanism must not be " +
-                "QmdRelevanceMechanism, and no QMD runtime configuration may exist here yet",
-        )
-
-        val error = assertFailsWith<IllegalStateException> {
-            relevanceMechanism.rank(RelevanceRequest(queryText = "irrelevant", candidates = emptyList()))
-        }
-        assertTrue(
-            error.message.orEmpty().contains("not runtime-composed until Unit 9.7.5"),
-            "the placeholder must fail loudly and immediately if ever invoked -- never fabricate a " +
-                "relevance result, and never silently succeed with an empty one: ${error.message}",
-        )
-
-        runtime.shutdown()
-    }
+    // Programme 3, Unit 9.7.4 -> Unit 9.7.5 compile-preserving composition seam (Task C bounded
+    // correction): this file previously held one temporary, additive test proving the interim
+    // fail-closed RelevanceMechanism placeholder ParkerRuntime.kt held between Unit 9.7.4 and Unit
+    // 9.7.5. Unit 9.7.5 ("Runtime Composition Wiring") has now replaced that placeholder with the
+    // real, composed QmdRelevanceMechanism, so that test's own assertions (the composed mechanism is
+    // NOT QmdRelevanceMechanism; invoking it throws "not runtime-composed until Unit 9.7.5") are no
+    // longer true statements about this codebase and are removed here, superseded -- not silently
+    // left in place to fail on the next Windows run. This file (Knowledge Discoverability / Reasoning
+    // Context integration) was never Unit 9.7.5's own governed test location in any case; the
+    // Implementation Plan's own Affected Files table (Section 9) names
+    // `tests/composition/ParkerRuntimeKnowledgeRetrievalCompositionTest.kt` as the file Unit 9.7.5
+    // extends additively -- the real composition proof now lives there instead.
 }

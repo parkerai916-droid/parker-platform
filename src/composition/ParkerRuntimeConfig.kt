@@ -1,5 +1,7 @@
 package parker.composition
 
+import java.nio.file.Path
+
 /**
  * Sprint 10, Unit 4 (Production Composition Root). The runtime's own
  * configuration, field-shaped. Every field here is either required with
@@ -64,6 +66,72 @@ package parker.composition
  *   when `PARKER_LOG_LEVEL` was genuinely absent/blank *and* an
  *   explicitly-set value (this field, when the key was present) always
  *   wins regardless of mode.
+ * @param qmdNodeExecutablePath Programme 3, Unit 9.7.5 (Runtime Composition
+ *   Wiring). The local `node` executable `ParkerRuntime` launches
+ *   `tools/qmd-relevance-bridge.mts` with, passed unchanged to
+ *   [parker.core.runtime.QmdRelevanceMechanismConfiguration.nodeExecutablePath].
+ *   Optional, defaults to `"node"` -- a portable, machine-agnostic
+ *   convention (rely on `PATH`), not a hard-coded developer path, mirroring
+ *   `QmdRelevanceMechanismLiveAcceptanceTest.kt`'s own established
+ *   `QMD_TEST_NODE ?: "node"` fallback exactly. Deliberately optional
+ *   (rather than required with no default, unlike [modelEndpointUrl])
+ *   because widening this composition root's own required-constructor-
+ *   argument surface would force every one of this repository's other,
+ *   unrelated `ParkerRuntimeConfig` construction sites (composition tests
+ *   for Evidence Intelligence, Memory Core durability, the conversation
+ *   pipeline, and so on -- none of which exercise Knowledge Retrieval's
+ *   semantic fallback branch at all) to also supply a QMD-specific value
+ *   they have no reason to care about -- exactly the "narrowest lawful
+ *   composition diff" this Unit's own governing task requires, not a
+ *   general configuration framework.
+ * @param qmdBridgeScriptPath The absolute path to
+ *   `tools/qmd-relevance-bridge.mts`, passed unchanged to
+ *   [parker.core.runtime.QmdRelevanceMechanismConfiguration.bridgeScriptPath].
+ *   Optional, defaults to that file's own well-known, portable,
+ *   repository-relative location resolved to an absolute path at
+ *   construction time -- again mirroring
+ *   `QmdRelevanceMechanismLiveAcceptanceTest.kt`'s own established
+ *   fallback, and again not a hard-coded developer-machine path (no `C:\`
+ *   drive letter or username appears here).
+ * @param qmdTsxCliPath Programme 3, Unit 9.7.5. The absolute path to a
+ *   TypeScript-capable loader's CLI entry point (`tsx`'s own
+ *   `dist/cli.mjs`), inserted as the sole entry of
+ *   [parker.core.runtime.QmdRelevanceMechanismConfiguration.additionalNodeArguments]
+ *   -- required because `tools/qmd-relevance-bridge.mts` imports QMD's own
+ *   TypeScript source directly, which plain `node` cannot execute (see
+ *   that script's own header comment, and `QmdRelevanceMechanism.kt`'s own
+ *   KDoc on [additionalNodeArguments]). Nullable, defaults to `null` --
+ *   this one genuinely has no portable, machine-agnostic default (unlike
+ *   [qmdNodeExecutablePath] and [qmdBridgeScriptPath] above): where `tsx`
+ *   lives is intrinsically tied to where a given deployment's own QMD
+ *   checkout installed its `node_modules`, which this composition root
+ *   does not, and must not, guess or hard-code (this Unit's own governing
+ *   task, Phase 2: "Do not hardcode Steve's Windows paths into the
+ *   reusable constitutional contract"). When left unset, the composed
+ *   mechanism still constructs successfully (so every unrelated
+ *   composition test above is unaffected), but the real bridge subprocess
+ *   fails loudly and diagnosably -- a non-zero exit reporting node's own
+ *   "unsupported file type" error -- the first time `RelevanceMechanism.rank`
+ *   is genuinely invoked, never a silent empty result and never an
+ *   on-demand fallback to a different mechanism (this Unit's own Phase 6).
+ * @param qmdModelCacheDir Programme 3, Unit 9.7.5. Passed unchanged to
+ *   [parker.core.runtime.QmdRelevanceMechanismConfiguration.modelCacheDir].
+ *   Nullable, defaults to `null` -- deployment-specific, for the identical
+ *   reason [qmdTsxCliPath] is nullable; `QmdRelevanceMechanismConfiguration`
+ *   itself already treats `null` here as fully lawful (QMD's own internal
+ *   default cache-directory resolution applies), not as a missing-required-
+ *   value error, so no invented default is needed for this composition
+ *   root to remain correct.
+ * @param qmdTimeoutMillis Programme 3, Unit 9.7.5. Passed unchanged to
+ *   [parker.core.runtime.QmdRelevanceMechanismConfiguration.timeoutMillis].
+ *   Optional, defaults to `120_000L` -- restated explicitly here rather
+ *   than left to that class's own shorter default (`30_000L`), because
+ *   `QmdRelevanceMechanismLiveAcceptanceTest.kt`'s own real Windows
+ *   evidence required `120_000` to reliably accommodate a fresh embedding-
+ *   model subprocess cold-load plus per-candidate embedding computation
+ *   (Frozen Boundary #10's disposable-state requirement means no model
+ *   stays warm across calls) -- mirroring [modelTimeoutMs]'s own
+ *   "restate the evidenced-correct value explicitly" precedent.
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -77,6 +145,11 @@ data class ParkerRuntimeConfig(
     val memoryCoreDurabilityLogPath: String,
     val knowledgeItemDurabilityLogPath: String,
     val logLevel: LogLevel = LogLevel.INFO,
+    val qmdNodeExecutablePath: String = "node",
+    val qmdBridgeScriptPath: String = Path.of("tools", "qmd-relevance-bridge.mts").toAbsolutePath().toString(),
+    val qmdTsxCliPath: String? = null,
+    val qmdModelCacheDir: String? = null,
+    val qmdTimeoutMillis: Long = 120_000L,
 )
 
 /**
@@ -107,6 +180,11 @@ object ParkerRuntimeConfigLoader {
     const val KEY_MEMORY_CORE_DURABILITY_LOG_PATH = "PARKER_MEMORY_CORE_DURABILITY_LOG_PATH"
     const val KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH = "PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH"
     const val KEY_LOG_LEVEL = "PARKER_LOG_LEVEL"
+    const val KEY_QMD_NODE_EXECUTABLE_PATH = "PARKER_QMD_NODE_EXECUTABLE_PATH"
+    const val KEY_QMD_BRIDGE_SCRIPT_PATH = "PARKER_QMD_BRIDGE_SCRIPT_PATH"
+    const val KEY_QMD_TSX_CLI_PATH = "PARKER_QMD_TSX_CLI_PATH"
+    const val KEY_QMD_MODEL_CACHE_DIR = "PARKER_QMD_MODEL_CACHE_DIR"
+    const val KEY_QMD_TIMEOUT_MILLIS = "PARKER_QMD_TIMEOUT_MILLIS"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -140,6 +218,32 @@ object ParkerRuntimeConfigLoader {
             }
         }
 
+        // Programme 3, Unit 9.7.5 (Runtime Composition Wiring). Deployment-specific QMD paths only
+        // -- never the frozen mechanism identity/version/configuration itself (mechanismName,
+        // qmdVersion, embeddingModelUri, vectorDimension, similarityMetric, bridgeProtocolVersion),
+        // which `ParkerRuntime.kt`'s own composition code supplies as fixed literals, never read
+        // from this environment map, per this Unit's own governing task (Phase 2: "Do not silently
+        // derive mutable retrieval-relevant values from environment state"). All five keys below are
+        // optional, mirroring [ParkerRuntimeConfig]'s own documented reason on each field: widening
+        // this loader's required-key surface would force every unrelated production/test caller to
+        // also supply QMD-specific configuration it has no reason to care about.
+        val qmdTimeoutMillisRaw = environment[KEY_QMD_TIMEOUT_MILLIS]?.takeIf { it.isNotBlank() }
+        val qmdTimeoutMillis = if (qmdTimeoutMillisRaw == null) {
+            120_000L
+        } else {
+            qmdTimeoutMillisRaw.toLongOrNull()
+                ?: throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_QMD_TIMEOUT_MILLIS,
+                    "must be a positive integer number of milliseconds; was '$qmdTimeoutMillisRaw'",
+                )
+        }
+        if (qmdTimeoutMillis <= 0) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_QMD_TIMEOUT_MILLIS,
+                "must be a positive integer number of milliseconds; was '$qmdTimeoutMillisRaw'",
+            )
+        }
+
         return ParkerRuntimeConfig(
             modelEndpointUrl = requireKey(environment, KEY_MODEL_ENDPOINT_URL),
             modelName = requireKey(environment, KEY_MODEL_NAME),
@@ -153,6 +257,12 @@ object ParkerRuntimeConfigLoader {
             memoryCoreDurabilityLogPath = requireKey(environment, KEY_MEMORY_CORE_DURABILITY_LOG_PATH),
             knowledgeItemDurabilityLogPath = requireKey(environment, KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH),
             logLevel = logLevel,
+            qmdNodeExecutablePath = environment[KEY_QMD_NODE_EXECUTABLE_PATH]?.takeIf { it.isNotBlank() } ?: "node",
+            qmdBridgeScriptPath = environment[KEY_QMD_BRIDGE_SCRIPT_PATH]?.takeIf { it.isNotBlank() }
+                ?: java.nio.file.Path.of("tools", "qmd-relevance-bridge.mts").toAbsolutePath().toString(),
+            qmdTsxCliPath = environment[KEY_QMD_TSX_CLI_PATH]?.takeIf { it.isNotBlank() },
+            qmdModelCacheDir = environment[KEY_QMD_MODEL_CACHE_DIR]?.takeIf { it.isNotBlank() },
+            qmdTimeoutMillis = qmdTimeoutMillis,
         )
     }
 
