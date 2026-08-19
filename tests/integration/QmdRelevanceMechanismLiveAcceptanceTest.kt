@@ -37,19 +37,37 @@ import parker.core.runtime.QmdRelevanceMechanismConfiguration
  * `ReasoningProtocolFamilyFDiagnosticTest.kt` already establish for this
  * codebase's own gated live-model instruments.
  *
- * Run explicitly, from the Windows development environment, via:
+ * Run explicitly, from a machine with a local QMD checkout provisioned
+ * (Windows or otherwise), via:
  * ```
  * .\gradlew.bat qmdRelevanceMechanismLiveAcceptance
  * ```
  * (task registered in `build.gradle.kts`, mirroring the existing
  * `reasoningProtocolLiveModelEvaluation`-family task registrations).
  *
- * Configuration (node executable, bridge script path, model cache
- * directory) is read from environment variables rather than hard-coded,
- * mirroring `QmdCanonicalMemoryRetrievalExperimentTest.kt`'s own
- * `QMD_TEST_NODE` convention, since these are genuinely
- * environment/deployment-specific paths this Unit does not assume a
- * fixed value for on every machine this test might run on.
+ * Configuration (node executable, QMD source root, tsx CLI, bridge script
+ * path, model cache directory) is read from environment variables rather
+ * than hard-coded, mirroring `QmdCanonicalMemoryRetrievalExperimentTest.kt`'s
+ * own `QMD_TEST_NODE` convention, since these are genuinely
+ * environment/deployment-specific paths this Unit does not assume a fixed
+ * value for on every machine this test might run on.
+ *
+ * **Post-Promotion QMD Live-Acceptance Portability Correction.** Every
+ * machine-specific value below is read only from its own environment
+ * variable, or derived from another explicitly-supplied one -- never a
+ * fabricated, machine-specific fallback path (this file previously
+ * defaulted `QMD_TEST_TSX_CLI`, `QMD_RELEVANCE_MODEL_CACHE_DIR`, and
+ * `QMD_TEST_SOURCE_ROOT` to Steve's own Windows checkout locations, which
+ * broke this test's own portability the first time it ran anywhere else).
+ * `liveConfiguration()` never searches the filesystem, never guesses a
+ * well-known install location, and never downloads or installs anything.
+ * A machine with no local QMD checkout provisioned -- expected and lawful,
+ * e.g. the Parker Linux server today -- is handled by
+ * [assumeLiveQmdPrerequisitesProvisioned], a second, explicit
+ * assumption/skip check (the same `assumeTrue` mechanism [LIVE_PROPERTY]
+ * itself already uses) that reports precisely which environment variable(s)
+ * are missing and skips cleanly, rather than allowing construction to
+ * proceed and fail deep inside a subprocess with an opaque path error.
  */
 class QmdRelevanceMechanismLiveAcceptanceTest {
 
@@ -57,53 +75,69 @@ class QmdRelevanceMechanismLiveAcceptanceTest {
         private const val LIVE_PROPERTY = "parker.relevance.qmd.live.enabled"
     }
 
+    // Post-Promotion QMD Live-Acceptance Portability Correction. Both
+    // machine-specific values below are resolved once, here, from exactly
+    // the environment variables this file's own class KDoc documents --
+    // never a fabricated fallback, never filesystem discovery. Shared by
+    // [assumeLiveQmdPrerequisitesProvisioned] (the prerequisite check) and
+    // [liveConfiguration] (the actual configuration build), so the
+    // derivation rule for [tsxCliPath] exists in exactly one place.
+
+    private fun resolvedQmdSourceRoot(): String? =
+        System.getenv("QMD_TEST_SOURCE_ROOT")?.takeIf { it.isNotBlank() }
+
+    private fun resolvedTsxCliPath(qmdSourceRoot: String?): String? =
+        System.getenv("QMD_TEST_TSX_CLI")?.takeIf { it.isNotBlank() }
+            ?: qmdSourceRoot?.let { Path.of(it, "node_modules", "tsx", "dist", "cli.mjs").toString() }
+
+    /**
+     * Explicit, diagnosable skip -- never a fabricated path -- when this
+     * machine has no local QMD checkout provisioned. Uses the same
+     * `assumeTrue` mechanism [LIVE_PROPERTY] itself already uses in every
+     * `@Test` below, one further explicit assumption/skip check, matching
+     * this repository's own established live-instrument convention rather
+     * than introducing a new one. Called as the second line of every
+     * `@Test` in this file, immediately after the existing [LIVE_PROPERTY]
+     * check.
+     */
+    private fun assumeLiveQmdPrerequisitesProvisioned() {
+        val qmdSourceRoot = resolvedQmdSourceRoot()
+        val tsxCliPath = resolvedTsxCliPath(qmdSourceRoot)
+        val missing = buildList {
+            if (qmdSourceRoot == null) add("QMD_TEST_SOURCE_ROOT (the local QMD installation/checkout root)")
+            if (tsxCliPath == null) add("QMD_TEST_TSX_CLI, or QMD_TEST_SOURCE_ROOT (from which it is derived)")
+        }
+        assumeTrue(
+            missing.isEmpty(),
+            "Live QMD prerequisites are not provisioned on this machine -- missing: ${missing.joinToString("; ")}. " +
+                "This mechanism is never auto-discovered, guessed, or downloaded; provision a local QMD " +
+                "checkout and set these environment variable(s) explicitly to run this live acceptance instrument.",
+        )
+    }
+
     private fun liveConfiguration(): QmdRelevanceMechanismConfiguration {
         val nodeExecutable = System.getenv("QMD_TEST_NODE")?.takeIf { it.isNotBlank() } ?: "node"
-        val tsxCliPath = System.getenv("QMD_TEST_TSX_CLI")?.takeIf { it.isNotBlank() }
-            ?: "C:\\Projects\\Parker\\qmd\\node_modules\\tsx\\dist\\cli.mjs"
         val bridgeScriptPath = System.getenv("QMD_RELEVANCE_BRIDGE_SCRIPT")?.takeIf { it.isNotBlank() }
             ?: Path.of("tools", "qmd-relevance-bridge.mts").toAbsolutePath().toString()
-        // Live Windows Acceptance Failure / Bounded Cache-Resolution
-        // Correction (this Unit's own follow-up review): falls back to the
-        // actual, confirmed-existing QMD model cache directory on this
-        // development environment (`config/index.yml`'s own collection
-        // root's sibling `cache/qmd/models`, populated via QMD's own
-        // portable `XDG_CACHE_HOME`-derived default -- see
-        // `qmd/src/llm.ts`'s `MODEL_CACHE_DIR`) when the environment
-        // variable is not set, mirroring the exact fallback pattern already
-        // used above for `tsxCliPath`. This is a local development test
-        // fixture default, not production configuration: `QmdRelevanceMechanism`
-        // and `QmdRelevanceMechanismConfiguration` themselves remain wholly
-        // unaware of this path and receive it only via this test's own
-        // externally-supplied configuration value, exactly as they would
-        // receive any other deployment-specific location at composition
-        // time.
+        val qmdSourceRoot = resolvedQmdSourceRoot()
+        val tsxCliPath = resolvedTsxCliPath(qmdSourceRoot)
+        // No Steve-specific Windows fallback: `QmdRelevanceMechanismConfiguration.modelCacheDir`
+        // already treats `null` as fully lawful -- the production bridge's
+        // own local-only, no-download default cache-directory resolution
+        // applies (`qmd/src/llm.ts`'s own `DEFAULT_MODEL_CACHE_DIR`, an
+        // `XDG_CACHE_HOME`-derived, portable, machine-agnostic location,
+        // never a network fetch) -- so no invented machine-specific path is
+        // required here at all. An explicit test-only override remains
+        // available via the environment variable for whoever genuinely
+        // needs one.
         val modelCacheDir = System.getenv("QMD_RELEVANCE_MODEL_CACHE_DIR")?.takeIf { it.isNotBlank() }
-            ?: "C:\\Projects\\Parker\\qmd-parker-experiment\\cache\\qmd\\models"
-        // Main-Promotion Gate / Production QMD Bridge Portability Correction
-        // (this Unit's own follow-on): `tools/qmd-relevance-bridge.mts` no
-        // longer hard-codes its own QMD source-root import location -- it
-        // now requires `qmdSourceRoot` on every request and resolves its
-        // `src/llm.ts` and `node_modules/node-llama-cpp/dist/index.js`
-        // imports from it dynamically (see that script's own header comment,
-        // and `QmdRelevanceMechanismConfiguration.qmdSourceRoot`'s own
-        // KDoc). Without this, the corrected bridge throws "missing or empty
-        // qmdSourceRoot" and this test's own live subprocess calls would
-        // fail -- this fallback default is the exact same local QMD checkout
-        // root (`C:\Projects\Parker\qmd`) both of the bridge script's own
-        // previously hard-coded import paths already pointed into, so this
-        // test's own real Windows behaviour is unchanged by the correction,
-        // mirroring the identical env-var-with-local-fallback pattern
-        // already used above for `tsxCliPath`.
-        val qmdSourceRoot = System.getenv("QMD_TEST_SOURCE_ROOT")?.takeIf { it.isNotBlank() }
-            ?: "C:\\Projects\\Parker\\qmd"
 
         return QmdRelevanceMechanismConfiguration(
             qmdVersion = "2.8.3",
             embeddingModelUri = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
             vectorDimension = 768,
             nodeExecutablePath = nodeExecutable,
-            additionalNodeArguments = listOf(tsxCliPath),
+            additionalNodeArguments = listOfNotNull(tsxCliPath),
             bridgeScriptPath = bridgeScriptPath,
             modelCacheDir = modelCacheDir,
             timeoutMillis = 120_000,
@@ -128,6 +162,7 @@ class QmdRelevanceMechanismLiveAcceptanceTest {
     @Test
     fun `live QMD subprocess ranks the accepted six-candidate emergency-vet fixture with candidate-1 first, repeated three times`() = runTest {
         assumeTrue(System.getProperty(LIVE_PROPERTY) == "true", "Live QMD property absent; no subprocess invoked")
+        assumeLiveQmdPrerequisitesProvisioned()
 
         val configuration = liveConfiguration()
         val mechanism = QmdRelevanceMechanism(configuration, ProcessBuilderQmdSubprocessInvoker(configuration))
@@ -159,6 +194,7 @@ class QmdRelevanceMechanismLiveAcceptanceTest {
     @Test
     fun `live QMD subprocess handles a single candidate deterministically`() = runTest {
         assumeTrue(System.getProperty(LIVE_PROPERTY) == "true", "Live QMD property absent; no subprocess invoked")
+        assumeLiveQmdPrerequisitesProvisioned()
 
         val configuration = liveConfiguration()
         val mechanism = QmdRelevanceMechanism(configuration, ProcessBuilderQmdSubprocessInvoker(configuration))
@@ -171,6 +207,7 @@ class QmdRelevanceMechanismLiveAcceptanceTest {
     @Test
     fun `live QMD subprocess returns a successful empty result for zero candidates, without launching a process`() = runTest {
         assumeTrue(System.getProperty(LIVE_PROPERTY) == "true", "Live QMD property absent; no subprocess invoked")
+        assumeLiveQmdPrerequisitesProvisioned()
 
         val configuration = liveConfiguration()
         val mechanism = QmdRelevanceMechanism(configuration, ProcessBuilderQmdSubprocessInvoker(configuration))
@@ -192,6 +229,7 @@ class QmdRelevanceMechanismLiveAcceptanceTest {
         // cover -- rather than silently attempting a live download or
         // hanging indefinitely.
         assumeTrue(System.getProperty(LIVE_PROPERTY) == "true", "Live QMD property absent; no subprocess invoked")
+        assumeLiveQmdPrerequisitesProvisioned()
 
         val emptyCacheDir = Files.createTempDirectory("parker-qmd-relevance-empty-model-cache-")
         try {
