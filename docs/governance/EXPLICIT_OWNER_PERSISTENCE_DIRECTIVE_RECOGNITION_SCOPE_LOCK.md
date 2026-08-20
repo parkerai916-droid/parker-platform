@@ -1,6 +1,6 @@
 # Explicit Owner Persistence Directive Recognition — Scope Lock
 
-**Status:** Proposed narrow Scope Lock, pending Independent Constitutional Review.
+**Status:** Adopted. Independent Constitutional Review accepted with no required correction.
 
 ## 1. Purpose and authority
 
@@ -251,5 +251,5 @@ No live model, Parker runtime, Docker, QMD, or evidence execution is authorized
 by this instrument.
 
 ```text
-EXPLICIT OWNER PERSISTENCE DIRECTIVE RECOGNITION — PROPOSED, PENDING ICR
+EXPLICIT OWNER PERSISTENCE DIRECTIVE RECOGNITION — ADOPTED
 ```
