@@ -1,5 +1,7 @@
 **Status:** Independent Constitutional Review of the Reasoning Protocol Live-Model Conformance Reopening Assessment for Knowledge Discoverability — **ACCEPTED.** This review accepts the Assessment's determination that a specific reopening condition is satisfied while independently confirming that the Assessment does not itself reopen the programme, select a remedy, authorize implementation, authorize a model run, or unblock Knowledge Discoverability closure.
 
+**Model-identity premise correction.** Corrected in place against the accepted Model-Identity Premise Defect Confirmation Review and its Independent Constitutional Review (commit `4d8d5012243df955683fe929a6cf7a0dc6766ffc`): any statement in this document characterizing, or accepting without independent challenge a characterization of, `llama3.2:3b` as Parker's current, live, or production model is superseded — `qwen2.5-coder:7b`, not `llama3.2:3b`, was Parker's committed deployed Docker baseline throughout this programme. Knowledge Discoverability Attempts 1–2's own historical use of `llama3.2:3b` remains accurate and unchanged. CONTROL_MODEL/SUBJECT_MODEL roles and the Family F research question remain unresolved, pending separate governance. The remainder of this document's body is unmodified and remains the historical record of this review.
+
 # Reasoning Protocol Live-Model Conformance — Reopening Assessment for Knowledge Discoverability — Independent Constitutional Review
 
 ## 1. Reviewed baseline and scope

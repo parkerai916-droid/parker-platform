@@ -1,5 +1,7 @@
 **Status:** Unit 3-BF Family F Experimental Reclassification and Qualification-Boundary Scope Lock - **PROPOSED - PENDING INDEPENDENT CONSTITUTIONAL REVIEW.** Governance-only against baseline `d68305f1a89ab1f0e84dc66a014bcd68a63ebfa7`. Adopts a narrow Family F pre-qualification diagnostic exception if, and only if, this document and its Independent Constitutional Review are accepted and merged. It authorizes no model loading, inference, campaign, implementation, model acquisition, production change, or Knowledge Discoverability Attempt 3.
 
+**Model-identity premise correction.** Corrected in place against the accepted Model-Identity Premise Defect Confirmation Review and its Independent Constitutional Review (commit `4d8d5012243df955683fe929a6cf7a0dc6766ffc`): this document's own designation of `llama3.2:3b` as comparison control is not itself rewritten, but rests on an upstream premise — that `llama3.2:3b` was Parker's current, live, or production model — now corrected; `qwen2.5-coder:7b`, not `llama3.2:3b`, was Parker's committed deployed Docker baseline throughout this programme. CONTROL_MODEL/SUBJECT_MODEL roles and the Family F research question remain unresolved, pending separate governance. The remainder of this document's body is unmodified and remains the historical record of this review.
+
 # Reasoning Protocol Live-Model Conformance Unit 3-BF - Family F Experimental Reclassification and Qualification-Boundary Scope Lock
 
 ## 1. Baseline and controlling authority

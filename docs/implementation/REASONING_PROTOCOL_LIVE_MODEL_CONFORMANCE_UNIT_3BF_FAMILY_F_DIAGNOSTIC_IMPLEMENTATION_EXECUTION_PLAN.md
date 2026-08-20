@@ -2,6 +2,8 @@
 
 **Status:** Proposed implementation/execution plan. This document creates no execution authority until it and its Independent Constitutional Review are accepted and merged, the implementation is completed and independently accepted, a Readiness Review and its Independent Constitutional Review are accepted, and a separate Explicit Execution Approval is issued.
 
+**Model-identity premise correction.** Corrected in place against the accepted Model-Identity Premise Defect Confirmation Review and its Independent Constitutional Review (commit `4d8d5012243df955683fe929a6cf7a0dc6766ffc`): this document's own designation of `llama3.2:3b` as comparison control is not itself rewritten, but rests on an upstream premise — that `llama3.2:3b` was Parker's current, live, or production model — now corrected; `qwen2.5-coder:7b`, not `llama3.2:3b`, was Parker's committed deployed Docker baseline throughout this programme. CONTROL_MODEL/SUBJECT_MODEL roles and the Family F research question remain unresolved, pending separate governance. The remainder of this document's body is unmodified and remains the historical record of this review.
+
 ---
 
 ## 1. Baseline and controlling authority
