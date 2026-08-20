@@ -190,6 +190,19 @@ tasks.register<Test>("reasoningProtocolFamilyFDiagnostic") {
     shouldRunAfter(tasks.test)
 }
 
+tasks.register<Test>("reasoningProtocolFamilyFBoundingEvidence") {
+    description = "Runs the explicit opt-in Reasoning Protocol Unit 3-BF Family F bounding-evidence offline estimator instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.ReasoningProtocolFamilyFBoundingEvidenceTest")
+    }
+    systemProperty("parker.reasoning.familyf.boundingEvidence.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 tasks.register<Test>("qmdRelevanceMechanismLiveAcceptance") {
     description = "Runs the explicit opt-in Programme 3 Unit 9.7.3 live QMD relevance mechanism acceptance instrument"
     group = "verification"
