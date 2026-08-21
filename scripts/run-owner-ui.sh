@@ -95,7 +95,16 @@ export PARKER_QMD_TSX_CLI_PATH="${PARKER_QMD_TSX_CLI_PATH:-${QMD_TSX_CLI_PATH_DE
 # invocation was -- regardless of whether the calling shell's own session
 # already has the group active, since a session predating group membership
 # would otherwise fork a Gradle daemon lacking it (see the owner-facing UI
-# acceptance record for the exact failure this avoids). The absolute
-# gradlew path is used inside the sg-spawned shell so this does not depend
-# on working-directory propagation through sg.
-exec sg parker-store-writers -c "'${REPO_ROOT}/gradlew' :ui-desktop:runOwnerUi --console=plain"
+# acceptance record for the exact failure this avoids).
+#
+# Gradle resolves its own project directory from the process's current
+# working directory, never from gradlew's own script location -- an
+# absolute path to gradlew alone does not change it. This script may be
+# invoked from any working directory (in particular /home/steve, the
+# directory an SSH-forwarded remote command starts from when launched via
+# the Windows desktop launcher's plink invocation), so the sg-spawned
+# shell must `cd` to REPO_ROOT explicitly, before gradlew ever runs --
+# never relying on whatever directory sg's own child shell happens to
+# inherit. The absolute gradlew path is kept as a second, redundant
+# safeguard, not a substitute for the `cd`.
+exec sg parker-store-writers -c "cd '${REPO_ROOT}' && exec '${REPO_ROOT}/gradlew' :ui-desktop:runOwnerUi --console=plain"
