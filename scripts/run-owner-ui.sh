@@ -107,4 +107,36 @@ export PARKER_QMD_TSX_CLI_PATH="${PARKER_QMD_TSX_CLI_PATH:-${QMD_TSX_CLI_PATH_DE
 # never relying on whatever directory sg's own child shell happens to
 # inherit. The absolute gradlew path is kept as a second, redundant
 # safeguard, not a substitute for the `cd`.
-exec sg parker-store-writers -c "cd '${REPO_ROOT}' && exec '${REPO_ROOT}/gradlew' :ui-desktop:runOwnerUi --console=plain"
+#
+# --no-daemon (deliberate, not merely a performance-neutral flag): Gradle's
+# default daemon is a long-lived background JVM, reused across invocations
+# by matching JVM args/classpath -- never by which group or session
+# launched it. A daemon forked by any unrelated, unwrapped `./gradlew`
+# invocation (a developer's own shell, an editor/IDE, CI) persists
+# indefinitely and gets silently reused by this script's own,
+# correctly-sg-wrapped invocation too, since Gradle's own daemon-matching
+# has no concept of "the right group" -- reproducing exactly the
+# storage-root-not-writable failure this correction fixes, even though the
+# shell that launched gradlew genuinely had parker-store-writers active.
+# --no-daemon runs the entire build in this one-shot process tree instead,
+# so the JavaExec-forked UI JVM is always a direct descendant of the
+# sg-spawned shell verified immediately below -- never a reused background
+# process whose own group was fixed at some earlier, unrelated fork time.
+# This trades a few extra seconds of Gradle's own startup overhead per
+# launch for full immunity to this entire class of defect; acceptable for
+# an infrequent, manually-triggered desktop launcher.
+#
+# The `id -nG` check immediately below is a debug assertion, not a
+# duplicate of the outer database-membership pre-flight check above: that
+# earlier check only proves the user is *eligible* to activate the group;
+# this one proves the group is genuinely *active in the exact shell about
+# to launch Gradle*, catching a silent sg failure with a clear message
+# instead of letting it reach Gradle/Java at all.
+exec sg parker-store-writers -c "
+    id -nG | tr ' ' '\n' | grep -qx parker-store-writers || {
+        echo 'run-owner-ui.sh: FATAL: parker-store-writers is not active in the shell about to launch Gradle (sg did not take effect as expected).' >&2
+        exit 1
+    }
+    cd '${REPO_ROOT}' &&
+    exec '${REPO_ROOT}/gradlew' :ui-desktop:runOwnerUi --console=plain --no-daemon
+"
