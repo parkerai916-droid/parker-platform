@@ -97,6 +97,32 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(null, config.qmdSourceRoot)
     }
 
+    // ui-desktop MODULE_NOT_FOUND regression (post-Unit-9.7.5 owner-UI live acceptance defect):
+    // this default is documented ("Optional, defaults to that file's own well-known, portable,
+    // repository-relative location resolved to an absolute path at construction time") as
+    // resolving relative to the live process's own working directory -- true for the CLI (Docker's
+    // own WORKDIR) and for this very test (Gradle's root-project `test` task's own default working
+    // directory), but silently false for any entry point whose own working directory is not the
+    // repository root, e.g. `ui-desktop`'s `runOwnerUi` JavaExec task before that task's own
+    // `workingDir` was fixed to `rootProject.projectDir`. This assertion catches a regression of
+    // either side of that assumption -- the resolved path drifting, or this test itself running
+    // from the wrong working directory -- by proving the file this default names genuinely exists
+    // on disk right now, not merely that the returned string has the expected shape.
+    @Test
+    fun `the default qmdBridgeScriptPath resolves to a file that genuinely exists on disk from the repository root`() {
+        val environment = fullEnvironment()
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertTrue(
+            java.io.File(config.qmdBridgeScriptPath).isFile,
+            "the default qmdBridgeScriptPath ('${config.qmdBridgeScriptPath}') must resolve to a real, " +
+                "existing file when the process working directory is the repository root -- every production " +
+                "entry point relying on this default (the CLI, and any future Gradle task) must itself run " +
+                "with the repository root as its own working directory for this documented default to be correct",
+        )
+    }
+
     @Test
     fun `every QMD key present loads exactly the supplied values`() {
         val environment = fullEnvironment(

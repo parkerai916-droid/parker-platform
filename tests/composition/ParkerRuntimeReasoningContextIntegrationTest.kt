@@ -1,8 +1,10 @@
 package parker.composition
 
 import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.ExecutionResultStatus
 import parker.core.interfaces.InboundOwnerMessage
@@ -71,6 +73,60 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         memoryCoreDurabilityLogPath = Files.createTempDirectory("unused-memory-core").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
     )
+
+    // RKS.6 (Reasoning Context Bounded Semantic Relevance Implementation Plan). Mirrors
+    // `QmdRelevanceMechanismLiveAcceptanceTest.kt`'s own established, portable, env-var-driven live
+    // gate exactly -- never a fabricated fallback, never filesystem discovery, and always an explicit
+    // `assumeTrue` skip (not a failure) on a machine without a local QMD checkout provisioned. The
+    // two tests below are the only ones in this file whose own dereferenced candidate set is
+    // non-empty with zero structural match, so they are the only ones that reach Bounded Relevance
+    // Computation's fallback branch and therefore the only ones needing live QMD.
+    private fun resolvedQmdSourceRoot(): String? =
+        System.getenv("QMD_TEST_SOURCE_ROOT")?.takeIf { it.isNotBlank() }
+
+    private fun resolvedTsxCliPath(qmdSourceRoot: String?): String? =
+        System.getenv("QMD_TEST_TSX_CLI")?.takeIf { it.isNotBlank() }
+            ?: qmdSourceRoot?.let { Path.of(it, "node_modules", "tsx", "dist", "cli.mjs").toString() }
+
+    private fun assumeLiveQmdPrerequisitesProvisioned() {
+        assumeTrue(
+            System.getProperty("parker.relevance.qmd.live.enabled") == "true",
+            "Live QMD property absent; no subprocess invoked",
+        )
+        val qmdSourceRoot = resolvedQmdSourceRoot()
+        val tsxCliPath = resolvedTsxCliPath(qmdSourceRoot)
+        val missing = buildList {
+            if (qmdSourceRoot == null) add("QMD_TEST_SOURCE_ROOT (the local QMD installation/checkout root)")
+            if (tsxCliPath == null) add("QMD_TEST_TSX_CLI, or QMD_TEST_SOURCE_ROOT (from which it is derived)")
+        }
+        assumeTrue(
+            missing.isEmpty(),
+            "Live QMD prerequisites are not provisioned on this machine -- missing: ${missing.joinToString("; ")}. " +
+                "This mechanism is never auto-discovered, guessed, or downloaded; provision a local QMD " +
+                "checkout and set these environment variable(s) explicitly to run this live proof.",
+        )
+    }
+
+    private fun configForQmdLive(stub: StubModelServer): ParkerRuntimeConfig {
+        val qmdSourceRoot = resolvedQmdSourceRoot()
+        val tsxCliPath = resolvedTsxCliPath(qmdSourceRoot)
+        return ParkerRuntimeConfig(
+            modelEndpointUrl = stub.endpointUrl,
+            modelName = "test-model",
+            ownerPrincipalId = ownerPrincipalId,
+            ownerDisplayName = ownerDisplayName,
+            localTextChannelModuleId = channelModuleId,
+            evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
+            evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
+            memoryCoreDurabilityLogPath = Files.createTempDirectory("unused-memory-core").resolve("memory-core.log").toString(),
+            knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
+            qmdNodeExecutablePath = System.getenv("QMD_TEST_NODE")?.takeIf { it.isNotBlank() } ?: "node",
+            qmdTsxCliPath = tsxCliPath,
+            qmdModelCacheDir = System.getenv("QMD_RELEVANCE_MODEL_CACHE_DIR")?.takeIf { it.isNotBlank() },
+            qmdTimeoutMillis = 120_000,
+            qmdSourceRoot = qmdSourceRoot,
+        )
+    }
 
     private fun message(text: String = "good morning parker", correlationId: String = "corr-context-${System.nanoTime()}") = InboundOwnerMessage(
         channelId = ModuleId(channelModuleId),
@@ -342,10 +398,19 @@ class ParkerRuntimeReasoningContextIntegrationTest {
     }
 
     @Test
-    fun `a genuinely related paraphrase does not recall a promoted proposition under the current literal substring retrieval`() = runBlocking<Unit> {
+    fun `a genuinely related paraphrase now recalls a promoted proposition through the real, live Bounded Relevance Computation fallback`() = runBlocking<Unit> {
+        // RKS.2-RKS.6 (Reasoning Context Bounded Semantic Relevance Implementation Plan): before
+        // this Unit, the current literal substring retrieval alone genuinely could not recover this
+        // paraphrase -- that pre-fallback baseline is exactly what this test's own predecessor
+        // proved. Bounded Relevance Computation now runs as a fallback whenever structural matching
+        // finds nothing over a non-empty candidate set, invoking the real, shared QmdRelevanceMechanism
+        // this environment's own local QMD checkout and embedding-model cache genuinely back (never a
+        // fake or stub) -- this is this Unit's own required real, same-runtime, live end-to-end proof
+        // (Successor Section 16, item 11), not a unit-level fake-mechanism substitute.
+        assumeLiveQmdPrerequisitesProvisioned()
         val proposition = "the owner's synthetic emergency vet is Harbour Animal Clinic"
         val stub = startStub("REPLY: acknowledged")
-        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        val runtime = ParkerRuntime(configForQmdLive(stub), RecordingParkerLogger())
         runtime.start()
 
         runtime.submitOwnerMessage(
@@ -355,26 +420,34 @@ class ParkerRuntimeReasoningContextIntegrationTest {
             ),
         )
 
-        runtime.submitOwnerMessage(
+        val recallOutcome = runtime.submitOwnerMessage(
             message(
                 text = "Which animal clinic did I tell you to use in an emergency?",
                 correlationId = "corr-qmd-control-semantic-recall",
             ),
         )
 
+        assertIs<ParkerRuntimeOutcome.Delivered>(
+            recallOutcome,
+            "the recall turn must reach a real model call through a genuinely available QMD mechanism, " +
+                "not fail closed -- if this assertion fails, the local QMD checkout/model cache this " +
+                "environment's own QmdRelevanceMechanismConfiguration names is not genuinely available here",
+        )
         assertEquals(1, stub.receivedRequestBodies.size)
         val recallPrompt = stub.receivedRequestBodies[0]
 
         assertTrue(
-            "Memory: $proposition" !in recallPrompt,
-            "pre-QMD control must prove the current literal substring retrieval does not recover the semantically related proposition: $recallPrompt",
+            "Memory: $proposition" in recallPrompt,
+            "the real, live Bounded Relevance Computation fallback must now recover the semantically " +
+                "related proposition into the real assembled prompt: $recallPrompt",
         )
 
         runtime.shutdown()
     }
 
     @Test
-    fun `six genuine promoted memories remain canonically stored while the current retrieval still misses the emergency vet paraphrase`() = runBlocking<Unit> {
+    fun `six genuine promoted memories remain canonically stored, and the real Bounded Relevance Computation fallback picks out the correct emergency vet paraphrase among all six`() = runBlocking<Unit> {
+        assumeLiveQmdPrerequisitesProvisioned()
         val propositions = listOf(
             "the owner's synthetic emergency vet is Harbour Animal Clinic",
             "the owner's synthetic regular vet is Riverside Veterinary Centre",
@@ -386,7 +459,7 @@ class ParkerRuntimeReasoningContextIntegrationTest {
 
         val stub = startStub("REPLY: acknowledged")
 
-        val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
+        val runtime = ParkerRuntime(configForQmdLive(stub), RecordingParkerLogger())
         runtime.start()
 
         runtime.submitOwnerMessage(
@@ -426,20 +499,31 @@ class ParkerRuntimeReasoningContextIntegrationTest {
             ),
         )
 
-        runtime.submitOwnerMessage(
+        val recallOutcome = runtime.submitOwnerMessage(
             message(
                 text = "Which animal clinic did I tell you to use in an emergency?",
                 correlationId = "corr-qmd-multi-semantic-recall",
             ),
         )
 
+        assertIs<ParkerRuntimeOutcome.Delivered>(recallOutcome)
         assertEquals(1, stub.receivedRequestBodies.size)
         val recallPrompt = stub.receivedRequestBodies[0]
 
         assertTrue(
-            "Memory: ${propositions[0]}" !in recallPrompt,
-            "pre-QMD control must show that current literal substring retrieval still misses the correct memory among multiple genuine Parker memories: $recallPrompt",
+            "Memory: ${propositions[0]}" in recallPrompt,
+            "the real, live Bounded Relevance Computation fallback must recover the correct emergency vet " +
+                "memory among six genuine, canonically stored candidates: $recallPrompt",
         )
+        for (distractor in propositions.drop(1)) {
+            assertTrue(
+                "Memory: $distractor" !in recallPrompt,
+                "the real mechanism must not surface a distractor -- in particular the 'emergency plumber' " +
+                    "entry, which shares the incidental 'emergency' token with the query but is not the " +
+                    "correct answer (the exact discrimination the Unit 9.7 mechanism-selection spike proved " +
+                    "QMD, and not a naive token-overlap comparator, gets right): $recallPrompt",
+            )
+        }
 
         runtime.shutdown()
     }

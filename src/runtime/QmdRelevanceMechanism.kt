@@ -363,6 +363,30 @@ fun interface QmdSubprocessInvoker {
  * applied at the boundary that actually understands the domain meaning
  * of the fault).
  *
+ * **Pre-flight TypeScript-loader check (post-Unit-9.7.5 owner-UI live
+ * acceptance defect).** [configuration.bridgeScriptPath] is, by frozen
+ * governed default, a `.mts` file -- Node's own native module loader
+ * cannot execute that extension at all (`ERR_UNKNOWN_FILE_EXTENSION`)
+ * without a TypeScript-capable loader (`tsx`) named in
+ * [configuration.additionalNodeArguments]. That relationship holds only
+ * by deployment-configuration convention, not by any type this class
+ * enforces at construction (deliberately -- see
+ * [QmdRelevanceMechanismConfiguration]'s own KDoc on why
+ * `additionalNodeArguments`/the tsx path can never be a portable,
+ * eagerly-required default), so a deployment that configures
+ * `PARKER_QMD_SOURCE_ROOT` without also configuring
+ * `PARKER_QMD_TSX_CLI_PATH` would otherwise reach this point and launch
+ * plain `node` directly against a `.mts` file for the first time only
+ * when Bounded Relevance Computation's fallback genuinely fires --
+ * surfacing as an opaque Node subprocess crash several layers removed
+ * from this configuration mistake's own true cause. [invoke] instead
+ * recognises this exact, narrow, structurally-detectable case before
+ * ever spawning a process or writing the request's own temporary file,
+ * and reports it through the identical `exitCode = -1` channel
+ * process-start failure already uses -- never a new failure shape, never
+ * a second bridge, never a change to what command line a correctly
+ * configured deployment ends up running.
+ *
  * Reads [QmdRelevanceMechanismConfiguration.nodeExecutablePath],
  * [QmdRelevanceMechanismConfiguration.additionalNodeArguments], and
  * [QmdRelevanceMechanismConfiguration.bridgeScriptPath] from the same
@@ -377,6 +401,20 @@ class ProcessBuilderQmdSubprocessInvoker(
 ) : QmdSubprocessInvoker {
 
     override fun invoke(requestJson: String, timeoutMillis: Long): QmdSubprocessInvocationResult {
+        if (requiresTypeScriptLoaderButNoneConfigured()) {
+            return QmdSubprocessInvocationResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "QmdRelevanceMechanismConfiguration.bridgeScriptPath " +
+                    "('${configuration.bridgeScriptPath}') is a TypeScript module, but " +
+                    "additionalNodeArguments is empty -- plain node cannot execute a .mts/.cts/.ts file " +
+                    "directly (Node's own ERR_UNKNOWN_FILE_EXTENSION). Configure PARKER_QMD_TSX_CLI_PATH " +
+                    "(a TypeScript-capable loader such as tsx's own dist/cli.mjs) alongside " +
+                    "PARKER_QMD_SOURCE_ROOT, exactly as this repository's own docker-compose.yml and " +
+                    "QmdRelevanceMechanismLiveAcceptanceTest.kt's own liveConfiguration() already do.",
+                timedOut = false,
+            )
+        }
         val requestFile = Files.createTempFile("parker-qmd-relevance-request-", ".json")
         try {
             Files.writeString(requestFile, requestJson)
@@ -431,6 +469,21 @@ class ProcessBuilderQmdSubprocessInvoker(
         } finally {
             Files.deleteIfExists(requestFile)
         }
+    }
+
+    // Deliberately narrow and structural, mirroring this class's own established discipline of
+    // detecting only exactly the case it names, never a broader heuristic: true only when
+    // bridgeScriptPath's own extension requires a TypeScript-capable loader and
+    // additionalNodeArguments carries none at all. This does not, and cannot, validate that
+    // whatever additionalNodeArguments does carry is genuinely a working loader -- a
+    // misconfigured-but-non-empty value still reaches ProcessBuilder and surfaces as an ordinary
+    // process/exit-code fault, exactly as before this check existed.
+    private fun requiresTypeScriptLoaderButNoneConfigured(): Boolean =
+        TYPESCRIPT_SOURCE_EXTENSIONS.any { configuration.bridgeScriptPath.endsWith(it, ignoreCase = true) } &&
+            configuration.additionalNodeArguments.isEmpty()
+
+    private companion object {
+        val TYPESCRIPT_SOURCE_EXTENSIONS = listOf(".mts", ".cts", ".ts")
     }
 }
 

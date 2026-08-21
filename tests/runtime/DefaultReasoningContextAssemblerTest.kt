@@ -26,6 +26,7 @@ import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningKnowledgeSource
+import parker.core.interfaces.RelevanceMechanism
 import parker.core.interfaces.ResolvedInboundMessage
 import parker.core.interfaces.SafeKnowledgeResultEntry
 import parker.core.interfaces.StalenessDisclosure
@@ -712,7 +713,12 @@ class DefaultReasoningContextAssemblerTest {
         assertIs<KnowledgeSubmissionDisposition.Promoted>(disposition)
 
         val purpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
-        val reasoningKnowledgeSource = DefaultReasoningKnowledgeSource(persistence, permissionEngine, core, purpose)
+        // "Kotlin" is a genuine structural match against the promoted statement below, so the
+        // Bounded Semantic Relevance fallback path (RKS.2-RKS.4) is never reached by this fixture.
+        val neverInvokedRelevanceMechanism = RelevanceMechanism { _ ->
+            error("RelevanceMechanism.rank must not be invoked -- this fixture's query structurally matches")
+        }
+        val reasoningKnowledgeSource = DefaultReasoningKnowledgeSource(persistence, permissionEngine, core, purpose, neverInvokedRelevanceMechanism)
         val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), reasoningKnowledgeSource, FakeWorldModelSource())
 
         val context = assembler.assemble(resolved(message(text = "Kotlin")))

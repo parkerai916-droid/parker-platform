@@ -41,6 +41,11 @@ import parker.core.interfaces.ProvenanceReference
 import parker.core.interfaces.Relationship
 import parker.core.interfaces.RelationshipId
 import parker.core.interfaces.RelationshipTraversalQuery
+import parker.core.interfaces.RelevanceCandidate
+import parker.core.interfaces.RelevanceCandidateToken
+import parker.core.interfaces.RelevanceMechanism
+import parker.core.interfaces.RelevanceRequest
+import parker.core.interfaces.RelevanceResult
 import parker.core.interfaces.SafeKnowledgeResultEntry
 import parker.core.interfaces.StalenessDisclosure
 import kotlin.test.AfterTest
@@ -256,12 +261,46 @@ class DefaultReasoningKnowledgeSourceTest {
             throw AssertionError("findByProvenance must never be called by DefaultReasoningKnowledgeSource")
     }
 
+    /**
+     * RKS.1-RKS.4. A [RelevanceMechanism] that fails loudly if ever invoked --
+     * mirroring `DefaultKnowledgeRetrievalTest`'s own established
+     * `neverInvokedRelevanceMechanism` fixture exactly -- the default for
+     * every test in this suite whose own fixture must never reach the
+     * fallback branch's mechanism invocation at all, because structural
+     * matching found a result, the dereferenced candidate set is empty, the
+     * act-level gate denied, or a failure propagated first. Throwing here,
+     * rather than quietly returning an empty result, turns an accidental
+     * widening of when the fallback path actually runs into an immediate,
+     * loud test failure instead of a silent pass.
+     */
+    private val neverInvokedRelevanceMechanism = RelevanceMechanism { _ ->
+        error(
+            "RelevanceMechanism.rank must not be invoked by this test's own fixture -- structural " +
+                "matching found a result, the dereferenced candidate set was empty, the act-level gate " +
+                "denied, or a failure occurred before the fallback branch's own mechanism invocation point",
+        )
+    }
+
+    /**
+     * RKS.3-RKS.4. A [RelevanceMechanism] fake that always returns a
+     * genuine, successful, empty [RelevanceResult], regardless of what it
+     * is asked to rank -- mirroring `DefaultKnowledgeRetrievalTest`'s own
+     * identically named, identically purposed fixture. Used only by the one
+     * pre-existing fixture (below) whose own fallback branch now reaches a
+     * non-empty dereferenced candidate set, whose own assertion predates
+     * this Unit and was written to expect an empty result regardless of
+     * what a later unit's mechanism invocation eventually does with that
+     * candidate set.
+     */
+    private val emptyResultRelevanceMechanism = RelevanceMechanism { _ -> RelevanceResult(rankedTokens = emptyList()) }
+
     private fun source(
         persistence: KnowledgeItemPersistence,
         permissionEngine: FakePermissionEngine,
         evidenceMemoryRetrieval: MemoryRetrieval,
+        relevanceMechanism: RelevanceMechanism = neverInvokedRelevanceMechanism,
         clock: Clock = fixedClock,
-    ) = DefaultReasoningKnowledgeSource(persistence, permissionEngine, evidenceMemoryRetrieval, purpose, clock)
+    ) = DefaultReasoningKnowledgeSource(persistence, permissionEngine, evidenceMemoryRetrieval, purpose, relevanceMechanism, clock)
 
     // --- A. Positive matching ---
 
@@ -739,7 +778,15 @@ class DefaultReasoningKnowledgeSourceTest {
         val persistence = InMemoryKnowledgeItemPersistence()
         persistence.store(item(KnowledgeId("k1"), toAssertion("a1"), basis = "grocery shopping reminder"))
         val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "unrelated budget figures for the quarter")))
-        val subject = source(persistence, approvingEngine(), evidence)
+        // RKS.2: this fixture's own resolved content dereferences successfully but does not
+        // structurally match, so the dereferenced candidate set is non-empty and the Bounded
+        // Relevance Computation fallback now runs (a real invocation, not a pre-Unit accident) --
+        // mirroring `DefaultKnowledgeRetrievalTest`'s own identically disclosed "two pre-existing
+        // Unit 9.7.2 fixtures" precedent. A mechanism that itself honestly finds nothing relevant
+        // keeps this test's own pre-existing assertion (`emptyList()`) true for the reason it was
+        // always meant to prove: matching must use resolved content only, never KnowledgeItem's own
+        // generic basis text -- not because the mechanism was never reached.
+        val subject = source(persistence, approvingEngine(), evidence, emptyResultRelevanceMechanism)
 
         val entries = subject.recall(principal, query(relevance = "grocery"))
 
@@ -860,11 +907,25 @@ class DefaultReasoningKnowledgeSourceTest {
     // --- Structural ---
 
     @Test
-    fun `the constructor accepts exactly five dependencies -- persistence, permissionEngine, evidenceMemoryRetrieval, authorizationPurpose, and clock`() {
+    fun `the constructor accepts exactly six dependencies -- persistence, permissionEngine, evidenceMemoryRetrieval, authorizationPurpose, relevanceMechanism, and clock`() {
         // Kotlin reflection, not java.lang.reflect: a defaulted parameter (clock) causes the JVM to
         // carry an additional synthetic bridge constructor, which java.lang.reflect would wrongly count.
-        val constructor = DefaultReasoningKnowledgeSource::class.primaryConstructor
-        assertEquals(5, constructor?.parameters?.size)
+        // RKS.5 (Reasoning Context Bounded Semantic Relevance Implementation Plan) added the mandatory
+        // relevanceMechanism dependency between authorizationPurpose and clock, mirroring the identical,
+        // already-accepted widening `DefaultKnowledgeRetrievalTest`'s own analogous structural test
+        // underwent for Unit 9.7.4's mandatory relevanceMechanism dependency.
+        val constructor = requireNotNull(DefaultReasoningKnowledgeSource::class.primaryConstructor)
+        assertEquals(
+            listOf(
+                KnowledgeItemPersistence::class,
+                parker.core.interfaces.PermissionEngine::class,
+                MemoryRetrieval::class,
+                AuthorizationPurposeId::class,
+                RelevanceMechanism::class,
+                Clock::class,
+            ),
+            constructor.parameters.map { it.type.classifier },
+        )
     }
 
     @Test
@@ -874,4 +935,459 @@ class DefaultReasoningKnowledgeSourceTest {
         val functionNames = parker.core.interfaces.ReasoningKnowledgeSource::class.declaredFunctions.map { it.name }.toSet()
         assertEquals(setOf("recall"), functionNames)
     }
+
+    // --- H. RKS.2: Fallback Trigger and Closed Candidate Set ---
+
+    @Test
+    fun `one or more structural matches prevent fallback -- the mechanism is never invoked`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "grocery list")))
+        val mechanism = RksFakeRelevanceMechanism { RelevanceResult(rankedTokens = emptyList()) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(1, entries.size)
+        assertEquals(0, mechanism.rankCallCount)
+    }
+
+    @Test
+    fun `an empty dereferenced candidate set never invokes the mechanism`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("nonexistent")))
+        val evidence = RecordingMemoryRetrieval()
+        val mechanism = RksFakeRelevanceMechanism { RelevanceResult(rankedTokens = emptyList()) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(emptyList<SafeKnowledgeResultEntry>(), entries)
+        assertEquals(0, mechanism.rankCallCount)
+    }
+
+    @Test
+    fun `the fallback candidate set is exactly the dereferenced, item-level-approved content -- one candidate per surviving item`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("approved-a"), toAssertion("a1")))
+        persistence.store(item(KnowledgeId("approved-b"), toAssertion("a2")))
+        persistence.store(item(KnowledgeId("denied"), toAssertion("a3")))
+        val evidence = RecordingMemoryRetrieval(
+            assertions = mapOf(
+                "a1" to assertionRecord("a1", "budget figures A"),
+                "a2" to assertionRecord("a2", "budget figures B"),
+                "a3" to assertionRecord("a3", "budget figures denied"),
+            ),
+        )
+        val mechanism = RksFakeRelevanceMechanism { RelevanceResult(rankedTokens = emptyList()) }
+        val subject = source(persistence, actLevelApprovingEngine("approved-a", "approved-b"), evidence, mechanism)
+
+        subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(1, mechanism.rankCallCount)
+        val request = mechanism.capturedRequests.single()
+        assertEquals("grocery", request.queryText)
+        assertEquals(
+            setOf("budget figures A", "budget figures B"),
+            request.candidates.map { it.content }.toSet(),
+            "the denied item's own content must never reach the mechanism",
+        )
+    }
+
+    // --- I. RKS.3: Mechanism Invocation and Token Minting ---
+
+    @Test
+    fun `an unknown token returned by the mechanism fails the whole retrieval closed`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { RelevanceResult(rankedTokens = listOf(RelevanceCandidateToken("not-a-real-token"))) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        assertFailsWith<IllegalStateException> { subject.recall(principal, query(relevance = "grocery")) }
+    }
+
+    @Test
+    fun `a duplicate token returned by the mechanism fails the whole retrieval closed, never silently de-duplicated`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request ->
+            val token = request.candidates.single().token
+            RelevanceResult(rankedTokens = listOf(token, token))
+        }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        assertFailsWith<IllegalStateException> { subject.recall(principal, query(relevance = "grocery")) }
+    }
+
+    @Test
+    fun `more tokens returned than were supplied fails the whole retrieval closed`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request ->
+            RelevanceResult(rankedTokens = request.candidates.map { it.token } + RelevanceCandidateToken("extra-unsupplied-token"))
+        }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        assertFailsWith<IllegalStateException> { subject.recall(principal, query(relevance = "grocery")) }
+    }
+
+    @Test
+    fun `a genuine mechanism fault propagates unchanged, uncaught`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val failure = IllegalStateException("QMD subprocess timed out")
+        val mechanism = RksFakeRelevanceMechanism { throw failure }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val thrown = assertFailsWith<IllegalStateException> { subject.recall(principal, query(relevance = "grocery")) }
+        assertSame(failure, thrown)
+    }
+
+    @Test
+    fun `a genuine successful empty RelevanceResult over a non-empty candidate set is not a fault -- it returns emptyList`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { RelevanceResult(rankedTokens = emptyList()) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(emptyList<SafeKnowledgeResultEntry>(), entries)
+        assertEquals(1, mechanism.rankCallCount)
+    }
+
+    @Test
+    fun `the mechanism receives only query text and the token-to-content mapping -- never KnowledgeId or lifecycle state`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("secret-knowledge-id-should-never-cross"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { RelevanceResult(rankedTokens = emptyList()) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        subject.recall(principal, query(relevance = "grocery"))
+
+        val request = mechanism.capturedRequests.single()
+        assertEquals("grocery", request.queryText)
+        val candidate = request.candidates.single()
+        assertEquals("budget figures", candidate.content)
+        assertTrue(
+            candidate.token.value != "secret-knowledge-id-should-never-cross",
+            "the opaque token must never equal, or be derived from, the item's own KnowledgeId",
+        )
+    }
+
+    // --- J. RKS.4: Three-Check Pre-Disclosure Re-Verification ---
+
+    @Test
+    fun `Pre-disclosure check A performs a fresh persistence-find call for every mechanism-surfaced token`() = runTest {
+        val knowledgeId = KnowledgeId("k1")
+        val storedItem = item(knowledgeId, toAssertion("a1"))
+        val persistence = RksScriptedFindKnowledgeItemPersistence { id -> if (id == knowledgeId) storedItem else null }
+        persistence.store(storedItem)
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(1, persistence.findCallCount, "the surviving candidate's own KnowledgeId must be freshly looked up exactly once")
+        assertEquals(listOf(knowledgeId), persistence.findCalledWith)
+    }
+
+    @Test
+    fun `a KnowledgeItem removed from persistence between Pre-computation and Pre-disclosure is excluded, never disclosed`() = runTest {
+        val knowledgeId = KnowledgeId("k1")
+        val storedItem = item(knowledgeId, toAssertion("a1"))
+        val persistence = RksScriptedFindKnowledgeItemPersistence { _ -> null }
+        persistence.store(storedItem)
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(emptyList<SafeKnowledgeResultEntry>(), entries)
+    }
+
+    @Test
+    fun `a candidate that becomes RETIRED between Pre-computation and Pre-disclosure is excluded`() = runTest {
+        val knowledgeId = KnowledgeId("k1")
+        val activeSnapshot = item(knowledgeId, toAssertion("a1"), status = KnowledgeItemStatus.ACTIVE)
+        val retiredNow = item(knowledgeId, toAssertion("a1"), status = KnowledgeItemStatus.RETIRED)
+        val persistence = RksScriptedFindKnowledgeItemPersistence { id -> if (id == knowledgeId) retiredNow else null }
+        persistence.store(activeSnapshot)
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(emptyList<SafeKnowledgeResultEntry>(), entries)
+    }
+
+    @Test
+    fun `Pre-disclosure check B is a genuinely fresh, second permission evaluation -- not a reuse of the Pre-computation decision`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evaluatedIntents = mutableListOf<String>()
+        val engine = FakePermissionEngine { request ->
+            evaluatedIntents.add(request.intent)
+            decision(request, PermissionDecisionOutcome.APPROVED)
+        }
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, engine, evidence, mechanism)
+
+        subject.recall(principal, query(relevance = "grocery"))
+
+        val itemLevelEvaluations = evaluatedIntents.count { it.contains("k1") }
+        assertEquals(
+            2,
+            itemLevelEvaluations,
+            "the sole eligible item must be item-level evaluated twice -- once for Pre-computation's own " +
+                "closed-candidate-set gate, and once more, freshly, for RKS.4's own Pre-disclosure re-verification",
+        )
+    }
+
+    @Test
+    fun `a candidate approved during Pre-computation but denied before disclosure is excluded, never disclosed`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        var itemLevelCallCount = 0
+        val engine = FakePermissionEngine { request ->
+            if (request.intent == DefaultReasoningKnowledgeSource.ACT_LEVEL_INTENT) {
+                decision(request, PermissionDecisionOutcome.APPROVED)
+            } else {
+                itemLevelCallCount++
+                // Approved the first (Pre-computation) time, denied the second (Pre-disclosure) time.
+                val outcome = if (itemLevelCallCount == 1) PermissionDecisionOutcome.APPROVED else PermissionDecisionOutcome.DENIED
+                decision(request, outcome)
+            }
+        }
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, engine, evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(emptyList<SafeKnowledgeResultEntry>(), entries)
+    }
+
+    @Test
+    fun `Pre-disclosure check C performs a fresh, second Memory Core dereference for every mechanism-surfaced token`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(
+            listOf(AssertionId("a1"), AssertionId("a1")),
+            evidence.getAssertionCalls,
+            "the same Assertion must be dereferenced twice -- once for Pre-computation, once more, freshly, for Pre-disclosure check C",
+        )
+    }
+
+    @Test
+    fun `the disclosed content reflects the fresh Pre-disclosure dereference, never the earlier Pre-computation snapshot`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = SequencedAssertionMemoryRetrieval(
+            "a1" to listOf(
+                assertionRecord("a1", "unrelated budget figures for the quarter"),
+                assertionRecord("a1", "a freshly revised statement, written after Pre-computation captured its own snapshot"),
+            ),
+        )
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(
+            "a freshly revised statement, written after Pre-computation captured its own snapshot",
+            entries.single().content,
+            "the final entry must be built from the fresh Pre-disclosure dereference, never the Pre-computation snapshot",
+        )
+    }
+
+    @Test
+    fun `a referenced record that becomes non-ACTIVE between Pre-computation and Pre-disclosure is excluded, never substituted`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = SequencedAssertionMemoryRetrieval(
+            "a1" to listOf(
+                assertionRecord("a1", "budget figures", status = MemoryCoreRecordStatus.ACTIVE),
+                assertionRecord("a1", "budget figures", status = MemoryCoreRecordStatus.DISPUTED),
+            ),
+        )
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(emptyList<SafeKnowledgeResultEntry>(), entries)
+    }
+
+    @Test
+    fun `an unchanged, still-eligible candidate survives the full fallback pipeline and is disclosed`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        val evidence = RecordingMemoryRetrieval(assertions = mapOf("a1" to assertionRecord("a1", "budget figures")))
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(1, entries.size)
+        assertEquals("budget figures", entries.single().content)
+        assertEquals(1, mechanism.rankCallCount)
+    }
+
+    @Test
+    fun `surviving candidates are disclosed in the mechanism's own ranked order, not persistence insertion order`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        persistence.store(item(KnowledgeId("k2"), toAssertion("a2")))
+        val evidence = RecordingMemoryRetrieval(
+            assertions = mapOf(
+                "a1" to assertionRecord("a1", "budget figures one"),
+                "a2" to assertionRecord("a2", "budget figures two"),
+            ),
+        )
+        // Reverses insertion order -- the mechanism's own ranking, not persistence order, must govern.
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }.reversed()) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery"))
+
+        assertEquals(listOf("budget figures two", "budget figures one"), entries.map { it.content })
+    }
+
+    @Test
+    fun `maximumResults bounds the surviving, re-verified fallback candidates at the same governed final stage`() = runTest {
+        val persistence = InMemoryKnowledgeItemPersistence()
+        persistence.store(item(KnowledgeId("k1"), toAssertion("a1")))
+        persistence.store(item(KnowledgeId("k2"), toAssertion("a2")))
+        persistence.store(item(KnowledgeId("k3"), toAssertion("a3")))
+        val evidence = RecordingMemoryRetrieval(
+            assertions = mapOf(
+                "a1" to assertionRecord("a1", "budget figures one"),
+                "a2" to assertionRecord("a2", "budget figures two"),
+                "a3" to assertionRecord("a3", "budget figures three"),
+            ),
+        )
+        val mechanism = RksFakeRelevanceMechanism { request -> RelevanceResult(rankedTokens = request.candidates.map { it.token }) }
+        val subject = source(persistence, approvingEngine(), evidence, mechanism)
+
+        val entries = subject.recall(principal, query(relevance = "grocery", maximumResults = 2))
+
+        assertEquals(2, entries.size)
+    }
+}
+
+/**
+ * RKS.4. A [KnowledgeItemPersistence] test double whose [find] result is scripted independently of
+ * whatever [store]/[findAll] produced -- mirroring `DefaultKnowledgeRetrievalTest`'s own identically
+ * named, identically purposed fixture -- so a test can model a KnowledgeItem's own state genuinely
+ * diverging between Pre-computation ([findAll]) and Pre-disclosure ([find]).
+ */
+private class RksScriptedFindKnowledgeItemPersistence(
+    private val findResultFor: (KnowledgeId) -> KnowledgeItem?,
+) : KnowledgeItemPersistence {
+
+    private val delegate = InMemoryKnowledgeItemPersistence()
+
+    var findCallCount: Int = 0
+        private set
+    val findCalledWith = mutableListOf<KnowledgeId>()
+
+    override suspend fun store(item: KnowledgeItem): KnowledgeItem = delegate.store(item)
+
+    override suspend fun find(knowledgeId: KnowledgeId): KnowledgeItem? {
+        findCallCount++
+        findCalledWith.add(knowledgeId)
+        return findResultFor(knowledgeId)
+    }
+
+    override suspend fun findAll(): List<KnowledgeItem> = delegate.findAll()
+}
+
+/**
+ * RKS.3-RKS.4. A scriptable [RelevanceMechanism] fake -- mirroring `DefaultKnowledgeRetrievalTest`'s
+ * own established `RksFakeRelevanceMechanism` shape exactly -- so this suite's own fallback tests can
+ * supply arbitrary [RelevanceResult] values, including ones a real mechanism would never produce (to
+ * prove this class's own integrity validation), without ever depending on [QmdRelevanceMechanism] or a
+ * live QMD subprocess. [resultFor] may also simply throw, to prove a genuine mechanism fault propagates
+ * unchanged.
+ */
+private class RksFakeRelevanceMechanism(
+    private val resultFor: (RelevanceRequest) -> RelevanceResult,
+) : RelevanceMechanism {
+
+    var rankCallCount: Int = 0
+        private set
+    val capturedRequests = mutableListOf<RelevanceRequest>()
+
+    override suspend fun rank(request: RelevanceRequest): RelevanceResult {
+        rankCallCount++
+        capturedRequests.add(request)
+        return resultFor(request)
+    }
+}
+
+/**
+ * RKS.4. A [MemoryRetrieval] test double whose [getAssertion] result for a given [AssertionId] is a
+ * scripted, in-order sequence -- the second element returned only on the second call for that same ID
+ * -- so a test can prove Pre-disclosure check C ([DefaultReasoningKnowledgeSource]'s own fresh, second
+ * dereference) genuinely re-reads current Memory Core state rather than reusing Pre-computation's own
+ * earlier result. Every other [MemoryRetrieval] method throws immediately, mirroring
+ * [DefaultReasoningKnowledgeSourceTest.RecordingMemoryRetrieval]'s own identical discipline.
+ */
+private class SequencedAssertionMemoryRetrieval(
+    vararg scripts: Pair<String, List<Assertion?>>,
+) : MemoryRetrieval {
+
+    private val queues: Map<String, ArrayDeque<Assertion?>> = scripts.associate { (id, results) -> id to ArrayDeque(results) }
+    val getAssertionCalls = mutableListOf<AssertionId>()
+
+    override suspend fun getAssertion(requestingPrincipalId: PrincipalId, assertionId: AssertionId): Assertion? {
+        getAssertionCalls += assertionId
+        val queue = queues[assertionId.value] ?: return null
+        check(queue.isNotEmpty()) { "SequencedAssertionMemoryRetrieval exhausted its scripted results for '${assertionId.value}'" }
+        return queue.removeFirst()
+    }
+
+    override suspend fun getEntity(requestingPrincipalId: PrincipalId, entityId: EntityId): Entity? =
+        throw AssertionError("getEntity must never be called by this fixture")
+
+    override suspend fun getDocument(requestingPrincipalId: PrincipalId, documentId: DocumentId): Document? =
+        throw AssertionError("getDocument must never be called by this fixture")
+
+    override suspend fun getRelationship(requestingPrincipalId: PrincipalId, relationshipId: RelationshipId): Relationship? =
+        throw AssertionError("getRelationship must never be called by this fixture")
+
+    override suspend fun findEntities(query: EntityLookupQuery): List<Entity> =
+        throw AssertionError("findEntities must never be called by this fixture")
+
+    override suspend fun findDocuments(query: DocumentLookupQuery): List<Document> =
+        throw AssertionError("findDocuments must never be called by this fixture")
+
+    override suspend fun traverseRelationships(query: RelationshipTraversalQuery): List<Relationship> =
+        throw AssertionError("traverseRelationships must never be called by this fixture")
+
+    override suspend fun findByTimeRange(query: ChronologicalLookupQuery): List<MemoryCoreRecord> =
+        throw AssertionError("findByTimeRange must never be called by this fixture")
+
+    override suspend fun findByMetadata(query: MetadataLookupQuery): List<MemoryCoreRecord> =
+        throw AssertionError("findByMetadata must never be called by this fixture")
+
+    override suspend fun findByProvenance(query: ProvenanceLookupQuery): List<MemoryCoreRecord> =
+        throw AssertionError("findByProvenance must never be called by this fixture")
 }

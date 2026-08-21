@@ -69,6 +69,7 @@ import parker.core.runtime.InMemoryIdentityService
 import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.InMemoryResourceRegistry
 import parker.core.runtime.PermissionPolicyRule
+import parker.core.runtime.QmdRelevanceMechanism
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -245,6 +246,43 @@ class ParkerRuntimeReasoningKnowledgeSourceCompositionTest {
         val reasoningPermissionEngine = reasoningKnowledgeSourceFrom(runtime).privateField<PermissionEngine>("permissionEngine")
 
         assertSame(runtimePermissionEngine, reasoningPermissionEngine)
+
+        runtime.shutdown()
+    }
+
+    // ================= 1b. RKS.5: Runtime Composition Wiring =================
+
+    @Test
+    fun `the composed DefaultReasoningKnowledgeSource is backed by a real QmdRelevanceMechanism, never the former fail-closed placeholder`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val relevanceMechanism = reasoningKnowledgeSourceFrom(runtime).privateField<Any>("relevanceMechanism")
+
+        assertIs<QmdRelevanceMechanism>(
+            relevanceMechanism,
+            "ParkerRuntime must compose the real, selected QmdRelevanceMechanism into DefaultReasoningKnowledgeSource, per RKS.5",
+        )
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `DefaultReasoningKnowledgeSource and DefaultKnowledgeRetrieval share the identical relevanceMechanism instance -- never a second, independently configured one`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val reasoningMechanism = reasoningKnowledgeSourceFrom(runtime).privateField<Any>("relevanceMechanism")
+        val knowledgeRetrieval = runtime.privateField<Any>("knowledgeRetrieval")
+        val retrievalMechanism = knowledgeRetrieval.privateField<Any>("relevanceMechanism")
+
+        assertSame(
+            retrievalMechanism,
+            reasoningMechanism,
+            "the Successor document's own 'Shared Unit 9.7 Mechanism Reuse' requirement (Section 8) binds " +
+                "both surfaces to one shared instance, with the identical frozen identity/version/configuration -- " +
+                "never two independently constructed instances of the same configuration",
+        )
 
         runtime.shutdown()
     }

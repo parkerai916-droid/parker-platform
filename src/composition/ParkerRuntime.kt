@@ -1046,6 +1046,13 @@ class ParkerRuntime(
         // uses immediately above -- never a second, parallel persistence instance -- so anything
         // knowledgeSubmission successfully promotes is genuinely reachable through this new surface
         // too. clock is left defaulted (the real system clock).
+        // RKS.5 ("Runtime Composition Wiring", Reasoning Context Bounded Semantic Relevance
+        // Implementation Plan Section 9). Reuses the identical relevanceMechanism instance
+        // constructed above for DefaultKnowledgeRetrieval -- never a second, independently
+        // configured instance -- satisfying the Successor document's own "Shared Unit 9.7
+        // Mechanism Reuse" requirement (Section 8) by construction: both surfaces are backed by
+        // the same, single QmdRelevanceMechanism object, with the same frozen identity/version/
+        // configuration.
         val reasoningContextMemoryRetrieval =
             permissionFilteredMemoryRetrieval.forAuthorizationPurpose(REASONING_CONTEXT_RETRIEVAL_PURPOSE)
         val reasoningKnowledgeSource: ReasoningKnowledgeSource = DefaultReasoningKnowledgeSource(
@@ -1053,6 +1060,7 @@ class ParkerRuntime(
             permissionEngine,
             reasoningContextMemoryRetrieval,
             REASONING_CONTEXT_RETRIEVAL_PURPOSE,
+            relevanceMechanism,
         )
 
         // Cutover, atomically, in this same unit and the same reviewable change as

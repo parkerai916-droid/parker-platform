@@ -90,6 +90,10 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
     // concern (QmdRelevanceMechanismLiveAcceptanceTest.kt), not this file's.
     private fun configWithUnreachableQmdExecutable(): ParkerRuntimeConfig = config().copy(
         qmdNodeExecutablePath = "parker-unit-9-7-5-composition-test-nonexistent-node-executable",
+        // A non-empty (if unused) loader argument, so ProcessBuilderQmdSubprocessInvoker's own
+        // pre-flight TypeScript-loader guard does not itself fire first and mask this test's own,
+        // different, intended failure (an unreachable node executable) behind an unrelated one.
+        qmdTsxCliPath = "parker-unit-9-7-5-composition-test-unused-tsx-cli-path",
     )
 
     private fun <T> Any.privateField(name: String): T {

@@ -19,6 +19,11 @@ import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ReasoningKnowledgeSource
+import parker.core.interfaces.RelevanceCandidate
+import parker.core.interfaces.RelevanceCandidateToken
+import parker.core.interfaces.RelevanceMechanism
+import parker.core.interfaces.RelevanceRequest
+import parker.core.interfaces.RelevanceResult
 import parker.core.interfaces.RequestId
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
@@ -82,6 +87,19 @@ import parker.core.interfaces.StalenessDisclosure
  * @param authorizationPurpose The exact, frozen Purpose this class's own act/item-level
  *   [ExecutionRequest]s carry -- supplied already-resolved; this class registers nothing and performs
  *   no Purpose-registry lookup of its own.
+ * @param relevanceMechanism (RKS.2-RKS.4, `docs/governance/REASONING_KNOWLEDGE_SOURCE_BOUNDED_SEMANTIC_RELEVANCE_CONTRACT_AND_PERMISSION_SUCCESSOR.md`,
+ *   `docs/governance/REASONING_KNOWLEDGE_SOURCE_BOUNDED_SEMANTIC_RELEVANCE_IMPLEMENTATION_PLAN.md`)
+ *   The sole, mechanism-neutral seam through which [recall] may ever reach Bounded Relevance
+ *   Computation -- invoked at most once per call, only when structural matching (steps 7-8) has
+ *   completed successfully and found exactly zero relevant candidates from a non-empty dereferenced
+ *   candidate set. Deliberately no default: a default relevance mechanism would be silent,
+ *   undisclosed configuration inference, mirroring [DefaultKnowledgeRetrieval]'s own identical,
+ *   already-governed refusal to default this dependency. This class constructs the concrete instance
+ *   for neither production nor test use -- RKS.5's own runtime composition wiring supplies the real,
+ *   already-shared [QmdRelevanceMechanism] instance in production (the identical instance
+ *   [DefaultKnowledgeRetrieval] itself uses, per the Successor document's own "Shared Unit 9.7
+ *   Mechanism Reuse" requirement), and this Unit's own tests supply narrow fakes -- never a live QMD
+ *   subprocess.
  * @param clock The time source [disclosureFor] reads "now" from. Defaults to the real system clock in
  *   production; tests supply a fixed [Clock] so staleness assertions remain deterministic.
  */
@@ -90,6 +108,7 @@ internal class DefaultReasoningKnowledgeSource(
     private val permissionEngine: PermissionEngine,
     private val evidenceMemoryRetrieval: MemoryRetrieval,
     private val authorizationPurpose: AuthorizationPurposeId,
+    private val relevanceMechanism: RelevanceMechanism,
     private val clock: Clock = Clock.systemUTC(),
 ) : ReasoningKnowledgeSource {
 
@@ -112,21 +131,152 @@ internal class DefaultReasoningKnowledgeSource(
             if (isAuthorised(decision)) itemApproved += item
         }
 
-        // Steps 7-8: governed dereference, then content relevance -- only for item-level-approved
-        // candidates; a resolution failure silently excludes that candidate only (authorized-partial).
-        val relevant = mutableListOf<Pair<KnowledgeItem, String>>()
+        // Steps 7-8, restructured (RKS.2, Reasoning Context Bounded Semantic Relevance Implementation
+        // Plan Section 7.1/7.2): dereference every item-level-approved candidate once, retaining the
+        // item->content pairing instead of discarding it once the current candidate's own structural
+        // test completes -- the identical dereferenced set Bounded Relevance Computation needs for its
+        // own Pre-computation-admitted closed candidate set, not a second, wider dereference.
+        val dereferenced = mutableListOf<Pair<KnowledgeItem, String>>()
         for (item in itemApproved) {
             val content = resolveContent(requestingPrincipalId, item.evidenceReference) ?: continue
-            if (content.contains(query.relevance, ignoreCase = true)) relevant += item to content
+            dereferenced += item to content
+        }
+        val structurallyMatched = dereferenced.filter { (_, content) -> content.contains(query.relevance, ignoreCase = true) }
+
+        // Fallback trigger: one or more structural matches -- regardless of how many ultimately survive
+        // -- always stands, unmodified, exactly as before this Unit. Bounded Relevance Computation runs
+        // only when structural matching completed successfully and found exactly zero relevant
+        // candidates over a non-empty dereferenced set (Successor Section 3/4); an empty dereferenced
+        // set means no candidate exists for this principal at all, so the mechanism is never invoked to
+        // rank nothing.
+        val relevant: List<Pair<KnowledgeItem, String>> = when {
+            structurallyMatched.isNotEmpty() -> structurallyMatched
+            dereferenced.isEmpty() -> emptyList()
+            else -> resolveSemanticFallback(requestingPrincipalId, query, dereferenced)
         }
 
-        // Step 9: safe result construction.
+        // Step 9: safe result construction -- from either the structural match, or (RKS.4) the freshly
+        // re-verified Pre-disclosure state; never from a stale Pre-computation snapshot on either path.
         val entries = relevant.map { (item, content) ->
             SafeKnowledgeResultEntry(content, item.evidentialState, item.status, disclosureFor(item))
         }
 
-        // Step 10: bounds applied last, after every authorization/visibility/relevance filter.
+        // Step 10: bounds applied last, after every authorization/visibility/relevance/fallback filter,
+        // identically for both the structural and fallback paths.
         return entries.take(query.maximumResults)
+    }
+
+    /**
+     * RKS.3 (Mechanism Invocation and Token Minting). Mints one opaque
+     * [RelevanceCandidateToken] per already-dereferenced, already
+     * item-level-approved candidate, invokes [relevanceMechanism] exactly
+     * once with the query's own relevance text and the minimum content
+     * boundary [dereferenced] already computed (never a [KnowledgeItem],
+     * [MemoryCoreRecordReference], `evidentialState`, `status`, or
+     * `StalenessDisclosure` -- Successor Section 6/7), and hands the result
+     * to [resolveSemanticResult] for RKS.4's own fail-closed integrity
+     * validation and three-check Pre-disclosure re-verification. The
+     * token-to-item map is local to this one call -- never a class field,
+     * never persisted, never returned (Successor Section 12/13).
+     */
+    private suspend fun resolveSemanticFallback(
+        requestingPrincipalId: PrincipalId,
+        query: KnowledgeRetrievalQuery,
+        dereferenced: List<Pair<KnowledgeItem, String>>,
+    ): List<Pair<KnowledgeItem, String>> {
+        val tokenToItem = mutableMapOf<RelevanceCandidateToken, KnowledgeItem>()
+        val candidates = dereferenced.map { (item, content) ->
+            val token = RelevanceCandidateToken(UUID.randomUUID().toString())
+            tokenToItem[token] = item
+            RelevanceCandidate(token = token, content = content)
+        }
+
+        val relevanceResult = relevanceMechanism.rank(RelevanceRequest(queryText = query.relevance, candidates = candidates))
+
+        return resolveSemanticResult(relevanceResult, tokenToItem, requestingPrincipalId, query)
+    }
+
+    /**
+     * RKS.4 (Three-Check Pre-Disclosure Re-Verification and Fresh-Content
+     * Construction, Successor Section 9/10). [relevanceMechanism]'s own
+     * [RelevanceResult] is discovery, never authority: every returned
+     * [RelevanceCandidateToken] is validated fail-closed against this one
+     * call's own local [tokenToItem] map -- an unknown token, a duplicate
+     * token, or more tokens than were supplied is a mechanism-level
+     * integrity fault, thrown, never silently dropped or truncated. A
+     * genuinely empty [RelevanceResult.rankedTokens] over a non-empty
+     * supplied set is not a fault -- it is the mechanism's own honest
+     * "nothing here is relevant" answer.
+     *
+     * A token surviving integrity validation is resolved back to its own
+     * [KnowledgeItem] only through [tokenToItem] -- never trusted, never
+     * substituted -- and then, immediately before any disclosure, undergoes
+     * exactly three fresh checks, each a second invocation of an operation
+     * Pre-computation already performed once: **(A)** [KnowledgeItem]
+     * currentness, a fresh [KnowledgeItemPersistence.find]; **(B)**
+     * permission currentness, a fresh [PermissionEngine.evaluate] for the
+     * identical item-level intent; **(C)** Memory Core currentness and
+     * content, a fresh, second [resolveContent] dereference -- the
+     * genuinely new invocation type this class's own dereferenced-content
+     * boundary requires that [DefaultKnowledgeRetrieval]'s simpler
+     * two-check pattern never needed. Any of the three failing excludes the
+     * candidate outright -- never disclosed, never substituted for. The
+     * disclosed content, for every survivor, is always check C's own fresh
+     * result, never [RelevanceCandidate.content] and never the
+     * Pre-computation snapshot.
+     */
+    private suspend fun resolveSemanticResult(
+        relevanceResult: RelevanceResult,
+        tokenToItem: Map<RelevanceCandidateToken, KnowledgeItem>,
+        requestingPrincipalId: PrincipalId,
+        query: KnowledgeRetrievalQuery,
+    ): List<Pair<KnowledgeItem, String>> {
+        val rankedTokens = relevanceResult.rankedTokens
+
+        check(rankedTokens.size <= tokenToItem.size) {
+            "relevance mechanism returned more tokens (${rankedTokens.size}) than were supplied " +
+                "(${tokenToItem.size}) for this request -- integrity fault, rejected fail-closed"
+        }
+        val seenTokens = mutableSetOf<RelevanceCandidateToken>()
+        for (token in rankedTokens) {
+            check(tokenToItem.containsKey(token)) {
+                "relevance mechanism returned a token that is not a member of this request's own " +
+                    "closed candidate set -- integrity fault, rejected fail-closed, never substituted, " +
+                    "never treated as a low-relevance result: '${token.value}'"
+            }
+            check(seenTokens.add(token)) {
+                "relevance mechanism returned a duplicate token -- integrity fault, rejected " +
+                    "fail-closed, never silently de-duplicated: '${token.value}'"
+            }
+        }
+
+        if (rankedTokens.isEmpty()) {
+            // A genuine, successful "nothing here is relevant" answer over a non-empty supplied
+            // candidate set -- never itself a failure.
+            return emptyList()
+        }
+
+        val freshlyVerified = mutableListOf<Pair<KnowledgeItem, String>>()
+        for (token in rankedTokens) {
+            val preComputationItem = tokenToItem.getValue(token)
+            // Pre-disclosure check A: KnowledgeItem currentness.
+            val currentItem = persistence.find(preComputationItem.knowledgeId) ?: continue
+            if (!isRetrievable(currentItem, query)) continue
+            // Pre-disclosure check B: permission currentness -- the identical item-level intent,
+            // resource, and action Pre-computation's own gate already used, evaluated freshly.
+            val itemDecision = permissionEngine.evaluate(
+                buildExecutionRequest(requestingPrincipalId, query.correlationId, itemLevelIntent(currentItem)),
+            )
+            if (!isAuthorised(itemDecision)) continue
+            // Pre-disclosure check C: a fresh, second Memory Core dereference -- current content, or
+            // exclusion if the referenced record is no longer ACTIVE or no longer exists.
+            val freshContent = resolveContent(requestingPrincipalId, currentItem.evidenceReference) ?: continue
+            freshlyVerified += currentItem to freshContent
+        }
+
+        // QMD's own ranked order among rankedTokens is preserved among survivors -- freshlyVerified is
+        // built by iterating rankedTokens in order and never re-sorted.
+        return freshlyVerified
     }
 
     // Identical rule to DefaultKnowledgeRetrieval.isRetrievable, duplicated deliberately rather than
