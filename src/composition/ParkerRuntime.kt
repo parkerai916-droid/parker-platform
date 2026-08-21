@@ -76,6 +76,8 @@ import parker.core.runtime.EvidenceIntelligenceInvocationGate
 import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
+import parker.core.runtime.DefaultExplicitOwnerPersistenceDirectiveClassifier
+import parker.core.runtime.ExplicitOwnerPersistenceDirectiveReasoningProvider
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
 import parker.core.runtime.FileSystemEvidenceDeletionAudit
 import parker.core.runtime.FileSystemMemoryCoreDurabilityLog
@@ -824,11 +826,15 @@ class ParkerRuntime(
 
         val reasoningProvider = stage("Reasoning Provider construction") {
             LoggingReasoningProvider(
-                ModelReasoningProvider(
-                    promptBuilder = DefaultReasoningPromptBuilder(),
-                    modelInferenceClient = LocalHttpModelInferenceClient(config.modelEndpointUrl, config.modelName),
-                    responseParser = TaggedReasoningResponseParser(),
-                    timeoutMs = config.modelTimeoutMs,
+                ExplicitOwnerPersistenceDirectiveReasoningProvider(
+                    ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+                    classifier = DefaultExplicitOwnerPersistenceDirectiveClassifier(),
+                    delegate = ModelReasoningProvider(
+                        promptBuilder = DefaultReasoningPromptBuilder(),
+                        modelInferenceClient = LocalHttpModelInferenceClient(config.modelEndpointUrl, config.modelName),
+                        responseParser = TaggedReasoningResponseParser(),
+                        timeoutMs = config.modelTimeoutMs,
+                    ),
                 ),
                 logger,
             )

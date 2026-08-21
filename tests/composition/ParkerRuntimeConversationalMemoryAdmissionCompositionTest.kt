@@ -92,20 +92,21 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
 
     @Test
     fun `an explicit owner REMEMBER instruction creates durable evidence and a persisted promoted KnowledgeItem before success is reported`() = runBlocking<Unit> {
-        val proposition = "My test coffee mug is black."
-        val stub = startStub("REMEMBER: $proposition")
+        val proposition = "the test lighthouse is painted orange"
+        val stub = startStub("REPLY: model downgrade must not be reached")
         val logPath = Files.createTempDirectory("memory-admission-composition-single").resolve("memory-core.log").toString()
         val logger = RecordingParkerLogger()
         val ownerSink = RecordingOwnerNotificationSink()
         val runtime = ParkerRuntime(configFor(stub, logPath), logger, ownerSink)
         runtime.start()
 
-        val ownerMessage = message("Remember that my test coffee mug is black.")
+        val ownerMessage = message("Remember the test lighthouse is painted orange.")
         val outcome = runtime.submitOwnerMessage(ownerMessage)
 
         val delivered = assertIs<ParkerRuntimeOutcome.Delivered>(outcome)
         assertEquals(ExecutionResultStatus.SUCCESS, delivered.executionResult.status)
         assertEquals(listOf("I'll remember that."), ownerSink.notifications)
+        assertTrue(stub.receivedRequestBodies.isEmpty(), "deterministic owner intent must bypass the model")
 
         val knowledgeRetrieval = runtime.privateField<Any>("knowledgeRetrieval")
         val persistence = knowledgeRetrieval.privateField<DurableKnowledgeItemPersistence>("persistence")
@@ -246,7 +247,7 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
     }
 
     @Test
-    fun `this Unit's own admission gate is genuinely reached and genuinely approves in the real, live runtime -- proven structurally, not merely by absence of a denial`() = runBlocking<Unit> {
+    fun `ordinary model-produced Remember still reaches the existing admission gate unchanged`() = runBlocking<Unit> {
         // The first test proves full promotion and persistence; this test retains the earlier
         // direct regression that the admission gate itself remains reachable and approving.
         val stub = startStub("REMEMBER: Stellar is my dog")
@@ -255,9 +256,10 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
         val runtime = ParkerRuntime(configFor(stub, logPath), RecordingParkerLogger(), ownerSink)
         runtime.start()
 
-        runtime.submitOwnerMessage(message("Remember that Stellar is my dog"))
+        runtime.submitOwnerMessage(message("This is an ordinary non-directive turn"))
 
         val replyText = ownerSink.notifications.single()
+        assertEquals(1, stub.receivedRequestBodies.size, "ordinary input must reach the model exactly once")
         assertTrue(
             "not able to store that right now" !in replyText,
             "a reply naming this Unit's own admission-gate denial must never occur when the real policy approves WRITE/MEMORY (already an APPROVED rule) -- actual: $replyText",

@@ -310,7 +310,7 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         // DurableMemoryCore -> real DefaultKnowledgeSubmission promotion path. No synthetic or
         // hand-constructed KnowledgeItem, and no direct persistence seeding, is used anywhere in
         // this test.
-        val stub = startStub("REMEMBER: $proposition")
+        val stub = startStub("REPLY: acknowledged")
         val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
         runtime.start()
 
@@ -331,8 +331,8 @@ class ParkerRuntimeReasoningContextIntegrationTest {
         // -- must carry a safely rendered "Memory: " entry with X's own distinctive content. A
         // friendly reply is not evidence and is not inspected anywhere in this test; only the
         // real, assembled prompt request itself.
-        assertEquals(2, stub.receivedRequestBodies.size)
-        val recallPrompt = stub.receivedRequestBodies[1]
+        assertEquals(1, stub.receivedRequestBodies.size)
+        val recallPrompt = stub.receivedRequestBodies[0]
         assertTrue(
             "Memory: $proposition" in recallPrompt,
             "the real assembled prompt for the separate recall turn must carry a genuine Memory: entry for the promoted proposition: $recallPrompt",
@@ -344,10 +344,7 @@ class ParkerRuntimeReasoningContextIntegrationTest {
     @Test
     fun `a genuinely related paraphrase does not recall a promoted proposition under the current literal substring retrieval`() = runBlocking<Unit> {
         val proposition = "the owner's synthetic emergency vet is Harbour Animal Clinic"
-        val stub = StubModelServer.startSequential(
-            "REMEMBER: $proposition",
-            "REPLY: acknowledged",
-        ).also { server = it }
+        val stub = startStub("REPLY: acknowledged")
         val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
         runtime.start()
 
@@ -365,8 +362,8 @@ class ParkerRuntimeReasoningContextIntegrationTest {
             ),
         )
 
-        assertEquals(2, stub.receivedRequestBodies.size)
-        val recallPrompt = stub.receivedRequestBodies[1]
+        assertEquals(1, stub.receivedRequestBodies.size)
+        val recallPrompt = stub.receivedRequestBodies[0]
 
         assertTrue(
             "Memory: $proposition" !in recallPrompt,
@@ -387,15 +384,7 @@ class ParkerRuntimeReasoningContextIntegrationTest {
             "the owner's synthetic favourite hiking trail is Widow's Peak Ridge",
         )
 
-        val stub = StubModelServer.startSequential(
-            "REMEMBER: ${propositions[0]}",
-            "REMEMBER: ${propositions[1]}",
-            "REMEMBER: ${propositions[2]}",
-            "REMEMBER: ${propositions[3]}",
-            "REMEMBER: ${propositions[4]}",
-            "REMEMBER: ${propositions[5]}",
-            "REPLY: acknowledged",
-        ).also { server = it }
+        val stub = startStub("REPLY: acknowledged")
 
         val runtime = ParkerRuntime(configFor(stub), RecordingParkerLogger())
         runtime.start()
@@ -444,11 +433,11 @@ class ParkerRuntimeReasoningContextIntegrationTest {
             ),
         )
 
-        assertEquals(7, stub.receivedRequestBodies.size)
-        val recallPrompt = stub.receivedRequestBodies[6]
+        assertEquals(1, stub.receivedRequestBodies.size)
+        val recallPrompt = stub.receivedRequestBodies[0]
 
         assertTrue(
-            "Memory: the owner's synthetic emergency vet is Harbour Animal Clinic" !in recallPrompt,
+            "Memory: ${propositions[0]}" !in recallPrompt,
             "pre-QMD control must show that current literal substring retrieval still misses the correct memory among multiple genuine Parker memories: $recallPrompt",
         )
 
