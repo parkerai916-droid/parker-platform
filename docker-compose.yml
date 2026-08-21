@@ -55,10 +55,10 @@ services:
       PARKER_QMD_MODEL_CACHE_DIR: "/opt/qmd-models"
       PARKER_QMD_SOURCE_ROOT: "/opt/qmd"
     volumes:
-      - evidence-storage:/data/evidence
-      - evidence-audit:/data/evidence-audit
-      - memory-core-durability:/data/memory-core
-      - knowledge-item-durability:/data/knowledge-items
+      - /mnt/parker-data/parker/evidence:/data/evidence
+      - /mnt/parker-data/parker/evidence-audit:/data/evidence-audit
+      - /mnt/parker-data/parker/memory-core:/data/memory-core
+      - /mnt/parker-data/parker/knowledge-items:/data/knowledge-items
       # QMD Docker-Runtime Enablement. The Parker host's own
       # already-governed QMD 2.8.3 checkout and local embedding-model
       # cache, mounted read-only -- this compose project never writes
@@ -71,8 +71,3 @@ services:
       - /home/steve/.cache/qmd/models:/opt/qmd-models:ro
     restart: unless-stopped
 
-volumes:
-  evidence-storage:
-  evidence-audit:
-  memory-core-durability:
-  knowledge-item-durability:
