@@ -91,6 +91,10 @@ This is controlled submission and execution wired into the production path, not 
 
 The Evidence Custodian programme has also reached production integration: governed acceptance, retrieval, Memory Core registration, owner-authorised deletion, and durable deletion audit are all now constructed and wired into the same production composition root, reachable through `ParkerRuntime.submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner` — see the Evidence Custodian milestone below.
 
+Parker's memory is now durable and governed end-to-end. An explicit owner instruction to remember something is admitted into canonical Memory Core and Knowledge Item storage, survives a full runtime restart, and is retrieved into the real Reasoning Context through a governed path — literal structural matching first, falling back only when necessary to a bounded, fail-closed relevance mechanism that never gains authority over Parker's own canonical records. This has been demonstrated end-to-end, not merely in isolated tests, through Parker's own production owner-facing UI — see "Milestone: Durable Owner Memory and Governed Relevance Retrieval" below.
+
+Parker also now has a real, production-composed owner-facing user interface — a desktop application wired directly into the same production runtime the CLI and every other entry point use, with a supported launcher script for headless/X11-forwarded server operation.
+
 The current implementation has been developed through governance-first units under the Parker Engineering Standard (**PES-001**).
 
 ## Engineering Workflow
@@ -147,10 +151,26 @@ Communication, conversation, and reasoning:
 - ConversationTurnReasoningCoordinator
 - production `ReasoningContext` assembly
 - Conversation History source
-- Memory source
 - World Model source
 - model-backed Reasoning Provider
 - ConversationReplyCoordinator
+
+Memory and Knowledge (durable owner memory and governed retrieval):
+
+- Memory Core (canonical assertions, entities, and provenance) with durable, replayable persistence
+- Knowledge Item persistence and promotion, backed by the same durability discipline
+- explicit owner `REMEMBER` recognition — deterministic, model-independent classification of an explicit persistence directive
+- `MemoryAdmissionCoordinator` — governed admission of owner-directed memory into Memory Core and Knowledge Items
+- canonical recovery on restart — recovered from durable storage, never resubmitted
+- `DefaultReasoningKnowledgeSource` — governed retrieval into the real Reasoning Context, structural (literal) matching first
+- Bounded Relevance Computation — a governed, fail-closed fallback used only when structural matching finds nothing, backed by a subordinate, shared relevance mechanism (QMD) that proposes candidate identifiers only; every candidate is independently re-verified and resolved against live canonical state before Parker discloses it
+- `DefaultKnowledgeRetrieval` — the analogous governed retrieval surface for direct Knowledge queries, sharing the same relevance mechanism instance
+
+Owner-facing interfaces:
+
+- Local Text Channel / CLI `--interactive` owner console
+- Compose Desktop owner UI (`ui-desktop`), wired directly into the real production runtime
+- `scripts/run-owner-ui.sh` — the supported launcher for the owner UI, with environment/pre-flight validation and a one-shot Gradle execution model
 
 Reply delivery:
 
@@ -192,11 +212,15 @@ Evidence custody and registration:
 | Runtime Foundation | Complete |
 | Conversation Pipeline | Complete |
 | Reasoning Context | Complete |
+| Durable Memory / Knowledge Persistence | Complete (Memory Core, Knowledge Items, explicit owner `REMEMBER`, canonical recovery) |
+| Reasoning Context Relevance (Bounded Semantic Fallback / RKS.1–RKS.6) | Complete |
 | Reply Delivery | Complete |
 | Goal Routing | Complete |
 | Planner Integration | Complete |
 | Agent Execution | Controlled Submission Complete |
 | Evidence Custodian | Complete (Phases 1–10; full native verification passed) |
+| Owner-Facing UI | Complete (Desktop, real production runtime) |
+| Document Ingestion | Not started (next development focus) |
 | Workflow Engine | Planned |
 | Android Product | Planned |
 
@@ -267,6 +291,8 @@ ParkerRuntimeOutcome
 ```
 
 This path is now assembled in the production composition root rather than existing only in isolated tests. The Goal branch now reaches controlled Agent Run submission and synchronous execution through the Agent Runtime, not merely `PlanningSessionResult` — production Tool execution from planned Goals remains incomplete.
+
+Memory retrieval within this path is now durable and governed end-to-end — recovered from canonical storage after a restart, matched structurally first, and falling back to a bounded, fail-closed relevance mechanism only when structural matching finds nothing. See "Milestone: Durable Owner Memory and Governed Relevance Retrieval" below.
 
 ---
 
@@ -406,14 +432,56 @@ This closes the constitutional Evidence Custodian layer. Any future evidence-rel
 
 ---
 
+## Milestone: Durable Owner Memory and Governed Relevance Retrieval
+
+Parker now provides durable owner memory, recoverable across a full restart, retrieved into real reasoning through a governed path that never lets a subordinate search component gain authority over canonical state.
+
+**Persistence.** An explicit owner instruction to remember something is recognised deterministically (no model call is required to classify it), admitted through `MemoryAdmissionCoordinator` into canonical Memory Core and Knowledge Item storage, and durably written. A full runtime restart recovers this state from durable storage — it is never resubmitted.
+
+**Retrieval.** `DefaultReasoningKnowledgeSource` governs what reaches the real Reasoning Context:
+
+```text
+Owner message
+      │
+      ▼
+Structural (literal) match against canonical Memory / Knowledge content
+      │
+      ├── found  → disclosed
+      │
+      └── nothing found
+             │
+             ▼
+      Bounded Relevance Computation (fallback only)
+             │
+             ▼
+      QMD — derivative, search-only relevance mechanism
+             │
+             ▼
+      candidate identifiers (never content, never authority)
+             │
+             ▼
+      Parker independently re-verifies and resolves every candidate
+      against live canonical Memory Core / Knowledge Item state
+             │
+             ▼
+      Parker governance decides what, if anything, is disclosed
+```
+
+Structural matching always runs first and is never bypassed. Bounded Relevance Computation runs only when structural matching genuinely finds nothing, using a relevance mechanism (QMD) shared, unchanged, between Parker's Knowledge Retrieval and Reasoning Context surfaces. That mechanism proposes opaque candidate identifiers only — it cannot create, modify, delete, or redefine Parker memory, and it never sees or returns canonical content. Token resolution is fail-closed (an unknown, duplicate, or excess candidate is rejected, never silently repaired), and every surviving candidate is re-verified against current permission and canonical state immediately before disclosure, not from an earlier snapshot.
+
+**Demonstrated, not merely tested.** This complete path — an explicit `REMEMBER` instruction, durable persistence, a full runtime restart, canonical recovery, and a naturally-phrased recall question answered correctly from the recovered memory — was demonstrated successfully through Parker's real, production owner-facing UI, not only through automated tests or the CLI. A small number of tests that require a live, locally-provisioned relevance component are skipped by default in ordinary verification and run separately.
+
+**Owner-facing UI.** A Compose Desktop owner UI is wired directly into the same production runtime every other entry point uses. `scripts/run-owner-ui.sh` is the supported launcher for running it against the real production stores, with pre-flight checks and a one-shot Gradle execution model chosen deliberately so the launched process's permissions are never inherited from a stale background build daemon. Convenient one-click launching from an owner's own Windows workstation is supported as a local, owner-machine arrangement — a Windows launcher starts an X server, opens an SSH session authenticated by key (never a stored password) with X11 forwarding, and runs `scripts/run-owner-ui.sh` on the server — entirely outside this repository, since it is specific to one owner's own machine.
+
+---
+
 ## Current Verified Baseline
 
 - **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
-- **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10; Deletion, Optimisation Safeguard, and Runtime Integration all verified)
-- **Latest implementation unit:** Evidence Custodian — Runtime Integration
-- **Latest verified milestone:** Evidence Custodian — Programme Complete
-- **Latest commit:** `8f1cffd` — `feat: integrate Evidence Custodian into Parker runtime`
-- **Verification:** full native Gradle test suite passed — 1,191 tests, 0 failures
+- **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10); durable owner memory and governed relevance retrieval (RKS.1–RKS.6) complete; owner-facing UI operational
+- **Latest repository commit:** `68faf46` — `fix(ui): make run-owner-ui.sh immune to a stale wrong-group Gradle daemon` (a bounded, launcher-only shell-script correction)
+- **Latest production implementation milestone:** Reasoning Knowledge Source — Bounded Semantic Relevance (RKS.1–RKS.6), commit `7a1678c` — `feat(reasoning-context): implement RKS.1-RKS.6 bounded semantic relevance fallback`
+- **Latest full native regression baseline:** 2,290 tests, 0 failures, 0 errors, 7 skipped — established at commit `7a1678c`. The commits after it touch only the owner-UI launcher shell script, not Kotlin or Gradle build configuration, and were verified individually rather than by re-running the full suite.
 - **Build result:** `BUILD SUCCESSFUL`
 - **Repository state:** `main` synchronized with `origin/main`; working tree clean
 
@@ -427,6 +495,7 @@ Controlled Agent Run submission is now live, and synchronous execution through t
 
 Still under development:
 
+- document ingestion — transforming external documents (PDFs, scans, email, images, and similar) into governed, Parker-consumable Memory/Knowledge content
 - production tool execution initiated from planned Goals
 - broader Task lifecycle handling after Agent failure
 - richer production completion and recovery semantics
@@ -439,6 +508,8 @@ Still under development:
 - public SDK
 - security hardening
 - release packaging
+
+Document ingestion is a distinct capability from what already exists, and the boundary matters: the Evidence Custodian already provides governed custody of artefacts an owner explicitly submits. Memory and Knowledge now provide durable canonical owner memory and governed retrieval for what an owner explicitly tells Parker to remember. Reasoning Context now includes bounded semantic relevance for recalling that memory. None of this means Parker can read an arbitrary document and turn its contents into governed knowledge on its own — that transformation, from external documents into Parker-consumable Memory/Knowledge, is the next planned development programme and does not exist yet.
 
 The production `AgentStepSource` used today, `DeterministicAgentStepSource`, is a deliberate, deterministic stand-in for a future Planner-backed step source, not tool execution driven by real planned Goals. A configured Agent Run may still terminate in `agent.failed` where no executable action mapping exists for its proposed action — an expected outcome for an unmapped action today, not a defect this milestone resolves.
 
@@ -612,11 +683,36 @@ Parker organises knowledge into three layers:
 
 | Layer | Purpose |
 |---|---|
-| **Memory** | What Parker has learned |
+| **Memory** | What Parker has learned — durably, in canonical Memory Core and Knowledge Item storage |
 | **World Model** | What Parker currently believes to be true |
 | **Reasoning Context** | What matters for the current turn or task |
 
 Production Reasoning Context assembly now draws from Conversation History, Memory, and World Model sources while preserving their distinct ownership and lifecycle boundaries.
+
+### Memory, Knowledge, and governed relevance
+
+Parker's Memory Core and Knowledge Items are the sole canonical, authoritative record of what Parker has been told to remember. A relevance mechanism (currently QMD) may be consulted, but only as a subordinate, derivative, search-only fallback — never as a second store of truth:
+
+```text
+Canonical Memory Core / Knowledge Items (authoritative)
+      │
+      ▼
+Structural retrieval (always first)
+      │
+      └── fallback only, when nothing structural is found
+             │
+             ▼
+      QMD — derivative, search-only relevance mechanism
+             │
+             ▼
+      candidate identifiers (never content, never authority)
+             │
+             ▼
+      Parker re-verifies and resolves each candidate against
+      canonical state, then governs disclosure
+```
+
+QMD cannot create, modify, delete, promote, or redefine Parker memory, and it never determines what Parker discloses. See "Milestone: Durable Owner Memory and Governed Relevance Retrieval," above, for the full retrieval path.
 
 ---
 
@@ -742,22 +838,24 @@ The constitutional foundation is defined by:
 
 - **Architecture:** Constitutional Foundation complete and frozen
 - **Runtime Foundation:** Complete
-- **Sprint status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10)
-- **Latest implementation unit:** Evidence Custodian — Runtime Integration
-- **Latest verified milestone:** Evidence Custodian — Programme Complete, verified by behavioural and structural tests against the real Evidence Custodian, Memory Core, deletion authority, and production composition root
-- **Latest production commit:** `8f1cffd`
-- **Current focus:** production Tool execution from planned Goals, and broader Task lifecycle handling
+- **Sprint status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10); durable owner memory and governed relevance retrieval (RKS.1–RKS.6) complete; owner-facing UI operational
+- **Latest repository commit:** `68faf46` — a bounded, launcher-only shell-script correction; see "Current Verified Baseline" for why this is distinguished from the production milestone below
+- **Latest production implementation milestone:** Reasoning Knowledge Source — Bounded Semantic Relevance, commit `7a1678c`, verified by behavioural and structural tests against the real `DefaultReasoningKnowledgeSource`, `DefaultKnowledgeRetrieval`, shared relevance mechanism, and production composition root, and by a real owner-facing UI acceptance
+- **Latest full native regression baseline:** 2,290 tests, 0 failures, 0 errors, 7 skipped (see "Build Status")
+- **Current focus:** document ingestion — transforming external documents into governed, Parker-consumable Memory/Knowledge content; production Tool execution from planned Goals and broader Task lifecycle handling remain separately open
 
 ---
 
 ## Build Status
 
-Current verified baseline:
+Latest full native regression baseline, at commit `7a1678c`:
 
 ```text
 Native Gradle verification: BUILD SUCCESSFUL
-1,191 tests, 0 failures
+2,290 tests, 0 failures, 0 errors, 7 skipped
 ```
+
+The commits on `main` after `7a1678c` are a bounded, owner-UI-launcher-only correction (`scripts/run-owner-ui.sh`, a shell script) and did not require, and were not verified by, a full suite re-run.
 
 The complete test suite must pass before an implementation unit is accepted, committed, and pushed.
 
@@ -781,6 +879,8 @@ Implementation units are accepted only after:
 6. clean working-tree confirmation.
 
 The current verified baseline includes dedicated behavioural verification for the Evidence Registration Coordinator and for Derivative Relationship Support — confirming that an original and a derivative artefact always receive distinct identities, with traceability preserved solely through Memory Core's own Provenance mechanism — together with dedicated verification for owner-authorised deletion (including durable audit ordering under simulated failure), structural verification of the Constitutional Optimisation Safeguard, and end-to-end verification of the wired production composition root, exercised against real file-backed storage and a real permission graph rather than test fakes.
+
+It also includes dedicated verification of durable Memory Core and Knowledge Item persistence and recovery, structural-first governed retrieval, fail-closed candidate-token minting and resolution, and pre-disclosure re-verification against live canonical state — together with a small number of tests, skipped by default, that require a live, locally-provisioned relevance component and are run separately from ordinary verification.
 
 ---
 
@@ -833,9 +933,12 @@ tests/
     contracts/
     runtime/
 
+ui-desktop/         Compose Desktop owner UI, wired to the real production runtime
+
 agents/
 examples/
 plugins/
+scripts/            Supported operational launchers (e.g. run-owner-ui.sh)
 tools/
 ```
 
@@ -846,9 +949,10 @@ tools/
 | Item | Status |
 |---|---|
 | Architecture | Constitutional Foundation (Frozen) |
-| Implementation | Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10) |
-| Latest Commit | `8f1cffd` — `feat: integrate Evidence Custodian into Parker runtime` |
-| Build Status | `BUILD SUCCESSFUL` |
+| Implementation | Controlled Agent Run Submission complete; Evidence Custodian programme complete; durable owner memory and governed relevance retrieval (RKS.1–RKS.6) complete; owner-facing UI operational |
+| Latest Repository Commit | `68faf46` — `fix(ui): make run-owner-ui.sh immune to a stale wrong-group Gradle daemon` |
+| Latest Production Milestone | `7a1678c` — `feat(reasoning-context): implement RKS.1-RKS.6 bounded semantic relevance fallback` |
+| Build Status | `BUILD SUCCESSFUL` (2,290 tests, 0 failures, 0 errors, 7 skipped, at `7a1678c`) |
 | Branch | `main` |
 | Repository | Clean • Synced with origin |
 
@@ -866,10 +970,14 @@ Parker is being developed in deliberate stages:
 6. Goal handoff and Plan Candidate generation ✅
 7. Planner Runtime production integration ✅
 8. Controlled Agent Run submission ✅
-9. Workflow Engine
-10. Plugins and richer tools
-11. Android product integration
-12. Multi-device production platform
+9. Evidence Custodian ✅
+10. Durable owner memory and governed relevance retrieval (Memory Core, Knowledge Items, RKS.1–RKS.6) ✅
+11. Owner-facing UI ✅
+12. Document ingestion ← next
+13. Workflow Engine
+14. Plugins and richer tools
+15. Android product integration
+16. Multi-device production platform
 
 The controlled transition from an authorised Task Proposal into Agent Run submission and synchronous execution is now implemented:
 
@@ -905,7 +1013,7 @@ Developed as a separate, parallel infrastructure programme, governed by its own 
 6. Derivative Relationship Support ✅ (verified by behavioural tests)
 7. Deletion workflow ✅ (owner-only `OwnerEvidenceDeletionAuthority`, durably audited)
 8. Optimisation Safeguard enforcement ✅ (verified structurally, not by convention)
-9. Platform-wide verification ✅ (completed through cumulative native verification across Phases 7–10; full native Gradle suite passed with 1,191 tests, 0 failures, and 0 errors)
+9. Platform-wide verification ✅ (completed through cumulative native verification across Phases 7–10; full native Gradle suite passed at that time with 1,191 tests, 0 failures, and 0 errors — see "Current Verified Baseline" for the current count)
 10. Runtime integration ✅
 
 Evidence Custodian is now fully wired into `ParkerRuntime`'s production composition root: `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed via dependency injection, their Resources/action-vocabulary/permission rules are registered, and the subsystem is reachable through `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`. Controlled Tool execution from planned Goals remains this platform's own separate, unresolved boundary — see "What Is Not Yet Complete," above.
@@ -948,7 +1056,7 @@ Parker is not another chatbot. It is a governed runtime platform for trustworthy
 
 It is an attempt to build one where the owner remains in control, AI remains replaceable, and trust is enforced by architecture rather than promised through policy.
 
-The Runtime Foundation, production conversation path, Reasoning Context integration, reply delivery, Goal handoff, Plan Candidate generation, and Planner Runtime integration now exist as working, verified parts of the platform.
+The Runtime Foundation, production conversation path, Reasoning Context integration, reply delivery, Goal handoff, Plan Candidate generation, Planner Runtime integration, durable owner memory with governed relevance retrieval, and an owner-facing user interface now exist as working, verified parts of the platform.
 
 The next phase is not to loosen Parker's safeguards in the name of capability. It is to extend capability while preserving them.
 
