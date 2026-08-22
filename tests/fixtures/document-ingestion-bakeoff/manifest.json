@@ -1,0 +1,476 @@
+{
+  "schemaVersion": 1,
+  "corpus": "Parker Document Ingestion Controlled Fixture Pack",
+  "sourceAuthority": "Exact fixture bytes are authoritative. All extracted, OCR, normalized, reconstructed, Markdown, JSON, metadata, or other processed representations are derivative.",
+  "canonicalPlainTextSerialization": null,
+  "fixtureCount": 7,
+  "fixtures": [
+    {
+      "fixtureId": "PARKER-FIXTURE-2026-001",
+      "filename": "01-searchable-simple.pdf",
+      "sha256": "7320a9921a3af2b89c56360fd7eea041ed4d2a2146bc4bd540363232e7b8a3db",
+      "byteLength": 75717,
+      "expectedMimeType": "application/pdf",
+      "expectedPageCount": 2,
+      "ocrRequired": false,
+      "exactControlStrings": [
+        "PARKER-FIXTURE-2026-001",
+        "The quick bronze fox costs NZ$1,234.50 — GST included.",
+        "Case-ID: PF-007/26",
+        "Account: 00104567",
+        "Date: 21 August 2026",
+        "Email: evidence.test@example.invalid",
+        "Māori",
+        "Whanganui",
+        "café",
+        "naïve",
+        "€42.00",
+        "\"quoted text\"",
+        "'single quotes'",
+        "& < > / \\ ( ) [ ] { }"
+      ],
+      "literalExpectations": [
+        "PARKER-FIXTURE-2026-001",
+        "The quick bronze fox costs NZ$1,234.50 — GST included.",
+        "Case-ID: PF-007/26",
+        "Account: 00104567",
+        "Date: 21 August 2026",
+        "Email: evidence.test@example.invalid",
+        "Māori",
+        "Whanganui",
+        "café",
+        "naïve",
+        "€42.00",
+        "\"quoted text\"",
+        "'single quotes'",
+        "& < > / \\ ( ) [ ] { }"
+      ],
+      "pageSpecificControls": {
+        "1": [
+          "PARKER-FIXTURE-2026-001",
+          "Account: 00104567"
+        ],
+        "2": [
+          "PAGE-2-ONLY: KŌWHAI-SECOND-PAGE-882"
+        ]
+      },
+      "metadataExpectations": {
+        "pageCount": 2,
+        "textLayer": true,
+        "header": "Parker Searchable Simple Fixture",
+        "footer": "Synthetic evaluation evidence — immutable source fixture"
+      },
+      "structuralExpectations": [
+        "two pages",
+        "header and footer on each page",
+        "page number on each page"
+      ],
+      "tableCellExpectations": [],
+      "attachmentExpectations": null,
+      "intendedReadingOrder": null,
+      "deliberateWhitespaceControls": [
+        "Whitespace control: Alpha     Beta  Gamma"
+      ],
+      "trapNotes": "Tests searchable text, punctuation, Unicode/macrons, currency, identifiers, repeated internal spaces, headers/footers, and page boundaries."
+    },
+    {
+      "fixtureId": "PARKER-FIXTURE-2026-002",
+      "filename": "02-multicolumn-complex.pdf",
+      "sha256": "d5db7f7497a7032b45776d95c9e712aa1d027830443df760451504f389886c15",
+      "byteLength": 74067,
+      "expectedMimeType": "application/pdf",
+      "expectedPageCount": 1,
+      "ocrRequired": false,
+      "exactControlStrings": [
+        "PARKER-FIXTURE-2026-002",
+        "L1 Alpha one",
+        "L2 Alpha two",
+        "L3 Alpha three",
+        "R1 Bravo one",
+        "R2 Bravo two",
+        "R3 Bravo three",
+        "Alpha",
+        "2",
+        "$12.50",
+        "Bravo",
+        "10",
+        "$1,004.07",
+        "Charlie",
+        "001",
+        "$0.09"
+      ],
+      "literalExpectations": [
+        "PARKER-FIXTURE-2026-002",
+        "L1 Alpha one",
+        "L2 Alpha two",
+        "L3 Alpha three",
+        "R1 Bravo one",
+        "R2 Bravo two",
+        "R3 Bravo three",
+        "Alpha",
+        "2",
+        "$12.50",
+        "Bravo",
+        "10",
+        "$1,004.07",
+        "Charlie",
+        "001",
+        "$0.09"
+      ],
+      "pageSpecificControls": {},
+      "metadataExpectations": {
+        "pageCount": 1,
+        "textLayer": true,
+        "header": "Parker Multicolumn Complex Fixture"
+      },
+      "structuralExpectations": [
+        "text above columns",
+        "two distinct bordered columns",
+        "text below columns",
+        "three-column table",
+        "header/footer/page number"
+      ],
+      "tableCellExpectations": [
+        [
+          "Item",
+          "Quantity",
+          "Amount"
+        ],
+        [
+          "Alpha",
+          "2",
+          "$12.50"
+        ],
+        [
+          "Bravo",
+          "10",
+          "$1,004.07"
+        ],
+        [
+          "Charlie",
+          "001",
+          "$0.09"
+        ]
+      ],
+      "attachmentExpectations": null,
+      "intendedReadingOrder": [
+        "ABOVE-COLUMNS",
+        "LEFT:",
+        "L1 Alpha one",
+        "L2 Alpha two",
+        "L3 Alpha three",
+        "RIGHT:",
+        "R1 Bravo one",
+        "R2 Bravo two",
+        "R3 Bravo three",
+        "BELOW-COLUMNS",
+        "table rows top-to-bottom",
+        "TABLE-END"
+      ],
+      "deliberateWhitespaceControls": [],
+      "trapNotes": "Tests two-column reading order, table reconstruction, currency punctuation, and leading-zero table cells."
+    },
+    {
+      "fixtureId": "PARKER-FIXTURE-2026-003",
+      "filename": "03-scanned.pdf",
+      "sha256": "64039b3200b34c67ce1f993c1cb1f98a115390d6aa25541ceb8a60e674441149",
+      "byteLength": 89913,
+      "expectedMimeType": "application/pdf",
+      "expectedPageCount": 1,
+      "ocrRequired": true,
+      "exactControlStrings": [
+        "PARKER-FIXTURE-2026-003",
+        "OCR CONTROL: SCAN-88421",
+        "Surname: Harcourt",
+        "Amount: $8,750.04",
+        "Vehicle: KJH482",
+        "Date: 09/10/2025",
+        "Phrase: Comfort eligibility removed.",
+        "Māori control: Kōwhai",
+        "Leading-zero value: 004209"
+      ],
+      "literalExpectations": [
+        "PARKER-FIXTURE-2026-003",
+        "OCR CONTROL: SCAN-88421",
+        "Surname: Harcourt",
+        "Amount: $8,750.04",
+        "Vehicle: KJH482",
+        "Date: 09/10/2025",
+        "Phrase: Comfort eligibility removed.",
+        "Māori control: Kōwhai",
+        "Leading-zero value: 004209"
+      ],
+      "pageSpecificControls": {},
+      "metadataExpectations": {
+        "pageCount": 1,
+        "textLayer": false
+      },
+      "structuralExpectations": [
+        "single raster image page",
+        "no embedded or searchable text"
+      ],
+      "tableCellExpectations": [],
+      "attachmentExpectations": null,
+      "intendedReadingOrder": null,
+      "deliberateWhitespaceControls": [],
+      "trapNotes": "Tests OCR requirement disclosure and prevents accidental reliance on an embedded text layer; OCR is intentionally not run during creation."
+    },
+    {
+      "fixtureId": "PARKER-FIXTURE-2026-004",
+      "filename": "04-structured.docx",
+      "sha256": "9cd12baf98a26a8a0edf8d7caeb5a0f821f36d39dbe2e24e16eddbab40e5d49d",
+      "byteLength": 38561,
+      "expectedMimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "expectedPageCount": 2,
+      "ocrRequired": false,
+      "exactControlStrings": [
+        "PARKER-FIXTURE-2026-004",
+        "bold evidence",
+        "italic evidence",
+        "Māori",
+        "café",
+        "0004981",
+        "DOCX-CELL-004",
+        "DOCX-PAGE-2-ONLY: STRUCTURE-7721"
+      ],
+      "literalExpectations": [
+        "PARKER-FIXTURE-2026-004",
+        "bold evidence",
+        "italic evidence",
+        "Māori",
+        "café",
+        "0004981",
+        "DOCX-CELL-004",
+        "DOCX-PAGE-2-ONLY: STRUCTURE-7721"
+      ],
+      "pageSpecificControls": {
+        "2": [
+          "DOCX-PAGE-2-ONLY: STRUCTURE-7721"
+        ]
+      },
+      "metadataExpectations": {
+        "title": "Parker Structured Synthetic Fixture",
+        "author": "Parker Synthetic Fixture Generator",
+        "subject": "Synthetic document-ingestion evaluation corpus"
+      },
+      "structuralExpectations": [
+        "title",
+        "Heading 1 and Heading 2",
+        "paragraphs",
+        "bold run",
+        "italic run",
+        "real numbered list",
+        "real bullet list",
+        "table",
+        "explicit page break",
+        "header",
+        "footer"
+      ],
+      "tableCellExpectations": [
+        [
+          "Field",
+          "Value",
+          "Control"
+        ],
+        [
+          "Reference",
+          "001245",
+          "DOCX-CELL-004"
+        ],
+        [
+          "Location",
+          "Te Whanganui-a-Tara",
+          "Unicode"
+        ],
+        [
+          "Amount",
+          "NZ$3,210.09",
+          "Decimal"
+        ]
+      ],
+      "attachmentExpectations": null,
+      "intendedReadingOrder": null,
+      "deliberateWhitespaceControls": [],
+      "trapNotes": "Tests OOXML structure, styles, run formatting, lists, tables, page breaks, metadata, Unicode, and leading-zero identifiers."
+    },
+    {
+      "fixtureId": "PARKER-FIXTURE-2026-005",
+      "filename": "05-email-with-attachment.eml",
+      "sha256": "9bcb75404cbbe9959f55a2740d33e7b9dfe1ca365bdf5683962d3dfc073c5302",
+      "byteLength": 1039,
+      "expectedMimeType": "message/rfc822",
+      "expectedPageCount": null,
+      "ocrRequired": false,
+      "exactControlStrings": [
+        "PARKER-FIXTURE-2026-005",
+        "EMAIL BODY CONTROL: MAIL-77105",
+        "Reference: 000205",
+        "Unicode: Māori and café"
+      ],
+      "literalExpectations": [
+        "PARKER-FIXTURE-2026-005",
+        "EMAIL BODY CONTROL: MAIL-77105",
+        "Reference: 000205",
+        "Unicode: Māori and café"
+      ],
+      "pageSpecificControls": {},
+      "metadataExpectations": {
+        "From": "synthetic.sender@example.invalid",
+        "To": "synthetic.recipient@example.invalid",
+        "Cc": "synthetic.audit@example.invalid",
+        "Date": "Fri, 21 Aug 2026 10:15:00 +1200",
+        "Subject": "PARKER-FIXTURE-2026-005 — Synthetic evidence message",
+        "Message-ID": "<parker-fixture-2026-005@example.invalid>"
+      },
+      "structuralExpectations": [
+        "standards-compliant MIME message",
+        "UTF-8 text/plain body",
+        "exactly one attachment"
+      ],
+      "tableCellExpectations": [],
+      "attachmentExpectations": {
+        "filename": "synthetic-control-005.txt",
+        "mimeType": "text/plain",
+        "byteLength": 95,
+        "sha256": "3b5a3e7f8d5d7873feedfb2d4c026a73c94308016e82cf4f0f4dbd9eeb740828",
+        "exactControlStrings": [
+          "PARKER-ATTACHMENT-2026-005",
+          "Attachment control: TXT-55021",
+          "Reference: 000055",
+          "Unicode: Māori"
+        ]
+      },
+      "intendedReadingOrder": null,
+      "deliberateWhitespaceControls": [],
+      "trapNotes": "Tests RFC message metadata, MIME boundaries, UTF-8 body fidelity, attachment enumeration, transfer decoding, and attachment provenance."
+    },
+    {
+      "fixtureId": "PARKER-FIXTURE-2026-006",
+      "filename": "06-structured.csv",
+      "sha256": "8e560383b8dcdc9a637e20614e46acee7af21596c0ff9d168db83e3ae07120f1",
+      "byteLength": 248,
+      "expectedMimeType": "text/csv",
+      "expectedPageCount": null,
+      "ocrRequired": false,
+      "exactControlStrings": [
+        "PARKER-FIXTURE-2026-006",
+        "001",
+        "00001234",
+        "Alpha, Limited",
+        "Exact, quoted value",
+        "Māori Test",
+        "01-02-03",
+        "Line with  repeated spaces",
+        "He said \"literal\"."
+      ],
+      "literalExpectations": [
+        "PARKER-FIXTURE-2026-006",
+        "001",
+        "00001234",
+        "Alpha, Limited",
+        "Exact, quoted value",
+        "Māori Test",
+        "01-02-03",
+        "Line with  repeated spaces",
+        "He said \"literal\"."
+      ],
+      "pageSpecificControls": {},
+      "metadataExpectations": {
+        "encoding": "UTF-8",
+        "lineEnding": "CRLF"
+      },
+      "structuralExpectations": [
+        "five columns",
+        "header plus four records",
+        "RFC 4180-compatible quoting"
+      ],
+      "tableCellExpectations": [
+        [
+          "id",
+          "name",
+          "reference",
+          "amount",
+          "note"
+        ],
+        [
+          "001",
+          "Alpha, Limited",
+          "00001234",
+          "1234.50",
+          "Exact, quoted value"
+        ],
+        [
+          "002",
+          "Māori Test",
+          "ABC-007",
+          "0.00",
+          ""
+        ],
+        [
+          "003",
+          "Bravo",
+          "01-02-03",
+          "42.10",
+          "Line with  repeated spaces"
+        ],
+        [
+          "004",
+          "Fixture Marker",
+          "PARKER-FIXTURE-2026-006",
+          "7.05",
+          "He said \"literal\"."
+        ]
+      ],
+      "attachmentExpectations": null,
+      "intendedReadingOrder": null,
+      "deliberateWhitespaceControls": [
+        "Line with  repeated spaces"
+      ],
+      "trapNotes": "Tests CSV quoting, embedded commas, escaped quotes, empty cells, decimals stored as literal text, date-like text, Unicode, repeated spaces, and leading zeroes."
+    },
+    {
+      "fixtureId": "PARKER-FIXTURE-2026-007",
+      "filename": "07-text-image.png",
+      "sha256": "434e7af5da3312c63b955919742dfefc6ccba7f8ad457ff1152d81554d59db83",
+      "byteLength": 57628,
+      "expectedMimeType": "image/png",
+      "expectedPageCount": null,
+      "ocrRequired": true,
+      "exactControlStrings": [
+        "PARKER-FIXTURE-2026-007",
+        "IMAGE OCR CONTROL: IMG-49017",
+        "Reference: 000731",
+        "Amount: NZ$907.03",
+        "Date: 03/08/2026",
+        "Location: Te Whanganui-a-Tara",
+        "Status: REVIEW REQUIRED"
+      ],
+      "literalExpectations": [
+        "PARKER-FIXTURE-2026-007",
+        "IMAGE OCR CONTROL: IMG-49017",
+        "Reference: 000731",
+        "Amount: NZ$907.03",
+        "Date: 03/08/2026",
+        "Location: Te Whanganui-a-Tara",
+        "Status: REVIEW REQUIRED"
+      ],
+      "pageSpecificControls": {},
+      "metadataExpectations": {
+        "pixelDimensions": [
+          1400,
+          1000
+        ],
+        "colorMode": "RGB"
+      },
+      "structuralExpectations": [
+        "rendered text pixels only",
+        "no OCR or hidden text representation"
+      ],
+      "tableCellExpectations": [],
+      "attachmentExpectations": null,
+      "intendedReadingOrder": null,
+      "deliberateWhitespaceControls": [],
+      "trapNotes": "Tests OCR of a standalone raster image, numeric/date fidelity, leading zeroes, and geographic text; image is not OCRed during creation."
+    }
+  ]
+}

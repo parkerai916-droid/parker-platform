@@ -1,0 +1,29 @@
+From: synthetic.sender@example.invalid
+To: synthetic.recipient@example.invalid
+Cc: synthetic.audit@example.invalid
+Date: Fri, 21 Aug 2026 10:15:00 +1200
+Subject: PARKER-FIXTURE-2026-005 =?utf-8?b?4oCU?= Synthetic evidence message
+Message-ID: <parker-fixture-2026-005@example.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============0490641462303132395=="
+
+--===============0490641462303132395==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+PARKER-FIXTURE-2026-005
+EMAIL BODY CONTROL: MAIL-77105
+Reference: 000205
+Unicode: Māori and café
+This body is synthetic and contains no real case data.
+
+--===============0490641462303132395==
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="synthetic-control-005.txt"
+MIME-Version: 1.0
+
+UEFSS0VSLUFUVEFDSE1FTlQtMjAyNi0wMDUNCkF0dGFjaG1lbnQgY29udHJvbDogVFhULTU1MDIx
+DQpSZWZlcmVuY2U6IDAwMDA1NQ0KVW5pY29kZTogTcSBb3JpDQo=
+
+--===============0490641462303132395==--

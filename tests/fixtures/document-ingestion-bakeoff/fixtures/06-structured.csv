@@ -1,0 +1,5 @@
+id,name,reference,amount,note
+001,"Alpha, Limited",00001234,1234.50,"Exact, quoted value"
+002,Māori Test,ABC-007,0.00,
+003,Bravo,01-02-03,42.10,Line with  repeated spaces
+004,Fixture Marker,PARKER-FIXTURE-2026-006,7.05,"He said ""literal""."
