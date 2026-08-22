@@ -39,7 +39,8 @@ class FileSystemDocumentIngestionAudit(private val logFile: Path) : DocumentInge
             append("requestingPrincipalId=").append(encode(record.requestingPrincipalId.value)).append('\t')
             append("operationalOutcome=").append(encode(record.operationalOutcome)).append('\t')
             append("recordedAt=").append(record.recordedAt).append('\t')
-            append("derivativeGenerationId=").append(record.derivativeGenerationId?.value?.let(::encode) ?: "")
+            append("derivativeGenerationId=").append(encode(record.derivativeGenerationId.value)).append('\t')
+            append("stage=").append(record.stage.name)
             append('\n')
         }.toByteArray(StandardCharsets.UTF_8)
         mutex.withLock {

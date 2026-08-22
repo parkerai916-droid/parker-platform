@@ -18,6 +18,7 @@ import parker.core.interfaces.DerivativeGenerationStorageException
 class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGenerationStorage {
     private val storageRoot = storageRoot.toAbsolutePath().normalize()
     private val tempDirectory: Path
+    private val preparedDirectory: Path
     private val mutex = Mutex()
 
     init {
@@ -25,19 +26,24 @@ class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGener
         if (!Files.isDirectory(this.storageRoot)) throw DerivativeGenerationStorageException.InvalidStorageRoot(storageRoot.toString(), "storage root is not a directory")
         if (!Files.isWritable(this.storageRoot)) throw DerivativeGenerationStorageException.InvalidStorageRoot(storageRoot.toString(), "storage root is not writable")
         tempDirectory = this.storageRoot.resolve(".tmp")
+        preparedDirectory = this.storageRoot.resolve(".prepared")
         try {
             Files.createDirectories(tempDirectory)
+            Files.createDirectories(preparedDirectory)
         } catch (e: IOException) {
             throw DerivativeGenerationStorageException.InvalidStorageRoot(storageRoot.toString(), "could not create temporary directory: ${e.message}")
         }
     }
 
-    override suspend fun admit(record: DerivativeGenerationRecord) {
+    override suspend fun prepare(record: DerivativeGenerationRecord) {
         requireSafe(record.derivativeGenerationId)
         val target = target(record.derivativeGenerationId)
+        val preparedTarget = preparedTarget(record.derivativeGenerationId)
         val encoded = DerivativeGenerationRecordCodec.encode(record)
         mutex.withLock {
-            if (Files.exists(target)) throw DerivativeGenerationStorageException.DuplicateIdentifier(record.derivativeGenerationId)
+            if (Files.exists(target) || Files.exists(preparedTarget)) {
+                throw DerivativeGenerationStorageException.DuplicateIdentifier(record.derivativeGenerationId)
+            }
             val temporary = try {
                 Files.createTempFile(tempDirectory, "derivative-generation-", ".tmp")
             } catch (e: IOException) {
@@ -50,7 +56,7 @@ class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGener
                     channel.force(true)
                 }
                 try {
-                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE)
+                    Files.move(temporary, preparedTarget, StandardCopyOption.ATOMIC_MOVE)
                 } catch (e: FileAlreadyExistsException) {
                     throw DerivativeGenerationStorageException.DuplicateIdentifier(record.derivativeGenerationId)
                 }
@@ -60,6 +66,48 @@ class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGener
                 throw DerivativeGenerationStorageException.PersistenceFailure("Failed to persist derivative generation '${record.derivativeGenerationId.value}'", e)
             } finally {
                 Files.deleteIfExists(temporary)
+            }
+        }
+    }
+
+    override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) {
+        requireSafe(derivativeGenerationId)
+        val prepared = preparedTarget(derivativeGenerationId)
+        val target = target(derivativeGenerationId)
+        mutex.withLock {
+            if (Files.exists(target)) throw DerivativeGenerationStorageException.DuplicateIdentifier(derivativeGenerationId)
+            if (!Files.exists(prepared)) {
+                throw DerivativeGenerationStorageException.PersistenceFailure(
+                    "No prepared derivative generation exists for '${derivativeGenerationId.value}'",
+                    IOException("prepared record not found"),
+                )
+            }
+            val preparedRecord = try {
+                val size = Files.size(prepared)
+                if (size > MAX_RECORD_BYTES) error("prepared record exceeds the $MAX_RECORD_BYTES-byte limit")
+                DerivativeGenerationRecordCodec.decode(Files.readAllBytes(prepared))
+            } catch (e: Exception) {
+                throw DerivativeGenerationStorageException.CorruptRecord(
+                    derivativeGenerationId,
+                    e.message ?: "prepared record could not be decoded",
+                    e,
+                )
+            }
+            if (preparedRecord.derivativeGenerationId != derivativeGenerationId) {
+                throw DerivativeGenerationStorageException.CorruptRecord(
+                    derivativeGenerationId,
+                    "prepared identity does not match publication identity",
+                )
+            }
+            try {
+                Files.move(prepared, target, StandardCopyOption.ATOMIC_MOVE)
+            } catch (e: FileAlreadyExistsException) {
+                throw DerivativeGenerationStorageException.DuplicateIdentifier(derivativeGenerationId)
+            } catch (e: IOException) {
+                throw DerivativeGenerationStorageException.PersistenceFailure(
+                    "Failed to publish prepared derivative generation '${derivativeGenerationId.value}'",
+                    e,
+                )
             }
         }
     }
@@ -94,6 +142,7 @@ class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGener
     }
 
     private fun target(id: DerivativeGenerationId): Path = storageRoot.resolve("${id.value}.derivative")
+    private fun preparedTarget(id: DerivativeGenerationId): Path = preparedDirectory.resolve("${id.value}.derivative")
 
     private fun requireSafe(id: DerivativeGenerationId) {
         if (!SAFE_IDENTIFIER.matches(id.value) || id.value in RESERVED_NAMES || isReservedNumberedName(id.value)) {

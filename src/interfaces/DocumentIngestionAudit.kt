@@ -2,13 +2,19 @@ package parker.core.interfaces
 
 import java.time.Instant
 
+enum class DocumentIngestionAuditStage {
+    ADMISSION_AUTHORISED,
+    ADMITTED,
+}
+
 data class DocumentIngestionAuditRecord(
     val correlationValue: String,
     val sourceEvidenceArtifactId: EvidenceArtifactId,
     val requestingPrincipalId: PrincipalId,
     val operationalOutcome: String,
     val recordedAt: Instant,
-    val derivativeGenerationId: DerivativeGenerationId? = null,
+    val derivativeGenerationId: DerivativeGenerationId,
+    val stage: DocumentIngestionAuditStage,
 ) {
     init {
         require(correlationValue.isNotBlank()) { "DocumentIngestionAuditRecord.correlationValue must not be blank" }

@@ -15,6 +15,7 @@ import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DocumentIngestionAudit
 import parker.core.interfaces.DocumentIngestionAuditException
 import parker.core.interfaces.DocumentIngestionAuditRecord
+import parker.core.interfaces.DocumentIngestionAuditStage
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.PrincipalId
 
@@ -70,6 +71,7 @@ class FileSystemDocumentIngestionAuditTest {
             operationalOutcome = "ADMITTED\tWITH_WARNING",
             recordedAt = Instant.parse("2026-08-23T01:02:03Z"),
             derivativeGenerationId = DerivativeGenerationId("generation\rΩ"),
+            stage = DocumentIngestionAuditStage.ADMISSION_AUTHORISED,
         )
         audit.record(record)
         val lines = Files.readAllLines(log)
@@ -97,6 +99,7 @@ class FileSystemDocumentIngestionAuditTest {
             operationalOutcome = "ADMITTED",
             recordedAt = Instant.parse(time),
             derivativeGenerationId = DerivativeGenerationId("generation-1"),
+            stage = DocumentIngestionAuditStage.ADMITTED,
         )
 
     private fun decodedField(line: String, name: String): String {

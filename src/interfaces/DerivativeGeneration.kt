@@ -184,6 +184,7 @@ sealed class DerivativeGenerationStorageException(message: String, cause: Throwa
 }
 
 interface DerivativeGenerationStorage {
-    suspend fun admit(record: DerivativeGenerationRecord)
+    suspend fun prepare(record: DerivativeGenerationRecord)
+    suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId)
     suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId): DerivativeGenerationRecord?
 }

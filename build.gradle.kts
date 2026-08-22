@@ -34,6 +34,7 @@ dependencies {
     // unreachable, not merely unconfigured (Boundary Clarification Determination 2).
     implementation("org.apache.tika:tika-core:3.3.1")
     implementation("org.apache.tika:tika-parser-pdf-module:3.3.1")
+    implementation("org.apache.commons:commons-csv:1.14.1")
 
     testImplementation(kotlin("test-junit5"))
     testImplementation(kotlin("reflect"))

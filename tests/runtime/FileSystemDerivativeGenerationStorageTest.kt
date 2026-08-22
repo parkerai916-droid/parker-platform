@@ -23,7 +23,8 @@ class FileSystemDerivativeGenerationStorageTest {
     @Test
     fun `admitted record is durable and reloadable`() = runTest {
         val record = DerivativeGenerationTest.record()
-        FileSystemDerivativeGenerationStorage(directory).admit(record)
+        FileSystemDerivativeGenerationStorage(directory).prepare(record)
+        FileSystemDerivativeGenerationStorage(directory).publishPrepared(record.derivativeGenerationId)
         val reloaded = FileSystemDerivativeGenerationStorage(directory).retrieve(record.derivativeGenerationId)
         assertEquals(record, reloaded)
         assertNotNull(reloaded)
@@ -33,9 +34,10 @@ class FileSystemDerivativeGenerationStorageTest {
     fun `duplicate identity is rejected without overwrite`() = runTest {
         val storage = FileSystemDerivativeGenerationStorage(directory)
         val original = DerivativeGenerationTest.record()
-        storage.admit(original)
+        storage.prepare(original)
+        storage.publishPrepared(original.derivativeGenerationId)
         assertFailsWith<DerivativeGenerationStorageException.DuplicateIdentifier> {
-            storage.admit(original.copy(derivativeKind = "replacement"))
+            storage.prepare(original.copy(derivativeKind = "replacement"))
         }
         assertEquals(original, storage.retrieve(original.derivativeGenerationId))
     }
@@ -63,7 +65,7 @@ class FileSystemDerivativeGenerationStorageTest {
         val id = DerivativeGenerationId("../escape")
         val record = DerivativeGenerationTest.record().copy(derivativeGenerationId = id)
         assertFailsWith<DerivativeGenerationStorageException.UnsafeIdentifier> {
-            FileSystemDerivativeGenerationStorage(directory).admit(record)
+            FileSystemDerivativeGenerationStorage(directory).prepare(record)
         }
         assertEquals(false, Files.exists(directory.parent.resolve("escape.derivative")))
     }
@@ -81,12 +83,47 @@ class FileSystemDerivativeGenerationStorageTest {
         val original = DerivativeGenerationTest.record()
         val replacement = original.copy(derivativeKind = "replacement")
         val outcomes = listOf(original, replacement).map { candidate ->
-            async { runCatching { storage.admit(candidate) } }
+            async { runCatching { storage.prepare(candidate) } }
         }.map { it.await() }
         assertEquals(1, outcomes.count { it.isSuccess })
         assertEquals(1, outcomes.count { it.exceptionOrNull() is DerivativeGenerationStorageException.DuplicateIdentifier })
+        storage.publishPrepared(original.derivativeGenerationId)
         val stored = storage.retrieve(original.derivativeGenerationId)
         assertEquals(true, stored == original || stored == replacement)
+    }
+
+    @Test
+    fun `durable prepared record is hidden until atomic publication`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val record = DerivativeGenerationTest.record()
+        storage.prepare(record)
+        assertEquals(null, storage.retrieve(record.derivativeGenerationId))
+        assertEquals(true, Files.exists(directory.resolve(".prepared").resolve("generation-1.derivative")))
+        storage.publishPrepared(record.derivativeGenerationId)
+        assertEquals(record, storage.retrieve(record.derivativeGenerationId))
+        assertEquals(false, Files.exists(directory.resolve(".prepared").resolve("generation-1.derivative")))
+    }
+
+    @Test
+    fun `prepared visibility remains hidden across restart until publication`() = runTest {
+        val record = DerivativeGenerationTest.record()
+        FileSystemDerivativeGenerationStorage(directory).prepare(record)
+        val restarted = FileSystemDerivativeGenerationStorage(directory)
+        assertEquals(null, restarted.retrieve(record.derivativeGenerationId))
+        restarted.publishPrepared(record.derivativeGenerationId)
+        assertEquals(record, FileSystemDerivativeGenerationStorage(directory).retrieve(record.derivativeGenerationId))
+    }
+
+    @Test
+    fun `corrupt prepared bytes cannot be published into admitted namespace`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val record = DerivativeGenerationTest.record()
+        storage.prepare(record)
+        directory.resolve(".prepared").resolve("generation-1.derivative").writeBytes(byteArrayOf(1, 2, 3))
+        assertFailsWith<DerivativeGenerationStorageException.CorruptRecord> {
+            storage.publishPrepared(record.derivativeGenerationId)
+        }
+        assertEquals(null, storage.retrieve(record.derivativeGenerationId))
     }
 
     @Test
