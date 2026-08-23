@@ -18,6 +18,11 @@ out/
 dist/
 tmp/
 
+# Docling OCR bridge (tools/docling-ocr-bridge.py) -- the first Python code
+# in this repository. Standard bytecode-cache artifacts, never committed.
+__pycache__/
+*.pyc
+
 # Evidence Processing (Searchable PDF), Implementation Unit 2: real-world evidence corpus
 # fixtures (Uber-style receipt, WelTec/ERA document, scanned/malformed/unsupported samples).
 # Never committed, per Scope Lock Section 4 and Unit 7's own operational-proof requirement --

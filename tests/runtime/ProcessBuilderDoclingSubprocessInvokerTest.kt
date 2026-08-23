@@ -5,6 +5,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.OcrRecognitionOutcome
+import parker.core.interfaces.OcrRecognitionRequest
 
 /**
  * OCR Mechanism -- Docling Concrete Adapter Implementation Unit. Real
@@ -113,5 +118,66 @@ class ProcessBuilderDoclingSubprocessInvokerTest {
 
         assertFalse(drain.capExceeded)
         assertEquals("", drain.text())
+    }
+
+    // ---- Real Kotlin<->Python protocol compatibility, against the real script ----
+    //
+    // Unlike every other test in this file, these two genuinely invoke
+    // tools/docling-ocr-bridge.py as a real subprocess -- no fake invoker, no
+    // Docling installation required. Both exercise a request-file shape that is
+    // deterministic without Docling (a nonexistent modelCacheDir, per that
+    // script's own contract, is rejected during its pre-flight check, before any
+    // `import docling` is ever attempted). Skipped gracefully, never failed, on
+    // an environment lacking python3 or the script itself -- mirroring this
+    // codebase's own established "skip, don't fail, on a missing optional
+    // external prerequisite" discipline.
+
+    private fun realBridgeScriptPath(): String {
+        val file = java.io.File("tools/docling-ocr-bridge.py")
+        return file.absolutePath
+    }
+
+    private fun assumePythonAndBridgeScriptAvailable(): String {
+        val scriptFile = java.io.File(realBridgeScriptPath())
+        assumeTrue(scriptFile.exists(), "tools/docling-ocr-bridge.py not found at ${scriptFile.absolutePath} -- skipping real protocol-compatibility test")
+        val pythonProbe = try {
+            ProcessBuilder(listOf("python3", "--version")).start().apply { waitFor() }.exitValue() == 0
+        } catch (_: Exception) {
+            false
+        }
+        assumeTrue(pythonProbe, "no python3 executable found on PATH -- skipping real protocol-compatibility test")
+        return scriptFile.absolutePath
+    }
+
+    @Test
+    fun `real bridge script -- a nonexistent modelCacheDir is rejected with exit code 2, matching the adopted exit-code contract`() {
+        val scriptPath = assumePythonAndBridgeScriptAvailable()
+        val invoker = ProcessBuilderDoclingSubprocessInvoker(
+            configuration(pythonExecutablePath = "python3", bridgeScriptPath = scriptPath),
+        )
+        val requestJson = """{"protocolVersion":"1","sourceFilePath":"/tmp/does-not-matter.pdf","mediaType":"application/pdf","configurationProfile":"docling-bridge-v1","modelCacheDir":"/nonexistent/model-cache-9f3a"}"""
+
+        val result = invoker.invoke(requestJson, timeoutMillis = 15_000)
+
+        assertEquals(2, result.exitCode, "the real script's own exit code for a missing modelCacheDir must match EXIT_CODE_MISSING_ASSETS exactly -- stderr: ${result.stderr}")
+        assertEquals("", result.stdout, "no stdout output is permitted on a non-zero exit")
+        assertFalse(result.timedOut)
+    }
+
+    @Test
+    fun `real bridge script through the real adapter -- a nonexistent modelCacheDir maps end-to-end to ProcessingOrDependencyFailure`() = runTest {
+        val scriptPath = assumePythonAndBridgeScriptAvailable()
+        val configuration = configuration(pythonExecutablePath = "python3", bridgeScriptPath = scriptPath)
+            .copy(modelCacheDir = "/nonexistent/model-cache-9f3a")
+        val adapter = DoclingOcrProviderAdapter(configuration, ProcessBuilderDoclingSubprocessInvoker(configuration))
+        val request = OcrRecognitionRequest(
+            sourceEvidenceId = EvidenceArtifactId("evidence-1"),
+            content = byteArrayOf(1, 2, 3),
+            mediaType = "application/pdf",
+        )
+
+        val outcome = adapter.recognise(request)
+
+        assertTrue(outcome is OcrRecognitionOutcome.ProcessingOrDependencyFailure, "expected ProcessingOrDependencyFailure, got: $outcome")
     }
 }
