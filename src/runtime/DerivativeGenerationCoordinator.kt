@@ -17,6 +17,9 @@ import parker.core.interfaces.DocumentIngestionAudit
 import parker.core.interfaces.DocumentIngestionAuditRecord
 import parker.core.interfaces.DocumentIngestionAuditException
 import parker.core.interfaces.DocumentIngestionAuditStage
+import parker.core.interfaces.DocxStructuralExtractionOutcome
+import parker.core.interfaces.DocxStructuralExtractor
+import parker.core.interfaces.DocxStructuralResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EmlAttachmentCandidate
 import parker.core.interfaces.EmlStructuralExtractionOutcome
@@ -40,6 +43,20 @@ data class EmlIngestionSource(
     val expectedSha256: String,
 ) {
     init { require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) }
+}
+
+data class DocxIngestionSource(val evidenceArtifactId: EvidenceArtifactId, val content: ByteArray, val expectedSha256: String) {
+    init { require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) }
+}
+
+sealed class DocxDerivativeGenerationCoordinationOutcome {
+    data class Admitted(val record: DerivativeGenerationRecord, val docxStructure: DocxStructuralResult) : DocxDerivativeGenerationCoordinationOutcome()
+    data class ExtractionFailed(val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
+    data class SourceIntegrityFailed(val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
+    data class PreparationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
+    data class AuthorisationAuditFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
+    data class PublicationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
+    data class AdmittedAuditFailed(val record: DerivativeGenerationRecord, val docxStructure: DocxStructuralResult, val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
 }
 
 data class CandidateChildSource(
@@ -93,6 +110,7 @@ class DerivativeGenerationCoordinator(
     private val idFactory: () -> DerivativeGenerationId = { DerivativeGenerationId(UUID.randomUUID().toString()) },
     private val now: () -> Instant = Instant::now,
     private val emlExtractor: EmlStructuralExtractor? = null,
+    private val docxExtractor: DocxStructuralExtractor? = null,
 ) {
     suspend fun ingestCsv(
         source: CsvIngestionSource,
@@ -194,6 +212,35 @@ class DerivativeGenerationCoordinator(
             return EmlDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, candidates, e.message ?: e::class.simpleName.orEmpty())
         }
         return EmlDerivativeGenerationCoordinationOutcome.Admitted(record, extracted, candidates)
+    }
+
+    suspend fun ingestDocx(source: DocxIngestionSource, requestingPrincipalId: PrincipalId, correlationValue: String): DocxDerivativeGenerationCoordinationOutcome {
+        require(correlationValue.isNotBlank())
+        val extractor = requireNotNull(docxExtractor) { "DOCX extractor is not configured" }
+        if (sha256(source.content) != source.expectedSha256) return DocxDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 does not match the governed source context")
+        val extracted = when (val outcome = extractor.extract(source.content.copyOf())) {
+            is DocxStructuralExtractionOutcome.Malformed -> return DocxDerivativeGenerationCoordinationOutcome.ExtractionFailed(outcome.reason)
+            is DocxStructuralExtractionOutcome.Extracted -> outcome.result
+        }
+        if (sha256(source.content) != source.expectedSha256) return DocxDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 changed during DOCX extraction")
+        val id = idFactory()
+        val record = DerivativeGenerationRecord(
+            id, source.evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(source.evidenceArtifactId)),
+            "DOCX OOXML structure", extracted.producerIdentity, extracted.transformationHistory, now(),
+            DerivativeContentIdentity.NoCanonicalSerialization, extracted.completenessState,
+            DerivativeOperationalOutcome.USABLE, extracted.warnings,
+        )
+        try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) {
+            return DocxDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED)) }
+        catch (e: DocumentIngestionAuditException) { return DocxDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { storage.publishPrepared(id) } catch (e: DerivativeGenerationStorageException) {
+            return DocxDerivativeGenerationCoordinationOutcome.PublicationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
+        catch (e: DocumentIngestionAuditException) { return DocxDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
+        return DocxDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
     }
 
     private fun EmlAttachmentCandidate.linkTo(root: EvidenceArtifactId) = CandidateChildSource(

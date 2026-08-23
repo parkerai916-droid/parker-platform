@@ -37,6 +37,7 @@ dependencies {
     implementation("org.apache.commons:commons-csv:1.14.1")
     implementation("org.apache.james:apache-mime4j-core:0.8.14")
     implementation("org.apache.james:apache-mime4j-dom:0.8.14")
+    implementation("org.apache.poi:poi-ooxml:5.5.1")
 
     testImplementation(kotlin("test-junit5"))
     testImplementation(kotlin("reflect"))
