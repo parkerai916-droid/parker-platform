@@ -53,6 +53,20 @@ import java.nio.file.Path
  *   sibling storage root, not nested inside [evidenceStorageRootPath],
  *   since a manifest is never itself an `EvidenceArtifact`. Required,
  *   for the same reason [evidenceStorageRootPath] is required.
+ * @param derivativeGenerationStorageRootPath Document Ingestion, Owner-Facing
+ *   Tier A Runtime Invocation Boundary. An already-existing, writable
+ *   directory, passed unchanged to `FileSystemDerivativeGenerationStorage`
+ *   -- the already-governed Tier A derivative store this Programme's own
+ *   Implementation Unit already built, only now wired into this
+ *   composition root. Required, for the same reason
+ *   [evidenceStorageRootPath] is required.
+ * @param documentIngestionAuditLogPath Document Ingestion, Owner-Facing
+ *   Tier A Runtime Invocation Boundary. The exact file path (not a
+ *   directory) passed unchanged to `FileSystemDocumentIngestionAudit` --
+ *   its parent directory must already exist and be writable; the file
+ *   itself is created if missing, mirroring [evidenceDeletionAuditLogPath]'s
+ *   own exact shape. Required, for the same reason
+ *   [evidenceStorageRootPath] is required.
  * @param memoryCoreDurabilityLogPath Memory Core Durability, Unit 8
  *   (Runtime Composition). The exact file path (not a directory) passed
  *   unchanged to `FileSystemMemoryCoreDurabilityLog` -- its parent
@@ -169,6 +183,8 @@ data class ParkerRuntimeConfig(
     val evidenceStorageRootPath: String,
     val evidenceDeletionAuditLogPath: String,
     val evidenceSourceManifestStorageRootPath: String,
+    val derivativeGenerationStorageRootPath: String,
+    val documentIngestionAuditLogPath: String,
     val memoryCoreDurabilityLogPath: String,
     val knowledgeItemDurabilityLogPath: String,
     val logLevel: LogLevel = LogLevel.INFO,
@@ -206,6 +222,8 @@ object ParkerRuntimeConfigLoader {
     const val KEY_EVIDENCE_STORAGE_ROOT = "PARKER_EVIDENCE_STORAGE_ROOT"
     const val KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH = "PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH"
     const val KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT = "PARKER_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT"
+    const val KEY_DERIVATIVE_GENERATION_STORAGE_ROOT = "PARKER_DERIVATIVE_GENERATION_STORAGE_ROOT"
+    const val KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH = "PARKER_DOCUMENT_INGESTION_AUDIT_LOG_PATH"
     const val KEY_MEMORY_CORE_DURABILITY_LOG_PATH = "PARKER_MEMORY_CORE_DURABILITY_LOG_PATH"
     const val KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH = "PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH"
     const val KEY_LOG_LEVEL = "PARKER_LOG_LEVEL"
@@ -287,6 +305,8 @@ object ParkerRuntimeConfigLoader {
             evidenceStorageRootPath = requireKey(environment, KEY_EVIDENCE_STORAGE_ROOT),
             evidenceDeletionAuditLogPath = requireKey(environment, KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH),
             evidenceSourceManifestStorageRootPath = requireKey(environment, KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT),
+            derivativeGenerationStorageRootPath = requireKey(environment, KEY_DERIVATIVE_GENERATION_STORAGE_ROOT),
+            documentIngestionAuditLogPath = requireKey(environment, KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH),
             memoryCoreDurabilityLogPath = requireKey(environment, KEY_MEMORY_CORE_DURABILITY_LOG_PATH),
             knowledgeItemDurabilityLogPath = requireKey(environment, KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH),
             logLevel = logLevel,

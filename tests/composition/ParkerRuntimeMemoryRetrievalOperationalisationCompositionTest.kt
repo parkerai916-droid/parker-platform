@@ -60,6 +60,8 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
         localTextChannelModuleId = "channel.local-text-gap54-unit2-composition",
         evidenceStorageRootPath = Files.createTempDirectory("gap54-unit2-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("gap54-unit2-evidence-manifest").toString(),
+        derivativeGenerationStorageRootPath = Files.createTempDirectory("gap54-unit2-evidence-manifest-derivative-generation").toString(),
+        documentIngestionAuditLogPath = Files.createTempDirectory("gap54-unit2-evidence-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("gap54-unit2-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("gap54-unit2-memory").resolve("memory.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),

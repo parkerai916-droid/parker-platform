@@ -48,6 +48,8 @@ import parker.core.interfaces.ResourceId
 import parker.core.interfaces.ResourceLifecycleState
 import parker.core.interfaces.ResourceSensitivity
 import parker.core.interfaces.ResourceType
+import parker.core.interfaces.TierADocumentIngestionRouter
+import parker.core.interfaces.TierAOwnerInvocationOutcome
 import parker.core.interfaces.WorldModelSource
 import parker.core.runtime.ActionMapper
 import parker.core.runtime.CommunicationConversationCoordinator
@@ -78,6 +80,8 @@ import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
 import parker.core.runtime.DefaultExplicitOwnerPersistenceDirectiveClassifier
 import parker.core.runtime.ExplicitOwnerPersistenceDirectiveReasoningProvider
+import parker.core.runtime.FileSystemDerivativeGenerationStorage
+import parker.core.runtime.FileSystemDocumentIngestionAudit
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
 import parker.core.runtime.FileSystemEvidenceDeletionAudit
 import parker.core.runtime.FileSystemEvidenceSourceManifestStorage
@@ -111,6 +115,8 @@ import parker.core.runtime.ReplyDeliveryCoordinator
 import parker.core.runtime.ResponseComposer
 import parker.core.runtime.ResponseDelivery
 import parker.core.runtime.TaggedReasoningResponseParser
+import parker.core.runtime.TierADocumentIngestionComposition
+import parker.core.runtime.TierAOwnerInvocationCoordinator
 
 /**
  * [ParkerRuntime]'s own lifecycle, restated as an explicit, observable
@@ -230,6 +236,12 @@ class ParkerRuntime(
     private lateinit var evidenceCustodian: EvidenceCustodian
     private lateinit var evidenceRegistrationCoordinator: EvidenceRegistrationCoordinator
     private lateinit var ownerEvidenceDeletionAuthority: OwnerEvidenceDeletionAuthority
+
+    // Document Ingestion, Owner-Facing Tier A Runtime Invocation Boundary. Held as its own
+    // narrow class, exactly mirroring ownerEvidenceDeletionAuthority's own "only this class's
+    // own entry-point method reads it" isolation -- no other coordinator constructed in
+    // buildAndRegisterRuntimeGraph ever receives a reference to it.
+    private lateinit var tierAOwnerInvocationCoordinator: TierAOwnerInvocationCoordinator
 
     // Programme 4, Evidence Intelligence, Unit 8 ("Runtime Composition"). permissionEngine is
     // promoted from a construction-local val (used throughout buildAndRegisterRuntimeGraph
@@ -827,6 +839,22 @@ class ParkerRuntime(
             evidenceDeletionAudit,
             evidenceSourceManifestStorage,
         )
+
+        // Document Ingestion, Owner-Facing Tier A Runtime Invocation Boundary. Wires the
+        // already-governed, already-implemented Tier A composition (Implementation Unit,
+        // DOCUMENT_INGESTION_TIER_A_IMPLEMENTATION_CLOSURE.md) into this runtime for the first
+        // time -- construction alone performs no I/O beyond the two storage/audit constructions
+        // below (mirroring evidenceArtifactStorage's own precedent) and starts no background
+        // work, watcher, or scheduled task of any kind; the router is only ever reached through
+        // invokeTierAIngestionAsOwner, below.
+        val derivativeGenerationStorage = stage("Document Ingestion derivative generation storage construction") {
+            FileSystemDerivativeGenerationStorage(Path.of(config.derivativeGenerationStorageRootPath))
+        }
+        val documentIngestionAudit = stage("Document Ingestion audit construction") {
+            FileSystemDocumentIngestionAudit(Path.of(config.documentIngestionAuditLogPath))
+        }
+        val tierADocumentIngestionRouter = TierADocumentIngestionComposition.create(derivativeGenerationStorage, documentIngestionAudit)
+        tierAOwnerInvocationCoordinator = TierAOwnerInvocationCoordinator(defaultEvidenceCustodian, tierADocumentIngestionRouter)
 
         val deliverTool = stage("Local Text Channel deliver Tool construction") {
             LocalTextChannelDeliverTool(onOwnerNotified = ownerNotificationSink::notify)
@@ -1538,6 +1566,45 @@ class ParkerRuntime(
         }
         logger.info("Evidence deletion requested by owner (evidenceArtifactId=${evidenceArtifactId.value})")
         return ownerEvidenceDeletionAuthority.deleteAsOwner(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)
+    }
+
+    /**
+     * Document Ingestion, Owner-Facing Tier A Runtime Invocation Boundary. The one production
+     * entry point through which Tier A Document Ingestion may be invoked -- **explicit,
+     * individually-authorized owner invocation only**, mirroring [deleteEvidenceAsOwner]'s own
+     * structural owner-only pattern exactly: this method takes **no** `requestingPrincipalId`
+     * parameter, always acts as `PrincipalId(config.ownerPrincipalId)`, and there is no code
+     * path through which any caller, internal or external, could substitute a different
+     * principal (`docs/architecture/DOCUMENT_INGESTION_AUTHORITATIVE_SOURCE_MANIFEST_RETRIEVAL_SCOPE_LOCK.md`
+     * ("the Scope Lock") Section 17).
+     *
+     * Accepts only [evidenceArtifactId] -- an identity for an already-custodied source. It
+     * never accepts source bytes, an expected digest, a media type, a filename, a path, a URL,
+     * an uploaded file, a Gmail message, a parser choice, or an OCR choice; every one of those
+     * facts is resolved exclusively from Evidence Custodian's own authoritative manifest and
+     * bytes (Scope Lock Section 21). [tierAOwnerInvocationCoordinator] performs the entire
+     * governed chain -- manifest retrieval, byte retrieval, byte-length and SHA-256
+     * verification, and exactly one call to the existing, unchanged Tier A router -- this
+     * method adds no orchestration of its own beyond the [RuntimeLifecycleState.RUNNING] guard
+     * every production entry point on this class already requires and minting [correlationValue]
+     * once, here, mirroring [submitEvidence]'s own identical correlation-id convention.
+     *
+     * This method never invokes Tier B, OCR, Memory Core registration, Knowledge promotion, or
+     * Evidence Intelligence analysis -- the Tier A router it calls does not perform any of
+     * those either (`DOCUMENT_INGESTION_TIER_A_IMPLEMENTATION_CLOSURE.md` §11, §14).
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun invokeTierAIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId): TierAOwnerInvocationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Tier A document ingestion invoked by owner (evidenceArtifactId=${evidenceArtifactId.value})")
+        return tierAOwnerInvocationCoordinator.invoke(
+            PrincipalId(config.ownerPrincipalId),
+            evidenceArtifactId,
+            UUID.randomUUID().toString(),
+        )
     }
 
     /**

@@ -57,6 +57,8 @@ class ParkerRuntimeMemoryCoreDurabilityCompositionTest {
         localTextChannelModuleId = "channel.local-text-memory-core-durability-composition-test",
         evidenceStorageRootPath = Files.createTempDirectory("memory-core-durability-composition-evidence-storage").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("memory-core-durability-composition-evidence-storage-manifest").toString(),
+        derivativeGenerationStorageRootPath = Files.createTempDirectory("memory-core-durability-composition-evidence-storage-manifest-derivative-generation").toString(),
+        documentIngestionAuditLogPath = Files.createTempDirectory("memory-core-durability-composition-evidence-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath =
             Files.createTempDirectory("memory-core-durability-composition-evidence-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = memoryCoreDurabilityLogPath

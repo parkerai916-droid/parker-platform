@@ -26,6 +26,10 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT to Files.createTempDirectory("config-loader-test-evidence-storage").toString(),
             ParkerRuntimeConfigLoader.KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT to
                 Files.createTempDirectory("config-loader-test-evidence-source-manifest-storage").toString(),
+            ParkerRuntimeConfigLoader.KEY_DERIVATIVE_GENERATION_STORAGE_ROOT to
+                Files.createTempDirectory("config-loader-test-derivative-generation-storage").toString(),
+            ParkerRuntimeConfigLoader.KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH to
+                Files.createTempDirectory("config-loader-test-document-ingestion-audit").resolve("audit.log").toString(),
             ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH to
                 Files.createTempDirectory("config-loader-test-evidence-audit").resolve("audit.log").toString(),
             ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH to
@@ -55,6 +59,14 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(
             environment[ParkerRuntimeConfigLoader.KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT],
             config.evidenceSourceManifestStorageRootPath,
+        )
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_DERIVATIVE_GENERATION_STORAGE_ROOT],
+            config.derivativeGenerationStorageRootPath,
+        )
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH],
+            config.documentIngestionAuditLogPath,
         )
         assertEquals(
             environment[ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH],
@@ -215,6 +227,30 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.load(environment)
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_DERIVATIVE_GENERATION_STORAGE_ROOT throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_DERIVATIVE_GENERATION_STORAGE_ROOT to null),
+        )
+
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_DERIVATIVE_GENERATION_STORAGE_ROOT, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_DOCUMENT_INGESTION_AUDIT_LOG_PATH throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH to null),
+        )
+
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH, thrown.key)
     }
 
     @Test
