@@ -30,6 +30,7 @@ import parker.core.interfaces.ModuleConnectivityDeclaration
 import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.ModulePermissionRequirement
+import parker.core.interfaces.OcrMechanism
 import parker.core.interfaces.OwnerEvidenceDeletionAuthority
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PermissionAction
@@ -97,6 +98,9 @@ import parker.core.runtime.InMemoryActionVocabulary
 import parker.core.runtime.InMemoryAgentRuntime
 import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
 import parker.core.runtime.InMemoryCommunicationIntake
+import parker.core.runtime.DoclingOcrProviderAdapter
+import parker.core.runtime.DoclingOcrProviderAdapterConfiguration
+import parker.core.runtime.EvidenceIntelligenceOcrCoordinator
 import parker.core.runtime.InMemoryConversationEngine
 import parker.core.runtime.InMemoryEventBus
 import parker.core.runtime.InMemoryIdentityService
@@ -111,7 +115,9 @@ import parker.core.runtime.LocalHttpModelInferenceClient
 import parker.core.runtime.LocalTextChannelDeliverTool
 import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.ModelReasoningProvider
+import parker.core.runtime.OcrExecutionSequencer
 import parker.core.runtime.OwnerLocalFileIngressCoordinator
+import parker.core.runtime.ProcessBuilderDoclingSubprocessInvoker
 import parker.core.runtime.PermissionPolicyRule
 import parker.core.runtime.ProcessBuilderQmdSubprocessInvoker
 import parker.core.runtime.QmdRelevanceMechanism
@@ -1211,7 +1217,32 @@ class ParkerRuntime(
 
         val evidenceIntelligenceInputResolver = EvidenceIntelligenceInputResolver(defaultEvidenceCustodian, evidenceIntelligenceMemoryRetrieval)
         val evidenceIntelligenceReasoningCoordinator = EvidenceIntelligenceReasoningCoordinator(reasoningProvider)
-        evidenceIntelligence = DefaultEvidenceIntelligence(evidenceIntelligenceInputResolver, evidenceIntelligenceReasoningCoordinator)
+
+        // OCR Mechanism, Unit 12 ("Runtime Composition"). Governed in full by
+        // docs/architecture/OCR_MECHANISM_UNIT_12_RUNTIME_INVOCATION_SCOPE_LOCK.md and
+        // docs/architecture/OCR_MECHANISM_UNIT_12_IMPLEMENTATION_PLAN.md Section 5.A-5.K. Exactly the
+        // already-adopted composition chain: DoclingOcrProviderAdapter -> OcrExecutionSequencer
+        // (OcrMechanism) -> EvidenceIntelligenceOcrCoordinator -> DefaultEvidenceIntelligence's third,
+        // nullable constructor parameter. No new Resource, ActionVocabulary entry, or
+        // PermissionPolicyRule is added anywhere in this stage -- the existing (EXECUTE, DOCUMENT)
+        // invocation-level gate, already registered above, already governs every analyseEvidence call
+        // regardless of analysisKind (Unit 12 Scope Lock Section 5). Every path-shaped value below is
+        // either a portable convention (doclingPythonExecutablePath's own "python3" default,
+        // doclingBridgeScriptPath's own repository-relative default) or comes from config, resolved
+        // from environment exactly as this repository's other local-runtime dependencies (QMD,
+        // immediately above) already are -- no development-machine-specific path (for example, a
+        // ~/docling-venv virtual environment location) is hard-coded at this site.
+        val doclingConfiguration = DoclingOcrProviderAdapterConfiguration(
+            pythonExecutablePath = config.doclingPythonExecutablePath,
+            bridgeScriptPath = config.doclingBridgeScriptPath,
+            modelCacheDir = config.doclingModelCacheDir,
+            timeoutMillis = config.doclingTimeoutMillis,
+        )
+        val doclingOcrProviderAdapter = DoclingOcrProviderAdapter(doclingConfiguration, ProcessBuilderDoclingSubprocessInvoker(doclingConfiguration))
+        val ocrMechanism: OcrMechanism = OcrExecutionSequencer(doclingOcrProviderAdapter)
+        val evidenceIntelligenceOcrCoordinator = EvidenceIntelligenceOcrCoordinator(defaultEvidenceCustodian, ocrMechanism)
+
+        evidenceIntelligence = DefaultEvidenceIntelligence(evidenceIntelligenceInputResolver, evidenceIntelligenceReasoningCoordinator, evidenceIntelligenceOcrCoordinator)
 
         // The existing raw memoryCore, not a PermissionGatedMemoryCore wrapper: this coordinator
         // already gates its own CandidateRecordProduced dispatch internally (its own

@@ -172,6 +172,46 @@ import java.nio.file.Path
  *   fails loudly and diagnosably the first time `RelevanceMechanism.rank`
  *   is genuinely invoked -- never a silent empty result and never an
  *   on-demand fallback to any default location (this Unit's own Phase 6).
+ * @param doclingPythonExecutablePath OCR Mechanism, Unit 12 ("Runtime
+ *   Composition"). The local Python interpreter `ParkerRuntime` launches
+ *   `tools/docling-ocr-bridge.py` with, passed unchanged to
+ *   [parker.core.runtime.DoclingOcrProviderAdapterConfiguration.pythonExecutablePath].
+ *   Optional, defaults to `"python3"` -- a portable, machine-agnostic
+ *   convention (rely on `PATH`), mirroring [qmdNodeExecutablePath]'s own
+ *   identical "portable default, never a hard-coded developer path"
+ *   discipline. Deliberately never defaults to a specific virtual
+ *   environment path (for example, this development machine's own
+ *   `~/docling-venv`) -- a real deployment's own provisioning decides where
+ *   its own Docling virtual environment lives; this composition root does
+ *   not, and must not, guess it.
+ * @param doclingBridgeScriptPath The absolute path to
+ *   `tools/docling-ocr-bridge.py`, passed unchanged to
+ *   [parker.core.runtime.DoclingOcrProviderAdapterConfiguration.bridgeScriptPath].
+ *   Optional, defaults to that file's own well-known, portable,
+ *   repository-relative location resolved to an absolute path at
+ *   construction time, mirroring [qmdBridgeScriptPath] exactly.
+ * @param doclingModelCacheDir OCR Mechanism, Unit 12. Passed unchanged to
+ *   [parker.core.runtime.DoclingOcrProviderAdapterConfiguration.modelCacheDir].
+ *   Nullable, defaults to `null` -- deployment-specific, mirroring
+ *   [qmdModelCacheDir] exactly: `DoclingOcrProviderAdapterConfiguration`
+ *   itself already treats `null` here as fully lawful (the bridge script's
+ *   own default model-cache-location resolution applies), not as a
+ *   missing-required-value error.
+ * @param doclingTimeoutMillis OCR Mechanism, Unit 12. Passed unchanged to
+ *   [parker.core.runtime.DoclingOcrProviderAdapterConfiguration.timeoutMillis].
+ *   Optional, defaults to `900_000L` (15 minutes) -- the Docling
+ *   Authorization's own frozen wall-clock bound
+ *   (`OCR_MECHANISM_DOCLING_PROVIDER_AUTHORIZATION_SCOPE_LOCK.md` Section
+ *   6), restated explicitly here rather than left to
+ *   `DoclingOcrProviderAdapterConfiguration`'s own identical default,
+ *   mirroring [qmdTimeoutMillis]'s own "restate the governed value
+ *   explicitly" precedent. Every other `DoclingOcrProviderAdapterConfiguration`
+ *   field (resource bounds: max source bytes, image dimensions, output
+ *   size, stdout/stderr caps) is a frozen governance constant, not a
+ *   deployment-specific value -- this composition root does not expose
+ *   those as configuration, mirroring how no prior runtime-composition
+ *   Unit in this repository exposes an already-frozen numeric bound as a
+ *   per-deployment override either.
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -194,6 +234,10 @@ data class ParkerRuntimeConfig(
     val qmdModelCacheDir: String? = null,
     val qmdTimeoutMillis: Long = 120_000L,
     val qmdSourceRoot: String? = null,
+    val doclingPythonExecutablePath: String = "python3",
+    val doclingBridgeScriptPath: String = Path.of("tools", "docling-ocr-bridge.py").toAbsolutePath().toString(),
+    val doclingModelCacheDir: String? = null,
+    val doclingTimeoutMillis: Long = 900_000L,
 )
 
 /**
@@ -233,6 +277,10 @@ object ParkerRuntimeConfigLoader {
     const val KEY_QMD_MODEL_CACHE_DIR = "PARKER_QMD_MODEL_CACHE_DIR"
     const val KEY_QMD_TIMEOUT_MILLIS = "PARKER_QMD_TIMEOUT_MILLIS"
     const val KEY_QMD_SOURCE_ROOT = "PARKER_QMD_SOURCE_ROOT"
+    const val KEY_DOCLING_PYTHON_EXECUTABLE_PATH = "PARKER_DOCLING_PYTHON_EXECUTABLE_PATH"
+    const val KEY_DOCLING_BRIDGE_SCRIPT_PATH = "PARKER_DOCLING_BRIDGE_SCRIPT_PATH"
+    const val KEY_DOCLING_MODEL_CACHE_DIR = "PARKER_DOCLING_MODEL_CACHE_DIR"
+    const val KEY_DOCLING_TIMEOUT_MILLIS = "PARKER_DOCLING_TIMEOUT_MILLIS"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -294,6 +342,30 @@ object ParkerRuntimeConfigLoader {
             )
         }
 
+        // OCR Mechanism, Unit 12 ("Runtime Composition"). Deployment-specific Docling paths only --
+        // never the frozen resource-bound governance constants (max source bytes, image dimensions,
+        // output size, stdout/stderr caps), which DoclingOcrProviderAdapterConfiguration's own
+        // already-accepted defaults already supply, never read from this environment map. All four
+        // keys below are optional, mirroring the QMD keys' own identical reasoning: widening this
+        // loader's required-key surface would force every unrelated production/test caller to also
+        // supply Docling-specific configuration it has no reason to care about.
+        val doclingTimeoutMillisRaw = environment[KEY_DOCLING_TIMEOUT_MILLIS]?.takeIf { it.isNotBlank() }
+        val doclingTimeoutMillis = if (doclingTimeoutMillisRaw == null) {
+            900_000L
+        } else {
+            doclingTimeoutMillisRaw.toLongOrNull()
+                ?: throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_DOCLING_TIMEOUT_MILLIS,
+                    "must be a positive integer number of milliseconds; was '$doclingTimeoutMillisRaw'",
+                )
+        }
+        if (doclingTimeoutMillis <= 0) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_DOCLING_TIMEOUT_MILLIS,
+                "must be a positive integer number of milliseconds; was '$doclingTimeoutMillisRaw'",
+            )
+        }
+
         return ParkerRuntimeConfig(
             modelEndpointUrl = requireKey(environment, KEY_MODEL_ENDPOINT_URL),
             modelName = requireKey(environment, KEY_MODEL_NAME),
@@ -317,6 +389,11 @@ object ParkerRuntimeConfigLoader {
             qmdModelCacheDir = environment[KEY_QMD_MODEL_CACHE_DIR]?.takeIf { it.isNotBlank() },
             qmdTimeoutMillis = qmdTimeoutMillis,
             qmdSourceRoot = environment[KEY_QMD_SOURCE_ROOT]?.takeIf { it.isNotBlank() },
+            doclingPythonExecutablePath = environment[KEY_DOCLING_PYTHON_EXECUTABLE_PATH]?.takeIf { it.isNotBlank() } ?: "python3",
+            doclingBridgeScriptPath = environment[KEY_DOCLING_BRIDGE_SCRIPT_PATH]?.takeIf { it.isNotBlank() }
+                ?: java.nio.file.Path.of("tools", "docling-ocr-bridge.py").toAbsolutePath().toString(),
+            doclingModelCacheDir = environment[KEY_DOCLING_MODEL_CACHE_DIR]?.takeIf { it.isNotBlank() },
+            doclingTimeoutMillis = doclingTimeoutMillis,
         )
     }
 

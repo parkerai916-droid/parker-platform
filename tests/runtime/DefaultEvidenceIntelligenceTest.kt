@@ -11,6 +11,7 @@ import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.MemoryCoreRecord
+import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderResponse
@@ -255,11 +256,26 @@ class DefaultEvidenceIntelligenceTest {
     // ================= Dependency boundaries =================
 
     @Test
-    fun `the constructor accepts exactly EvidenceIntelligenceInputResolver and a nullable EvidenceIntelligenceReasoningCoordinator`() {
-        val constructor = DefaultEvidenceIntelligence::class.java.declaredConstructors.single()
+    fun `the constructor accepts exactly EvidenceIntelligenceInputResolver, a nullable EvidenceIntelligenceReasoningCoordinator, and a nullable EvidenceIntelligenceOcrCoordinator`() {
+        // OCR Mechanism, Unit 12 ("Runtime Composition"): updated from this test's own original,
+        // pre-Unit-12 two-parameter assertion, per docs/architecture/OCR_MECHANISM_UNIT_12_IMPLEMENTATION_PLAN.md
+        // Section 5.E's own explicitly-authorised third, nullable constructor parameter -- the same
+        // "an environment with no OCR composition remains a structurally valid DefaultEvidenceIntelligence,
+        // exactly as one with no reasoning provider already is" nullability discipline the second
+        // parameter already established.
+        // A default value on the third parameter (Section 5.E's own nullable-with-default
+        // discipline) makes Kotlin emit a second, synthetic constructor overload (an extra `int`
+        // bitmask + `DefaultConstructorMarker` parameter pair) alongside the real one -- declaredConstructors
+        // now returns two entries where it previously returned one; this must select the real,
+        // three-Parker-type constructor explicitly rather than assume there is exactly one.
+        val constructor = DefaultEvidenceIntelligence::class.java.declaredConstructors
+            .single { it.parameterTypes.none { type -> type.simpleName == "DefaultConstructorMarker" } }
         val parameterTypes = constructor.parameterTypes.map { it.simpleName }.toSet()
 
-        assertEquals(setOf("EvidenceIntelligenceInputResolver", "EvidenceIntelligenceReasoningCoordinator"), parameterTypes)
+        assertEquals(
+            setOf("EvidenceIntelligenceInputResolver", "EvidenceIntelligenceReasoningCoordinator", "EvidenceIntelligenceOcrCoordinator"),
+            parameterTypes,
+        )
     }
 
     @Test
@@ -301,7 +317,177 @@ class DefaultEvidenceIntelligenceTest {
         }
     }
 
+    // ================= OCR Mechanism, Unit 12 ("Runtime Composition") wiring =================
+
+    private fun ocrRequest(evidenceArtifactIds: List<EvidenceArtifactId>) = EvidenceAnalysisRequest(
+        analysisKind = "ocr-transcription",
+        requestingPrincipalId = principalId,
+        evidenceArtifactIds = evidenceArtifactIds,
+    )
+
+    private fun ocrResult(text: String = "recognised text") = parker.core.interfaces.OcrRecognitionResult(
+        recognisedText = text,
+        fidelity = parker.core.interfaces.TranscriptionFidelity.VERBATIM,
+        identity = parker.core.interfaces.OcrRecognitionIdentity(mechanismIdentity = "docling", configurationProfile = "test"),
+        recognisedAt = java.time.Instant.EPOCH,
+    )
+
+    @Test
+    fun `an OCR-eligible analysisKind with a resolved artefact invokes the OcrMechanism and produces a labelled TransientOutput`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-ocr-1")
+        val content = "scanned content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { OcrRecognitionOutcome.Recognised(ocrResult("PARKER OCR TEXT")) }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            reasoningCoordinator = null,
+            ocrCoordinator = ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        assertEquals(1, ocrMechanism.invocationCount)
+        assertEquals(1, results.size)
+        val transientOutput = assertIs<EvidenceAnalysisResult.TransientOutput>(results.single())
+        assertTrue(transientOutput.text.contains("PARKER OCR TEXT"))
+        assertTrue(transientOutput.text.startsWith("[${AnalyticalOutputDiscipline.EXTRACTED}]"), "OCR text must be labelled EXTRACTED, never MODEL_GENERATED -- got: ${transientOutput.text}")
+        assertEquals(listOf(artifactId), transientOutput.evidenceArtifactReferences)
+    }
+
+    @Test
+    fun `a non-OCR-eligible analysisKind never invokes the OcrMechanism, even with ocrCoordinator present`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-non-ocr")
+        val content = "some content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { throw AssertionError("must not be called for a non-OCR-eligible analysisKind") }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            reasoningCoordinator = null,
+            ocrCoordinator = ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(request(evidenceArtifactIds = listOf(artifactId)))
+
+        assertEquals(0, ocrMechanism.invocationCount)
+        assertTrue(results.isEmpty())
+    }
+
+    @Test
+    fun `a null ocrCoordinator never attempts OCR, even for an OCR-eligible analysisKind -- no regression to the pre-Unit-12 constructor shape`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-no-coordinator")
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, "content".toByteArray()) }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            reasoningCoordinator = null,
+            ocrCoordinator = null,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        assertTrue(results.isEmpty(), "with no ocrCoordinator and no reasoningCoordinator, behaviour must be unchanged from before this Unit: an empty list")
+    }
+
+    @Test
+    fun `a PartialOrDegradedOutput OCR outcome still produces a TransientOutput, carrying the actual partial text`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-partial")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 {
+            OcrRecognitionOutcome.PartialOrDegradedOutput(ocrResult("partial text only"), "page 2 unreadable")
+        }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            reasoningCoordinator = null,
+            ocrCoordinator = ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        val transientOutput = assertIs<EvidenceAnalysisResult.TransientOutput>(results.single())
+        assertTrue(transientOutput.text.contains("partial text only"), "the actual partial text must be preserved, never discarded")
+    }
+
+    @Test
+    fun `a non-success OcrRecognitionOutcome contributes nothing to the result list -- silence, never a fabricated success`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-failure")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { OcrRecognitionOutcome.ProcessingOrDependencyFailure("timed out") }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            reasoningCoordinator = null,
+            ocrCoordinator = ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        assertTrue(results.isEmpty())
+    }
+
+    @Test
+    fun `OCR results and reasoning results are both present when both coordinators are wired`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-both")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { OcrRecognitionOutcome.Recognised(ocrResult("ocr text")) }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Reply("reasoning text") }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            EvidenceIntelligenceReasoningCoordinator(reasoningProvider),
+            ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        assertEquals(2, results.size)
+        assertTrue(results.any { it is EvidenceAnalysisResult.TransientOutput && it.text.contains("ocr text") })
+        assertTrue(results.any { it is EvidenceAnalysisResult.TransientOutput && it.text.contains("reasoning text") })
+    }
+
     // ================= Fakes =================
+
+    private class FakeOcrMechanismForUnit12(
+        private val onRecognise: (parker.core.interfaces.OcrRecognitionRequest) -> OcrRecognitionOutcome,
+    ) : parker.core.interfaces.OcrMechanism {
+        var invocationCount: Int = 0
+            private set
+
+        override suspend fun recognise(request: parker.core.interfaces.OcrRecognitionRequest): OcrRecognitionOutcome {
+            invocationCount += 1
+            return onRecognise(request)
+        }
+    }
+
+    /** Supplies only [EvidenceCustodian.retrieveManifest] -- a manifest whose sha256/byteLength
+     * genuinely match [content] and whose receivedMediaType is OCR-eligible -- so
+     * [EvidenceIntelligenceOcrCoordinator]'s own integrity sequence passes without needing the
+     * full manifest-construction machinery [EvidenceIntelligenceOcrCoordinatorTest] already
+     * exercises directly. [retrieve]/[accept] are never called by this coordinator and throw if
+     * reached. */
+    private class FakeManifestOnlyEvidenceCustodian(private val content: ByteArray) : EvidenceCustodian {
+        override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact): EvidenceAcceptanceResult =
+            throw UnsupportedOperationException("must not be called")
+
+        override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceRetrievalResult =
+            throw UnsupportedOperationException("must not be called")
+
+        override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult {
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(content).joinToString("") { "%02x".format(it) }
+            return EvidenceManifestRetrievalResult.Found(
+                parker.core.interfaces.EvidenceSourceManifest(
+                    evidenceArtifactId = evidenceArtifactId,
+                    sha256 = digest,
+                    byteLength = content.size.toLong(),
+                    receivedMediaType = "application/pdf",
+                ),
+            )
+        }
+    }
 
     private class FakeEvidenceCustodianForUnit5(
         private val onRetrieve: (PrincipalId, EvidenceArtifactId) -> EvidenceRetrievalResult,

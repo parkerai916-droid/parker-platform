@@ -5,6 +5,7 @@ import parker.core.interfaces.EvidenceAnalysisResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.ReasoningContext
 import parker.core.interfaces.ReasoningProviderResponse
 import parker.core.interfaces.RelationshipEndpoint
@@ -107,6 +108,7 @@ import parker.core.interfaces.RelationshipEndpoint
 internal class DefaultEvidenceIntelligence(
     private val inputResolver: EvidenceIntelligenceInputResolver,
     private val reasoningCoordinator: EvidenceIntelligenceReasoningCoordinator?,
+    private val ocrCoordinator: EvidenceIntelligenceOcrCoordinator? = null,
 ) : EvidenceIntelligence {
 
     /**
@@ -156,11 +158,86 @@ internal class DefaultEvidenceIntelligence(
             return emptyList()
         }
 
-        val coordinator = reasoningCoordinator ?: return emptyList()
+        val ocrResults = collectOcrResults(request, evidenceResults)
+
+        val coordinator = reasoningCoordinator ?: return ocrResults
 
         val response = coordinator.reason(request, ReasoningContext(emptyList()))
 
-        return convertReasoningResponse(response, resolvedEvidenceArtifactIds, resolvedMemoryCoreReferences)
+        return ocrResults + convertReasoningResponse(response, resolvedEvidenceArtifactIds, resolvedMemoryCoreReferences)
+    }
+
+    /**
+     * OCR Mechanism, Unit 12 ("Runtime Composition"), Implementation Plan
+     * Section 5.E/5.J/5.K/5.R. A new, third, optional step -- structurally
+     * parallel to the existing reasoning step above, never replacing it --
+     * invoked only when [ocrCoordinator] is non-null (an environment with
+     * no OCR composition remains a structurally valid
+     * [DefaultEvidenceIntelligence], exactly as one with no reasoning
+     * provider already is) and only when [request]'s own `analysisKind`
+     * names the OCR-eligible convention below. Two independent conditions,
+     * neither alone sufficient -- `RequiresTierB`/`RequiresOcr` never
+     * appear anywhere in this design as anything other than already-in-hand
+     * facts a human, or a future thin request-construction helper, may
+     * consult before making the one, explicit `analyseEvidence` call; this
+     * method itself never reads either.
+     *
+     * For each [EvidenceRetrievalResult.Found] artefact (never a Memory
+     * Core reference -- OCR operates only on retrieved evidence bytes),
+     * [EvidenceIntelligenceOcrCoordinator.recognise] is invoked at most
+     * once, no retry. A coordinator-internal pre-execution rejection
+     * (manifest not found/rejected, integrity mismatch, not OCR-eligible)
+     * contributes nothing to this call's own result list -- mirroring
+     * exactly how an unresolved (`NotFound`/`Rejected`) [EvidenceRetrievalResult]
+     * is already, silently, excluded from citation today; this is silence,
+     * not fabricated success (Implementation Plan Section 5.R).
+     */
+    private suspend fun collectOcrResults(
+        request: EvidenceAnalysisRequest,
+        evidenceResults: List<EvidenceRetrievalResult>,
+    ): List<EvidenceAnalysisResult> {
+        val coordinator = ocrCoordinator ?: return emptyList()
+        if (request.analysisKind != OCR_ANALYSIS_KIND) return emptyList()
+
+        return evidenceResults
+            .filterIsInstance<EvidenceRetrievalResult.Found>()
+            .mapNotNull { found ->
+                val coordinatorOutcome = coordinator.recognise(request.requestingPrincipalId, found.evidenceArtifactId, found.content)
+                convertOcrOutcome(found.evidenceArtifactId, coordinatorOutcome)
+            }
+    }
+
+    /**
+     * The minimal mapping's own default rule (Implementation Plan Section
+     * 5.R): `Recognised`/`PartialOrDegradedOutput` become exactly one
+     * [EvidenceAnalysisResult.TransientOutput] each, citing the source
+     * [EvidenceArtifactId] -- the single safest default, directly
+     * foreclosing "OCR result treated as evidential truth" by construction:
+     * nothing is durably registered merely because OCR succeeded.
+     * `CandidateArtifactProduced`/`CandidateRecordProduced` construction
+     * from OCR output remains available, correctly-typed machinery a
+     * future, separate policy decision may choose to exercise -- this
+     * method does not exercise it. Every other [OcrCoordinatorOutcome] and
+     * every other [OcrRecognitionOutcome] variant contributes nothing (a
+     * `null` return), never a fabricated result.
+     *
+     * OCR text is labelled [AnalyticalOutputDiscipline.EXTRACTED], never
+     * [AnalyticalOutputDiscipline.MODEL_GENERATED] -- recognised text is
+     * literal content extracted from an image, not a Reasoning Provider's
+     * own explanatory narration (Contract Design Section 5's own four-way
+     * content-kind distinction).
+     */
+    private fun convertOcrOutcome(evidenceArtifactId: EvidenceArtifactId, coordinatorOutcome: OcrCoordinatorOutcome): EvidenceAnalysisResult? {
+        val outcome = (coordinatorOutcome as? OcrCoordinatorOutcome.Recognised)?.outcome ?: return null
+        val recognisedText = when (outcome) {
+            is OcrRecognitionOutcome.Recognised -> outcome.result.recognisedText
+            is OcrRecognitionOutcome.PartialOrDegradedOutput -> outcome.partialResult.recognisedText
+            else -> return null
+        }
+        return EvidenceAnalysisResult.TransientOutput(
+            text = AnalyticalOutputDiscipline.labelContent(AnalyticalOutputDiscipline.EXTRACTED, recognisedText),
+            evidenceArtifactReferences = listOf(evidenceArtifactId),
+        )
     }
 
     /**
@@ -226,5 +303,17 @@ internal class DefaultEvidenceIntelligence(
         is ReasoningProviderResponse.Remember -> throw UnsupportedOperationException(
             "ReasoningProviderResponse.Remember has no lawful EvidenceAnalysisResult mapping",
         )
+    }
+
+    private companion object {
+        /**
+         * OCR Mechanism, Unit 12, Implementation Plan Section 5.J: "an
+         * OCR-eligible `analysisKind` -- illustratively, `'ocr-transcription'`,
+         * not frozen." [EvidenceAnalysisRequest.analysisKind] remains an
+         * open, non-enumerated `String` (Contract Design Section 4 there);
+         * naming this one value here creates, expands, or implies no new
+         * authority beyond what any other `analysisKind` value already has.
+         */
+        const val OCR_ANALYSIS_KIND: String = "ocr-transcription"
     }
 }

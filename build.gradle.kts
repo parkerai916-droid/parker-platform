@@ -238,6 +238,23 @@ tasks.register<Test>("doclingOcrProviderAdapterLiveAcceptance") {
     shouldRunAfter(tasks.test)
 }
 
+// OCR Mechanism, Unit 12 ("Runtime Composition") -- this Unit's own opt-in live composition
+// acceptance instrument, mirroring doclingOcrProviderAdapterLiveAcceptance's own identical shape,
+// but through the real, unmodified ParkerRuntime.analyseEvidence entry point rather than
+// DoclingOcrProviderAdapter directly. Same environment variables, same live-provisioning gate.
+tasks.register<Test>("ocrMechanismUnit12CompositionLiveAcceptance") {
+    description = "Runs the explicit opt-in OCR Mechanism Unit 12 runtime composition live acceptance instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.OcrMechanismUnit12CompositionLiveAcceptanceTest")
+    }
+    systemProperty("parker.ocr.docling.live.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 // Main-Promotion Gate / QMD Linux Portability Defect correction (Programme 3
 // Unit 9.7.6 follow-on, bounded investigation and correction). Root cause:
 // `QmdCanonicalMemoryRetrievalExperimentTest.kt` (commit `aadd596`) is a
