@@ -26,6 +26,9 @@ import parker.core.interfaces.EmlStructuralExtractionOutcome
 import parker.core.interfaces.EmlStructuralExtractor
 import parker.core.interfaces.EmlStructuralResult
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.PdfStructuralExtractionOutcome
+import parker.core.interfaces.PdfStructuralExtractor
+import parker.core.interfaces.PdfStructuralResult
 
 data class CsvIngestionSource(
     val evidenceArtifactId: EvidenceArtifactId,
@@ -47,6 +50,21 @@ data class EmlIngestionSource(
 
 data class DocxIngestionSource(val evidenceArtifactId: EvidenceArtifactId, val content: ByteArray, val expectedSha256: String) {
     init { require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) }
+}
+
+data class PdfIngestionSource(val evidenceArtifactId: EvidenceArtifactId, val content: ByteArray, val expectedSha256: String) {
+    init { require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) }
+}
+
+sealed class PdfDerivativeGenerationCoordinationOutcome {
+    data class Admitted(val record: DerivativeGenerationRecord, val pdfStructure: PdfStructuralResult) : PdfDerivativeGenerationCoordinationOutcome()
+    data class RequiresTierB(val pageCount: Int?, val reason: String) : PdfDerivativeGenerationCoordinationOutcome()
+    data class ExtractionFailed(val reason: String) : PdfDerivativeGenerationCoordinationOutcome()
+    data class SourceIntegrityFailed(val reason: String) : PdfDerivativeGenerationCoordinationOutcome()
+    data class PreparationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : PdfDerivativeGenerationCoordinationOutcome()
+    data class AuthorisationAuditFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : PdfDerivativeGenerationCoordinationOutcome()
+    data class PublicationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : PdfDerivativeGenerationCoordinationOutcome()
+    data class AdmittedAuditFailed(val record: DerivativeGenerationRecord, val pdfStructure: PdfStructuralResult, val reason: String) : PdfDerivativeGenerationCoordinationOutcome()
 }
 
 sealed class DocxDerivativeGenerationCoordinationOutcome {
@@ -111,6 +129,7 @@ class DerivativeGenerationCoordinator(
     private val now: () -> Instant = Instant::now,
     private val emlExtractor: EmlStructuralExtractor? = null,
     private val docxExtractor: DocxStructuralExtractor? = null,
+    private val pdfExtractor: PdfStructuralExtractor? = null,
 ) {
     suspend fun ingestCsv(
         source: CsvIngestionSource,
@@ -241,6 +260,33 @@ class DerivativeGenerationCoordinator(
         try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
         catch (e: DocumentIngestionAuditException) { return DocxDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
         return DocxDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+    }
+
+    suspend fun ingestPdf(source: PdfIngestionSource, requestingPrincipalId: PrincipalId, correlationValue: String): PdfDerivativeGenerationCoordinationOutcome {
+        require(correlationValue.isNotBlank())
+        val extractor = requireNotNull(pdfExtractor) { "PDF extractor is not configured" }
+        if (sha256(source.content) != source.expectedSha256) return PdfDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 does not match the governed source context")
+        val extracted = when (val outcome = extractor.extract(source.content.copyOf())) {
+            is PdfStructuralExtractionOutcome.RequiresTierB -> return PdfDerivativeGenerationCoordinationOutcome.RequiresTierB(outcome.pageCount, outcome.reason)
+            is PdfStructuralExtractionOutcome.Malformed -> return PdfDerivativeGenerationCoordinationOutcome.ExtractionFailed(outcome.reason)
+            is PdfStructuralExtractionOutcome.Unsupported -> return PdfDerivativeGenerationCoordinationOutcome.ExtractionFailed(outcome.reason)
+            is PdfStructuralExtractionOutcome.Extracted -> outcome.result
+        }
+        if (sha256(source.content) != source.expectedSha256) return PdfDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 changed during PDF extraction")
+        val id = idFactory()
+        val record = DerivativeGenerationRecord(
+            id, source.evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(source.evidenceArtifactId)),
+            "Searchable PDF literal text", extracted.producerIdentity, extracted.transformationHistory, now(),
+            DerivativeContentIdentity.NoCanonicalSerialization, extracted.completenessState,
+            DerivativeOperationalOutcome.USABLE, extracted.warnings,
+        )
+        try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) { return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED)) }
+        catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { storage.publishPrepared(id) } catch (e: DerivativeGenerationStorageException) { return PdfDerivativeGenerationCoordinationOutcome.PublicationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
+        catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
+        return PdfDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
     }
 
     private fun EmlAttachmentCandidate.linkTo(root: EvidenceArtifactId) = CandidateChildSource(

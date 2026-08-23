@@ -10,6 +10,7 @@ import org.apache.tika.extractor.EmbeddedDocumentExtractor
 import org.apache.tika.metadata.Metadata
 import org.apache.tika.parser.ParseContext
 import org.apache.tika.parser.pdf.PDFParser
+import org.apache.tika.parser.pdf.PDFParserConfig
 import org.apache.tika.sax.BodyContentHandler
 import org.xml.sax.ContentHandler
 import parker.core.interfaces.EmbeddedResourceObservation
@@ -76,11 +77,9 @@ import parker.core.interfaces.ExtractionResult
  * identically for every call: embedded-document handling records
  * presence/declared name/declared media type only, via
  * [RecordingEmbeddedDocumentExtractor] below, and never parses embedded
- * content; no OCR strategy is set (Tika's own default: OCR only activates
- * if a Tesseract binary is present *and* an OCR strategy is explicitly
- * configured -- neither is true here, and `tika-parser-ocr-module` is not
- * even on this repository's classpath, Boundary Clarification
- * Determination 2). This fixed configuration is tagged
+ * content; [PDFParserConfig.OCR_STRATEGY.NO_OCR] is set explicitly and
+ * `tika-parser-ocr-module` is not on this repository's classpath (Boundary
+ * Clarification Determination 2). This fixed configuration is tagged
  * [CONFIGURATION_PROFILE] -- one constant string, recorded verbatim as
  * every [ExtractionResult.extractionIdentity]'s own configuration-profile
  * field, never varied per call (Scope Lock Section 4).
@@ -119,8 +118,10 @@ class TikaEvidenceExtractor : EvidenceExtractor {
         val embeddedResourceObserver = RecordingEmbeddedDocumentExtractor()
         val parseContext = ParseContext()
         parseContext.set(EmbeddedDocumentExtractor::class.java, embeddedResourceObserver)
+        val pdfConfig = PDFParserConfig().apply { ocrStrategy = PDFParserConfig.OCR_STRATEGY.NO_OCR }
+        parseContext.set(PDFParserConfig::class.java, pdfConfig)
 
-        val handler: ContentHandler = BodyContentHandler(-1)
+        val handler: ContentHandler = BodyContentHandler(MAX_EXTRACTED_TEXT_CHARACTERS)
 
         try {
             ByteArrayInputStream(content).use { input ->
@@ -132,6 +133,8 @@ class TikaEvidenceExtractor : EvidenceExtractor {
             return ExtractionOutcome.Malformed(reason = e.message ?: "Apache Tika reported an I/O failure reading the candidate PDF")
         } catch (e: org.xml.sax.SAXException) {
             return ExtractionOutcome.Malformed(reason = e.message ?: "Apache Tika reported a content-handling failure with no further detail")
+        } catch (e: IllegalStateException) {
+            return ExtractionOutcome.Malformed(reason = e.message ?: "Apache Tika exceeded a bounded extraction limit")
         }
 
         val extractedText = handler.toString()
@@ -175,26 +178,19 @@ class TikaEvidenceExtractor : EvidenceExtractor {
         const val EXTRACTOR_VERSION: String = "3.3.1"
         const val PDF_MEDIA_TYPE: String = "application/pdf"
 
-        /**
-         * A compiled-in constant, not user-configurable (Scope Lock Section
-         * 4). Twenty characters -- small enough that no genuine
-         * searchable-text PDF is misclassified, large enough that Tika's
-         * own incidental whitespace/artefact output from a scanned page is
-         * not mistaken for real text (Implementation Plan Unit 2). Unit 7's
-         * own real-file proof is this constant's first real validation; any
-         * misclassification found there is a defect in this constant to fix
-         * before Unit 6 is complete, never silently adjusted after
-         * acceptance.
-         */
-        const val SEARCHABLE_TEXT_THRESHOLD: Int = 20
+        /** One non-whitespace body character proves a searchable text layer exists. */
+        const val SEARCHABLE_TEXT_THRESHOLD: Int = 1
+        const val MAX_EXTRACTED_TEXT_CHARACTERS: Int = 8 * 1024 * 1024
+        const val MAX_EMBEDDED_RESOURCE_OBSERVATIONS: Int = 1000
+        const val MAX_EMBEDDED_METADATA_CHARACTERS: Int = 64 * 1024
 
         /**
          * Tagged verbatim onto every [ExtractionResult.extractionIdentity]'s
          * own configuration-profile field -- one fixed profile, embedded-
-         * document handling records presence/name/type only, no OCR
-         * strategy configured.
+         * document handling records presence/name/type only, with OCR
+         * explicitly disabled.
          */
-        const val CONFIGURATION_PROFILE: String = "tika-pdf-only-v1;embeddedResources=recordOnly;ocrStrategy=none"
+        const val CONFIGURATION_PROFILE: String = "tika-pdf-only-v2;embeddedResources=recordOnly;ocrStrategy=NO_OCR;textCharactersMax=8388608"
 
         /** This first unit applies no post-extraction normalisation -- stated explicitly, never omitted. */
         const val NORMALISATION_PROFILE: String = "none"
@@ -224,10 +220,19 @@ private class RecordingEmbeddedDocumentExtractor : EmbeddedDocumentExtractor {
     val observations: List<EmbeddedResourceObservation> get() = mutableObservations
 
     override fun shouldParseEmbedded(metadata: Metadata): Boolean {
+        if (mutableObservations.size >= TikaEvidenceExtractor.MAX_EMBEDDED_RESOURCE_OBSERVATIONS) {
+            throw IllegalStateException("PDF embedded-resource count exceeds the bounded observation limit")
+        }
+        val fileName = metadata.get(RESOURCE_NAME_METADATA_KEY)
+        val mediaType = metadata.get(CONTENT_TYPE_METADATA_KEY)
+        if ((fileName?.length ?: 0) > TikaEvidenceExtractor.MAX_EMBEDDED_METADATA_CHARACTERS ||
+            (mediaType?.length ?: 0) > TikaEvidenceExtractor.MAX_EMBEDDED_METADATA_CHARACTERS) {
+            throw IllegalStateException("PDF embedded-resource metadata exceeds the bounded observation limit")
+        }
         mutableObservations.add(
             EmbeddedResourceObservation(
-                declaredFileName = metadata.get(RESOURCE_NAME_METADATA_KEY),
-                declaredMediaType = metadata.get(CONTENT_TYPE_METADATA_KEY),
+                declaredFileName = fileName,
+                declaredMediaType = mediaType,
             ),
         )
         return false
