@@ -35,6 +35,8 @@ dependencies {
     implementation("org.apache.tika:tika-core:3.3.1")
     implementation("org.apache.tika:tika-parser-pdf-module:3.3.1")
     implementation("org.apache.commons:commons-csv:1.14.1")
+    implementation("org.apache.james:apache-mime4j-core:0.8.14")
+    implementation("org.apache.james:apache-mime4j-dom:0.8.14")
 
     testImplementation(kotlin("test-junit5"))
     testImplementation(kotlin("reflect"))
