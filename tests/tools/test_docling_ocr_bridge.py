@@ -22,10 +22,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -51,13 +53,30 @@ def write_request_file(tmp_dir: str, payload: dict) -> str:
     return path
 
 
-def run_bridge_subprocess(request_path: str) -> subprocess.CompletedProcess:
+def run_bridge_subprocess(request_path: str, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(BRIDGE_SCRIPT_PATH), request_path],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=timeout,
     )
+
+
+def build_minimal_png_bytes(width: int, height: int) -> bytes:
+    """A syntactically valid PNG containing only a real IHDR chunk (declaring
+    width/height) plus an empty IDAT and IEND -- enough for Pillow's own
+    header-only Image.open()/.size to answer without ever decoding a real
+    raster, so a boundary test at 10,000x10,000 never actually allocates a
+    giant in-memory bitmap (item 5's own "no giant full raster allocation"
+    requirement). Mirrors DoclingOcrProviderAdapterTest.kt's own identical
+    Kotlin-side technique exactly."""
+
+    def chunk(chunk_type: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", zlib.crc32(chunk_type + data))
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return signature + chunk(b"IHDR", ihdr_data) + chunk(b"IDAT", b"") + chunk(b"IEND", b"")
 
 
 class OfflineEnvironmentTest(unittest.TestCase):
@@ -303,6 +322,32 @@ class ResponseJsonConstructionTest(unittest.TestCase):
         with self.assertRaises(bridge.ResourceLimitBreach):
             bridge.build_response_json(outcome)
 
+    def test_exact_boundary_byte_below_the_ceiling_is_accepted_one_byte_above_is_rejected(self) -> None:
+        # Real Unit 3 acceptance work (item 4): exercises the real
+        # build_response_json/_serialize_within_bound path with text sized
+        # precisely against the true JSON-framing overhead (measured from an
+        # empty-text baseline of the exact same shape), rather than an
+        # approximate "way over the bound" value -- proving the ceiling is
+        # enforced at the actual byte, not merely "somewhere in the ballpark".
+        baseline = json.loads(bridge.build_response_json(bridge.DoclingRecognitionOutcome(status="recognised", text="x", fidelity="VERBATIM")))
+        self.assertEqual(baseline["recognisedText"], "x")
+        overhead_bytes = len(bridge.build_response_json(bridge.DoclingRecognitionOutcome(status="recognised", text="", fidelity="VERBATIM")).encode("utf-8"))
+
+        exact_fit_text_length = bridge.MAX_OUTPUT_BYTES - overhead_bytes
+        under_outcome = bridge.DoclingRecognitionOutcome(status="recognised", text="x" * exact_fit_text_length, fidelity="VERBATIM")
+        serialized = bridge.build_response_json(under_outcome)  # must not raise
+        self.assertEqual(len(serialized.encode("utf-8")), bridge.MAX_OUTPUT_BYTES, "the accepted payload should land exactly at the configured ceiling")
+
+        over_outcome = bridge.DoclingRecognitionOutcome(status="recognised", text="x" * (exact_fit_text_length + 1), fidelity="VERBATIM")
+        with self.assertRaises(bridge.ResourceLimitBreach):
+            bridge.build_response_json(over_outcome)
+
+    def test_output_size_accumulator_early_abort_is_exact_at_the_byte(self) -> None:
+        accumulator = bridge.OutputSizeAccumulator(max_bytes=1000)
+        accumulator.add("x" * 1000)  # exactly at the cap -- must not raise
+        with self.assertRaises(bridge.ResourceLimitBreach):
+            accumulator.add("x")  # one byte over -- must raise
+
 
 class RecogniseOrchestrationTest(unittest.TestCase):
     def test_missing_assets_short_circuits_before_backend_is_invoked(self) -> None:
@@ -428,6 +473,44 @@ class RealSubprocessProtocolCompatibilityTest(unittest.TestCase):
             self.assertEqual(result.stdout, "", "no stdout output is permitted on a non-zero exit")
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("Traceback", result.stderr, "an uncaught Python traceback must never be the failure mode")
+
+    # ---- Real Unit 3 acceptance work: precise pixel/dimension boundary, via the real
+    # subprocess, using a hand-crafted minimal PNG so no giant raster is ever allocated ----
+
+    def test_exact_boundary_dimensions_pass_the_preflight_check(self) -> None:
+        if importlib.util.find_spec("PIL") is None:
+            self.skipTest("Pillow is not importable under this interpreter -- run via a provisioned Docling venv's python to exercise this test")
+        with tempfile.TemporaryDirectory() as tmp:
+            png_path = os.path.join(tmp, "boundary.png")
+            with open(png_path, "wb") as handle:
+                handle.write(build_minimal_png_bytes(bridge.MAX_DIMENSION_PX, bridge.MAX_DIMENSION_PX))
+            request_path = write_request_file(
+                tmp,
+                {"protocolVersion": "1", "sourceFilePath": png_path, "mediaType": "image/png"},
+            )
+            result = run_bridge_subprocess(request_path)
+            # The preflight itself must not be what rejects this -- an empty-IDAT PNG will
+            # still fail later (Docling cannot decode a real raster from it, or Docling is not
+            # installed in this interpreter at all), but that failure must never carry this
+            # bridge's own resource-limit-breach exit code or message.
+            self.assertNotEqual(result.returncode, bridge.EXIT_RESOURCE_LIMIT_BREACH)
+            self.assertNotIn("exceed the maximum", result.stderr)
+
+    def test_one_pixel_over_the_boundary_is_rejected_by_the_preflight_check(self) -> None:
+        if importlib.util.find_spec("PIL") is None:
+            self.skipTest("Pillow is not importable under this interpreter -- run via a provisioned Docling venv's python to exercise this test")
+        with tempfile.TemporaryDirectory() as tmp:
+            png_path = os.path.join(tmp, "over-boundary.png")
+            with open(png_path, "wb") as handle:
+                handle.write(build_minimal_png_bytes(bridge.MAX_DIMENSION_PX + 1, bridge.MAX_DIMENSION_PX))
+            request_path = write_request_file(
+                tmp,
+                {"protocolVersion": "1", "sourceFilePath": png_path, "mediaType": "image/png"},
+            )
+            result = run_bridge_subprocess(request_path)
+            self.assertEqual(result.returncode, bridge.EXIT_RESOURCE_LIMIT_BREACH)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("exceed the maximum", result.stderr)
 
 
 if __name__ == "__main__":

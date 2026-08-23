@@ -376,17 +376,25 @@ def _build_converter():
 
 
 def _real_docling_backend(source_file_path: str, media_type: str, model_cache_dir: str | None) -> DoclingRecognitionOutcome:
-    try:
-        from docling.datamodel.base_models import ConversionStatus  # type: ignore
-    except ImportError as error:
-        raise DoclingUnavailableError(f"Docling package could not be imported: {error}") from error
-
+    # Resource-bound preflight checks run first, before even checking whether
+    # Docling itself is importable (Unit 3 acceptance finding, corrected from
+    # an earlier ordering that checked Docling's own importability first):
+    # a resource-limit breach is a property of the *input*, independent of
+    # runtime availability, and rejecting it cheaply should never be gated
+    # on whether a heavier runtime happens to be present -- pypdfium2/Pillow
+    # (both already-installed Docling transitive dependencies) are enough on
+    # their own to answer these checks.
     if media_type == "application/pdf":
         page_count = _pdf_page_count(source_file_path)
         if page_count is not None:
             check_page_count(page_count)
     elif media_type.startswith("image/"):
         _check_image_dimensions_preflight(source_file_path)
+
+    try:
+        from docling.datamodel.base_models import ConversionStatus  # type: ignore
+    except ImportError as error:
+        raise DoclingUnavailableError(f"Docling package could not be imported: {error}") from error
 
     try:
         # Any stray print()/progress-bar output a transitive dependency emits
