@@ -2,9 +2,11 @@ package parker.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -48,21 +50,74 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+private enum class ParkerOwnerTab { CONVERSATION, EVIDENCE }
+
+/**
+ * [evidenceController] is `null` for the offline, fully-scripted preview
+ * launcher (`OfflineOwnerUiMain.kt`), which must remain -- deliberately,
+ * already-tested (`OfflineOwnerUiLauncherIsolationTest`) -- unaware of any
+ * real Parker domain concept, evidence included. When `null`, only the
+ * Conversation tab exists; the real-runtime launcher (`OwnerUiMain.kt`)
+ * always supplies a real controller and both tabs render.
+ */
 @Composable
 fun ParkerOwnerWindow(
     controller: OwnerUiController,
     presentationMode: OwnerWindowPresentationMode,
+    evidenceController: OwnerEvidenceUiController? = null,
 ) {
     val state by controller.state.collectAsState()
-    ParkerOwnerWindowContent(
-        state = state,
-        presentationMode = presentationMode,
-        onSubmit = controller::submit,
+    var selectedTab by remember { mutableStateOf(ParkerOwnerTab.CONVERSATION) }
+
+    ParkerTheme {
+        Surface(modifier = Modifier.fillMaxSize(), color = ParkerBackground) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                ParkerHeader(state.status, presentationMode)
+                if (evidenceController != null) {
+                    ParkerTabRow(selectedTab, onSelect = { selectedTab = it })
+                }
+                Divider(color = Color.White.copy(alpha = 0.08f))
+
+                when {
+                    evidenceController != null && selectedTab == ParkerOwnerTab.EVIDENCE ->
+                        ParkerEvidencePanel(evidenceController)
+                    else -> ParkerConversationContent(
+                        state = state,
+                        presentationMode = presentationMode,
+                        onSubmit = controller::submit,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ParkerTabRow(selected: ParkerOwnerTab, onSelect: (ParkerOwnerTab) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp)) {
+        ParkerTab("Conversation", selected == ParkerOwnerTab.CONVERSATION) { onSelect(ParkerOwnerTab.CONVERSATION) }
+        ParkerTab("Evidence", selected == ParkerOwnerTab.EVIDENCE) { onSelect(ParkerOwnerTab.EVIDENCE) }
+    }
+}
+
+@Composable
+private fun ParkerTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (selected) ParkerAccent else ParkerMuted,
+        fontSize = 13.sp,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier
+            .padding(end = 20.dp, bottom = 10.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) ParkerSurfaceRaised else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
     )
 }
 
 @Composable
-internal fun ParkerOwnerWindowContent(
+internal fun ParkerConversationContent(
     state: OwnerUiState,
     presentationMode: OwnerWindowPresentationMode,
     onSubmit: (String) -> OwnerSubmissionAttempt,
@@ -84,83 +139,76 @@ internal fun ParkerOwnerWindowContent(
         }
     }
 
-    ParkerTheme {
-        Surface(modifier = Modifier.fillMaxSize(), color = ParkerBackground) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                ParkerHeader(state.status, presentationMode)
-                Divider(color = Color.White.copy(alpha = 0.08f))
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (state.transcript.isEmpty()) {
+            EmptyConversation(presentationMode, modifier = Modifier.weight(1f))
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(28.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                items(state.transcript) { entry -> TranscriptEntry(entry) }
+            }
+        }
 
-                if (state.transcript.isEmpty()) {
-                    EmptyConversation(presentationMode, modifier = Modifier.weight(1f))
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(28.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        items(state.transcript) { entry -> TranscriptEntry(entry) }
-                    }
-                }
+        AnimatedVisibility(visible = state.status == OwnerUiStatus.PROCESSING) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = ParkerAccent,
+                )
+                Text(
+                    "Parker is processing…",
+                    modifier = Modifier.padding(start = 10.dp),
+                    color = ParkerMuted,
+                    fontSize = 13.sp,
+                )
+            }
+        }
 
-                AnimatedVisibility(visible = state.status == OwnerUiStatus.PROCESSING) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = ParkerAccent,
-                        )
-                        Text(
-                            "Parker is processing…",
-                            modifier = Modifier.padding(start = 10.dp),
-                            color = ParkerMuted,
-                            fontSize = 13.sp,
-                        )
-                    }
-                }
-
-                Divider(color = Color.White.copy(alpha = 0.08f))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(22.dp),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        modifier = Modifier.weight(1f).height(96.dp).onPreviewKeyEvent { event ->
-                            if (event.type != KeyEventType.KeyDown || event.key != Key.Enter) {
-                                false
-                            } else {
-                                when (ownerInputKeyAction(true, event.isShiftPressed, state, draft)) {
-                                    OwnerInputKeyAction.SUBMIT -> {
-                                        submitDraft()
-                                        true
-                                    }
-                                    OwnerInputKeyAction.INSERT_NEWLINE -> false
-                                    OwnerInputKeyAction.NONE -> true
-                                }
+        Divider(color = Color.White.copy(alpha = 0.08f))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(22.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier.weight(1f).height(96.dp).onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || event.key != Key.Enter) {
+                        false
+                    } else {
+                        when (ownerInputKeyAction(true, event.isShiftPressed, state, draft)) {
+                            OwnerInputKeyAction.SUBMIT -> {
+                                submitDraft()
+                                true
                             }
-                        },
-                        enabled = state.status != OwnerUiStatus.STOPPED,
-                        label = { Text("Message Parker") },
-                        placeholder = { Text("Write a message…") },
-                        maxLines = 4,
-                        shape = RoundedCornerShape(14.dp),
-                    )
-                    Button(
-                        onClick = ::submitDraft,
-                        enabled = canSubmitOwnerText(state, draft),
-                        modifier = Modifier.height(52.dp),
-                        colors = ButtonDefaults.buttonColors(backgroundColor = ParkerAccent),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Text("Send", fontWeight = FontWeight.SemiBold)
+                            OwnerInputKeyAction.INSERT_NEWLINE -> false
+                            OwnerInputKeyAction.NONE -> true
+                        }
                     }
-                }
+                },
+                enabled = state.status != OwnerUiStatus.STOPPED,
+                label = { Text("Message Parker") },
+                placeholder = { Text("Write a message…") },
+                maxLines = 4,
+                shape = RoundedCornerShape(14.dp),
+            )
+            Button(
+                onClick = ::submitDraft,
+                enabled = canSubmitOwnerText(state, draft),
+                modifier = Modifier.height(52.dp),
+                colors = ButtonDefaults.buttonColors(backgroundColor = ParkerAccent),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("Send", fontWeight = FontWeight.SemiBold)
             }
         }
     }

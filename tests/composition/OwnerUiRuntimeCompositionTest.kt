@@ -2,8 +2,12 @@ package parker.composition
 
 import java.io.File
 import kotlinx.coroutines.test.runTest
+import parker.core.interfaces.EvidenceArtifactId
+import parker.ui.EvidenceImportOutcome
 import parker.ui.OfflineOwnerInteraction
 import parker.ui.OfflineOwnerScenario
+import parker.ui.OwnerEvidenceOperations
+import parker.ui.OwnerEvidenceUiController
 import parker.ui.OwnerInteraction
 import parker.ui.OwnerInteractionAvailability
 import parker.ui.OwnerReply
@@ -11,6 +15,8 @@ import parker.ui.OwnerSubmissionAttempt
 import parker.ui.OwnerSubmissionDisposition
 import parker.ui.OwnerUiController
 import parker.ui.OwnerUiStatus
+import parker.ui.TierAProcessingOutcome
+import parker.ui.TierBProcessingOutcome
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -21,15 +27,17 @@ import kotlin.test.assertTrue
 class OwnerUiRuntimeCompositionTest {
 
     @Test
-    fun `successful startup exposes only the configured OwnerInteraction`() = runTest {
+    fun `successful startup exposes only the configured OwnerInteraction and OwnerEvidenceOperations`() = runTest {
         val interaction = RecordingInteraction()
+        val evidenceOperations = RecordingEvidenceOperations()
         var starts = 0
-        val session = session(interaction, start = { starts++ })
+        val session = session(interaction, evidenceOperations, start = { starts++ })
 
         val result = assertIs<OwnerUiRuntimeStartResult.Ready>(session.start())
 
         assertEquals(1, starts)
         assertSame(interaction, result.interaction)
+        assertSame(evidenceOperations, result.evidenceOperations)
         assertFailsWith<IllegalStateException> { session.start() }
     }
 
@@ -64,13 +72,14 @@ class OwnerUiRuntimeCompositionTest {
     fun `close ordering stops controller before runtime shutdown`() = runTest {
         val interaction = OfflineOwnerInteraction(listOf(OfflineOwnerScenario.Delivered()))
         val controller = OwnerUiController(interaction, coroutineContext)
+        val evidenceController = OwnerEvidenceUiController(RecordingEvidenceOperations(), coroutineContext)
         var stateObservedDuringRuntimeShutdown: OwnerUiStatus? = null
         val session = session(
             interaction = interaction,
             shutdown = { stateObservedDuringRuntimeShutdown = controller.state.value.status },
         )
 
-        shutdownOwnerUiSession(controller, session)
+        shutdownOwnerUiSession(controller, evidenceController, session)
 
         assertEquals(OwnerUiStatus.STOPPED, stateObservedDuringRuntimeShutdown)
         assertEquals(OwnerSubmissionAttempt.UNAVAILABLE, controller.submit("after close"))
@@ -89,7 +98,7 @@ class OwnerUiRuntimeCompositionTest {
         assertTrue("parker.ui.OfflineOwnerUiMainKt" in desktopBuild)
         assertTrue("createOwnerUiRuntimeSession(System.getenv())" in realLauncher)
         assertTrue(
-            "ParkerOwnerWindow(state.controller, OwnerWindowPresentationMode.PARKER_RUNTIME)" in realLauncher,
+            "ParkerOwnerWindow(state.controller, OwnerWindowPresentationMode.PARKER_RUNTIME, state.evidenceController)" in realLauncher,
         )
         assertTrue("Starting Parker Runtime..." in realLauncher)
         assertTrue("Parker could not start" in realLauncher)
@@ -103,6 +112,7 @@ class OwnerUiRuntimeCompositionTest {
         val composition = File("src/composition/OwnerUiRuntimeComposition.kt").readText()
         val launcher = File("ui-desktop/src/main/kotlin/parker/ui/OwnerUiMain.kt").readText()
         val adapter = File("src/composition/OwnerUiRuntimeAdapter.kt").readText()
+        val evidenceAdapter = File("src/composition/OwnerUiEvidenceRuntimeAdapter.kt").readText()
         val forbiddenLauncherTerms = listOf(
             "PermissionEngine",
             "ReasoningProvider",
@@ -111,6 +121,8 @@ class OwnerUiRuntimeCompositionTest {
             "retrieveEvidence(",
             "deleteEvidenceAsOwner(",
             "analyseEvidence(",
+            "importEvidenceFileAsOwner(",
+            "invokeTierAIngestionAsOwner(",
             "http://",
             "https://",
         )
@@ -119,18 +131,27 @@ class OwnerUiRuntimeCompositionTest {
         assertTrue("PrincipalId(config.ownerPrincipalId)" in composition)
         assertTrue("ModuleId(config.localTextChannelModuleId)" in composition)
         assertTrue("submitOwnerMessage = runtime::submitOwnerMessage" in composition)
+        assertTrue("importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner" in composition)
+        assertTrue("invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner" in composition)
+        assertTrue("analyseEvidence = runtime::analyseEvidence" in composition)
         assertTrue("OwnerUiController(result.interaction)" in launcher)
+        assertTrue("OwnerEvidenceUiController(result.evidenceOperations)" in launcher)
         assertTrue("OwnerWindowPresentationMode.PARKER_RUNTIME" in launcher)
         assertTrue(forbiddenLauncherTerms.none { it in launcher })
         assertTrue("runtime.start()" !in adapter && "runtime.shutdown()" !in adapter)
-        assertTrue("androidx.compose" !in composition && "androidx.compose" !in adapter)
+        assertTrue("runtime.start()" !in evidenceAdapter && "runtime.shutdown()" !in evidenceAdapter)
+        assertTrue("androidx.compose" !in composition && "androidx.compose" !in adapter && "androidx.compose" !in evidenceAdapter)
+        // The evidence adapter must receive only the three named method references, never
+        // ParkerRuntime itself -- mirroring OwnerUiRuntimeAdapter's own identical discipline.
+        assertTrue("ParkerRuntime," !in evidenceAdapter && "runtime: ParkerRuntime" !in evidenceAdapter)
     }
 
     private fun session(
         interaction: OwnerInteraction = RecordingInteraction(),
+        evidenceOperations: OwnerEvidenceOperations = RecordingEvidenceOperations(),
         start: suspend () -> Unit = {},
         shutdown: suspend () -> Unit = {},
-    ) = OwnerUiRuntimeSession(start, shutdown, interaction)
+    ) = OwnerUiRuntimeSession(start, shutdown, interaction, evidenceOperations)
 
     private class RecordingInteraction : OwnerInteraction {
         override val availability = OwnerInteractionAvailability.AVAILABLE
@@ -139,5 +160,16 @@ class OwnerUiRuntimeCompositionTest {
             ownerText: String,
             onReply: suspend (OwnerReply) -> Unit,
         ): OwnerSubmissionDisposition = OwnerSubmissionDisposition.Delivered("SUCCESS")
+    }
+
+    private class RecordingEvidenceOperations : OwnerEvidenceOperations {
+        override suspend fun importFile(absolutePath: String, declaredMediaType: String?): EvidenceImportOutcome =
+            EvidenceImportOutcome.Imported(EvidenceArtifactId("recording-evidence-1"))
+
+        override suspend fun processTierA(evidenceArtifactId: EvidenceArtifactId): TierAProcessingOutcome =
+            TierAProcessingOutcome.Admitted("PDF")
+
+        override suspend fun processTierB(evidenceArtifactId: EvidenceArtifactId): TierBProcessingOutcome =
+            TierBProcessingOutcome.Completed(1)
     }
 }

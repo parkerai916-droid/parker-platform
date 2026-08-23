@@ -29,7 +29,11 @@ import parker.composition.shutdownOwnerUiSession
 
 private sealed interface OwnerUiLaunchState {
     data class Starting(val session: OwnerUiRuntimeSession? = null) : OwnerUiLaunchState
-    data class Ready(val session: OwnerUiRuntimeSession, val controller: OwnerUiController) : OwnerUiLaunchState
+    data class Ready(
+        val session: OwnerUiRuntimeSession,
+        val controller: OwnerUiController,
+        val evidenceController: OwnerEvidenceUiController,
+    ) : OwnerUiLaunchState
     data class Failed(val session: OwnerUiRuntimeSession?, val safeMessage: String) : OwnerUiLaunchState
 }
 
@@ -49,7 +53,11 @@ fun main() = application {
         launchState = OwnerUiLaunchState.Starting(session)
         when (val result = session.start()) {
             is OwnerUiRuntimeStartResult.Ready ->
-                launchState = OwnerUiLaunchState.Ready(session, OwnerUiController(result.interaction))
+                launchState = OwnerUiLaunchState.Ready(
+                    session,
+                    OwnerUiController(result.interaction),
+                    OwnerEvidenceUiController(result.evidenceOperations),
+                )
             is OwnerUiRuntimeStartResult.Failed ->
                 launchState = OwnerUiLaunchState.Failed(session, result.safeMessage)
         }
@@ -68,7 +76,7 @@ fun main() = application {
                 applicationScope.launch {
                     try {
                         if (stateAtClose is OwnerUiLaunchState.Ready) {
-                            shutdownOwnerUiSession(stateAtClose.controller, stateAtClose.session)
+                            shutdownOwnerUiSession(stateAtClose.controller, stateAtClose.evidenceController, stateAtClose.session)
                         } else {
                             session?.shutdown()
                         }
@@ -84,7 +92,7 @@ fun main() = application {
         when (val state = launchState) {
             is OwnerUiLaunchState.Starting -> OwnerUiStarting()
             is OwnerUiLaunchState.Ready ->
-                ParkerOwnerWindow(state.controller, OwnerWindowPresentationMode.PARKER_RUNTIME)
+                ParkerOwnerWindow(state.controller, OwnerWindowPresentationMode.PARKER_RUNTIME, state.evidenceController)
             is OwnerUiLaunchState.Failed -> OwnerUiStartupFailure(state.safeMessage)
         }
     }

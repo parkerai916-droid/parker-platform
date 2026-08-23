@@ -3,23 +3,27 @@ package parker.composition
 import java.util.concurrent.atomic.AtomicBoolean
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
+import parker.ui.OwnerEvidenceOperations
+import parker.ui.OwnerEvidenceUiController
 import parker.ui.OwnerInteraction
 import parker.ui.OwnerUiController
 
 /** Result of the real graphical launcher's one runtime-start attempt. */
 sealed interface OwnerUiRuntimeStartResult {
-    data class Ready(val interaction: OwnerInteraction) : OwnerUiRuntimeStartResult
+    data class Ready(val interaction: OwnerInteraction, val evidenceOperations: OwnerEvidenceOperations) : OwnerUiRuntimeStartResult
     data class Failed(val safeMessage: String) : OwnerUiRuntimeStartResult
 }
 
 /**
- * Launcher-owned lifecycle boundary. It exposes [OwnerInteraction] only
- * after startup succeeds and makes runtime shutdown idempotent.
+ * Launcher-owned lifecycle boundary. It exposes [OwnerInteraction]/
+ * [OwnerEvidenceOperations] only after startup succeeds and makes runtime
+ * shutdown idempotent.
  */
 class OwnerUiRuntimeSession internal constructor(
     private val startRuntime: suspend () -> Unit,
     private val shutdownRuntime: suspend () -> Unit,
     private val interaction: OwnerInteraction,
+    private val evidenceOperations: OwnerEvidenceOperations,
 ) {
     private val startAttempted = AtomicBoolean(false)
     private val shutdownAttempted = AtomicBoolean(false)
@@ -28,7 +32,7 @@ class OwnerUiRuntimeSession internal constructor(
         check(startAttempted.compareAndSet(false, true)) { "Owner UI runtime startup may be attempted only once" }
         return try {
             startRuntime()
-            OwnerUiRuntimeStartResult.Ready(interaction)
+            OwnerUiRuntimeStartResult.Ready(interaction, evidenceOperations)
         } catch (failure: ParkerRuntimeException) {
             runCatching { shutdown() }
             OwnerUiRuntimeStartResult.Failed("Parker Runtime could not start")
@@ -45,9 +49,11 @@ class OwnerUiRuntimeSession internal constructor(
 /** Fixed close ordering: stop UI work before shutting down its runtime. */
 suspend fun shutdownOwnerUiSession(
     controller: OwnerUiController,
+    evidenceController: OwnerEvidenceUiController,
     session: OwnerUiRuntimeSession,
 ) {
     controller.shutdown("Window closed")
+    evidenceController.shutdown()
     session.shutdown()
 }
 
@@ -66,9 +72,16 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         submitOwnerMessage = runtime::submitOwnerMessage,
         notificationBridge = notificationBridge,
     )
+    val evidenceOperations = OwnerUiEvidenceRuntimeAdapter(
+        ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+        importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
+        invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
+        analyseEvidence = runtime::analyseEvidence,
+    )
     return OwnerUiRuntimeSession(
         startRuntime = runtime::start,
         shutdownRuntime = runtime::shutdown,
         interaction = interaction,
+        evidenceOperations = evidenceOperations,
     )
 }

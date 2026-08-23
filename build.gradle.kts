@@ -272,6 +272,22 @@ tasks.register<Test>("tierBOwnerRoutingLiveAcceptance") {
     shouldRunAfter(tasks.test)
 }
 
+// Owner UI Evidence Upload & Processing -- this Unit's own opt-in live acceptance instrument,
+// mirroring tierBOwnerRoutingLiveAcceptance's own identical shape, but driving the real
+// OwnerEvidenceUiController/OwnerUiEvidenceRuntimeAdapter pair the Compose desktop UI itself uses.
+tasks.register<Test>("ownerEvidenceUiEndToEndLiveAcceptance") {
+    description = "Runs the explicit opt-in Owner UI Evidence Upload & Processing end-to-end live acceptance instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.OwnerEvidenceUiEndToEndLiveAcceptanceTest")
+    }
+    systemProperty("parker.ocr.docling.live.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 // Main-Promotion Gate / QMD Linux Portability Defect correction (Programme 3
 // Unit 9.7.6 follow-on, bounded investigation and correction). Root cause:
 // `QmdCanonicalMemoryRetrievalExperimentTest.kt` (commit `aadd596`) is a
