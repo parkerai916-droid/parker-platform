@@ -255,6 +255,23 @@ tasks.register<Test>("ocrMechanismUnit12CompositionLiveAcceptance") {
     shouldRunAfter(tasks.test)
 }
 
+// Document Ingestion Programme, Tier B Owner Routing -- this Unit's own opt-in live acceptance
+// instrument, mirroring ocrMechanismUnit12CompositionLiveAcceptance's own identical shape, but
+// through the real, complete, explicit owner workflow (importEvidenceFileAsOwner ->
+// invokeTierAIngestionAsOwner -> analyseEvidence) rather than submitEvidence + analyseEvidence alone.
+tasks.register<Test>("tierBOwnerRoutingLiveAcceptance") {
+    description = "Runs the explicit opt-in Document Ingestion Tier B owner routing live acceptance instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.TierBOwnerRoutingLiveAcceptanceTest")
+    }
+    systemProperty("parker.ocr.docling.live.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 // Main-Promotion Gate / QMD Linux Portability Defect correction (Programme 3
 // Unit 9.7.6 follow-on, bounded investigation and correction). Root cause:
 // `QmdCanonicalMemoryRetrievalExperimentTest.kt` (commit `aadd596`) is a
