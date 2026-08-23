@@ -30,6 +30,7 @@ import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.ModulePermissionRequirement
 import parker.core.interfaces.OwnerEvidenceDeletionAuthority
+import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
@@ -107,6 +108,7 @@ import parker.core.runtime.LocalHttpModelInferenceClient
 import parker.core.runtime.LocalTextChannelDeliverTool
 import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.ModelReasoningProvider
+import parker.core.runtime.OwnerLocalFileIngressCoordinator
 import parker.core.runtime.PermissionPolicyRule
 import parker.core.runtime.ProcessBuilderQmdSubprocessInvoker
 import parker.core.runtime.QmdRelevanceMechanism
@@ -236,6 +238,12 @@ class ParkerRuntime(
     private lateinit var evidenceCustodian: EvidenceCustodian
     private lateinit var evidenceRegistrationCoordinator: EvidenceRegistrationCoordinator
     private lateinit var ownerEvidenceDeletionAuthority: OwnerEvidenceDeletionAuthority
+
+    // Document Ingestion, Owner-Authorized Local File Ingress. Held as its own narrow class,
+    // exactly mirroring ownerEvidenceDeletionAuthority's own "only this class's own entry-point
+    // method reads it" isolation -- no other coordinator constructed in
+    // buildAndRegisterRuntimeGraph ever receives a reference to it.
+    private lateinit var ownerLocalFileIngressCoordinator: OwnerLocalFileIngressCoordinator
 
     // Document Ingestion, Owner-Facing Tier A Runtime Invocation Boundary. Held as its own
     // narrow class, exactly mirroring ownerEvidenceDeletionAuthority's own "only this class's
@@ -539,6 +547,17 @@ class ParkerRuntime(
                     mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
                 ),
             )
+            // Document Ingestion, Owner-Authorized Local File Ingress (Scope Lock Section 3): a
+            // new, distinct verb phrase, mapped to the identical existing (WRITE, DOCUMENT) pair
+            // "evidence.accept" already uses -- no new PermissionAction or ResourceType is
+            // introduced, and the existing coarse (WRITE, DOCUMENT) policy rule above already
+            // governs it, exactly as it already, today, governs "evidence.accept" itself.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = OwnerLocalFileIngressCoordinator.LOCAL_FILE_READ_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
+                ),
+            )
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = EvidenceRegistrationCoordinator.CREATE_PROVENANCE_ACTION_NAME,
@@ -823,6 +842,13 @@ class ParkerRuntime(
         )
         evidenceCustodian = defaultEvidenceCustodian
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
+
+        // Document Ingestion, Owner-Authorized Local File Ingress. Unlike
+        // tierAOwnerInvocationCoordinator (below), this coordinator performs its own, new,
+        // distinct gated act -- reading a local file the owner designates -- before ever
+        // reaching defaultEvidenceCustodian.accept's own, separately gated path, so it holds a
+        // permissionEngine reference of its own in addition to defaultEvidenceCustodian.
+        ownerLocalFileIngressCoordinator = OwnerLocalFileIngressCoordinator(permissionEngine, defaultEvidenceCustodian)
 
         // Phase 7 Boundary Clarification Section 3: DefaultOwnerEvidenceDeletionAuthority is a
         // wholly separate class from DefaultEvidenceCustodian, sharing only evidenceArtifactStorage
@@ -1604,6 +1630,56 @@ class ParkerRuntime(
             PrincipalId(config.ownerPrincipalId),
             evidenceArtifactId,
             UUID.randomUUID().toString(),
+        )
+    }
+
+    /**
+     * Document Ingestion, Owner-Authorized Local File Ingress. The one production entry point
+     * through which Parker may read a local filesystem file on the owner's behalf --
+     * **explicit, individually-authorized owner invocation only**, mirroring
+     * [deleteEvidenceAsOwner]'s/[invokeTierAIngestionAsOwner]'s own structural owner-only
+     * pattern exactly: this method takes **no** `requestingPrincipalId` parameter, always acts
+     * as `PrincipalId(config.ownerPrincipalId)`, and there is no code path through which any
+     * caller, internal or external, could substitute a different principal
+     * (`docs/architecture/DOCUMENT_INGESTION_OWNER_AUTHORIZED_LOCAL_FILE_INGRESS_SCOPE_LOCK.md`
+     * ("the Scope Lock") Section 3).
+     *
+     * Accepts only [absolutePath] -- an absolute local filesystem path the owner designates --
+     * and an optional [receivedMediaType] the owner may literally declare (Scope Lock Section
+     * 11). It never accepts an `EvidenceArtifactId`, an expected digest, a byte length, a
+     * filename override, a parser choice, an OCR choice, a Tier selection, or any Memory/
+     * Knowledge field; every one of those facts is either resolved exclusively from the file
+     * itself and Evidence Custodian's own admission authority, or not accepted at all (Scope
+     * Lock Section 12). [ownerLocalFileIngressCoordinator] performs the entire governed chain --
+     * permission evaluation, absolute-path validation, symlink rejection, regular-file
+     * validation, the 64 MiB size bound, a bounded byte-exact read, and exactly one call to the
+     * existing, unchanged [EvidenceCustodian.accept] -- this method adds no orchestration of
+     * its own beyond the [RuntimeLifecycleState.RUNNING] guard every production entry point on
+     * this class already requires.
+     *
+     * This method never invokes Tier A, OCR, Tier B, Memory Core registration, Knowledge
+     * promotion, or Evidence Intelligence analysis -- successful Evidence Custodian acceptance
+     * ends this operation (Scope Lock Section 14); a subsequent Tier A invocation, if wanted, is
+     * a separate, later, independently authorized owner action via [invokeTierAIngestionAsOwner].
+     *
+     * The log line below records no path -- only that an invocation occurred -- mirroring
+     * [invokeTierAIngestionAsOwner]'s own "identifier only, never a path" logging discipline
+     * (Scope Lock Section 18/Section 20).
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun importEvidenceFileAsOwner(
+        absolutePath: String,
+        receivedMediaType: String? = null,
+    ): OwnerLocalFileIngressOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Local file evidence ingress invoked by owner")
+        return ownerLocalFileIngressCoordinator.invoke(
+            PrincipalId(config.ownerPrincipalId),
+            absolutePath,
+            receivedMediaType,
         )
     }
 
