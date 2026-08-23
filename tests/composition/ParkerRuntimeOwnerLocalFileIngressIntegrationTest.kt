@@ -1,12 +1,18 @@
 package parker.composition
 
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.reflect.full.declaredFunctions
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.TierADerivativePayload
+import parker.core.interfaces.TierADocumentFormat
+import parker.core.interfaces.TierADocumentRoutingResult
+import parker.core.interfaces.TierAOwnerInvocationOutcome
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
@@ -63,6 +69,51 @@ class ParkerRuntimeOwnerLocalFileIngressIntegrationTest {
         val retrieved = runtime.retrieveEvidence(PrincipalId(ownerPrincipalId), accepted.acceptedEvidenceArtifact.evidenceArtifactId)
         val found = assertIs<EvidenceRetrievalResult.Found>(retrieved)
         assertEquals(true, content.contentEquals(found.content))
+
+        runtime.shutdown()
+    }
+
+    // --- Two-step composability: import and Tier A invocation remain two separate, explicit
+    // owner actions -- this test proves they compose correctly when the owner chooses to call
+    // both, not that either automatically triggers the other. No production code changes; no
+    // chaining is introduced by this test or by anything it exercises. ---
+
+    @Test
+    fun `an owner-imported real local file can be separately, explicitly Tier A invoked by its returned EvidenceArtifactId`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val fixtureBytes = Files.readAllBytes(Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/06-structured.csv"))
+        val sourceDir = Files.createTempDirectory("local-file-ingress-tier-a-compat-source")
+        val sourcePath = sourceDir.resolve("ledger.csv")
+        Files.write(sourcePath, fixtureBytes)
+
+        // Step 1: one explicit owner action -- import only. The return type itself (Accepted, a
+        // variant of OwnerLocalFileIngressOutcome, never of TierAOwnerInvocationOutcome) proves
+        // this call cannot have performed or represented a Tier A result of any kind.
+        val importOutcome = runtime.importEvidenceFileAsOwner(sourcePath.toString(), receivedMediaType = "text/csv")
+        val accepted = assertIs<OwnerLocalFileIngressOutcome.Accepted>(importOutcome)
+        val evidenceArtifactId = accepted.acceptedEvidenceArtifact.evidenceArtifactId
+
+        // Byte/source fidelity: what import alone placed in custody is exactly the real fixture
+        // bytes, unmodified, before Tier A is ever invoked.
+        val retrievedAfterImport = runtime.retrieveEvidence(PrincipalId(ownerPrincipalId), evidenceArtifactId)
+        val foundAfterImport = assertIs<EvidenceRetrievalResult.Found>(retrievedAfterImport)
+        assertContentEquals(fixtureBytes, foundAfterImport.content)
+
+        // Step 2: a second, separate, explicit owner action -- the exact, unchanged
+        // EvidenceArtifactId step 1 returned is supplied by the caller, never re-derived or
+        // substituted, proving identity continuity across the two independent calls.
+        val tierAOutcome = runtime.invokeTierAIngestionAsOwner(evidenceArtifactId)
+
+        // Faithful Tier A routing/extraction result: the real router, real CSV specialist, and
+        // real admission path produced a genuine, structurally correct extraction of the actual
+        // fixture content -- not merely a format tag.
+        val routed = assertIs<TierAOwnerInvocationOutcome.Routed>(tierAOutcome)
+        val admitted = assertIs<TierADocumentRoutingResult.Admitted>(routed.result)
+        assertEquals(TierADocumentFormat.CSV, admitted.format)
+        val csv = assertIs<TierADerivativePayload.Csv>(admitted.payload).value
+        assertEquals(listOf("id", "name", "reference", "amount", "note"), csv.headers)
+        assertEquals(listOf("001", "Alpha, Limited", "00001234", "1234.50", "Exact, quoted value"), csv.rows.first())
 
         runtime.shutdown()
     }
