@@ -73,6 +73,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         ownerPrincipalId = ownerPrincipalId,
         localTextChannelModuleId = "channel.local-text-knowledge-retrieval-composition-test",
         evidenceStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage").toString(),
+        evidenceSourceManifestStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage-manifest").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("knowledge-retrieval-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("knowledge-retrieval-composition-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),

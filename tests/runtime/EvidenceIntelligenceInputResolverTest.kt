@@ -16,6 +16,7 @@ import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
+import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.MemoryCoreRecord
 import parker.core.interfaces.MemoryRetrieval
@@ -294,6 +295,11 @@ class EvidenceIntelligenceInputResolverTest {
             requestingPrincipalId: PrincipalId,
             evidenceArtifactId: EvidenceArtifactId,
         ): EvidenceRetrievalResult = onRetrieve(requestingPrincipalId, evidenceArtifactId)
+
+        override suspend fun retrieveManifest(
+            requestingPrincipalId: PrincipalId,
+            evidenceArtifactId: EvidenceArtifactId,
+        ): EvidenceManifestRetrievalResult = throw UnsupportedOperationException("not used by EvidenceIntelligenceInputResolver")
     }
 
     /**

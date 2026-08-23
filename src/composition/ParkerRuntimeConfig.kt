@@ -45,6 +45,14 @@ import java.nio.file.Path
  *   -- its parent directory must already exist and be writable; the file
  *   itself is created if missing. Required, for the same reason
  *   [evidenceStorageRootPath] is required.
+ * @param evidenceSourceManifestStorageRootPath Document Ingestion,
+ *   Authoritative Source Manifest Foundation Implementation. An
+ *   already-existing, writable directory, passed unchanged to
+ *   `FileSystemEvidenceSourceManifestStorage`, mirroring
+ *   [evidenceStorageRootPath]'s own exact shape and requirement -- a
+ *   sibling storage root, not nested inside [evidenceStorageRootPath],
+ *   since a manifest is never itself an `EvidenceArtifact`. Required,
+ *   for the same reason [evidenceStorageRootPath] is required.
  * @param memoryCoreDurabilityLogPath Memory Core Durability, Unit 8
  *   (Runtime Composition). The exact file path (not a directory) passed
  *   unchanged to `FileSystemMemoryCoreDurabilityLog` -- its parent
@@ -160,6 +168,7 @@ data class ParkerRuntimeConfig(
     val localTextChannelModuleId: String = "channel.local-text",
     val evidenceStorageRootPath: String,
     val evidenceDeletionAuditLogPath: String,
+    val evidenceSourceManifestStorageRootPath: String,
     val memoryCoreDurabilityLogPath: String,
     val knowledgeItemDurabilityLogPath: String,
     val logLevel: LogLevel = LogLevel.INFO,
@@ -196,6 +205,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_LOCAL_TEXT_CHANNEL_MODULE_ID = "PARKER_LOCAL_TEXT_CHANNEL_MODULE_ID"
     const val KEY_EVIDENCE_STORAGE_ROOT = "PARKER_EVIDENCE_STORAGE_ROOT"
     const val KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH = "PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH"
+    const val KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT = "PARKER_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT"
     const val KEY_MEMORY_CORE_DURABILITY_LOG_PATH = "PARKER_MEMORY_CORE_DURABILITY_LOG_PATH"
     const val KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH = "PARKER_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH"
     const val KEY_LOG_LEVEL = "PARKER_LOG_LEVEL"
@@ -276,6 +286,7 @@ object ParkerRuntimeConfigLoader {
                 ?: "channel.local-text",
             evidenceStorageRootPath = requireKey(environment, KEY_EVIDENCE_STORAGE_ROOT),
             evidenceDeletionAuditLogPath = requireKey(environment, KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH),
+            evidenceSourceManifestStorageRootPath = requireKey(environment, KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT),
             memoryCoreDurabilityLogPath = requireKey(environment, KEY_MEMORY_CORE_DURABILITY_LOG_PATH),
             knowledgeItemDurabilityLogPath = requireKey(environment, KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH),
             logLevel = logLevel,

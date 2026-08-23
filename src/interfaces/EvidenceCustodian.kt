@@ -220,11 +220,29 @@ value class EvidenceArtifactId(val value: String) {
  */
 
 /**
- * What a caller submits to [EvidenceCustodian.accept] -- content only.
- * Carries no [EvidenceArtifactId] (minted only by a successful `accept`
- * call), no acceptance timestamp, no classification, no owner, and no
- * provenance reference. See this file's own Unit 2 KDoc, above, for why
- * each of those is deliberately absent.
+ * What a caller submits to [EvidenceCustodian.accept] -- content, plus
+ * two optional, purely declarative facts about that content's original
+ * submission. Carries no [EvidenceArtifactId] (minted only by a
+ * successful `accept` call), no acceptance timestamp, no classification,
+ * no owner, and no provenance reference. See this file's own Unit 2
+ * KDoc, above, for why each of those is deliberately absent.
+ *
+ * ## [receivedMediaType] and [originalFileName] -- Authoritative Source
+ * Manifest Foundation Implementation
+ *
+ * Governed by `docs/architecture/DOCUMENT_INGESTION_AUTHORITATIVE_SOURCE_MANIFEST_RETRIEVAL_SCOPE_LOCK.md`
+ * ("the Scope Lock") Section 25, which names widening this exact type as
+ * one of two authorized shapes for capturing a caller-declared received
+ * media type at admission time -- the only moment such a fact can ever
+ * be truthfully captured (Scope Lock Section 9: "the original ingress
+ * channel's own declaration ... never Parker's own later inspection of
+ * the bytes"). Both fields are optional, `null`-defaulted, purely
+ * pass-through declarations this class neither computes, infers, nor
+ * validates against [content] -- exactly the same "caller supplies,
+ * Evidence Custodian never asserts" discipline [content] itself already
+ * has. This is not a classification judgment (the kind of field this
+ * type's own Correction history, above, already excludes) -- it is a
+ * literal, externally-declared fact recorded, never evaluated.
  *
  * Not a `data class`: a Kotlin `data class`'s auto-generated `equals`/
  * `hashCode` compare a `ByteArray` property by reference, not by content,
@@ -232,14 +250,38 @@ value class EvidenceArtifactId(val value: String) {
  * [hashCode] are overridden here to compare [content] structurally
  * ([ByteArray.contentEquals]/[ByteArray.contentHashCode]) instead.
  */
-class CandidateEvidenceArtifact(val content: ByteArray) {
+class CandidateEvidenceArtifact(
+    val content: ByteArray,
+    val receivedMediaType: String? = null,
+    val originalFileName: String? = null,
+) {
+    init {
+        require(receivedMediaType == null || receivedMediaType.isNotBlank()) {
+            "CandidateEvidenceArtifact.receivedMediaType must not be blank if present -- omit it (null) " +
+                "instead to express a genuinely undeclared media type"
+        }
+        require(originalFileName == null || originalFileName.isNotBlank()) {
+            "CandidateEvidenceArtifact.originalFileName must not be blank if present -- omit it (null) " +
+                "instead to express a genuinely undeclared filename"
+        }
+    }
 
     override fun equals(other: Any?): Boolean =
-        other is CandidateEvidenceArtifact && content.contentEquals(other.content)
+        other is CandidateEvidenceArtifact &&
+            content.contentEquals(other.content) &&
+            receivedMediaType == other.receivedMediaType &&
+            originalFileName == other.originalFileName
 
-    override fun hashCode(): Int = content.contentHashCode()
+    override fun hashCode(): Int {
+        var result = content.contentHashCode()
+        result = 31 * result + (receivedMediaType?.hashCode() ?: 0)
+        result = 31 * result + (originalFileName?.hashCode() ?: 0)
+        return result
+    }
 
-    override fun toString(): String = "CandidateEvidenceArtifact(content=<${content.size} bytes>)"
+    override fun toString(): String =
+        "CandidateEvidenceArtifact(content=<${content.size} bytes>, receivedMediaType=$receivedMediaType, " +
+            "originalFileName=$originalFileName)"
 }
 
 /**
@@ -490,6 +532,34 @@ interface EvidenceCustodian {
         requestingPrincipalId: PrincipalId,
         evidenceArtifactId: EvidenceArtifactId,
     ): EvidenceRetrievalResult
+
+    /**
+     * Document Ingestion, Authoritative Source Manifest Foundation
+     * Implementation. Authorised, observational read access to the
+     * Authoritative Evidence Source Manifest [EvidenceArtifactId] names,
+     * governed by
+     * `docs/architecture/DOCUMENT_INGESTION_AUTHORITATIVE_SOURCE_MANIFEST_RETRIEVAL_SCOPE_LOCK.md`
+     * ("the Scope Lock") Section 14, option B -- a second, narrow,
+     * read-only operation added directly to this interface, mirroring
+     * how [accept] and [retrieve] were themselves incrementally added
+     * across prior Units, rather than as a new interface: no
+     * authority-narrowing reason (the kind that justified splitting
+     * [OwnerEvidenceDeletionAuthority] out entirely) applies to a
+     * read-only manifest fact ordinary retrieval callers may also
+     * safely hold.
+     *
+     * Never mints, mutates, deletes, or rewrites a manifest; never lists,
+     * searches, or returns "the latest" of anything; never retrieves
+     * source bytes or derivative data as a side effect (Scope Lock
+     * Section 12/14). A legacy artefact admitted before this
+     * capability existed, or missing bytes entirely, truthfully returns
+     * [EvidenceManifestRetrievalResult.NotFound] -- never a fabricated
+     * or inferred manifest (Scope Lock Section 13).
+     */
+    suspend fun retrieveManifest(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+    ): EvidenceManifestRetrievalResult
 }
 
 /**

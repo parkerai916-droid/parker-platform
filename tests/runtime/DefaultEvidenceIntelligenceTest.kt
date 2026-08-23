@@ -8,6 +8,7 @@ import parker.core.interfaces.EvidenceAnalysisResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceIntelligence
+import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.MemoryCoreRecord
 import parker.core.interfaces.PrincipalId
@@ -314,6 +315,11 @@ class DefaultEvidenceIntelligenceTest {
             requestingPrincipalId: PrincipalId,
             evidenceArtifactId: EvidenceArtifactId,
         ): EvidenceRetrievalResult = onRetrieve(requestingPrincipalId, evidenceArtifactId)
+
+        override suspend fun retrieveManifest(
+            requestingPrincipalId: PrincipalId,
+            evidenceArtifactId: EvidenceArtifactId,
+        ): EvidenceManifestRetrievalResult = throw UnsupportedOperationException("Unit 5 must never call EvidenceCustodian.retrieveManifest")
     }
 
     private class FakeMemoryRetrievalForUnit5(

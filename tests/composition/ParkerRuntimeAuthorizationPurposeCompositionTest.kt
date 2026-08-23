@@ -69,6 +69,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         ownerPrincipalId = "user.owner-authz-purpose-composition-test",
         localTextChannelModuleId = localTextChannelModuleId,
         evidenceStorageRootPath = Files.createTempDirectory("authz-purpose-composition-evidence").toString(),
+        evidenceSourceManifestStorageRootPath = Files.createTempDirectory("authz-purpose-composition-evidence-manifest").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("authz-purpose-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("authz-purpose-composition-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),

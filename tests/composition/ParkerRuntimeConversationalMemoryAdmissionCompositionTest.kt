@@ -69,6 +69,7 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
         ownerDisplayName = "Test Owner",
         localTextChannelModuleId = channelModuleId,
         evidenceStorageRootPath = Files.createTempDirectory("memory-admission-composition-evidence-storage").toString(),
+        evidenceSourceManifestStorageRootPath = Files.createTempDirectory("memory-admission-composition-evidence-storage-manifest").toString(),
         evidenceDeletionAuditLogPath =
             Files.createTempDirectory("memory-admission-composition-evidence-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = memoryCoreDurabilityLogPath,

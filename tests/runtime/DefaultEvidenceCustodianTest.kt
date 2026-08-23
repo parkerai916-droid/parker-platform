@@ -1,5 +1,6 @@
 package parker.core.runtime
 
+import java.security.MessageDigest
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.AcceptedEvidenceArtifact
@@ -9,7 +10,11 @@ import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceArtifactStorage
 import parker.core.interfaces.EvidenceArtifactStorageException
+import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceSourceManifest
+import parker.core.interfaces.EvidenceSourceManifestStorage
+import parker.core.interfaces.EvidenceSourceManifestStorageException
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
@@ -24,6 +29,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /**
  * Evidence Custodian, Implementation Plan Phase 3 (Unit 2) and Phase 4
@@ -247,8 +253,13 @@ class DefaultEvidenceCustodianTest {
         val fieldNames = CandidateEvidenceArtifact::class.java.declaredFields
             .filter { !it.isSynthetic }
             .map { it.name }
+            .toSet()
 
-        assertEquals(listOf("content"), fieldNames)
+        assertEquals(setOf("content", "receivedMediaType", "originalFileName"), fieldNames)
+        assertTrue(
+            fieldNames.none { it.contains("Id", ignoreCase = false) || it == "acceptedAt" },
+            "CandidateEvidenceArtifact must carry no identity or acceptance-timestamp field",
+        )
     }
 
     @Test
@@ -475,6 +486,210 @@ class DefaultEvidenceCustodianTest {
 
         assertEquals(listOf("permissionEngine.evaluate"), callOrder, "storage must never be reached on denial")
     }
+
+    // --- Authoritative Source Manifest Foundation Implementation: manifest establishment on accept ---
+
+    @Test
+    fun `a successful acceptance establishes a manifest whose sha256 matches the exact candidate bytes`() = runTest {
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine(), manifestStorage)
+        val content = "candidate bytes for digest proof".toByteArray()
+
+        val accepted = assertIs<EvidenceAcceptanceResult.Accepted>(
+            custodian.accept(principalId, CandidateEvidenceArtifact(content)),
+        )
+
+        val manifest = manifestStorage.read(accepted.acceptedEvidenceArtifact.evidenceArtifactId)
+        assertEquals(sha256Hex(content), manifest?.sha256, "the persisted manifest digest must equal SHA-256 of the exact accepted bytes")
+    }
+
+    @Test
+    fun `the established manifest byteLength equals the exact accepted candidate byte count`() = runTest {
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine(), manifestStorage)
+        val content = "twenty-nine byte content!!!!".toByteArray()
+
+        val accepted = assertIs<EvidenceAcceptanceResult.Accepted>(
+            custodian.accept(principalId, CandidateEvidenceArtifact(content)),
+        )
+
+        val manifest = manifestStorage.read(accepted.acceptedEvidenceArtifact.evidenceArtifactId)
+        assertEquals(content.size.toLong(), manifest?.byteLength)
+    }
+
+    @Test
+    fun `no expected-digest tautology -- the manifest digest is not recomputed from a later retrieval`() = runTest {
+        val artifactStorage = InMemoryEvidenceArtifactStorage()
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        val custodian = DefaultEvidenceCustodian(artifactStorage, approvingEngine(), manifestStorage)
+        val content = "original content".toByteArray()
+
+        val accepted = assertIs<EvidenceAcceptanceResult.Accepted>(
+            custodian.accept(principalId, CandidateEvidenceArtifact(content)),
+        )
+        val id = accepted.acceptedEvidenceArtifact.evidenceArtifactId
+        val manifestDigestAtAdmission = manifestStorage.read(id)?.sha256
+
+        // Retrieve the bytes again -- this must never mutate, rewrite, or re-derive the already-
+        // persisted manifest digest. The manifest digest is compared against, never replaced by,
+        // a digest computed from a later retrieval (Scope Lock Section 7).
+        custodian.retrieve(principalId, id)
+
+        assertEquals(manifestDigestAtAdmission, manifestStorage.read(id)?.sha256, "the manifest digest must remain exactly as established at admission")
+    }
+
+    @Test
+    fun `a caller-declared receivedMediaType and originalFileName are preserved literally in the manifest`() = runTest {
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine(), manifestStorage)
+
+        val accepted = assertIs<EvidenceAcceptanceResult.Accepted>(
+            custodian.accept(
+                principalId,
+                CandidateEvidenceArtifact(
+                    content = "csv content".toByteArray(),
+                    receivedMediaType = "text/csv",
+                    originalFileName = "ledger.csv",
+                ),
+            ),
+        )
+
+        val manifest = manifestStorage.read(accepted.acceptedEvidenceArtifact.evidenceArtifactId)
+        assertEquals("text/csv", manifest?.receivedMediaType)
+        assertEquals("ledger.csv", manifest?.originalFileName)
+    }
+
+    @Test
+    fun `an undeclared receivedMediaType and originalFileName remain null in the manifest -- never fabricated`() = runTest {
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine(), manifestStorage)
+
+        val accepted = assertIs<EvidenceAcceptanceResult.Accepted>(
+            custodian.accept(principalId, CandidateEvidenceArtifact("plain content".toByteArray())),
+        )
+
+        val manifest = manifestStorage.read(accepted.acceptedEvidenceArtifact.evidenceArtifactId)
+        assertNull(manifest?.receivedMediaType)
+        assertNull(manifest?.originalFileName)
+    }
+
+    @Test
+    fun `a manifest persistence failure propagates as a thrown exception, not silently ignored`() = runTest {
+        val manifestStorage = FakeEvidenceSourceManifestStorage(
+            writeBehavior = {
+                throw EvidenceSourceManifestStorageException.StorageIOFailure(
+                    "simulated manifest I/O failure",
+                    RuntimeException("disk error"),
+                )
+            },
+        )
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine(), manifestStorage)
+
+        assertFailsWith<EvidenceSourceManifestStorageException.StorageIOFailure> {
+            custodian.accept(principalId, CandidateEvidenceArtifact("content".toByteArray()))
+        }
+    }
+
+    @Test
+    fun `when manifest persistence fails, source bytes were already durably written -- bytes-first sequencing`() = runTest {
+        val artifactStorage = InMemoryEvidenceArtifactStorage()
+        var writtenId: EvidenceArtifactId? = null
+        val manifestStorage = FakeEvidenceSourceManifestStorage(
+            writeBehavior = { manifest ->
+                writtenId = manifest.evidenceArtifactId
+                throw EvidenceSourceManifestStorageException.StorageIOFailure("simulated failure", RuntimeException())
+            },
+        )
+        val custodian = DefaultEvidenceCustodian(artifactStorage, approvingEngine(), manifestStorage)
+
+        assertFailsWith<EvidenceSourceManifestStorageException.StorageIOFailure> {
+            custodian.accept(principalId, CandidateEvidenceArtifact("content".toByteArray()))
+        }
+
+        assertContentEquals("content".toByteArray(), artifactStorage.read(requireNotNull(writtenId)))
+    }
+
+    // --- Authoritative Source Manifest Foundation Implementation: retrieveManifest ---
+
+    @Test
+    fun `an APPROVED manifest retrieval returns the established manifest as Found`() = runTest {
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine(), manifestStorage)
+        val accepted = assertIs<EvidenceAcceptanceResult.Accepted>(
+            custodian.accept(principalId, CandidateEvidenceArtifact("content".toByteArray())),
+        )
+
+        val result = custodian.retrieveManifest(principalId, accepted.acceptedEvidenceArtifact.evidenceArtifactId)
+
+        val found = assertIs<EvidenceManifestRetrievalResult.Found>(result)
+        assertEquals(accepted.acceptedEvidenceArtifact.evidenceArtifactId, found.manifest.evidenceArtifactId)
+    }
+
+    @Test
+    fun `a manifest retrieval for a legacy artifact without an established manifest truthfully returns NotFound`() = runTest {
+        val custodian = DefaultEvidenceCustodian(
+            InMemoryEvidenceArtifactStorage(),
+            approvingEngine(),
+            InMemoryEvidenceSourceManifestStorage(),
+        )
+        val legacyId = EvidenceArtifactId("legacy-artifact-no-manifest")
+
+        val result = custodian.retrieveManifest(principalId, legacyId)
+
+        val notFound = assertIs<EvidenceManifestRetrievalResult.NotFound>(result)
+        assertEquals(legacyId, notFound.evidenceArtifactId)
+    }
+
+    @Test
+    fun `a DENIED manifest retrieval decision is Rejected, and performs no manifest storage read`() = runTest {
+        val manifestStorage = FakeEvidenceSourceManifestStorage(
+            readBehavior = { fail("manifest storage must not be read on denial") },
+        )
+        val custodian = DefaultEvidenceCustodian(
+            FakeEvidenceArtifactStorage(),
+            approvingEngine(PermissionDecisionOutcome.DENIED),
+            manifestStorage,
+        )
+        val evidenceArtifactId = EvidenceArtifactId("some-artifact")
+
+        val result = custodian.retrieveManifest(principalId, evidenceArtifactId)
+
+        val rejected = assertIs<EvidenceManifestRetrievalResult.Rejected>(result)
+        assertEquals(evidenceArtifactId, rejected.evidenceArtifactId)
+        assertEquals(0, manifestStorage.readCallCount)
+    }
+
+    @Test
+    fun `a genuine manifest storage failure on retrieval propagates unchanged, is never reported as NotFound`() = runTest {
+        val manifestStorage = FakeEvidenceSourceManifestStorage(
+            readBehavior = {
+                throw EvidenceSourceManifestStorageException.StorageIOFailure(
+                    "simulated manifest read I/O failure",
+                    RuntimeException("disk error"),
+                )
+            },
+        )
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine(), manifestStorage)
+
+        assertFailsWith<EvidenceSourceManifestStorageException.StorageIOFailure> {
+            custodian.retrieveManifest(principalId, EvidenceArtifactId("some-artifact"))
+        }
+    }
+
+    @Test
+    fun `retrieveManifest requires an actual Permission Engine call -- it is not bypassed`() = runTest {
+        val engine = approvingEngine()
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), engine, InMemoryEvidenceSourceManifestStorage())
+
+        custodian.retrieveManifest(principalId, EvidenceArtifactId("some-artifact"))
+
+        assertEquals(1, engine.evaluateCallCount)
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    }
 }
 
 /**
@@ -531,6 +746,47 @@ class FakeEvidenceArtifactStorage(
      * operation (Boundary Clarification Section 3) -- but this class
      * must still implement the interface completely to compile.
      */
+    override suspend fun delete(evidenceArtifactId: EvidenceArtifactId): Boolean {
+        deleteCallCount++
+        return if (deleteBehavior != null) deleteBehavior.invoke(evidenceArtifactId) else delegate.delete(evidenceArtifactId)
+    }
+}
+
+/**
+ * Authoritative Source Manifest Foundation Implementation. Test-only
+ * fake, mirroring [FakeEvidenceArtifactStorage]'s own lambda-configurable
+ * shape exactly. Delegates to a real [InMemoryEvidenceSourceManifestStorage]
+ * by default; [write]/[read] may be overridden to simulate a
+ * manifest-storage-layer fault without needing to reverse-engineer
+ * [FileSystemEvidenceSourceManifestStorage]'s own real failure conditions.
+ */
+class FakeEvidenceSourceManifestStorage(
+    private val writeBehavior: (suspend (EvidenceSourceManifest) -> Unit)? = null,
+    private val readBehavior: (suspend (EvidenceArtifactId) -> EvidenceSourceManifest?)? = null,
+    private val deleteBehavior: (suspend (EvidenceArtifactId) -> Boolean)? = null,
+) : EvidenceSourceManifestStorage {
+
+    private val delegate = InMemoryEvidenceSourceManifestStorage()
+
+    var writeCallCount: Int = 0
+        private set
+
+    var readCallCount: Int = 0
+        private set
+
+    var deleteCallCount: Int = 0
+        private set
+
+    override suspend fun write(manifest: EvidenceSourceManifest) {
+        writeCallCount++
+        if (writeBehavior != null) writeBehavior.invoke(manifest) else delegate.write(manifest)
+    }
+
+    override suspend fun read(evidenceArtifactId: EvidenceArtifactId): EvidenceSourceManifest? {
+        readCallCount++
+        return if (readBehavior != null) readBehavior.invoke(evidenceArtifactId) else delegate.read(evidenceArtifactId)
+    }
+
     override suspend fun delete(evidenceArtifactId: EvidenceArtifactId): Boolean {
         deleteCallCount++
         return if (deleteBehavior != null) deleteBehavior.invoke(evidenceArtifactId) else delegate.delete(evidenceArtifactId)

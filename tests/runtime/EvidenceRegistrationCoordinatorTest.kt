@@ -25,6 +25,7 @@ import parker.core.interfaces.Entity
 import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
+import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.MemoryCore
@@ -124,6 +125,11 @@ class EvidenceRegistrationCoordinatorTest {
             requestingPrincipalId: PrincipalId,
             evidenceArtifactId: EvidenceArtifactId,
         ): EvidenceRetrievalResult = throw UnsupportedOperationException("not used by EvidenceRegistrationCoordinator")
+
+        override suspend fun retrieveManifest(
+            requestingPrincipalId: PrincipalId,
+            evidenceArtifactId: EvidenceArtifactId,
+        ): EvidenceManifestRetrievalResult = throw UnsupportedOperationException("not used by EvidenceRegistrationCoordinator")
     }
 
     /**

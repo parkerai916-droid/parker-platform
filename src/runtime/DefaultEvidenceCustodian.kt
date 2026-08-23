@@ -1,5 +1,6 @@
 package parker.core.runtime
 
+import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
 import parker.core.interfaces.AcceptedEvidenceArtifact
@@ -8,7 +9,10 @@ import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceArtifactStorage
 import parker.core.interfaces.EvidenceCustodian
+import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceSourceManifest
+import parker.core.interfaces.EvidenceSourceManifestStorage
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
@@ -82,8 +86,32 @@ import parker.core.interfaces.ResourceId
 class DefaultEvidenceCustodian(
     private val storage: EvidenceArtifactStorage,
     private val permissionEngine: PermissionEngine,
+    private val manifestStorage: EvidenceSourceManifestStorage = InMemoryEvidenceSourceManifestStorage(),
 ) : EvidenceCustodian {
 
+    /**
+     * Document Ingestion, Authoritative Source Manifest Foundation
+     * Implementation. Step 3 below establishes the Authoritative
+     * Evidence Source Manifest (digest, byte length, and the caller's own
+     * declared [CandidateEvidenceArtifact.receivedMediaType]/
+     * [CandidateEvidenceArtifact.originalFileName], if any) from the
+     * exact accepted candidate bytes, immediately after [storage.write]
+     * durably succeeds -- bytes-first, manifest-second, exactly as
+     * `docs/architecture/DOCUMENT_INGESTION_AUTHORITATIVE_SOURCE_MANIFEST_RETRIEVAL_SCOPE_LOCK.md`
+     * ("the Scope Lock") Section 15 requires. [manifestStorage.write]'s
+     * own exception, like [storage.write]'s, is never caught here -- it
+     * propagates unchanged, so a manifest-persistence failure is never
+     * silently swallowed and [accept] never returns [EvidenceAcceptanceResult.Accepted]
+     * while claiming a state it cannot back (mirroring Evidence Custodian
+     * Phase 7 Boundary Clarification Section 7's own "the write failure
+     * propagates... and the caller-visible success is never returned"
+     * precedent for exactly this shape of secondary-durable-write
+     * failure after an already-durable primary action). The digest this
+     * step persists becomes the sole authoritative *expected* digest for
+     * this identity from this point forward -- it is never later replaced
+     * by a digest recomputed from a subsequent retrieval (Scope Lock
+     * Section 7).
+     */
     override suspend fun accept(
         requestingPrincipalId: PrincipalId,
         candidate: CandidateEvidenceArtifact,
@@ -110,9 +138,64 @@ class DefaultEvidenceCustodian(
         val evidenceArtifactId = EvidenceArtifactId("evidence-${UUID.randomUUID()}")
         storage.write(evidenceArtifactId, candidate.content)
 
+        manifestStorage.write(
+            EvidenceSourceManifest(
+                evidenceArtifactId = evidenceArtifactId,
+                sha256 = sha256Hex(candidate.content),
+                byteLength = candidate.content.size.toLong(),
+                receivedMediaType = candidate.receivedMediaType,
+                originalFileName = candidate.originalFileName,
+            ),
+        )
+
         return EvidenceAcceptanceResult.Accepted(
             AcceptedEvidenceArtifact(evidenceArtifactId, acceptedAt = Instant.now()),
         )
+    }
+
+    /**
+     * Document Ingestion, Authoritative Source Manifest Foundation
+     * Implementation. Mirrors [retrieve]'s own gated, observational shape
+     * exactly -- a permission check, strictly before any manifest access,
+     * followed by an unconditional [manifestStorage.read]. A genuinely
+     * absent manifest becomes [EvidenceManifestRetrievalResult.NotFound],
+     * never fabricated or inferred (Scope Lock Section 13); a genuine
+     * storage fault propagates unchanged, never reinterpreted as
+     * `NotFound`.
+     */
+    override suspend fun retrieveManifest(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+    ): EvidenceManifestRetrievalResult {
+        val decision = permissionEngine.evaluate(
+            buildExecutionRequest(
+                requestingPrincipalId = requestingPrincipalId,
+                resourceId = EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID,
+                actionName = RETRIEVE_MANIFEST_ACTION_NAME,
+                intent = "Retrieve evidence source manifest from Evidence Custodian custody",
+                requestIdPrefix = "evidence-retrieve-manifest",
+            ),
+        )
+
+        if (decision.decision != PermissionDecisionOutcome.APPROVED &&
+            decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
+        ) {
+            return EvidenceManifestRetrievalResult.Rejected(
+                evidenceArtifactId,
+                "Permission Engine did not authorise evidence manifest retrieval for principal " +
+                    "'${requestingPrincipalId.value}' (decision=${decision.decision})",
+            )
+        }
+
+        val manifest = manifestStorage.read(evidenceArtifactId)
+            ?: return EvidenceManifestRetrievalResult.NotFound(evidenceArtifactId)
+
+        return EvidenceManifestRetrievalResult.Found(manifest)
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 
     /**
@@ -255,5 +338,27 @@ class DefaultEvidenceCustodian(
          * this Unit.
          */
         const val RETRIEVE_ACTION_NAME: String = "evidence.retrieve"
+
+        /**
+         * Document Ingestion, Authoritative Source Manifest Foundation
+         * Implementation. The manifest-retrieval counterpart to
+         * [EVIDENCE_RETRIEVAL_RESOURCE_ID] -- a distinct literal value,
+         * never reused from bytes-retrieval's own convention, so a
+         * manifest read remains its own separately auditable,
+         * separately permission-traceable act (Scope Lock Section 17).
+         */
+        val EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID: ResourceId = ResourceId("evidence-custodian-manifest-retrieval")
+
+        /**
+         * Document Ingestion, Authoritative Source Manifest Foundation
+         * Implementation. Governed by
+         * `docs/architecture/DOCUMENT_INGESTION_AUTHORITATIVE_SOURCE_MANIFEST_RETRIEVAL_SCOPE_LOCK.md`
+         * Section 17: registered in `ParkerRuntime.kt`'s own
+         * `ActionVocabulary` registration to `(PermissionAction.READ,
+         * ResourceType.DOCUMENT)` -- the same pair [RETRIEVE_ACTION_NAME]
+         * already uses. No new `PermissionAction` or `ResourceType` was
+         * required.
+         */
+        const val RETRIEVE_MANIFEST_ACTION_NAME: String = "evidence.retrieve-manifest"
     }
 }

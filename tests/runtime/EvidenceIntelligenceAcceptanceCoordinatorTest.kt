@@ -20,6 +20,7 @@ import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceAnalysisResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
+import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.KnowledgeCandidate
@@ -715,6 +716,9 @@ private class FakeEvidenceCustodian(
     }
 
     override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceRetrievalResult =
+        throw UnsupportedOperationException("not used by EvidenceIntelligenceAcceptanceCoordinator")
+
+    override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
         throw UnsupportedOperationException("not used by EvidenceIntelligenceAcceptanceCoordinator")
 }
 

@@ -35,6 +35,7 @@ import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceExtractor
+import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.ExtractionIdentity
@@ -129,6 +130,9 @@ class EvidenceExtractionCoordinatorTest {
             retrieveCallCount++
             return onRetrieve(requestingPrincipalId, evidenceArtifactId)
         }
+
+        override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
+            fail("retrieveManifest must not be called")
     }
 
     private class FakeMemoryRetrieval(
@@ -237,6 +241,9 @@ class EvidenceExtractionCoordinatorTest {
 
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
                 fail("not used")
+
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
+                fail("not used")
         }
         val memoryCore = FakeMemoryCoreForRegistration(
             onCreateProvenance = { _, candidate ->
@@ -279,6 +286,8 @@ class EvidenceExtractionCoordinatorTest {
                 }
 
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
+
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
         }
         if (outcome is EvidenceRegistrationOutcome.NotAccepted) {
             val memoryCore = FakeMemoryCoreForRegistration(
@@ -295,6 +304,8 @@ class EvidenceExtractionCoordinatorTest {
                 )
 
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
+
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
         }
         val provenanceOnly = outcome is EvidenceRegistrationOutcome.DocumentRegistrationNotAuthorised
         var evaluateCount = 0

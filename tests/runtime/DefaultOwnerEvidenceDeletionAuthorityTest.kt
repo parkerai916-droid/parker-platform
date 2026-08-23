@@ -11,6 +11,9 @@ import parker.core.interfaces.EvidenceDeletionAudit
 import parker.core.interfaces.EvidenceDeletionAuditException
 import parker.core.interfaces.EvidenceDeletionAuditStage
 import parker.core.interfaces.EvidenceDeletionResult
+import parker.core.interfaces.EvidenceManifestRetrievalResult
+import parker.core.interfaces.EvidenceSourceManifest
+import parker.core.interfaces.EvidenceSourceManifestStorage
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
@@ -24,6 +27,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /**
  * Evidence Custodian, Implementation Plan Phase 7 ("Deletion workflow").
@@ -201,17 +205,94 @@ class DefaultOwnerEvidenceDeletionAuthorityTest {
     // --- Structural dependency shape (Boundary Clarification Section 4) ---
 
     @Test
-    fun `DefaultOwnerEvidenceDeletionAuthority declares exactly three constructor dependencies -- no MemoryCore, no EvidenceCustodian`() {
+    fun `DefaultOwnerEvidenceDeletionAuthority declares exactly four constructor dependencies -- no MemoryCore, no EvidenceCustodian`() {
         val constructor = DefaultOwnerEvidenceDeletionAuthority::class.constructors.single()
         val parameterTypes = constructor.parameters.map { it.type.classifier }
 
-        assertEquals(3, parameterTypes.size)
+        assertEquals(4, parameterTypes.size)
         assertEquals(
-            setOf(EvidenceArtifactStorage::class, PermissionEngine::class, EvidenceDeletionAudit::class),
+            setOf(
+                EvidenceArtifactStorage::class,
+                PermissionEngine::class,
+                EvidenceDeletionAudit::class,
+                EvidenceSourceManifestStorage::class,
+            ),
             parameterTypes.toSet(),
             "DefaultOwnerEvidenceDeletionAuthority must depend on exactly EvidenceArtifactStorage, " +
-                "PermissionEngine, and EvidenceDeletionAudit -- no MemoryCore, no EvidenceCustodian " +
+                "PermissionEngine, EvidenceDeletionAudit, and EvidenceSourceManifestStorage (Authoritative " +
+                "Source Manifest Foundation Implementation) -- no MemoryCore, no EvidenceCustodian " +
                 "(Boundary Clarification Section 4)",
         )
+    }
+
+    // --- Authoritative Source Manifest Foundation Implementation: manifest deletion ---
+
+    @Test
+    fun `a successful deletion also removes the active source manifest`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        storage.write(EvidenceArtifactId("artifact-1"), "content".toByteArray())
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        manifestStorage.write(EvidenceSourceManifest(EvidenceArtifactId("artifact-1"), sha256Hex("content".toByteArray()), 7L))
+        val audit = FakeEvidenceDeletionAudit()
+        val authority = DefaultOwnerEvidenceDeletionAuthority(storage, approvingEngine(), audit, manifestStorage)
+
+        val result = authority.deleteAsOwner(principalId, EvidenceArtifactId("artifact-1"))
+
+        assertIs<EvidenceDeletionResult.Deleted>(result)
+        assertNull(manifestStorage.read(EvidenceArtifactId("artifact-1")), "the active manifest must not survive successful deletion")
+    }
+
+    @Test
+    fun `a manifest retrieval after deletion truthfully reports absence`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        val id = EvidenceArtifactId("artifact-1")
+        storage.write(id, "content".toByteArray())
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        manifestStorage.write(EvidenceSourceManifest(id, sha256Hex("content".toByteArray()), 7L))
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(), manifestStorage)
+        val authority = DefaultOwnerEvidenceDeletionAuthority(storage, approvingEngine(), FakeEvidenceDeletionAudit(), manifestStorage)
+
+        authority.deleteAsOwner(principalId, id)
+        val result = custodian.retrieveManifest(principalId, id)
+
+        assertIs<EvidenceManifestRetrievalResult.NotFound>(result)
+    }
+
+    @Test
+    fun `a NotFound deletion (nothing present) still attempts manifest cleanup -- self-healing an orphan left by a prior failed attempt`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        val manifestStorage = FakeEvidenceSourceManifestStorage()
+        val authority = DefaultOwnerEvidenceDeletionAuthority(storage, approvingEngine(), FakeEvidenceDeletionAudit(), manifestStorage)
+
+        val result = authority.deleteAsOwner(principalId, EvidenceArtifactId("never-written"))
+
+        assertIs<EvidenceDeletionResult.NotFound>(result)
+        assertEquals(
+            1,
+            manifestStorage.deleteCallCount,
+            "manifest cleanup must be attempted unconditionally, so a manifest orphaned by an earlier " +
+                "partial failure is still reclaimed on a later NotFound retry",
+        )
+    }
+
+    @Test
+    fun `an orphaned manifest left by a prior failed cleanup is reclaimed on a later NotFound retry`() = runTest {
+        val storage = InMemoryEvidenceArtifactStorage()
+        val id = EvidenceArtifactId("artifact-1")
+        // Bytes are already gone (a prior successful storage.delete), but the manifest survived a
+        // prior manifestStorage.delete failure -- exactly the residual state this fix closes.
+        val manifestStorage = InMemoryEvidenceSourceManifestStorage()
+        manifestStorage.write(EvidenceSourceManifest(id, sha256Hex("content".toByteArray()), 7L))
+        val authority = DefaultOwnerEvidenceDeletionAuthority(storage, approvingEngine(), FakeEvidenceDeletionAudit(), manifestStorage)
+
+        val result = authority.deleteAsOwner(principalId, id)
+
+        assertIs<EvidenceDeletionResult.NotFound>(result)
+        assertNull(manifestStorage.read(id), "the orphaned manifest must be reclaimed even though storage.delete found nothing this time")
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 }

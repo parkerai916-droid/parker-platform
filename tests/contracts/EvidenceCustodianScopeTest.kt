@@ -41,6 +41,21 @@ import parker.core.runtime.DefaultEvidenceCustodian
  * prior revision (Unit 2) already reasoned when it removed its own two
  * now-false assertions inherited from `EvidenceArtifactStorageScopeTest.kt`.
  *
+ * ## Revision history (Authoritative Source Manifest Foundation Implementation)
+ *
+ * `docs/architecture/DOCUMENT_INGESTION_AUTHORITATIVE_SOURCE_MANIFEST_RETRIEVAL_SCOPE_LOCK.md`
+ * has since deliberately, explicitly authorised a third, narrow, read-only
+ * operation, [EvidenceCustodian.retrieveManifest] -- see that document's
+ * own Section 14. The "exactly two domain operations" tests below are
+ * revised, by the identical reasoning already stated above, to expect
+ * exactly *three* (`accept`, `retrieve`, `retrieveManifest`); a new shape
+ * test checks `retrieveManifest`'s own signature. `CandidateEvidenceArtifact`'s
+ * own field-name exclusion test is unaffected -- `receivedMediaType` and
+ * `originalFileName` are declared, external facts, not the
+ * classification/ownership/provenance/hash fields that test continues to
+ * guard against; a new, dedicated test confirms this type's now-complete
+ * field set instead.
+ *
  * ## Why Kotlin reflection ([kotlin.reflect.full.declaredFunctions]), not
  * `java.lang.reflect.Class.declaredMethods`
  *
@@ -74,15 +89,43 @@ import parker.core.runtime.DefaultEvidenceCustodian
 class EvidenceCustodianScopeTest {
 
     @Test
-    fun `EvidenceCustodian declares exactly two domain operations -- accept and retrieve`() {
+    fun `EvidenceCustodian declares exactly three domain operations -- accept, retrieve, and retrieveManifest`() {
         val declared = EvidenceCustodian::class.declaredFunctions
 
         assertEquals(
-            setOf("accept", "retrieve"),
+            setOf("accept", "retrieve", "retrieveManifest"),
             declared.map { it.name }.toSet(),
-            "EvidenceCustodian must declare exactly accept and retrieve -- found: ${declared.map { it.name }}",
+            "EvidenceCustodian must declare exactly accept, retrieve, and retrieveManifest -- found: " +
+                declared.map { it.name },
         )
-        assertEquals(2, declared.size, "no domain operation name may be declared more than once")
+        assertEquals(3, declared.size, "no domain operation name may be declared more than once")
+    }
+
+    @Test
+    fun `retrieveManifest has the expected public, suspend, abstract shape`() {
+        val retrieveManifest = EvidenceCustodian::class.declaredFunctions.single { it.name == "retrieveManifest" }
+
+        assertEquals(KVisibility.PUBLIC, retrieveManifest.visibility, "retrieveManifest must be a public operation")
+        assertTrue(retrieveManifest.isSuspend, "retrieveManifest must be a suspend function -- Permission Engine evaluation is async")
+        assertAbstract(retrieveManifest)
+
+        val valueParameters = retrieveManifest.parameters.filter { it.kind == KParameter.Kind.VALUE }
+        assertEquals(2, valueParameters.size, "retrieveManifest must take exactly two value parameters")
+        assertEquals(
+            PrincipalId::class,
+            valueParameters[0].type.classifier,
+            "retrieveManifest's first parameter must be the requesting principal",
+        )
+        assertEquals(
+            EvidenceArtifactId::class,
+            valueParameters[1].type.classifier,
+            "retrieveManifest's second parameter must be the target artefact's identifier",
+        )
+        assertEquals(
+            EvidenceManifestRetrievalResult::class,
+            retrieveManifest.returnType.classifier,
+            "retrieveManifest must return the sealed EvidenceManifestRetrievalResult",
+        )
     }
 
     @Test
@@ -197,6 +240,16 @@ class EvidenceCustodianScopeTest {
     }
 
     @Test
+    fun `CandidateEvidenceArtifact declares exactly content, receivedMediaType, and originalFileName`() {
+        val fieldNames = CandidateEvidenceArtifact::class.java.declaredFields
+            .filter { !it.isSynthetic }
+            .map { it.name }
+            .toSet()
+
+        assertEquals(setOf("content", "receivedMediaType", "originalFileName"), fieldNames)
+    }
+
+    @Test
     fun `AcceptedEvidenceArtifact carries no owner, classification, or provenance field`() {
         val fieldNames = AcceptedEvidenceArtifact::class.java.declaredFields
             .filter { !it.isSynthetic }
@@ -233,13 +286,13 @@ class EvidenceCustodianScopeTest {
     // --- Implementation Plan Phase 7 ("Deletion workflow") -- Boundary Clarification Section 3 ---
 
     @Test
-    fun `EvidenceCustodian still declares exactly accept and retrieve -- deletion was not added to it`() {
+    fun `EvidenceCustodian still declares exactly accept, retrieve, and retrieveManifest -- deletion was not added to it`() {
         val declared = EvidenceCustodian::class.declaredFunctions
 
         assertEquals(
-            setOf("accept", "retrieve"),
+            setOf("accept", "retrieve", "retrieveManifest"),
             declared.map { it.name }.toSet(),
-            "EvidenceCustodian must remain exactly accept and retrieve -- deletion (Phase 7) is a " +
+            "EvidenceCustodian must remain exactly accept, retrieve, and retrieveManifest -- deletion (Phase 7) is a " +
                 "structurally separate capability (OwnerEvidenceDeletionAuthority), never added to " +
                 "this interface -- found: ${declared.map { it.name }}",
         )

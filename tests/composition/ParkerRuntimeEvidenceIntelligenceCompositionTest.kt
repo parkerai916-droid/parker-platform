@@ -81,6 +81,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         ownerPrincipalId = ownerPrincipalId,
         localTextChannelModuleId = "channel.local-text-evidence-intelligence-integration-test",
         evidenceStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage").toString(),
+        evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage-manifest").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-intelligence-integration-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-intelligence-integration-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),

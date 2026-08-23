@@ -24,6 +24,8 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.KEY_OWNER_DISPLAY_NAME to "Steven",
             ParkerRuntimeConfigLoader.KEY_LOCAL_TEXT_CHANNEL_MODULE_ID to "channel.local-text-test",
             ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT to Files.createTempDirectory("config-loader-test-evidence-storage").toString(),
+            ParkerRuntimeConfigLoader.KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT to
+                Files.createTempDirectory("config-loader-test-evidence-source-manifest-storage").toString(),
             ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH to
                 Files.createTempDirectory("config-loader-test-evidence-audit").resolve("audit.log").toString(),
             ParkerRuntimeConfigLoader.KEY_MEMORY_CORE_DURABILITY_LOG_PATH to
@@ -50,6 +52,10 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals("Steven", config.ownerDisplayName)
         assertEquals("channel.local-text-test", config.localTextChannelModuleId)
         assertEquals(environment[ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT], config.evidenceStorageRootPath)
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT],
+            config.evidenceSourceManifestStorageRootPath,
+        )
         assertEquals(
             environment[ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH],
             config.evidenceDeletionAuditLogPath,
@@ -197,6 +203,18 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.load(environment)
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_EVIDENCE_STORAGE_ROOT, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT to null),
+        )
+
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT, thrown.key)
     }
 
     @Test

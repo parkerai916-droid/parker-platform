@@ -8,6 +8,7 @@ import parker.core.interfaces.EvidenceDeletionAudit
 import parker.core.interfaces.EvidenceDeletionAuditRecord
 import parker.core.interfaces.EvidenceDeletionAuditStage
 import parker.core.interfaces.EvidenceDeletionResult
+import parker.core.interfaces.EvidenceSourceManifestStorage
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.OwnerEvidenceDeletionAuthority
 import parker.core.interfaces.PermissionDecisionOutcome
@@ -95,6 +96,7 @@ class DefaultOwnerEvidenceDeletionAuthority(
     private val storage: EvidenceArtifactStorage,
     private val permissionEngine: PermissionEngine,
     private val evidenceDeletionAudit: EvidenceDeletionAudit,
+    private val manifestStorage: EvidenceSourceManifestStorage = InMemoryEvidenceSourceManifestStorage(),
 ) : OwnerEvidenceDeletionAuthority {
 
     override suspend fun deleteAsOwner(
@@ -124,6 +126,19 @@ class DefaultOwnerEvidenceDeletionAuthority(
         )
 
         val deleted = storage.delete(evidenceArtifactId)
+
+        // Authoritative Source Manifest Foundation Implementation, Scope Lock Section 19: the
+        // active manifest must not survive as a phantom authority once its source bytes are gone.
+        // Called unconditionally -- regardless of whether storage.delete found anything this call
+        // -- so that a manifest orphaned by an earlier attempt (for example, one whose own
+        // manifestStorage.delete previously failed after storage.delete had already succeeded) is
+        // still cleaned up on a later retry, even though that retry's own storage.delete now
+        // truthfully returns false. No tombstone is written -- manifestStorage.delete physically
+        // removes the manifest with no retained marker, exactly like storage.delete itself, and is
+        // itself an ordinary no-op (false) if nothing was present. A genuine I/O fault here
+        // propagates unchanged, uncaught, mirroring every other fault in this sequence.
+        manifestStorage.delete(evidenceArtifactId)
+
         if (!deleted) {
             return EvidenceDeletionResult.NotFound(evidenceArtifactId)
         }

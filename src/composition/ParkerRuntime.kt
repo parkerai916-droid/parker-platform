@@ -80,6 +80,7 @@ import parker.core.runtime.DefaultExplicitOwnerPersistenceDirectiveClassifier
 import parker.core.runtime.ExplicitOwnerPersistenceDirectiveReasoningProvider
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
 import parker.core.runtime.FileSystemEvidenceDeletionAudit
+import parker.core.runtime.FileSystemEvidenceSourceManifestStorage
 import parker.core.runtime.FileSystemMemoryCoreDurabilityLog
 import parker.core.runtime.FileSystemKnowledgeItemDurabilityLog
 import parker.core.runtime.GoalPlanningHandoffCoordinator
@@ -459,6 +460,11 @@ class ParkerRuntime(
             listOf(
                 Triple(DefaultEvidenceCustodian.EVIDENCE_INTAKE_RESOURCE_ID, ResourceType.DOCUMENT, "Evidence Custodian Intake"),
                 Triple(DefaultEvidenceCustodian.EVIDENCE_RETRIEVAL_RESOURCE_ID, ResourceType.DOCUMENT, "Evidence Custodian Retrieval"),
+                Triple(
+                    DefaultEvidenceCustodian.EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID,
+                    ResourceType.DOCUMENT,
+                    "Evidence Custodian Manifest Retrieval",
+                ),
                 Triple(EvidenceRegistrationCoordinator.MEMORY_CORE_PROVENANCE_RESOURCE_ID, ResourceType.MEMORY, "Memory Core Provenance Creation"),
                 Triple(EvidenceRegistrationCoordinator.MEMORY_CORE_DOCUMENT_REGISTRATION_RESOURCE_ID, ResourceType.MEMORY, "Memory Core Document Registration"),
                 Triple(DefaultOwnerEvidenceDeletionAuthority.EVIDENCE_DELETION_RESOURCE_ID, ResourceType.DOCUMENT, "Evidence Custodian Deletion"),
@@ -509,6 +515,15 @@ class ParkerRuntime(
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = DefaultEvidenceCustodian.RETRIEVE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
+                ),
+            )
+            // Document Ingestion, Authoritative Source Manifest Foundation Implementation
+            // (Scope Lock Section 17): the same (READ, DOCUMENT) pair evidence.retrieve already
+            // uses -- no new PermissionAction or ResourceType is introduced.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DefaultEvidenceCustodian.RETRIEVE_MANIFEST_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
                 ),
             )
@@ -763,6 +778,13 @@ class ParkerRuntime(
             FileSystemEvidenceArtifactStorage(Path.of(config.evidenceStorageRootPath))
         }
 
+        // Document Ingestion, Authoritative Source Manifest Foundation Implementation. A sibling
+        // storage root to evidenceArtifactStorage, never nested inside it -- the Authoritative
+        // Evidence Source Manifest is never itself an EvidenceArtifact (Scope Lock Section 4/20).
+        val evidenceSourceManifestStorage = stage("Evidence Custodian source manifest storage construction") {
+            FileSystemEvidenceSourceManifestStorage(Path.of(config.evidenceSourceManifestStorageRootPath))
+        }
+
         // Memory Core Durability Unit 8 (Runtime Composition). The filesystem durability log and
         // the recovery it drives are both genuinely suspending (file I/O), so both are constructed
         // inside two stage() calls here in start(), never in a synchronous constructor -- the same
@@ -782,7 +804,11 @@ class ParkerRuntime(
             DurableMemoryCore.create(memoryCoreDurabilityLog)
         }
         val memoryCore: MemoryCore = durableMemoryCore
-        val defaultEvidenceCustodian = DefaultEvidenceCustodian(evidenceArtifactStorage, permissionEngine)
+        val defaultEvidenceCustodian = DefaultEvidenceCustodian(
+            evidenceArtifactStorage,
+            permissionEngine,
+            evidenceSourceManifestStorage,
+        )
         evidenceCustodian = defaultEvidenceCustodian
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
 
@@ -799,6 +825,7 @@ class ParkerRuntime(
             evidenceArtifactStorage,
             permissionEngine,
             evidenceDeletionAudit,
+            evidenceSourceManifestStorage,
         )
 
         val deliverTool = stage("Local Text Channel deliver Tool construction") {
