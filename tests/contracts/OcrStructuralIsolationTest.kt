@@ -339,15 +339,24 @@ class OcrStructuralIsolationTest {
     }
 
     @Test
-    fun `no concrete class in src implements OcrProviderAdapter -- a concrete provider adapter remains explicitly deferred future work`() {
+    fun `DoclingOcrProviderAdapter is the sole concrete class in src implementing OcrProviderAdapter`() {
+        // Updated during the Docling Concrete Adapter Implementation Unit -- see
+        // OcrProviderAdapterScopeTest.kt's own identical update for the full citation. This
+        // test's own isolation-proof purpose is preserved: exactly one, named, authorized
+        // provider adapter, never a second, unauthorized one.
         val implementsPattern = Regex("""\b(?:class|object)\s+\w+(?:\([^)]*\))?\s*:\s*[\w<>,\s]*\bOcrProviderAdapter\b""")
         val srcRoot = java.io.File("src")
         val implementers = srcRoot.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .filter { file -> implementsPattern.containsMatchIn(file.readText()) }
+            .map { it.path.replace('\\', '/') }
             .toList()
 
-        assertTrue(implementers.isEmpty(), "no concrete adapter may exist yet -- found: ${implementers.map { it.path }}")
+        assertEquals(
+            listOf("src/runtime/DoclingOcrProviderAdapter.kt"),
+            implementers,
+            "exactly one, authorized concrete adapter may implement OcrProviderAdapter -- found: $implementers",
+        )
     }
 
     @Test

@@ -124,7 +124,15 @@ class OcrProviderAdapterScopeTest {
     }
 
     @Test
-    fun `no concrete class implements OcrProviderAdapter anywhere in src -- a property or parameter of that type is not an implementation`() {
+    fun `DoclingOcrProviderAdapter is the sole class implementing OcrProviderAdapter anywhere in src -- a property or parameter of that type is not an implementation`() {
+        // Updated during the Docling Concrete Adapter Implementation Unit: a concrete adapter
+        // was, at this Unit's own original drafting, explicitly deferred future work (Scope Lock
+        // Section 18, item 6). `docs/architecture/OCR_MECHANISM_DOCLING_PROVIDER_AUTHORIZATION_SCOPE_LOCK.md`
+        // Section 9 item C ("Implementation of DoclingOcrProviderAdapter -- Now authorized to be
+        // proposed and built") and `docs/architecture/OCR_MECHANISM_DOCLING_CONCRETE_ADAPTER_IMPLEMENTATION_PLAN.md`
+        // subsequently authorized exactly one, named, confined implementation -- this test now
+        // proves that authorization was exercised narrowly, never opening the door to a second,
+        // unauthorized provider adapter.
         val srcRoot = java.io.File("src")
         check(srcRoot.exists()) { "src/ directory not found from working directory ${java.io.File(".").absolutePath}" }
 
@@ -136,17 +144,17 @@ class OcrProviderAdapterScopeTest {
         // any, is consumed by the optional group below and excluded from the supertype match that follows.
         val implementsPattern = Regex("""\b(?:class|object)\s+\w+(?:\([^)]*\))?\s*:\s*[\w<>,\s]*\bOcrProviderAdapter\b""")
 
-        val offendingFiles = srcRoot.walkTopDown()
+        val implementers = srcRoot.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .filter { file -> implementsPattern.containsMatchIn(file.readText()) }
-            .map { it.path }
+            .map { it.path.replace('\\', '/') }
             .toList()
 
-        assertTrue(
-            offendingFiles.isEmpty(),
-            "No file in src/ may implement OcrProviderAdapter -- a concrete adapter is explicitly deferred future " +
-                "work (Scope Lock Section 18, item 6; Implementation Plan Section 16, item 6), never this Unit's " +
-                "own responsibility -- found a candidate implementation in: $offendingFiles",
+        assertEquals(
+            listOf("src/runtime/DoclingOcrProviderAdapter.kt"),
+            implementers,
+            "exactly one, authorized concrete adapter may implement OcrProviderAdapter (Docling Authorization " +
+                "Section 9 item C; Adapter Plan) -- found: $implementers",
         )
     }
 
