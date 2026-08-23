@@ -15,6 +15,7 @@ import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
+import parker.core.interfaces.DerivativeMemoryRegistrationOutcome
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
@@ -50,6 +51,7 @@ import parker.core.interfaces.ResourceLifecycleState
 import parker.core.interfaces.ResourceSensitivity
 import parker.core.interfaces.ResourceType
 import parker.core.interfaces.TierADocumentIngestionRouter
+import parker.core.interfaces.TierADocumentRoutingResult
 import parker.core.interfaces.TierAOwnerInvocationOutcome
 import parker.core.interfaces.WorldModelSource
 import parker.core.runtime.ActionMapper
@@ -70,6 +72,7 @@ import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningKnowledgeSource
 import parker.core.runtime.DefaultReasoningPromptBuilder
+import parker.core.runtime.DerivativeMemoryRegistrationCoordinator
 import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.DurableKnowledgeItemPersistence
@@ -250,6 +253,14 @@ class ParkerRuntime(
     // own entry-point method reads it" isolation -- no other coordinator constructed in
     // buildAndRegisterRuntimeGraph ever receives a reference to it.
     private lateinit var tierAOwnerInvocationCoordinator: TierAOwnerInvocationCoordinator
+
+    // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
+    // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
+    // constructed in buildAndRegisterRuntimeGraph ever receives a reference to it. Unlike
+    // tierAOwnerInvocationCoordinator, this one depends on memoryCore/permissionEngine, not
+    // evidenceCustodian, per the adopted scope lock's own "MemoryCore and PermissionEngine only"
+    // dependency boundary.
+    private lateinit var derivativeMemoryRegistrationCoordinator: DerivativeMemoryRegistrationCoordinator
 
     // Programme 4, Evidence Intelligence, Unit 8 ("Runtime Composition"). permissionEngine is
     // promoted from a construction-local val (used throughout buildAndRegisterRuntimeGraph
@@ -488,6 +499,21 @@ class ParkerRuntime(
                 Triple(EvidenceRegistrationCoordinator.MEMORY_CORE_PROVENANCE_RESOURCE_ID, ResourceType.MEMORY, "Memory Core Provenance Creation"),
                 Triple(EvidenceRegistrationCoordinator.MEMORY_CORE_DOCUMENT_REGISTRATION_RESOURCE_ID, ResourceType.MEMORY, "Memory Core Document Registration"),
                 Triple(DefaultOwnerEvidenceDeletionAuthority.EVIDENCE_DELETION_RESOURCE_ID, ResourceType.DOCUMENT, "Evidence Custodian Deletion"),
+                // Document Ingestion, Derivative-to-Memory-Core Registration (Scope Lock Section
+                // 18): the same registration EvidenceRegistrationCoordinator's own two Memory Core
+                // resources above already require -- DefaultPermissionPolicy resolves a target
+                // Resource's own registered resourceType, so an unregistered ResourceId cannot be
+                // approved regardless of any matching ActionVocabulary/policy rule.
+                Triple(
+                    DerivativeMemoryRegistrationCoordinator.DERIVATIVE_MEMORY_PROVENANCE_RESOURCE_ID,
+                    ResourceType.MEMORY,
+                    "Derivative Memory Core Provenance Creation",
+                ),
+                Triple(
+                    DerivativeMemoryRegistrationCoordinator.DERIVATIVE_MEMORY_DOCUMENT_REGISTRATION_RESOURCE_ID,
+                    ResourceType.MEMORY,
+                    "Derivative Memory Core Document Registration",
+                ),
             ).forEach { (resourceId, resourceType, displayName) ->
                 resourceRegistry.register(
                     Resource(
@@ -567,6 +593,24 @@ class ParkerRuntime(
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = EvidenceRegistrationCoordinator.REGISTER_DOCUMENT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
+                ),
+            )
+            // Document Ingestion, Derivative-to-Memory-Core Registration (Scope Lock Section 18):
+            // two new, distinct verb phrases, mapped to the identical existing (WRITE, MEMORY)
+            // pair "memory.create-provenance"/"memory.register-document" already use -- no new
+            // PermissionAction or ResourceType is introduced, and the existing coarse (WRITE,
+            // MEMORY) policy rule above already governs both, exactly as it already, today,
+            // governs EvidenceRegistrationCoordinator's own two writes.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DerivativeMemoryRegistrationCoordinator.CREATE_PROVENANCE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = DerivativeMemoryRegistrationCoordinator.REGISTER_DOCUMENT_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.MEMORY)),
                 ),
             )
@@ -842,6 +886,12 @@ class ParkerRuntime(
         )
         evidenceCustodian = defaultEvidenceCustodian
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
+
+        // Document Ingestion, Derivative-to-Memory-Core Registration. Depends on memoryCore and
+        // permissionEngine only -- never evidenceCustodian, never DerivativeGenerationStorage,
+        // never either existing Document Ingestion owner-invocation coordinator (Scope Lock
+        // Section 4.C).
+        derivativeMemoryRegistrationCoordinator = DerivativeMemoryRegistrationCoordinator(memoryCore, permissionEngine)
 
         // Document Ingestion, Owner-Authorized Local File Ingress. Unlike
         // tierAOwnerInvocationCoordinator (below), this coordinator performs its own, new,
@@ -1680,6 +1730,52 @@ class ParkerRuntime(
             PrincipalId(config.ownerPrincipalId),
             absolutePath,
             receivedMediaType,
+        )
+    }
+
+    /**
+     * Document Ingestion, Derivative-to-Memory-Core Registration. The one production entry point
+     * through which an already-admitted Tier A derivative may be registered into Memory Core --
+     * **explicit, individually-authorized owner invocation only**, mirroring
+     * [deleteEvidenceAsOwner]'s/[invokeTierAIngestionAsOwner]'s/[importEvidenceFileAsOwner]'s own
+     * structural owner-only pattern exactly: this method takes **no** `requestingPrincipalId`
+     * parameter, always acts as `PrincipalId(config.ownerPrincipalId)`, and there is no code path
+     * through which any caller, internal or external, could substitute a different principal
+     * (`docs/architecture/DOCUMENT_INGESTION_DERIVATIVE_TO_MEMORY_CORE_REGISTRATION_SCOPE_LOCK.md`
+     * ("the Scope Lock") Section 5).
+     *
+     * Accepts only [admitted] -- an already-admitted Tier A result the owner separately obtained
+     * from a prior, independent [invokeTierAIngestionAsOwner] call. There is no code path from a
+     * successful [importEvidenceFileAsOwner] or [invokeTierAIngestionAsOwner] call to this method
+     * -- registration is always a third, separate, explicit owner action, never automatically
+     * chained (Scope Lock Section 5's own "explicit, separate, owner-triggered" decision).
+     * [derivativeMemoryRegistrationCoordinator] performs the entire governed chain -- two
+     * separately gated Memory Core writes, using only [admitted]'s own `record`/`format` fields,
+     * never its `payload` -- this method adds no orchestration of its own beyond the
+     * [RuntimeLifecycleState.RUNNING] guard every production entry point on this class already
+     * requires.
+     *
+     * This method never invokes Knowledge promotion, Evidence Intelligence, OCR, or Tier B, never
+     * writes to `DerivativeReviewRegistry`, and never alters the already-admitted derivative
+     * Document Ingestion's own storage holds -- a registration failure of any kind leaves that
+     * derivative exactly as durably admitted as it already was (Scope Lock Section 15).
+     *
+     * The log line below records no derivative identity beyond that an invocation occurred,
+     * mirroring every other owner entry point's own logging discipline.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun registerDerivativeInMemoryAsOwner(
+        admitted: TierADocumentRoutingResult.Admitted,
+    ): DerivativeMemoryRegistrationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Derivative Memory Core registration invoked by owner")
+        return derivativeMemoryRegistrationCoordinator.register(
+            PrincipalId(config.ownerPrincipalId),
+            UUID.randomUUID().toString(),
+            admitted,
         )
     }
 
