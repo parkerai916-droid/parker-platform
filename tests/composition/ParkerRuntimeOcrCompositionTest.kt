@@ -55,34 +55,32 @@ import parker.core.runtime.OcrExecutionSequencer
  * `OcrMechanismUnit12CompositionLiveAcceptanceTest.kt`
  * (`tests/integration`, opt-in, gated on real provisioning).
  *
- * **A pre-existing, disclosed, non-Unit-12 limitation, freshly confirmed by
- * this file, shapes every test below that reaches real evidence resolution.**
- * `DefaultEvidenceIntelligence.analyse` calls `reasoningCoordinator?.reason(...)`
- * unconditionally whenever a `reasoningCoordinator` is wired, independent of
- * `analysisKind` and independent of whether the OCR step also ran -- this is
- * today's unmodified, already-governed behaviour (Unit 12 Implementation Plan
- * §5.E: the OCR step is "independent of whether reasoning is also
- * attempted"). Real `ParkerRuntime` composition always wires a
- * `reasoningCoordinator` backed by `ModelReasoningProvider`, which by its own
- * documented, frozen scope never supports `ReasoningSubject.OfEvidenceAnalysisRequest`
- * and unconditionally throws `UnsupportedOperationException` for it -- already
- * proven, pre-Unit-12, by `ParkerRuntimeEvidenceIntelligenceCompositionTest`'s
- * own "analyseEvidence propagates a genuine Reasoning Provider fault
- * unchanged once real input resolves" test. Consequently, in the current,
- * real, full `ParkerRuntime` composition, any `analyseEvidence` call that
- * resolves at least one real evidence artefact -- OCR-eligible or not --
- * throws before returning, regardless of the OCR mechanism's own outcome.
- * This is not introduced, caused, or regressed by Unit 12; it is a
- * pre-existing gap in the Evidence Intelligence / Reasoning Provider
- * integration that Unit 12 newly makes reachable by giving `analyseEvidence`
- * a real reason to be called with real, resolved evidence. Every test below
- * that exercises real evidence resolution therefore proves OCR's own,
- * genuine behaviour (bridge invoked or not, via the marker-file technique)
- * *and separately* proves the downstream fault still propagates unchanged
- * (via `assertFailsWith`) -- never a fabricated `Completed` outcome. The
- * `EvidenceAnalysisResult` shape OCR itself produces is proven instead at the
- * `DefaultEvidenceIntelligence` unit level (`DefaultEvidenceIntelligenceTest.kt`),
- * where `reasoningCoordinator` can genuinely be `null`.
+ * **Narrow Reasoning/OCR Precedence Resolution (post-Unit-12 follow-up),
+ * resolved -- history retained for context.** A pre-existing, disclosed,
+ * non-Unit-12 gap was freshly confirmed by this file's own first version:
+ * `DefaultEvidenceIntelligence.analyse` called `reasoningCoordinator?.reason(...)`
+ * unconditionally whenever a `reasoningCoordinator` was wired, and real
+ * `ParkerRuntime` composition always wires one backed by
+ * `ModelReasoningProvider`, which never supports
+ * `ReasoningSubject.OfEvidenceAnalysisRequest` and unconditionally throws
+ * `UnsupportedOperationException` for it -- already proven, pre-Unit-12, by
+ * `ParkerRuntimeEvidenceIntelligenceCompositionTest`'s own "analyseEvidence
+ * propagates a genuine Reasoning Provider fault unchanged once real input
+ * resolves" test (still true, unchanged, for every non-OCR `analysisKind`).
+ * Consequently, `analyseEvidence` for an OCR-eligible request that had
+ * already produced a genuine OCR result still threw, discarding it. Fixed
+ * (`DefaultEvidenceIntelligence.analyse`) per Evidence Intelligence Contract
+ * Design §11's own "partial completion... must never be silently collapsed"
+ * rule: a reasoning-leg fault, once OCR has already produced a genuine
+ * result, is now partial completion -- the genuine OCR result is returned,
+ * `Completed`, non-empty, never discarded. Reasoning remains unconditionally
+ * *attempted* whenever a coordinator is configured (never skipped by
+ * `analysisKind`); only a fault, and only once OCR already succeeded, no
+ * longer erases that success. Where OCR itself produces nothing (empty
+ * result), or for any non-OCR `analysisKind`, a reasoning fault still
+ * propagates unchanged, exactly as before -- proven by the timeout/
+ * missing-model/non-eligible/integrity-mismatch tests below, which
+ * correctly remain `assertFailsWith`.
  */
 class ParkerRuntimeOcrCompositionTest {
 
@@ -204,7 +202,7 @@ class ParkerRuntimeOcrCompositionTest {
     // ================= 3, 8, 9. Explicit, authorised invocation on OCR-eligible sources =================
 
     @Test
-    fun `explicit authorised analyseEvidence on a scanned-PDF-eligible source genuinely invokes the real bridge, and the pre-existing Reasoning Provider fault still propagates unchanged afterward`() = runTest {
+    fun `explicit authorised analyseEvidence on a scanned-PDF-eligible source genuinely invokes the real bridge and RETURNS the OCR-derived EvidenceAnalysisResult to the caller`() = runTest {
         val scriptDir = Files.createTempDirectory("ocr-composition-scripts")
         val marker = scriptDir.resolve("invoked.marker")
         val scriptPath = writeFakeBridgeScript(scriptDir, 0, successJson, markerPath = marker)
@@ -216,26 +214,27 @@ class ParkerRuntimeOcrCompositionTest {
             runtime.submitEvidence(principal, CandidateEvidenceArtifact("fake scanned pdf bytes".toByteArray(), receivedMediaType = "application/pdf"), candidateProvenance(), "test-document"),
         )
 
-        // See this file's own class-level KDoc: the reasoning step remains unconditional and its
-        // ModelReasoningProvider fault propagates unchanged -- a pre-existing, non-Unit-12 gap.
-        assertFailsWith<Exception> {
-            runtime.analyseEvidence(
-                principal,
-                EvidenceAnalysisRequest(
-                    analysisKind = "ocr-transcription",
-                    requestingPrincipalId = principal,
-                    evidenceArtifactIds = listOf(registered.acceptedEvidenceArtifact.evidenceArtifactId),
-                ),
-            )
-        }
+        // See this file's own class-level KDoc (updated for the Narrow Reasoning/OCR Precedence
+        // Resolution): the pre-existing, unrelated Reasoning Provider fault no longer discards a
+        // genuine OCR result -- analyseEvidence now returns it, Completed, non-empty.
+        val outcome = runtime.analyseEvidence(
+            principal,
+            EvidenceAnalysisRequest(
+                analysisKind = "ocr-transcription",
+                requestingPrincipalId = principal,
+                evidenceArtifactIds = listOf(registered.acceptedEvidenceArtifact.evidenceArtifactId),
+            ),
+        )
 
-        assertTrue(Files.exists(marker), "the real bridge script must have been invoked before the downstream reasoning fault occurred")
+        assertTrue(Files.exists(marker), "the real bridge script must have been invoked")
+        val completed = assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(outcome)
+        assertEquals(1, completed.acceptanceOutcomes.size)
 
         runtime.shutdown()
     }
 
     @Test
-    fun `explicit authorised analyseEvidence on an image-eligible source genuinely invokes the real bridge, and the pre-existing Reasoning Provider fault still propagates unchanged afterward`() = runTest {
+    fun `explicit authorised analyseEvidence on an image-eligible source genuinely invokes the real bridge and RETURNS the OCR-derived EvidenceAnalysisResult to the caller`() = runTest {
         val scriptDir = Files.createTempDirectory("ocr-composition-scripts")
         val marker = scriptDir.resolve("invoked.marker")
         val scriptPath = writeFakeBridgeScript(scriptDir, 0, successJson, markerPath = marker)
@@ -247,18 +246,18 @@ class ParkerRuntimeOcrCompositionTest {
             runtime.submitEvidence(principal, CandidateEvidenceArtifact(minimalPngBytes(), receivedMediaType = "image/png"), candidateProvenance(), "test-document"),
         )
 
-        assertFailsWith<Exception> {
-            runtime.analyseEvidence(
-                principal,
-                EvidenceAnalysisRequest(
-                    analysisKind = "ocr-transcription",
-                    requestingPrincipalId = principal,
-                    evidenceArtifactIds = listOf(registered.acceptedEvidenceArtifact.evidenceArtifactId),
-                ),
-            )
-        }
+        val outcome = runtime.analyseEvidence(
+            principal,
+            EvidenceAnalysisRequest(
+                analysisKind = "ocr-transcription",
+                requestingPrincipalId = principal,
+                evidenceArtifactIds = listOf(registered.acceptedEvidenceArtifact.evidenceArtifactId),
+            ),
+        )
 
-        assertTrue(Files.exists(marker), "the real bridge script must have been invoked before the downstream reasoning fault occurred")
+        assertTrue(Files.exists(marker), "the real bridge script must have been invoked")
+        val completed = assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(outcome)
+        assertEquals(1, completed.acceptanceOutcomes.size)
 
         runtime.shutdown()
     }
@@ -521,19 +520,14 @@ class ParkerRuntimeOcrCompositionTest {
     // ================= 13, 14, 15. No Memory/Knowledge/DerivativeGenerationRecord authority =================
 
     @Test
-    fun `OCR's own coordinator holds no Memory Core, Knowledge, or DerivativeGenerationRecord dependency of any kind`() = runTest {
+    fun `a successful OCR recognition dispatches to NotDispatched through the real chain -- no Memory Core, Knowledge, or DerivativeGenerationRecord side effect`() = runTest {
         // The minimal mapping's own default rule (Unit 12 Implementation Plan Section 5.R) --
         // Recognised -> exactly one TransientOutput -> NotDispatched (never touches
-        // EvidenceCustodian, MemoryCore, or Knowledge Memory) -- is proven at the
-        // DefaultEvidenceIntelligence unit level (DefaultEvidenceIntelligenceTest.kt), where
-        // reasoningCoordinator can genuinely be null so the resulting List<EvidenceAnalysisResult>
-        // is actually observable. TransientOutput's own dispatch to NotDispatched is separately,
-        // pre-existing, unmodified behaviour of EvidenceIntelligenceAcceptanceCoordinator, entirely
-        // untouched by Unit 12. Through the real, full ParkerRuntime chain, this call cannot
-        // observe that combined outcome directly -- the pre-existing, unconditional reasoning step
-        // (class-level KDoc) throws before dispatch() is ever reached -- so this test instead
-        // proves the structural claim only Unit 12 actually introduces: the coordinator itself
-        // reaches no such subsystem at all.
+        // EvidenceCustodian, MemoryCore, or Knowledge Memory). Following the Narrow Reasoning/OCR
+        // Precedence Resolution, this is now directly observable through the real, full
+        // ParkerRuntime.analyseEvidence -> EvidenceIntelligenceAcceptanceCoordinator.dispatch chain
+        // -- previously impossible here because the pre-existing reasoning-provider fault discarded
+        // the OCR result before dispatch() was ever reached.
         val scriptDir = Files.createTempDirectory("ocr-composition-scripts")
         val marker = scriptDir.resolve("invoked.marker")
         val scriptPath = writeFakeBridgeScript(scriptDir, 0, successJson, markerPath = marker)
@@ -544,17 +538,20 @@ class ParkerRuntimeOcrCompositionTest {
             runtime.submitEvidence(principal, CandidateEvidenceArtifact("content".toByteArray(), receivedMediaType = "application/pdf"), candidateProvenance(), "test-document"),
         )
 
-        assertFailsWith<Exception> {
-            runtime.analyseEvidence(
-                principal,
-                EvidenceAnalysisRequest(
-                    analysisKind = "ocr-transcription",
-                    requestingPrincipalId = principal,
-                    evidenceArtifactIds = listOf(registered.acceptedEvidenceArtifact.evidenceArtifactId),
-                ),
-            )
-        }
-        assertTrue(Files.exists(marker), "the real bridge script must have been invoked before the downstream reasoning fault occurred")
+        val outcome = runtime.analyseEvidence(
+            principal,
+            EvidenceAnalysisRequest(
+                analysisKind = "ocr-transcription",
+                requestingPrincipalId = principal,
+                evidenceArtifactIds = listOf(registered.acceptedEvidenceArtifact.evidenceArtifactId),
+            ),
+        )
+        assertTrue(Files.exists(marker), "the real bridge script must have been invoked")
+
+        val completed = assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(outcome)
+        assertEquals(1, completed.acceptanceOutcomes.size)
+        val dispatched = completed.acceptanceOutcomes.single()
+        assertEquals("NotDispatched", dispatched::class.simpleName, "a TransientOutput must dispatch to NotDispatched -- it is never submitted to Memory Core, Knowledge Memory, or any derivative pipeline")
 
         // No DerivativeGenerationRecord/DerivativeGenerationStorage/MemoryCore/Knowledge dependency
         // is reachable from the OCR coordinator chain at all (structural, not merely behavioural).

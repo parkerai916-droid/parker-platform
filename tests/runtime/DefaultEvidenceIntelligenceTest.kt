@@ -449,6 +449,146 @@ class DefaultEvidenceIntelligenceTest {
         assertTrue(results.any { it is EvidenceAnalysisResult.TransientOutput && it.text.contains("reasoning text") })
     }
 
+    // ================= Reasoning/OCR precedence resolution (narrow fix) =================
+    //
+    // Root cause: `DefaultEvidenceIntelligence.analyse` used to call `reasoningCoordinator.reason(...)`
+    // unconditionally whenever a coordinator was configured, with no regard for whether the OCR leg had
+    // already produced a genuine result -- so a downstream Reasoning Provider fault (in real production,
+    // ModelReasoningProvider unconditionally throwing UnsupportedOperationException for
+    // ReasoningSubject.OfEvidenceAnalysisRequest) discarded already-successful OCR output. Fixed per
+    // Evidence Intelligence Contract Design §11's own "partial completion... must never be silently
+    // collapsed into either" total success or total failure: a reasoning-leg fault, once OCR has already
+    // produced a genuine result, returns that genuine result instead of propagating the fault; a
+    // reasoning-leg fault with nothing else to return still propagates unchanged, exactly as before.
+
+    @Test
+    fun `a real, recognised OCR result returns from analyse even though the Reasoning Provider throws UnsupportedOperationException for the unsupported subject`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-precedence-1")
+        val content = "scanned content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { OcrRecognitionOutcome.Recognised(ocrResult("REAL RECOGNISED TEXT")) }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val reasoningProvider = FakeReasoningProvider {
+            throw UnsupportedOperationException("ModelReasoningProvider does not support ReasoningSubject.OfEvidenceAnalysisRequest")
+        }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            EvidenceIntelligenceReasoningCoordinator(reasoningProvider),
+            ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        assertEquals(1, reasoningProvider.reasonCallCount, "reasoning must still genuinely be attempted -- never globally bypassed")
+        assertEquals(1, results.size)
+        val transientOutput = assertIs<EvidenceAnalysisResult.TransientOutput>(results.single())
+        assertTrue(transientOutput.text.contains("REAL RECOGNISED TEXT"), "the genuine OCR result must be returned, not swallowed alongside the fault")
+    }
+
+    @Test
+    fun `a PartialOrDegradedOutput OCR result also returns truthfully when the Reasoning Provider subsequently faults`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-precedence-partial")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 {
+            OcrRecognitionOutcome.PartialOrDegradedOutput(ocrResult("partial text under precedence fix"), "page 2 unreadable")
+        }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val reasoningProvider = FakeReasoningProvider { throw UnsupportedOperationException("unsupported subject") }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            EvidenceIntelligenceReasoningCoordinator(reasoningProvider),
+            ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        val transientOutput = assertIs<EvidenceAnalysisResult.TransientOutput>(results.single())
+        assertTrue(transientOutput.text.contains("partial text under precedence fix"), "a partial/degraded OCR result must still be returned truthfully, exactly as produced")
+    }
+
+    @Test
+    fun `when OCR itself produces nothing, a subsequent Reasoning Provider fault still propagates unchanged -- OCR failure is never converted into a false success`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-precedence-ocr-empty")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { OcrRecognitionOutcome.ProcessingOrDependencyFailure("timed out") }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val reasoningProvider = FakeReasoningProvider { throw UnsupportedOperationException("unsupported subject") }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            EvidenceIntelligenceReasoningCoordinator(reasoningProvider),
+            ocrCoordinator,
+        )
+
+        assertFailsWith<UnsupportedOperationException> {
+            evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+        }
+    }
+
+    @Test
+    fun `a non-OCR analysisKind is completely unaffected by the precedence fix -- a Reasoning Provider fault still propagates unchanged, exactly as before`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-precedence-non-ocr")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        // ocrCoordinator is wired (proving its mere presence changes nothing for a non-OCR analysisKind)
+        // but must never be invoked -- request()'s own analysisKind is "comparison", not "ocr-transcription".
+        val ocrMechanism = FakeOcrMechanismForUnit12 { throw AssertionError("must not be called for a non-OCR-eligible analysisKind") }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val reasoningProvider = FakeReasoningProvider { throw UnsupportedOperationException("unsupported subject") }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            EvidenceIntelligenceReasoningCoordinator(reasoningProvider),
+            ocrCoordinator,
+        )
+
+        assertFailsWith<UnsupportedOperationException> {
+            evidenceIntelligence.analyse(request(evidenceArtifactIds = listOf(artifactId)))
+        }
+        assertEquals(0, ocrMechanism.invocationCount)
+    }
+
+    @Test
+    fun `a supported reasoning subject still genuinely reaches the Reasoning Provider and combines with OCR output -- reasoning is never globally bypassed`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-precedence-both-succeed")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { OcrRecognitionOutcome.Recognised(ocrResult("ocr text")) }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val reasoningProvider = FakeReasoningProvider { ReasoningProviderResponse.Reply("reasoning text") }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            EvidenceIntelligenceReasoningCoordinator(reasoningProvider),
+            ocrCoordinator,
+        )
+
+        val results = evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+
+        assertEquals(1, reasoningProvider.reasonCallCount, "a supported response path must still genuinely reach the Reasoning Provider")
+        assertEquals(2, results.size)
+        assertTrue(results.any { it is EvidenceAnalysisResult.TransientOutput && it.text.contains("ocr text") })
+        assertTrue(results.any { it is EvidenceAnalysisResult.TransientOutput && it.text.contains("reasoning text") })
+    }
+
+    @Test
+    fun `a genuine coroutine CancellationException is always rethrown unchanged, even when OCR already produced a genuine result -- never treated as recoverable`() = runTest {
+        val artifactId = EvidenceArtifactId("artifact-precedence-cancellation")
+        val content = "content".toByteArray()
+        val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, content) }
+        val ocrMechanism = FakeOcrMechanismForUnit12 { OcrRecognitionOutcome.Recognised(ocrResult("ocr text")) }
+        val ocrCoordinator = EvidenceIntelligenceOcrCoordinator(FakeManifestOnlyEvidenceCustodian(content), ocrMechanism)
+        val reasoningProvider = FakeReasoningProvider { throw kotlinx.coroutines.CancellationException("scope shutting down") }
+        val evidenceIntelligence: EvidenceIntelligence = DefaultEvidenceIntelligence(
+            resolverOf(evidenceCustodian),
+            EvidenceIntelligenceReasoningCoordinator(reasoningProvider),
+            ocrCoordinator,
+        )
+
+        assertFailsWith<kotlinx.coroutines.CancellationException> {
+            evidenceIntelligence.analyse(ocrRequest(listOf(artifactId)))
+        }
+    }
+
     // ================= Fakes =================
 
     private class FakeOcrMechanismForUnit12(

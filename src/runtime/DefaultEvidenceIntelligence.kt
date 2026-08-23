@@ -1,5 +1,7 @@
 package parker.core.runtime
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceAnalysisResult
 import parker.core.interfaces.EvidenceArtifactId
@@ -143,6 +145,60 @@ internal class DefaultEvidenceIntelligence(
      * Provider it could not honestly attribute a response to -- a
      * confident "nothing to propose" outcome, not a failure (Contract
      * Design §5, §11).
+     *
+     * **Reasoning is always attempted whenever [reasoningCoordinator] is
+     * non-null -- never conditionally, and never based on
+     * [EvidenceAnalysisRequest.analysisKind].** This preserves, unchanged,
+     * this class's own already-adopted "decided once, at composition
+     * time, never by any analysis-kind-specific, per-request algorithm"
+     * discipline (this class's own header KDoc; Scope Lock §3;
+     * Implementation Plan §11) -- deciding *whether* to invoke reasoning
+     * is not, and does not become, an OCR-specific branch.
+     *
+     * **A reasoning-leg fault, once OCR has already produced a genuine
+     * result, is partial completion -- never total failure, and never
+     * silently discarded.** Evidence Intelligence Contract Design §11
+     * ("Failure Model") already governs this exactly: "an analysis may
+     * legitimately complete only partially: some referenced inputs may be
+     * successfully analysed, producing genuine `EvidenceAnalysisResult`
+     * values... while others cannot be... processed, for a recoverable
+     * reason"; "partial completion... must never be silently collapsed
+     * into either" total success or complete failure; the successfully
+     * analysed portion "is represented exactly as any other successful
+     * analysis already is -- a non-empty list." [ocrResults] and the
+     * reasoning leg below are exactly the two independent, orchestrated
+     * dependencies §12's own Dependency Model names (`OcrMechanism`
+     * "zero or one," `ReasoningProvider` "zero or more") -- structurally
+     * parallel, per OCR Mechanism Unit 12 Implementation Plan §5.E's own
+     * "independent of whether reasoning is also attempted." So: if
+     * reasoning faults (timeout, provider crash, malformed output, or an
+     * unsupported [parker.core.interfaces.ReasoningSubject] --
+     * `REASONING_PROVIDER_CONTRACT_DESIGN.md` §3's own named fault
+     * categories, reused unchanged) *and* [ocrResults] is non-empty, this
+     * method returns [ocrResults] -- the genuine, non-fabricated,
+     * successfully-analysed portion -- rather than letting an unrelated
+     * downstream fault erase it. §11 leaves signalling a reasoning fault
+     * to "whatever mechanism [the implementation] chooses"; this
+     * implementation's own choice, disclosed here rather than silently
+     * made, is that no further side channel exists for the case where a
+     * genuine partial result already exists to return -- exactly as no
+     * `EvidenceIntelligence` dependency of any tracked kind (logger
+     * included) exists on this class today (this class's own header
+     * KDoc, "no dependency beyond what Units 2 and 3 already declare").
+     *
+     * **If [ocrResults] is empty, this is unchanged, total-failure
+     * behaviour** -- identical to every non-OCR `analysisKind` today
+     * (`ParkerRuntimeEvidenceIntelligenceCompositionTest`'s own
+     * "propagates a genuine Reasoning Provider fault unchanged" test):
+     * nothing succeeded, so the fault propagates unchanged, exactly as it
+     * always has. A genuine `CancellationException` (real coroutine
+     * cancellation, never an operational fault) is always rethrown
+     * unchanged regardless of [ocrResults] -- never treated as
+     * recoverable, mirroring `ParkerRuntime.submitOwnerMessage`'s own
+     * identical, already-accepted `TimeoutCancellationException`-before-
+     * `CancellationException` catch ordering exactly (a real model
+     * timeout is a `CancellationException` subtype that is, in truth, an
+     * operational fault, not a real cancellation request).
      */
     override suspend fun analyse(request: EvidenceAnalysisRequest): List<EvidenceAnalysisResult> {
         val (evidenceResults, memoryCoreResults) = inputResolver.resolve(request)
@@ -162,9 +218,16 @@ internal class DefaultEvidenceIntelligence(
 
         val coordinator = reasoningCoordinator ?: return ocrResults
 
-        val response = coordinator.reason(request, ReasoningContext(emptyList()))
-
-        return ocrResults + convertReasoningResponse(response, resolvedEvidenceArtifactIds, resolvedMemoryCoreReferences)
+        return try {
+            val response = coordinator.reason(request, ReasoningContext(emptyList()))
+            ocrResults + convertReasoningResponse(response, resolvedEvidenceArtifactIds, resolvedMemoryCoreReferences)
+        } catch (fault: TimeoutCancellationException) {
+            if (ocrResults.isNotEmpty()) ocrResults else throw fault
+        } catch (fault: CancellationException) {
+            throw fault
+        } catch (fault: Exception) {
+            if (ocrResults.isNotEmpty()) ocrResults else throw fault
+        }
     }
 
     /**

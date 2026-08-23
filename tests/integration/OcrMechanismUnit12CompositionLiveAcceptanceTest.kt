@@ -3,7 +3,6 @@ package parker.integration
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
-import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
@@ -53,49 +52,68 @@ import parker.core.runtime.EvidenceRegistrationOutcome
  * field, to verify the custodied source remains byte-unchanged -- a public
  * interface, not an internal type).
  *
- * **2. `DefaultEvidenceIntelligence.analyse` calls `reasoningCoordinator?.reason(...)`
- * unconditionally whenever a `reasoningCoordinator` is wired -- pre-existing,
- * unmodified, disclosed behaviour, freshly reconfirmed by
- * `ParkerRuntimeOcrCompositionTest.kt`'s own class-level KDoc.** Real
- * `ParkerRuntime` composition always wires a `reasoningCoordinator` backed by
- * `ModelReasoningProvider`, which never supports
+ * **2. Resolved -- Narrow Reasoning/OCR Precedence Resolution.**
+ * `DefaultEvidenceIntelligence.analyse` used to call
+ * `reasoningCoordinator?.reason(...)` unconditionally whenever a
+ * `reasoningCoordinator` was wired, and real `ParkerRuntime` composition
+ * always wires one backed by `ModelReasoningProvider`, which never supports
  * `ReasoningSubject.OfEvidenceAnalysisRequest` and unconditionally throws --
  * already proven, pre-Unit-12, by `ParkerRuntimeEvidenceIntelligenceCompositionTest`'s
- * own "propagates a genuine Reasoning Provider fault unchanged" test. So
- * **even with a real, live, fully-provisioned Docling installation**, a real
- * `analyseEvidence` call that resolves real evidence still throws before
- * returning -- OCR runs for real, genuinely reaching Docling, but its
- * `EvidenceAnalysisResult` is discarded by this unrelated, pre-existing gap
- * before `ParkerRuntime.analyseEvidence` can return it. This is not
- * introduced, caused, or regressed by Unit 12.
+ * own "propagates a genuine Reasoning Provider fault unchanged" test (still
+ * true, unchanged, whenever OCR itself produces nothing). Previously, even
+ * with a real, live, fully-provisioned Docling installation, a real
+ * `analyseEvidence` call that resolved real evidence still threw before
+ * returning, discarding a genuine OCR result. Fixed in
+ * `DefaultEvidenceIntelligence.analyse` per Evidence Intelligence Contract
+ * Design §11's own "partial completion... must never be silently collapsed"
+ * rule: once OCR has produced a genuine result, a subsequent reasoning-leg
+ * fault no longer erases it -- `analyseEvidence` now genuinely returns
+ * `Completed` to the caller. The two tests below are this fix's own
+ * decisive, live proof.
  *
  * Given both constraints, this file proves what a *real* `analyseEvidence`
  * call, through the real, unmodified composition, over real evidence and a
- * real Docling installation, can actually, honestly demonstrate today:
+ * real Docling installation, genuinely demonstrates:
  * - the real permission gate is genuinely exercised (an unregistered
  *   principal is rejected near-instantly; the owner is not);
  * - the real custodied source is genuinely used, and remains byte-unchanged
  *   after the call;
- * - real OCR processing genuinely occurs in between -- proven
- *   non-tautologically via wall-clock elapsed time, mirroring the Docling
- *   Concrete Adapter Implementation Plan's own already-validated
- *   solo-vs-concurrent timing-comparison technique (Unit 3): an OCR-eligible
- *   call over a real fixture takes measurably, substantially longer than an
- *   otherwise-identical call whose source never resolves (no OCR attempted
- *   at all) -- not a fabricated instant no-op.
+ * - real OCR processing genuinely occurs -- proven non-tautologically via
+ *   wall-clock elapsed time, mirroring the Docling Concrete Adapter
+ *   Implementation Plan's own already-validated solo-vs-concurrent
+ *   timing-comparison technique (Unit 3): an OCR-eligible call over a real
+ *   fixture takes measurably, substantially longer than an otherwise-
+ *   identical call whose source never resolves (no OCR attempted at all) --
+ *   not a fabricated instant no-op;
+ * - **the resulting `EvidenceAnalysisResult` genuinely RETURNS to the
+ *   caller** as `EvidenceIntelligenceInvocationOutcome.Completed` -- not
+ *   merely "OCR executed before a later exception."
  *
- * **Correct `EvidenceAnalysisResult` mapping itself** (Recognised ->
- * exactly one `TransientOutput`, labelled `EXTRACTED`, citing the source
- * `EvidenceArtifactId`) is *not* re-proven live here -- it cannot be,
- * end-to-end, through `ParkerRuntime.analyseEvidence` today, for the
- * pre-existing reason above. It is instead proven by composing two already,
- * separately-proven facts: (a) the real, live Docling recognition output
- * for these exact fixtures, already proven correct by
- * `DoclingOcrProviderAdapterLiveAcceptanceTest.kt`'s own live tests; and (b)
- * the mapping logic itself (`OcrCoordinatorOutcome.Recognised` ->
- * `EvidenceAnalysisResult.TransientOutput`), proven correct, deterministically,
- * against the exact same production code, by `DefaultEvidenceIntelligenceTest.kt`
- * and `EvidenceIntelligenceOcrCoordinatorTest.kt`.
+ * **The literal recognised text/provenance is not independently re-asserted
+ * in this file, by an unavoidable, structural design fact, not a gap in
+ * this fix:** `Completed`'s own constructor and its one property,
+ * `acceptanceOutcomes`, are `internal` (`EvidenceIntelligenceInvocationOutcome.kt`'s
+ * own header KDoc explains why -- a `public` class cannot expose a
+ * `public` property of the `internal` `EvidenceIntelligenceAcceptanceOutcome`
+ * type it carries), and `tests/integration` is not friend-compiled against
+ * `main` (constraint 1, above) -- so this file can assert `is Completed`
+ * (type-level, public) but cannot read what it carries. Nor can `NotDispatched`
+ * (the outcome a `TransientOutput` -- OCR's own result shape -- always
+ * dispatches to) carry text: it is a bare marker object by design
+ * (`EvidenceIntelligenceAcceptanceCoordinator.kt`'s own header KDoc,
+ * "`TransientOutput` was never submitted anywhere"). The literal recognised
+ * text for these exact fixtures, via this exact same real Docling backend,
+ * is instead independently, already verified correct by
+ * `DoclingOcrProviderAdapterLiveAcceptanceTest.kt`'s own live tests
+ * (asserting `"SCANNED SYNTHETIC EVIDENCE"`/`"Māori"` for the PDF fixture);
+ * the mapping from that recognised text into a labelled `TransientOutput`
+ * is separately, deterministically proven correct against the exact same
+ * production code by `DefaultEvidenceIntelligenceTest.kt` and
+ * `EvidenceIntelligenceOcrCoordinatorTest.kt`. Together with this file's own
+ * `Completed`-return proof, these three already-proven facts jointly,
+ * honestly establish the complete claim: a real scanned document, through
+ * `ParkerRuntime.analyseEvidence`, produces the correct text, maps it
+ * correctly, and returns it to the caller.
  */
 class OcrMechanismUnit12CompositionLiveAcceptanceTest {
 
@@ -205,25 +223,29 @@ class OcrMechanismUnit12CompositionLiveAcceptanceTest {
         val baselineElapsedMillis = (System.nanoTime() - baselineStart) / 1_000_000
         assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(baselineOutcome, "a source that never resolves must complete, never throw")
 
-        // The real call: reaches the real permission gate, the real custodied source, the real
+        // The decisive call: reaches the real permission gate, the real custodied source, the real
         // OcrExecutionSequencer/DoclingOcrProviderAdapter, the real subprocess, and real Docling --
-        // then still throws, afterward, from the pre-existing, unconditional reasoning step (see
-        // this file's class-level KDoc). Wall-clock elapsed time, not the (necessarily thrown)
-        // return value, is this test's own non-tautological proof that real OCR processing
-        // genuinely occurred in between.
+        // and, per the Narrow Reasoning/OCR Precedence Resolution, now genuinely RETURNS a
+        // Completed outcome to the caller instead of throwing. Wall-clock elapsed time remains this
+        // test's own non-tautological proof that real OCR processing genuinely occurred (not a
+        // trivial no-op) in between; the returned Completed type itself is the decisive proof that
+        // the OCR-derived result reached the caller.
         val realStart = System.nanoTime()
-        assertFailsWith<Exception> {
-            runtime.analyseEvidence(
-                principal,
-                EvidenceAnalysisRequest(
-                    analysisKind = "ocr-transcription",
-                    requestingPrincipalId = principal,
-                    evidenceArtifactIds = listOf(evidenceArtifactId),
-                ),
-            )
-        }
+        val realOutcome = runtime.analyseEvidence(
+            principal,
+            EvidenceAnalysisRequest(
+                analysisKind = "ocr-transcription",
+                requestingPrincipalId = principal,
+                evidenceArtifactIds = listOf(evidenceArtifactId),
+            ),
+        )
         val realElapsedMillis = (System.nanoTime() - realStart) / 1_000_000
-        println("live composition PDF: baseline=${baselineElapsedMillis}ms (no OCR), real=${realElapsedMillis}ms (real OCR)")
+        println("live composition PDF: baseline=${baselineElapsedMillis}ms (no OCR), real=${realElapsedMillis}ms (real OCR), outcome=${realOutcome::class.simpleName}")
+        assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(
+            realOutcome,
+            "a real, scanned-PDF-fixture analyseEvidence call must RETURN a Completed outcome to the caller, " +
+                "not merely execute OCR before an unrelated downstream exception",
+        )
         assertTrue(
             realElapsedMillis > baselineElapsedMillis + 500,
             "expected the OCR-eligible call to take substantially longer than the no-OCR baseline " +
@@ -272,18 +294,21 @@ class OcrMechanismUnit12CompositionLiveAcceptanceTest {
         assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(baselineOutcome)
 
         val realStart = System.nanoTime()
-        assertFailsWith<Exception> {
-            runtime.analyseEvidence(
-                principal,
-                EvidenceAnalysisRequest(
-                    analysisKind = "ocr-transcription",
-                    requestingPrincipalId = principal,
-                    evidenceArtifactIds = listOf(evidenceArtifactId),
-                ),
-            )
-        }
+        val realOutcome = runtime.analyseEvidence(
+            principal,
+            EvidenceAnalysisRequest(
+                analysisKind = "ocr-transcription",
+                requestingPrincipalId = principal,
+                evidenceArtifactIds = listOf(evidenceArtifactId),
+            ),
+        )
         val realElapsedMillis = (System.nanoTime() - realStart) / 1_000_000
-        println("live composition PNG: baseline=${baselineElapsedMillis}ms (no OCR), real=${realElapsedMillis}ms (real OCR)")
+        println("live composition PNG: baseline=${baselineElapsedMillis}ms (no OCR), real=${realElapsedMillis}ms (real OCR), outcome=${realOutcome::class.simpleName}")
+        assertIs<EvidenceIntelligenceInvocationOutcome.Completed>(
+            realOutcome,
+            "a real, PNG-fixture analyseEvidence call must RETURN a Completed outcome to the caller, " +
+                "not merely execute OCR before an unrelated downstream exception",
+        )
         assertTrue(
             realElapsedMillis > baselineElapsedMillis + 500,
             "expected the OCR-eligible call to take substantially longer than the no-OCR baseline " +
