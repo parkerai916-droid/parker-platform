@@ -220,6 +220,24 @@ tasks.register<Test>("qmdRelevanceMechanismLiveAcceptance") {
     shouldRunAfter(tasks.test)
 }
 
+// OCR Mechanism, Docling Concrete Adapter -- this Unit's own opt-in live acceptance
+// instrument, mirroring qmdRelevanceMechanismLiveAcceptance's own identical shape.
+// DOCLING_TEST_PYTHON (and optionally DOCLING_TEST_BRIDGE_SCRIPT/DOCLING_TEST_MODEL_CACHE_DIR)
+// must be set in the environment this Gradle invocation itself runs in -- never
+// auto-discovered, guessed, or downloaded by this task.
+tasks.register<Test>("doclingOcrProviderAdapterLiveAcceptance") {
+    description = "Runs the explicit opt-in OCR Mechanism Docling concrete adapter live acceptance instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.DoclingOcrProviderAdapterLiveAcceptanceTest")
+    }
+    systemProperty("parker.ocr.docling.live.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 // Main-Promotion Gate / QMD Linux Portability Defect correction (Programme 3
 // Unit 9.7.6 follow-on, bounded investigation and correction). Root cause:
 // `QmdCanonicalMemoryRetrievalExperimentTest.kt` (commit `aadd596`) is a

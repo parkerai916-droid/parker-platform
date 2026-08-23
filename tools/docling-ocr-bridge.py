@@ -21,19 +21,24 @@ runtime/model assets; 3 unsupported/inaccessible input; 4 resource-limit
 breach; any other non-zero, an unclassified internal fault. Never -1
 (reserved exclusively for the JVM-side "process failed to start" signal).
 
-Docling's own actual, installed public API is EXTERNAL KNOWLEDGE, NOT
-VERIFIED against a live installation in the environment this file was
-drafted in (contract document Section 2's own disclosure, restated here).
-The Docling-specific integration below (`_real_docling_backend`, `_pdf_page_count`,
-`_check_image_dimensions_preflight`, `_docling_version`) is this script's
-own best-effort design against Docling's well-known, documented API shape
-at drafting time -- it must be reconfirmed, and corrected if wrong, against
-whichever Docling version is actually installed before this script is used
-against a real installation. Every other function in this file (request
-parsing, response-JSON construction, exit-code mapping, resource-bound
-arithmetic, offline-flag handling) does not depend on Docling's own API at
-all and is exercised directly by this file's own pure-Python test suite
-(`tests/tools/test_docling_ocr_bridge.py`) without Docling installed.
+**Docling integration verified empirically (Unit 2 provisioning)** against a
+real `docling==2.121.0` installation (CPU-only, Python 3.12, isolated venv)
+-- `_build_converter`/`_real_docling_backend` use Docling's own actual,
+confirmed public API (`DocumentConverter`, `PdfFormatOption`/`ImageFormatOption`,
+`PdfPipelineOptions`, `RapidOcrOptions`, `ConversionResult.status`/`.pages`/
+`.confidence`/`.errors`, `DoclingDocument.export_to_text`), not merely this
+script's own earlier, speculative guess at that API's shape. Both real
+fixture PDFs/images OCR successfully offline, including inside a genuinely
+network-isolated (`docker run --network none`) container, using only
+already-local model assets -- see
+`docs/architecture/OCR_MECHANISM_DOCLING_BRIDGE_SCRIPT_PYTHON_CONTRACT.md`
+for the full provisioning record. `_pdf_page_count`/`_check_image_dimensions_preflight`/
+`_docling_version` are similarly verified. Every other function in this file
+(request parsing, response-JSON construction, exit-code mapping,
+resource-bound arithmetic, offline-flag handling) never depended on
+Docling's own API and is exercised directly by this file's own pure-Python
+test suite (`tests/tools/test_docling_ocr_bridge.py`) without Docling
+installed.
 """
 
 from __future__ import annotations
@@ -267,19 +272,24 @@ def _check_image_dimensions_preflight(source_file_path: str) -> None:
 
 
 def _pdf_page_count(source_file_path: str) -> int | None:
-    """Best-effort, pre-conversion PDF page count. Returns None when no
-    page-counting library is available, in which case the caller must
-    still enforce MAX_PDF_PAGES after Docling's own conversion completes
-    (_check_result_page_count, below) -- the bound is deferred, never
-    skipped."""
+    """Best-effort, pre-conversion PDF page count, via pypdfium2 -- verified,
+    empirically, against a real Docling installation (Unit 2 of this task's
+    own governing instruction) to be an already-present transitive
+    dependency of `docling[standard]` (it is Docling's own PDF backend
+    library, not a package this script adds). Returns None when
+    unavailable, in which case the caller must still enforce MAX_PDF_PAGES
+    after Docling's own conversion completes (the post-decode re-check,
+    below) -- the bound is deferred, never skipped."""
     try:
-        import pypdf  # type: ignore
+        import pypdfium2  # type: ignore
     except ImportError:
         return None
     try:
-        with open(source_file_path, "rb") as handle:
-            reader = pypdf.PdfReader(handle)
-            return len(reader.pages)
+        document = pypdfium2.PdfDocument(source_file_path)
+        try:
+            return len(document)
+        finally:
+            document.close()
     except Exception:  # noqa: BLE001 -- a pre-flight probe failure is not itself a diagnosis; let Docling's own attempt produce the real error
         return None
 
@@ -329,9 +339,45 @@ def _docling_version() -> str | None:
         return None
 
 
+def _build_converter():
+    """Constructs a DocumentConverter configured for local, offline, CPU-only
+    execution -- verified empirically against a real installation (Unit 2).
+
+    **Load-bearing discovery, not present in this file's own original,
+    illustrative drafting:** Docling's own *default* OCR-engine auto-selection
+    (`OcrAutoOptions`) chose RapidOCR's own `backend="torch"` variant, which
+    downloads separate PyTorch-format model weights from `modelscope.cn`
+    via RapidOCR's own bespoke downloader -- a network call this script's
+    `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` flags do **not** cover, since it
+    never goes through `huggingface_hub` at all. Explicitly requesting
+    `backend="onnxruntime"` instead uses `.onnx` model weights already
+    bundled inside the installed `rapidocr` package itself (shipped as
+    package data, present immediately after `pip install`, verified via a
+    real, network-disabled Docker container run with zero download log
+    lines) -- eliminating this network dependency entirely, not merely
+    hiding it behind an offline flag. The document *layout* model
+    (`docling-project/docling-layout-heron`, fetched via `huggingface_hub`)
+    remains a genuine, one-time, `HF_HUB_OFFLINE`-respecting provisioning
+    requirement -- pre-fetched once (with network available, outside any
+    governed OCR invocation), cached locally, and reused offline thereafter.
+    """
+    from docling.datamodel.base_models import InputFormat  # type: ignore
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions  # type: ignore
+    from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption  # type: ignore
+
+    ocr_options = RapidOcrOptions(backend="onnxruntime")
+    pipeline_options = PdfPipelineOptions(ocr_options=ocr_options)
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+            InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_options),
+        }
+    )
+
+
 def _real_docling_backend(source_file_path: str, media_type: str, model_cache_dir: str | None) -> DoclingRecognitionOutcome:
     try:
-        from docling.document_converter import DocumentConverter  # type: ignore
+        from docling.datamodel.base_models import ConversionStatus  # type: ignore
     except ImportError as error:
         raise DoclingUnavailableError(f"Docling package could not be imported: {error}") from error
 
@@ -349,34 +395,67 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
         # script's own contract (Section 7) requires stdout to carry exactly.
         # Scoped around construction too, not merely .convert(), since model
         # loading (the heaviest, most log-chatty step) happens at
-        # DocumentConverter() construction time for at least some Docling
-        # pipeline configurations. Python-level only -- this does not, and
-        # cannot, redirect writes a C extension makes directly to file
-        # descriptor 1, a disclosed, not eliminated, limitation (contract
-        # Section 24, adversarial item 8: "mitigated, not eliminated by this
-        # document alone").
+        # DocumentConverter() construction time. Python-level only -- this
+        # does not, and cannot, redirect writes a C extension makes directly
+        # to file descriptor 1, a disclosed, not eliminated, limitation
+        # (contract Section 24, adversarial item 8: "mitigated, not
+        # eliminated by this document alone").
         with contextlib.redirect_stdout(sys.stderr):
-            converter = DocumentConverter()
+            converter = _build_converter()
             result = converter.convert(source_file_path)
-    except Exception as error:  # noqa: BLE001 -- any Docling conversion failure is this input's own "unsupported/inaccessible" disposition
+    except (DoclingUnavailableError, DoclingProcessingError, ResourceLimitBreach):
+        raise
+    except OSError as error:
+        # A genuine "required model asset is missing, and offline mode
+        # correctly prevented fetching it" condition -- discovered
+        # empirically (Unit 2 provisioning): huggingface_hub's own
+        # LocalEntryNotFoundError (a FileNotFoundError/OSError subclass) is
+        # what Docling's own layout-model resolution raises when
+        # HF_HUB_OFFLINE=1 and the model is not already cached. This is a
+        # missing-assets condition (exit 2), never this specific input's own
+        # "unsupported" disposition (exit 3) -- a genuine defect this
+        # provisioning unit found and corrected: an earlier version of this
+        # function mapped this exact case to exit 3, which would have told a
+        # future implementer the *input* was the problem when the *runtime
+        # provisioning* was. Deliberately checked before the generic
+        # `Exception` handler below, and deliberately checking the exception
+        # class hierarchy (OSError) rather than importing huggingface_hub
+        # directly -- this file must remain importable in this module's own
+        # pure-Python test suite without huggingface_hub installed.
+        raise DoclingUnavailableError(
+            f"required Docling model asset is not locally cached, and offline mode correctly prevented "
+            f"fetching it: {error}"
+        ) from error
+    except Exception as error:  # noqa: BLE001 -- any other Docling conversion failure is this input's own "unsupported/inaccessible" disposition
         raise DoclingProcessingError(f"Docling could not process the supplied content: {error}") from error
 
     document = result.document
 
-    # Stage-two, post-decode page-count re-check -- a backstop for the
-    # case _pdf_page_count could not run (no pypdf available) or
-    # under-reported (contract Section 13's own two-stage discipline,
-    # applied here to page count rather than pixel dimensions).
-    pages_attr = getattr(document, "pages", None)
-    if pages_attr is not None:
-        try:
-            actual_page_count = len(pages_attr)
-        except TypeError:
-            actual_page_count = None
-        if actual_page_count is not None:
-            check_page_count(actual_page_count)
+    # Stage-two, post-decode page-count re-check -- a backstop for the case
+    # _pdf_page_count could not run or under-reported (contract Section 13's
+    # own two-stage discipline, applied here to page count rather than pixel
+    # dimensions). result.pages is Docling's own ConversionResult field
+    # (verified fresh against a real installation), never the DoclingDocument
+    # object's own, differently-shaped attribute.
+    try:
+        actual_page_count = len(result.pages)
+    except TypeError:
+        actual_page_count = None
+    if actual_page_count is not None:
+        check_page_count(actual_page_count)
 
-    text = document.export_to_text() if hasattr(document, "export_to_text") else str(document)
+    # Docling's own ConversionStatus is the authoritative success/partial/
+    # failure signal (verified fresh against a real installation) -- never
+    # inferred from "is the recognised text non-empty", which cannot
+    # distinguish a genuine failure from a genuinely blank page.
+    if result.status == ConversionStatus.FAILURE:
+        error_messages = "; ".join(str(e) for e in (result.errors or [])) or "no further detail reported"
+        raise DoclingProcessingError(f"Docling reported conversion failure: {error_messages}")
+    if result.status == ConversionStatus.SKIPPED:
+        raise DoclingProcessingError("Docling skipped the supplied content without attempting conversion")
+
+    text = document.export_to_text()
+    confidence = result.confidence.mean_score if result.confidence is not None else None
 
     if not text or not text.strip():
         return DoclingRecognitionOutcome(
@@ -388,10 +467,22 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
     accumulator = OutputSizeAccumulator()
     accumulator.add(text)
 
+    if result.status == ConversionStatus.PARTIAL_SUCCESS:
+        error_messages = "; ".join(str(e) for e in (result.errors or [])) or "Docling reported partial success"
+        return DoclingRecognitionOutcome(
+            status="partial",
+            text=text,
+            fidelity="VERBATIM",
+            confidence=confidence,
+            reason=error_messages,
+            mechanism_version=_docling_version(),
+        )
+
     return DoclingRecognitionOutcome(
         status="recognised",
         text=text,
         fidelity="VERBATIM",
+        confidence=confidence,
         mechanism_version=_docling_version(),
     )
 

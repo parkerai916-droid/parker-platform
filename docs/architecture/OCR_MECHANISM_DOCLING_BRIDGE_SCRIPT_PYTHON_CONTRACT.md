@@ -1,5 +1,57 @@
 # OCR Mechanism — Docling Bridge Script Python-Side Contract / Implementation Plan
 
+## Addendum — corrections from real provisioning (Unit 2)
+
+This document was drafted before any Docling installation existed, per its
+own explicit external-knowledge disclosure below. `tools/docling-ocr-bridge.py`
+has since been implemented and provisioned against a real `docling==2.121.0`
+installation (Python 3.12, CPU-only, isolated `uv`-managed venv). Real,
+empirical findings that correct or extend this document's own original,
+speculative design:
+
+- **§9/§13's `pypdf` reference is wrong; the real dependency is `pypdfium2`.**
+  `docling[standard]` does not depend on `pypdf` at all — its own PDF
+  backend uses `pypdfium2`, already installed as a transitive dependency.
+  The implemented `_pdf_page_count` uses `pypdfium2.PdfDocument`, not `pypdf`.
+- **§10's offline-mode flags are necessary but were not, by themselves,
+  sufficient — confirmed exactly as this document's own §10/§24 already,
+  correctly, refused to claim otherwise.** Docling's *default* OCR-engine
+  auto-selection (`OcrAutoOptions`) chooses RapidOCR's own `backend="torch"`
+  variant, which downloads separate model weights from `modelscope.cn` via
+  RapidOCR's own bespoke downloader — a call `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`
+  do **not** cover, since it never goes through `huggingface_hub`. The
+  implemented bridge explicitly constructs `RapidOcrOptions(backend="onnxruntime")`
+  instead, which uses `.onnx` model weights already bundled inside the
+  installed `rapidocr` package itself (present immediately after `pip
+  install`, zero network calls, verified via a real `docker run --network
+  none` run producing correct OCR output). The document *layout* model
+  (`docling-project/docling-layout-heron`) is fetched via `huggingface_hub`
+  and correctly respects `HF_HUB_OFFLINE`; it is the one genuine, one-time
+  provisioning step, cached at `~/.cache/huggingface/hub/` by default (no
+  custom `modelCacheDir` was required to reproduce a fully offline run).
+- **§8's exit-code table needed one real-world correction.** A missing/
+  uncached layout model under `HF_HUB_OFFLINE=1` raises `huggingface_hub`'s
+  own `LocalEntryNotFoundError` (an `OSError` subclass) — the implemented
+  bridge catches this specifically and maps it to exit `2` (missing
+  assets), not exit `3` (unsupported input); an earlier implementation pass
+  mapped it to exit `3` and was corrected once observed against the real
+  installation.
+- **GPU/CUDA discipline confirmed necessary, not merely a documentation
+  nicety.** `pip install torch` alone resolves the default CUDA-enabled
+  wheel (~5 GB of `nvidia-*` packages) even on a GPU-less machine; the real
+  provisioning install used `torch`/`torchvision` from PyTorch's own
+  dedicated CPU wheel index (`https://download.pytorch.org/whl/cpu`)
+  *before* installing `docling-slim[standard]`, so the already-satisfied
+  CPU build is reused rather than silently upgraded to a CUDA build.
+- Real OCR output was verified correct, including Unicode (Māori macron
+  characters), against both bake-off fixtures, on the host, and inside a
+  genuinely network-isolated container, and through the real, adopted
+  Kotlin adapter end-to-end (`doclingOcrProviderAdapterLiveAcceptance`).
+
+Every other section below is retained as originally drafted, for its own
+design rationale and citation trail — read alongside this addendum, not in
+place of it.
+
 ## Status
 
 **Draft for owner review. Governance/implementation-planning only — no
