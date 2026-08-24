@@ -57,6 +57,29 @@ services:
       PARKER_QMD_MODEL_CACHE_DIR: "/opt/qmd-models"
       PARKER_QMD_SOURCE_ROOT: "/opt/qmd"
 
+      # Docling Production Runtime Enablement. Points at the self-contained
+      # Python 3.12 + Docling venv the Dockerfile's own docling-build stage
+      # produces (never the host's own ~/docling-venv -- see that stage's
+      # own comment for why). PARKER_DOCLING_BRIDGE_SCRIPT_PATH is
+      # deliberately left unset: ParkerRuntimeConfig's own
+      # tools/docling-ocr-bridge.py default, resolved from this image's own
+      # WORKDIR, is already correct. PARKER_DOCLING_TIMEOUT_MILLIS is also
+      # left unset -- its 900000ms (15 minute) default already matches the
+      # proven value; nothing here is a deployment-specific requirement.
+      #
+      # PARKER_DOCLING_MODEL_CACHE_DIR only satisfies the bridge script's
+      # own pre-flight "does this directory exist and have content"
+      # sanity check (tools/docling-ocr-bridge.py's verify_model_assets_available)
+      # -- it is never passed to Docling/huggingface_hub as an actual cache
+      # location (fresh-read confirms the bridge never wires it to
+      # HF_HOME or any huggingface_hub parameter). HF_HOME below is what
+      # actually redirects huggingface_hub's own real cache resolution --
+      # both point at the same read-only mount (see volumes: below) so the
+      # sanity check and the real resolution agree.
+      PARKER_DOCLING_PYTHON_EXECUTABLE_PATH: "/opt/docling-venv/bin/python3.12"
+      PARKER_DOCLING_MODEL_CACHE_DIR: "/opt/docling-models"
+      HF_HOME: "/opt/docling-models"
+
       # Owner LAN Evidence Upload. Opt-in and off by default: both
       # variables below are blank unless set in a local, git-ignored .env
       # file, and ParkerRuntimeConfigLoader.load collapses a blank value
@@ -100,5 +123,17 @@ services:
       # retrieval rules are unaffected by this deployment-only wiring.
       - /home/steve/qmd:/opt/qmd:ro
       - /home/steve/.cache/qmd/models:/opt/qmd-models:ro
+      # Docling Production Runtime Enablement. The Parker host's own
+      # already-populated Hugging Face cache (the document-layout model
+      # Docling itself fetches on first use, docling-project/docling-layout-heron
+      # -- the one genuine, already-completed provisioning step; RapidOCR's
+      # own onnxruntime-backend weights are bundled inside the rapidocr
+      # package itself and need no cache entry at all), mounted read-only
+      # -- HF_HUB_OFFLINE=1 (already set by DoclingOcrProviderAdapter's own
+      # applyDoclingOfflineEnvironment, unmodified) means huggingface_hub
+      # only ever reads this mount, never writes to it; the read-only mount
+      # is a second, independent enforcement of that same guarantee at the
+      # filesystem level.
+      - /home/steve/.cache/huggingface:/opt/docling-models:ro
     restart: unless-stopped
 

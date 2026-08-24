@@ -38,6 +38,54 @@ RUN ./gradlew installDist --no-daemon
 # the runtime stage's own Jammy base instead.
 FROM node:22-bookworm-slim AS node-runtime
 
+# Docling Production Runtime Enablement. A self-contained Python 3.12 +
+# Docling (CPU-only) virtual environment, built on `ubuntu:22.04` --
+# byte-identical to the runtime stage's own `eclipse-temurin:17-jre-jammy`
+# base OS (both are Ubuntu 22.04 "Jammy") -- so the compiled native
+# extensions below (torch, onnxruntime, opencv, pypdfium2) are guaranteed
+# glibc/ABI-compatible with the stage they are COPY'd into. This is the
+# reason the host's own already-provisioned `~/docling-venv` is never
+# bind-mounted as a shortcut: fresh inspection of that venv found its
+# `python3` symlink resolves outside the venv entirely (to a `uv`-managed
+# interpreter under `~/.local/share/uv/`, itself absent from any
+# container), and the host OS is Ubuntu 26.04 -- two Jammy major versions
+# newer than this image's own base, with no forward glibc-compatibility
+# guarantee. Building fresh, on the same base OS the runtime stage itself
+# uses, avoids both problems entirely rather than working around them.
+#
+# `python3.12` is not in Ubuntu 22.04's own default repository (Jammy
+# ships 3.10); the deadsnakes PPA (`ppa:deadsnakes/ppa`, the long-established,
+# widely-used community source for Ubuntu Python builds) is added for this
+# one build stage only -- it never reaches the final runtime stage's own
+# image or apt sources. `--copies` (rather than the default symlink-based
+# venv) makes the venv self-contained: without it, `bin/python3.12` would
+# symlink to this build stage's own system interpreter, which does not
+# exist in the runtime stage COPY targets it.
+FROM ubuntu:22.04 AS docling-build
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends software-properties-common ca-certificates gnupg \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3.12 python3.12-venv \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3.12 -m venv --copies /opt/docling-venv
+WORKDIR /docling-build
+COPY tools/docling-requirements.txt ./
+# torch/torchvision installed first, from PyTorch's own dedicated CPU wheel
+# index, pinned to the exact versions already proven -- `pip install torch`
+# alone resolves the default CUDA-enabled wheel (~5 GB of nvidia-*
+# packages) even on a GPU-less build machine; installing the CPU build
+# first means the requirements-file install below finds it already
+# satisfied rather than silently upgrading to CUDA. See
+# tools/docling-requirements.txt's own header for the opencv-python
+# (not headless) rationale.
+RUN /opt/docling-venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/docling-venv/bin/pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch==2.13.0+cpu torchvision==0.28.0+cpu \
+    && /opt/docling-venv/bin/pip install --no-cache-dir -r docling-requirements.txt
+
 FROM eclipse-temurin:17-jre-jammy AS runtime
 RUN useradd --system --create-home --shell /usr/sbin/nologin parker
 
@@ -50,6 +98,44 @@ RUN useradd --system --create-home --shell /usr/sbin/nologin parker
 # expected).
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 ENV PATH="/usr/local/bin:${PATH}"
+
+# Docling Production Runtime Enablement. Native runtime libraries
+# opencv-python's compiled extension actually dlopens at import time,
+# verified via `ldd` against the real, proven venv -- no X server,
+# display, window manager, or desktop environment package among them; the
+# rest of what `ldd` reports (Qt5, ffmpeg codecs, libpng/libavif, OpenBLAS)
+# is bundled inside the wheel's own `.libs` directory already and needs no
+# system package. `--no-install-recommends` keeps this to exactly the
+# shared libraries below, nothing pulled in as a "recommended" extra.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libx11-6 \
+        libxcb1 \
+        libxau6 \
+        libxdmcp6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The self-contained Python 3.12 + Docling (CPU-only) venv built in the
+# docling-build stage above, on the same Ubuntu 22.04 Jammy base as this
+# stage -- COPY'd, never bind-mounted from the host, for the glibc/ABI
+# reasons documented on that stage's own header comment. `python -m venv`,
+# even with `--copies`, does not duplicate the interpreter's own standard
+# library (`sys.base_prefix`) -- only site-packages lives fully inside the
+# venv directory itself; the stdlib remains the system Python installation
+# it was created from (confirmed empirically: without this second COPY,
+# the venv's own python3.12 fails at startup with "No module named
+# 'encodings'"). Both COPYs together are what makes this venv actually
+# self-contained across the stage boundary.
+# --chown at COPY time, not a later `chown -R`: overlay2 (this daemon's
+# storage driver) records a `chown -R` over a large tree as a fresh
+# copy-on-write of every file it touches, which was observed (via `docker
+# history`) to nearly double this layer's own reported size (~1.9 GB
+# duplicated). Setting ownership during the COPY itself avoids that
+# entirely -- confirmed via a rebuild that the resulting image is smaller.
+COPY --chown=parker:parker --from=docling-build /opt/docling-venv /opt/docling-venv
+COPY --from=docling-build /usr/lib/python3.12 /usr/lib/python3.12
 
 WORKDIR /opt/parker
 COPY --from=build /workspace/build/install/parker ./

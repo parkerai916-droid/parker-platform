@@ -1,0 +1,44 @@
+# Docling Production Runtime Enablement. Pinned to the exact package
+# versions empirically proven on the Parker host's own provisioned
+# reference environment (Python 3.12, CPU-only, isolated venv --
+# see docs/architecture/OCR_MECHANISM_DOCLING_BRIDGE_SCRIPT_PYTHON_CONTRACT.md's
+# own "Addendum -- corrections from real provisioning (Unit 2)") -- never
+# resolved freely against "latest compatible" at image-build time, so a
+# rebuild months from now installs the identical, already-verified set.
+#
+# torch/torchvision are installed separately, from PyTorch's own dedicated
+# CPU wheel index (https://download.pytorch.org/whl/cpu), BEFORE this file
+# -- `pip install torch` alone resolves the default CUDA-enabled wheel
+# (~5 GB of nvidia-* packages) even on a GPU-less machine; installing the
+# CPU build first means docling-slim's own dependency resolution below
+# finds it already satisfied rather than silently upgrading to CUDA.
+#
+# docling-ibm-models is installed here WITHOUT either of its own
+# "opencv-python"/"opencv-python-headless" extras: both cap opencv at
+# <5.0.0.0, which conflicts with the exact 5.0.0.93 proven below (pip
+# confirmed this conflict empirically -- ResolutionImpossible). The real
+# provisioned venv this file reproduces never used either extra either;
+# opencv-python reaches the environment purely via rapidocr's own
+# separate, unbounded "opencv_python>=4.5.1.48" requirement (no headless
+# alternative of its own), which is what actually resolved to 5.0.0.93.
+# The handful of native
+# shared libraries opencv-python's compiled extension actually dlopens at
+# import time (verified via ldd against the real proven venv -- libGL,
+# libX11, libxcb, libXau, libXdmcp, libglib-2.0/libgthread-2.0; every other
+# library ldd reported is bundled inside the wheel's own .libs directory,
+# no system package needed) are installed as plain runtime library
+# packages at the Dockerfile's own runtime stage -- no X server, display,
+# window manager, or desktop environment of any kind is installed,
+# configured, or required.
+docling-slim[standard]==2.121.0
+docling-core==2.92.0
+docling-ibm-models==3.14.0
+docling-parse==7.15.0
+huggingface-hub==1.28.0
+numpy==2.5.2
+onnxruntime==1.29.0
+opencv-python==5.0.0.93
+pillow==12.3.0
+pypdfium2==5.13.0
+rapidocr==3.9.2
+transformers==5.15.1
