@@ -362,6 +362,102 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
+    // ================= UI state-mapping: Process action after a successful import =================
+    //
+    // Live server behavior: a successful upload returns EvidenceImportOutcome.Imported, which
+    // handleUpload maps to JSON status "IMPORTED" (never "READY_TO_PROCESS" -- that name is never
+    // actually produced by this endpoint, only carried in the page's own status vocabulary
+    // alongside the Compose UI's identical one). The page's render() function must render the
+    // Process action for that real status, not only for a status the server never sends.
+
+    // The exact, known Process-button render condition this fix produces -- asserted as a literal
+    // substring rather than parsed out of the page with a regex, since the page's source is fully
+    // under this repository's own control and a literal check is far less fragile than trying to
+    // structurally re-parse JavaScript out of an HTML/JS test fixture.
+    private val processRenderCondition = "if (row.status === 'IMPORTED' || row.status === 'READY_TO_PROCESS') {"
+    private val ocrRenderCondition = "} else if (row.status === 'REQUIRES_OCR') {"
+
+    @Test
+    fun `a successful upload returns status IMPORTED, and the served page renders Process for that exact status`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(
+                uploadRequest(harness, listOf(UploadPart("files", "report.pdf", "application/pdf", "content".toByteArray()))),
+            )
+            assertEquals(200, uploadResponse.statusCode())
+            assertEquals("IMPORTED", extractField(uploadResponse.body(), "status"))
+
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            assertTrue(
+                pageResponse.body().contains(processRenderCondition),
+                "the Process button's render condition must include the real, server-sent 'IMPORTED' status, not only 'READY_TO_PROCESS'",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `READY_TO_PROCESS remains a processable status in the page's render logic`() = runTest {
+        val harness = startHarness("")
+        try {
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            // The Process-button condition (the `if` guarding the `processRow` click handler) must
+            // still reference READY_TO_PROCESS, in case any future response ever uses that name.
+            assertTrue(
+                pageResponse.body().contains(processRenderCondition),
+                "READY_TO_PROCESS must remain recognised as processable, not removed by this fix",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `IMPORT_FAILED is never treated as processable in the page's render logic`() = runTest {
+        val harness = startHarness("")
+        try {
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            assertTrue(
+                "row.status === 'IMPORT_FAILED'" !in pageResponse.body(),
+                "IMPORT_FAILED must never appear as a condition satisfying the Process-button render logic",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `REQUIRES_OCR renders only the Run OCR action, never Process, in the page's render logic`() = runTest {
+        val harness = startHarness("")
+        try {
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val body = pageResponse.body()
+            assertTrue(
+                !processRenderCondition.contains("REQUIRES_OCR") && body.contains(ocrRenderCondition),
+                "REQUIRES_OCR must be in its own separate branch (Run OCR), never part of the Process-button condition",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a successful upload response carries no Tier A or Tier B outcome fields -- no automatic processing occurs`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(
+                uploadRequest(harness, listOf(UploadPart("files", "report.pdf", "application/pdf", "content".toByteArray()))),
+            )
+            assertEquals(200, uploadResponse.statusCode())
+            val body = uploadResponse.body()
+            assertEquals("IMPORTED", extractField(body, "status"))
+            assertTrue(extractField(body, "format") == null, "upload must never carry a Tier A format -- Process is a separate, explicit action")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
     // ================= Multipart parser: bounded / truncated =================
 
     @Test

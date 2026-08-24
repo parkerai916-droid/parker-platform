@@ -609,7 +609,7 @@ function render() {
     const tr = document.createElement('tr');
     const actions = document.createElement('td');
     actions.className = 'row-actions';
-    if (row.status === 'READY_TO_PROCESS') {
+    if (row.status === 'IMPORTED' || row.status === 'READY_TO_PROCESS') {
       const b = document.createElement('button');
       b.textContent = 'Process';
       b.onclick = () => processRow(index);
