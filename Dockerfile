@@ -76,7 +76,13 @@ COPY tools ./tools
 # `docker compose up` -- when Docker initialises each named volume from the
 # image's own directory content -- the volume comes up already owned by the
 # non-root user the process actually runs as, not root.
-RUN mkdir -p /data/evidence /data/evidence-audit /data/memory-core /data/knowledge-items \
+RUN mkdir -p /data/evidence \
+    /data/evidence-audit \
+    /data/evidence-source-manifests \
+    /data/derivative-generations \
+    /data/document-ingestion-audit \
+    /data/memory-core \
+    /data/knowledge-items \
     && chown -R parker:parker /opt/parker /data
 USER parker
 
