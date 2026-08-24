@@ -40,6 +40,7 @@ class ParkerRuntimeTierAOwnerInvocationIntegrationTest {
         evidenceStorageRootPath = Files.createTempDirectory("tier-a-integration-evidence-storage").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("tier-a-integration-evidence-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("tier-a-integration-derivative-generation").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("tier-a-integration-derivative-generation-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("tier-a-integration-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("tier-a-integration-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("tier-a-integration-memory").resolve("memory-core.log").toString(),

@@ -88,6 +88,7 @@ class TierBOwnerRoutingLiveAcceptanceTest {
         evidenceStorageRootPath = Files.createTempDirectory("tier-b-live-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("tier-b-live-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("tier-b-live-derivative").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("tier-b-live-derivative-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("tier-b-live-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("tier-b-live-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("tier-b-live-memory").resolve("memory-core.log").toString(),

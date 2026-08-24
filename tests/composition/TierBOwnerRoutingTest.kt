@@ -68,6 +68,7 @@ class TierBOwnerRoutingTest {
         evidenceStorageRootPath = Files.createTempDirectory("tier-b-routing-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("tier-b-routing-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("tier-b-routing-derivative").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("tier-b-routing-derivative-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("tier-b-routing-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("tier-b-routing-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("tier-b-routing-memory").resolve("memory-core.log").toString(),

@@ -8,6 +8,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
 
 /**
@@ -315,5 +316,10 @@ class OwnerEvidenceUiControllerTest {
         override suspend fun processTierA(evidenceArtifactId: EvidenceArtifactId): TierAProcessingOutcome = tierAResult()
 
         override suspend fun processTierB(evidenceArtifactId: EvidenceArtifactId): TierBProcessingOutcome = tierBResult()
+
+        override suspend fun retrieveTierAExtractedContent(
+            evidenceArtifactId: EvidenceArtifactId,
+            derivativeGenerationId: DerivativeGenerationId,
+        ): TierAContentRetrievalResult = TierAContentRetrievalResult.UnknownGeneration
     }
 }

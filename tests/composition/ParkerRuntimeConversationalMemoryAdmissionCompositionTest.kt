@@ -71,6 +71,7 @@ class ParkerRuntimeConversationalMemoryAdmissionCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("memory-admission-composition-evidence-storage").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("memory-admission-composition-evidence-storage-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("memory-admission-composition-evidence-storage-manifest-derivative-generation").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("memory-admission-composition-evidence-storage-manifest-derivative-generation-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("memory-admission-composition-evidence-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath =
             Files.createTempDirectory("memory-admission-composition-evidence-audit").resolve("audit.log").toString(),

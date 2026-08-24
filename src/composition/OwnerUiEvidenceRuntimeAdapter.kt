@@ -1,10 +1,12 @@
 package parker.composition
 
+import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeProducerIdentity
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.TierAContentRetrievalOutcome
 import parker.core.interfaces.TierADerivativePayload
 import parker.core.interfaces.TierADocumentFormat
 import parker.core.interfaces.TierADocumentRoutingResult
@@ -17,6 +19,7 @@ import parker.ui.OwnerEmlBodySummary
 import parker.ui.OwnerEvidenceOperations
 import parker.ui.OwnerPdfMetadataValue
 import parker.ui.OwnerTierAContent
+import parker.ui.TierAContentRetrievalResult
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 
@@ -49,6 +52,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val importEvidenceFileAsOwner: suspend (String, String?) -> OwnerLocalFileIngressOutcome,
     private val invokeTierAIngestionAsOwner: suspend (EvidenceArtifactId) -> TierAOwnerInvocationOutcome,
     private val analyseEvidence: suspend (PrincipalId, EvidenceAnalysisRequest) -> EvidenceIntelligenceInvocationOutcome,
+    private val retrieveTierAExtractedContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome,
 ) : OwnerEvidenceOperations {
 
     override suspend fun importFile(absolutePath: String, declaredMediaType: String?): EvidenceImportOutcome =
@@ -92,7 +96,11 @@ class OwnerUiEvidenceRuntimeAdapter(
 
     private fun mapRoutingResult(result: TierADocumentRoutingResult): TierAProcessingOutcome = when (result) {
         is TierADocumentRoutingResult.Admitted ->
-            TierAProcessingOutcome.Admitted(formatLabel(result.format), toOwnerContent(result.payload))
+            TierAProcessingOutcome.Admitted(
+                formatLabel(result.format),
+                toOwnerContent(result.payload),
+                result.record.derivativeGenerationId,
+            )
         is TierADocumentRoutingResult.RequiresTierB -> TierAProcessingOutcome.RequiresTierB
         is TierADocumentRoutingResult.Unsupported -> TierAProcessingOutcome.Unsupported(result.reason)
         is TierADocumentRoutingResult.ExtractionFailed -> TierAProcessingOutcome.Failed("EXTRACTION", result.reason)
@@ -186,6 +194,20 @@ class OwnerUiEvidenceRuntimeAdapter(
         modelIdentity = modelIdentity,
         modelVersion = modelVersion,
     )
+
+    override suspend fun retrieveTierAExtractedContent(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): TierAContentRetrievalResult =
+        when (val outcome = retrieveTierAExtractedContentAsOwner(evidenceArtifactId, derivativeGenerationId)) {
+            is TierAContentRetrievalOutcome.Retrieved -> TierAContentRetrievalResult.Retrieved(toOwnerContent(outcome.payload))
+            is TierAContentRetrievalOutcome.UnknownGeneration -> TierAContentRetrievalResult.UnknownGeneration
+            is TierAContentRetrievalOutcome.SourceMismatch -> TierAContentRetrievalResult.SourceMismatch
+            is TierAContentRetrievalOutcome.ContentMissing -> TierAContentRetrievalResult.ContentMissing
+            is TierAContentRetrievalOutcome.ContentCorrupt -> TierAContentRetrievalResult.ContentCorrupt(outcome.reason)
+            is TierAContentRetrievalOutcome.UnsupportedRepresentationVersion ->
+                TierAContentRetrievalResult.UnsupportedRepresentationVersion(outcome.version)
+        }
 
     override suspend fun processTierB(evidenceArtifactId: EvidenceArtifactId): TierBProcessingOutcome {
         val outcome = analyseEvidence(

@@ -44,6 +44,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         evidenceStorageRootPath = Files.createTempDirectory("evidence-ui-adapter-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-ui-adapter-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-ui-adapter-derivative").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("evidence-ui-adapter-derivative-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-ui-adapter-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-ui-adapter-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-ui-adapter-memory").resolve("memory-core.log").toString(),
@@ -68,6 +69,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
         invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
         analyseEvidence = runtime::analyseEvidence,
+        retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
     )
 
     // ================= Import =================
@@ -272,6 +274,72 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         assertEquals("CSV", csvAdmitted.format)
 
         assertTrue(Files.notExists(marker), "Tier A processing of a governed, non-OCR-eligible format must never invoke the OCR bridge")
+
+        runtime.shutdown()
+    }
+
+    // ================= Document Ingestion -- Derivative Content Persistence and Retrieval =================
+
+    @Test
+    fun `retrieveTierAExtractedContent returns the durably persisted content, not a re-extraction, across a fresh runtime restart`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val configValue = config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString())
+        val runtime = ParkerRuntime(configValue, RecordingParkerLogger())
+        runtime.start()
+        val adapter = adapterFor(runtime)
+        val sourcePath = fixtureRoot.resolve("01-searchable-simple.pdf").toAbsolutePath()
+
+        val imported = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(sourcePath.toString(), "application/pdf"))
+        val admitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(imported.evidenceArtifactId))
+        val originalContent = assertIs<OwnerTierAContent.Pdf>(admitted.content)
+        val derivativeGenerationId = requireNotNull(admitted.derivativeGenerationId)
+        runtime.shutdown()
+
+        val restarted = ParkerRuntime(configValue, RecordingParkerLogger())
+        restarted.start()
+        val restartedAdapter = adapterFor(restarted)
+        val retrieved = assertIs<parker.ui.TierAContentRetrievalResult.Retrieved>(
+            restartedAdapter.retrieveTierAExtractedContent(imported.evidenceArtifactId, derivativeGenerationId),
+        )
+        val retrievedContent = assertIs<OwnerTierAContent.Pdf>(retrieved.content)
+
+        assertEquals(originalContent.documentText, retrievedContent.documentText)
+        assertEquals(originalContent.pageCount, retrievedContent.pageCount)
+        assertEquals(originalContent.completenessState, retrievedContent.completenessState)
+        assertEquals(originalContent.warnings, retrievedContent.warnings)
+
+        restarted.shutdown()
+    }
+
+    @Test
+    fun `retrieveTierAExtractedContent for a never-processed generation id returns UnknownGeneration`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+
+        val outcome = adapterFor(runtime).retrieveTierAExtractedContent(
+            EvidenceArtifactId("evidence-never-registered"),
+            parker.core.interfaces.DerivativeGenerationId("generation-never-registered"),
+        )
+
+        assertEquals(parker.ui.TierAContentRetrievalResult.UnknownGeneration, outcome)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `retrieveTierAExtractedContent for the wrong evidence artefact returns SourceMismatch, never the content`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val adapter = adapterFor(runtime)
+        val csv = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("06-structured.csv").toAbsolutePath().toString(), "text/csv"))
+        val admitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(csv.evidenceArtifactId))
+        val derivativeGenerationId = requireNotNull(admitted.derivativeGenerationId)
+
+        val outcome = adapter.retrieveTierAExtractedContent(EvidenceArtifactId("a-different-evidence-artefact"), derivativeGenerationId)
+
+        assertEquals(parker.ui.TierAContentRetrievalResult.SourceMismatch, outcome)
 
         runtime.shutdown()
     }

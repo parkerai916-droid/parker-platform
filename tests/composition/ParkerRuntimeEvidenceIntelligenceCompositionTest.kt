@@ -83,6 +83,7 @@ class ParkerRuntimeEvidenceIntelligenceCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage-manifest-derivative-generation").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("evidence-intelligence-integration-storage-manifest-derivative-generation-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-intelligence-integration-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-intelligence-integration-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-intelligence-integration-memory").resolve("memory-core.log").toString(),

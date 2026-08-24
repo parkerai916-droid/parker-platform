@@ -77,6 +77,7 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
         invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
         analyseEvidence = runtime::analyseEvidence,
+        retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
     )
     return OwnerUiRuntimeSession(
         startRuntime = runtime::start,

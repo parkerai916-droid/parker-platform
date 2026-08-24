@@ -75,6 +75,7 @@ class OwnerEvidenceHttpEndToEndLiveAcceptanceTest {
         evidenceStorageRootPath = Files.createTempDirectory("evidence-http-e2e-live-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-http-e2e-live-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-http-e2e-live-derivative").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("evidence-http-e2e-live-derivative-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-http-e2e-live-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-http-e2e-live-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-http-e2e-live-memory").resolve("memory-core.log").toString(),
@@ -126,6 +127,7 @@ class OwnerEvidenceHttpEndToEndLiveAcceptanceTest {
             importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
+            retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",

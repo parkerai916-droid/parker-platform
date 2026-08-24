@@ -75,6 +75,7 @@ class ParkerRuntimeKnowledgeRetrievalCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage-manifest-derivative-generation").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("knowledge-retrieval-composition-storage-manifest-derivative-generation-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("knowledge-retrieval-composition-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("knowledge-retrieval-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("knowledge-retrieval-composition-memory").resolve("memory-core.log").toString(),

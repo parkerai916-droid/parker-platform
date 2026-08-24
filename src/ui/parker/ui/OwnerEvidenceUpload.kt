@@ -1,5 +1,6 @@
 package parker.ui
 
+import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
 
 /**
@@ -43,6 +44,23 @@ interface OwnerEvidenceOperations {
      * helper" to close.
      */
     suspend fun processTierB(evidenceArtifactId: EvidenceArtifactId): TierBProcessingOutcome
+
+    /**
+     * Document Ingestion — Derivative Content Persistence and Retrieval
+     * (`DOCUMENT_INGESTION_DERIVATIVE_CONTENT_PERSISTENCE_RETRIEVAL_SCOPE_LOCK.md`).
+     * Retrieves an already-persisted Tier A derivative's durable content by
+     * known identity -- never re-runs extraction. [derivativeGenerationId]
+     * must be one the caller already possesses (from a prior
+     * [processTierA] response); this interface offers no enumeration of
+     * generations for an [evidenceArtifactId], mirroring the scope lock's
+     * own deliberately narrow retrieval boundary. Structurally owner-only,
+     * exactly like [processTierA]/[processTierB]: no `requestingPrincipalId`
+     * parameter of any kind.
+     */
+    suspend fun retrieveTierAExtractedContent(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): TierAContentRetrievalResult
 }
 
 /** The truthful result of one [OwnerEvidenceOperations.importFile] call. */
@@ -61,9 +79,16 @@ sealed interface EvidenceImportOutcome {
  * `null` only when a caller genuinely has no content to report (a fake
  * test double, for instance); the real production adapter
  * ([parker.composition.OwnerUiEvidenceRuntimeAdapter]) always supplies it.
+ * [derivativeGenerationId] is the durable identity the caller must retain to
+ * later call [OwnerEvidenceOperations.retrieveTierAExtractedContent] without
+ * re-processing -- `null` only for the same fake-caller reason as [content].
  */
 sealed interface TierAProcessingOutcome {
-    data class Admitted(val format: String, val content: OwnerTierAContent? = null) : TierAProcessingOutcome
+    data class Admitted(
+        val format: String,
+        val content: OwnerTierAContent? = null,
+        val derivativeGenerationId: DerivativeGenerationId? = null,
+    ) : TierAProcessingOutcome
     data object RequiresTierB : TierAProcessingOutcome
     data class Unsupported(val reason: String) : TierAProcessingOutcome
     data class IntegrityFailure(val reason: String) : TierAProcessingOutcome
@@ -174,4 +199,21 @@ sealed interface TierBProcessingOutcome {
     data class Completed(val resultCount: Int) : TierBProcessingOutcome
     data class NotAuthorised(val reason: String) : TierBProcessingOutcome
     data class Failed(val safeMessage: String) : TierBProcessingOutcome
+}
+
+/**
+ * The truthful result of one [OwnerEvidenceOperations.retrieveTierAExtractedContent]
+ * call. Every failure variant is distinct and non-fabricated -- mirroring
+ * [parker.core.interfaces.TierAContentRetrievalOutcome]'s own identical
+ * distinctions at the runtime layer, never collapsed into a single generic
+ * "not found."
+ */
+sealed interface TierAContentRetrievalResult {
+    data class Retrieved(val content: OwnerTierAContent) : TierAContentRetrievalResult
+    data object UnknownGeneration : TierAContentRetrievalResult
+    data object SourceMismatch : TierAContentRetrievalResult
+    data object ContentMissing : TierAContentRetrievalResult
+    data class ContentCorrupt(val safeMessage: String) : TierAContentRetrievalResult
+    data class UnsupportedRepresentationVersion(val version: Int) : TierAContentRetrievalResult
+    data class Failed(val safeMessage: String) : TierAContentRetrievalResult
 }

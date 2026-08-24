@@ -114,6 +114,7 @@ fun main(args: Array<String>) = runBlocking {
             importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
+            retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
         )
         OwnerEvidenceHttpServer(
             bindAddress = config.ownerHttpBindAddress,

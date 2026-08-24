@@ -13,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.io.TempDir
 import parker.core.interfaces.CsvStructuralExtractionOutcome
@@ -176,6 +177,96 @@ class DerivativeGenerationCoordinatorTest {
             idFactory = { DerivativeGenerationId(iterator.next()) },
             now = { Instant.parse("2026-08-23T00:00:00Z") },
         )
+    }
+
+    // ================= Document Ingestion -- Derivative Content Persistence and Retrieval =================
+    // Governed by DOCUMENT_INGESTION_DERIVATIVE_CONTENT_PERSISTENCE_RETRIEVAL_SCOPE_LOCK.md §9: content is
+    // published to durable storage strictly before the DerivativeGenerationRecord is ever prepared.
+
+    @Test
+    fun `content is published to the content store before the record is ever prepared`() = runTest {
+        val trace = mutableListOf<String>()
+        val storage = SpyStorage(trace = trace)
+        val contentStorage = SpyContentStorage(trace = trace)
+        val audit = RecordingAudit(trace = trace)
+        val coordinator = DerivativeGenerationCoordinator(
+            ApacheCommonsCsvExtractor(), storage, audit,
+            idFactory = { DerivativeGenerationId("generation-content-order") },
+            now = { Instant.parse("2026-08-23T00:00:00Z") },
+            contentStorage = contentStorage,
+        )
+        val outcome = coordinator.ingestCsv(validSyntheticSource(), PRINCIPAL, "c")
+        assertIs<DerivativeGenerationCoordinationOutcome.Admitted>(outcome)
+        assertEquals(listOf("content:prepare", "content:publish", "prepare", "audit:ADMISSION_AUTHORISED", "publish", "audit:ADMITTED"), trace)
+    }
+
+    @Test
+    fun `content store prepare failure prevents the record from ever being prepared`() = runTest {
+        val storage = SpyStorage()
+        val contentStorage = SpyContentStorage(failPrepare = true)
+        val audit = RecordingAudit()
+        val coordinator = DerivativeGenerationCoordinator(
+            ApacheCommonsCsvExtractor(), storage, audit,
+            idFactory = { DerivativeGenerationId("generation-content-prepare-fail") },
+            contentStorage = contentStorage,
+        )
+        val outcome = coordinator.ingestCsv(validSyntheticSource(), PRINCIPAL, "c")
+        val failed = assertIs<DerivativeGenerationCoordinationOutcome.PreparationFailed>(outcome)
+        assertTrue(failed.reason.contains("content store prepare failed"))
+        assertEquals(0, storage.prepareCalls, "the record must never be prepared once its content publication has failed")
+        assertEquals(emptyList(), audit.records)
+    }
+
+    @Test
+    fun `content store publish failure prevents the record from ever being prepared`() = runTest {
+        val storage = SpyStorage()
+        val contentStorage = SpyContentStorage(failPublish = true)
+        val audit = RecordingAudit()
+        val coordinator = DerivativeGenerationCoordinator(
+            ApacheCommonsCsvExtractor(), storage, audit,
+            idFactory = { DerivativeGenerationId("generation-content-publish-fail") },
+            contentStorage = contentStorage,
+        )
+        val outcome = coordinator.ingestCsv(validSyntheticSource(), PRINCIPAL, "c")
+        val failed = assertIs<DerivativeGenerationCoordinationOutcome.PreparationFailed>(outcome)
+        assertTrue(failed.reason.contains("content store publish failed"))
+        assertEquals(0, storage.prepareCalls)
+        assertEquals(emptyList(), audit.records)
+    }
+
+    @Test
+    fun `a generation is never reported Admitted unless its content was already durably published`() = runTest {
+        val directory = Files.createTempDirectory("content-order-integration")
+        val generationStorage = FileSystemDerivativeGenerationStorage(directory.resolve("generations").also { Files.createDirectory(it) })
+        val contentStorage = FileSystemDerivativeContentStorage(directory.resolve("content").also { Files.createDirectory(it) })
+        val audit = RecordingAudit()
+        val coordinator = DerivativeGenerationCoordinator(
+            ApacheCommonsCsvExtractor(), generationStorage, audit,
+            idFactory = { DerivativeGenerationId("generation-real-content") },
+            contentStorage = contentStorage,
+        )
+        val outcome = assertIs<DerivativeGenerationCoordinationOutcome.Admitted>(
+            coordinator.ingestCsv(validSyntheticSource(), PRINCIPAL, "c"),
+        )
+        val storedContent = contentStorage.retrieve(outcome.record.derivativeGenerationId)
+        assertNotNull(storedContent, "content must already be durably retrievable once Admitted is ever reported")
+        assertEquals(EvidenceArtifactId("fixture-source"), storedContent.rootSourceEvidenceArtifactId)
+    }
+
+    private class SpyContentStorage(
+        private val failPrepare: Boolean = false,
+        private val failPublish: Boolean = false,
+        private val trace: MutableList<String>? = null,
+    ) : parker.core.interfaces.DerivativeContentStorage {
+        override suspend fun prepare(entry: parker.core.interfaces.DerivativeContentEntry) {
+            if (failPrepare) throw parker.core.interfaces.DerivativeContentStorageException.PersistenceFailure("injected prepare failure", IOException("injected"))
+            trace?.add("content:prepare")
+        }
+        override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) {
+            if (failPublish) throw parker.core.interfaces.DerivativeContentStorageException.PersistenceFailure("injected publish failure", IOException("injected"))
+            trace?.add("content:publish")
+        }
+        override suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId): parker.core.interfaces.DerivativeContentEntry? = null
     }
 
     private fun source(bytes: ByteArray) = CsvIngestionSource(EvidenceArtifactId("fixture-source"), bytes, sha256(bytes))

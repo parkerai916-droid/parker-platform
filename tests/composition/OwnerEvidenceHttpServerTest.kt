@@ -41,6 +41,7 @@ class OwnerEvidenceHttpServerTest {
         evidenceStorageRootPath = Files.createTempDirectory("evidence-http-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-http-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-http-derivative").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("evidence-http-derivative-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-http-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-http-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-http-memory").resolve("memory-core.log").toString(),
@@ -78,6 +79,7 @@ class OwnerEvidenceHttpServerTest {
             importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
+            retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
@@ -533,6 +535,133 @@ class OwnerEvidenceHttpServerTest {
             .build(),
     )
 
+    private fun get(harness: Harness, path: String, authToken: String? = token): HttpResponse<String> {
+        val builder = HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path")).GET()
+        if (authToken != null) builder.header("Authorization", "Bearer $authToken")
+        return send(builder.build())
+    }
+
+    // ================= Document Ingestion -- Derivative Content Persistence and Retrieval =================
+
+    @Test
+    fun `the durable content endpoint returns the persisted content by evidence and generation identity, matching the Process response`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "01-searchable-simple.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("01-searchable-simple.pdf"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            val processBody = post(harness, "/owner/evidence/$id/process").body()
+            val derivativeGenerationId = requireNotNull(extractField(processBody, "derivativeGenerationId"))
+            val originalText = requireNotNull(extractJsonStringField(processBody, "documentText"))
+
+            val response = get(harness, "/owner/evidence/$id/content/$derivativeGenerationId")
+
+            assertEquals(200, response.statusCode())
+            assertEquals("RETRIEVED", extractField(response.body(), "status"))
+            assertEquals("PDF", Regex(""""kind"\s*:\s*"([A-Z]+)"""").find(response.body())?.groupValues?.get(1))
+            assertEquals(originalText, extractJsonStringField(response.body(), "documentText"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the durable content endpoint requires authentication -- no token, no content`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "structured.csv", "text/csv", Files.readAllBytes(fixtureRoot.resolve("06-structured.csv"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            val processBody = post(harness, "/owner/evidence/$id/process").body()
+            val derivativeGenerationId = requireNotNull(extractField(processBody, "derivativeGenerationId"))
+
+            val response = get(harness, "/owner/evidence/$id/content/$derivativeGenerationId", authToken = null)
+
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `an unknown derivative generation id returns UNKNOWN_GENERATION, never fabricated content`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "structured.csv", "text/csv", Files.readAllBytes(fixtureRoot.resolve("06-structured.csv"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            val response = get(harness, "/owner/evidence/$id/content/generation-never-registered")
+
+            assertEquals(200, response.statusCode())
+            assertEquals("UNKNOWN_GENERATION", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a derivative generation id retrieved against the wrong evidence artefact returns SOURCE_MISMATCH, never the content`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "structured.csv", "text/csv", Files.readAllBytes(fixtureRoot.resolve("06-structured.csv"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            val processBody = post(harness, "/owner/evidence/$id/process").body()
+            val derivativeGenerationId = requireNotNull(extractField(processBody, "derivativeGenerationId"))
+
+            val otherUpload = send(uploadRequest(harness, listOf(UploadPart("files", "other.csv", "text/csv", "x,y\n1,2\n".toByteArray()))))
+            val otherId = requireNotNull(extractField(otherUpload.body(), "evidenceArtifactId"))
+
+            val response = get(harness, "/owner/evidence/$otherId/content/$derivativeGenerationId")
+
+            assertEquals(200, response.statusCode())
+            assertEquals("SOURCE_MISMATCH", extractField(response.body(), "status"))
+            assertTrue("headers" !in response.body(), "a source-mismatched request must never carry the other evidence artefact's content")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a malformed evidence artefact or generation id in the content path is rejected with 400, never reaching the operations layer`() = runTest {
+        val harness = startHarness("")
+        try {
+            assertEquals(400, get(harness, "/owner/evidence/%20/content/generation-1").statusCode())
+            assertEquals(400, get(harness, "/owner/evidence/evidence-1/content/%20").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a path-traversal-shaped or reserved-device-name-shaped generation id is rejected with 400, never an internal error`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "structured.csv", "text/csv", Files.readAllBytes(fixtureRoot.resolve("06-structured.csv"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            assertEquals(400, get(harness, "/owner/evidence/$id/content/..").statusCode())
+            assertEquals(400, get(harness, "/owner/evidence/$id/content/con").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the durable content response carries no server temp path or stack trace`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "01-searchable-simple.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("01-searchable-simple.pdf"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            val processBody = post(harness, "/owner/evidence/$id/process").body()
+            val derivativeGenerationId = requireNotNull(extractField(processBody, "derivativeGenerationId"))
+
+            val body = get(harness, "/owner/evidence/$id/content/$derivativeGenerationId").body()
+
+            assertTrue("/tmp" !in body, "no server temp path may appear in the durable content response")
+            assertTrue("Exception" !in body && "\tat " !in body, "no stack trace may appear in the durable content response")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
     private fun assertIsExtracted(
         outcome: parker.core.interfaces.PdfStructuralExtractionOutcome,
     ): parker.core.interfaces.PdfStructuralResult {
@@ -561,7 +690,11 @@ class OwnerEvidenceHttpServerTest {
             val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
             val body = response.body()
             assertTrue(body.contains("View Extracted Content"), "the page must offer an explicit action to view extracted content")
-            assertTrue(body.contains("row.status === 'TIER_A_COMPLETE' && row.content"), "the action must only appear once Tier A has actually completed and content was returned")
+            assertTrue(
+                body.contains("row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId"),
+                "the action must only appear once Tier A has actually completed and a durable derivativeGenerationId was returned",
+            )
+            assertTrue(body.contains("/content/"), "the action must fetch persisted content from the durable retrieval endpoint")
         } finally {
             harness.shutdown()
         }

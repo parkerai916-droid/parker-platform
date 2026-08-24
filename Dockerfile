@@ -166,6 +166,7 @@ RUN mkdir -p /data/evidence \
     /data/evidence-audit \
     /data/evidence-source-manifests \
     /data/derivative-generations \
+    /data/derivative-content \
     /data/document-ingestion-audit \
     /data/memory-core \
     /data/knowledge-items \

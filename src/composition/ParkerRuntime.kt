@@ -15,6 +15,7 @@ import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
+import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeMemoryRegistrationOutcome
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
@@ -51,6 +52,7 @@ import parker.core.interfaces.ResourceId
 import parker.core.interfaces.ResourceLifecycleState
 import parker.core.interfaces.ResourceSensitivity
 import parker.core.interfaces.ResourceType
+import parker.core.interfaces.TierAContentRetrievalOutcome
 import parker.core.interfaces.TierADocumentIngestionRouter
 import parker.core.interfaces.TierADocumentRoutingResult
 import parker.core.interfaces.TierAOwnerInvocationOutcome
@@ -85,6 +87,7 @@ import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
 import parker.core.runtime.DefaultExplicitOwnerPersistenceDirectiveClassifier
 import parker.core.runtime.ExplicitOwnerPersistenceDirectiveReasoningProvider
+import parker.core.runtime.FileSystemDerivativeContentStorage
 import parker.core.runtime.FileSystemDerivativeGenerationStorage
 import parker.core.runtime.FileSystemDocumentIngestionAudit
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
@@ -127,6 +130,7 @@ import parker.core.runtime.ResponseComposer
 import parker.core.runtime.ResponseDelivery
 import parker.core.runtime.TaggedReasoningResponseParser
 import parker.core.runtime.TierADocumentIngestionComposition
+import parker.core.runtime.TierAContentRetrievalCoordinator
 import parker.core.runtime.TierAOwnerInvocationCoordinator
 
 /**
@@ -259,6 +263,11 @@ class ParkerRuntime(
     // own entry-point method reads it" isolation -- no other coordinator constructed in
     // buildAndRegisterRuntimeGraph ever receives a reference to it.
     private lateinit var tierAOwnerInvocationCoordinator: TierAOwnerInvocationCoordinator
+
+    // Document Ingestion — Derivative Content Persistence and Retrieval. Held as its own narrow
+    // class, mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
+    // constructed in buildAndRegisterRuntimeGraph ever receives a reference to it.
+    private lateinit var tierAContentRetrievalCoordinator: TierAContentRetrievalCoordinator
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -935,8 +944,16 @@ class ParkerRuntime(
         val documentIngestionAudit = stage("Document Ingestion audit construction") {
             FileSystemDocumentIngestionAudit(Path.of(config.documentIngestionAuditLogPath))
         }
-        val tierADocumentIngestionRouter = TierADocumentIngestionComposition.create(derivativeGenerationStorage, documentIngestionAudit)
+        // Document Ingestion — Derivative Content Persistence and Retrieval
+        // (DOCUMENT_INGESTION_DERIVATIVE_CONTENT_PERSISTENCE_RETRIEVAL_SCOPE_LOCK.md). A wholly
+        // separate, subordinate store from derivativeGenerationStorage above -- own storage root,
+        // own file extension (`.content`), never nested inside it (Scope Lock §4).
+        val derivativeContentStorage = stage("Document Ingestion derivative content storage construction") {
+            FileSystemDerivativeContentStorage(Path.of(config.derivativeContentStorageRootPath))
+        }
+        val tierADocumentIngestionRouter = TierADocumentIngestionComposition.create(derivativeGenerationStorage, documentIngestionAudit, derivativeContentStorage)
         tierAOwnerInvocationCoordinator = TierAOwnerInvocationCoordinator(defaultEvidenceCustodian, tierADocumentIngestionRouter)
+        tierAContentRetrievalCoordinator = TierAContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
 
         val deliverTool = stage("Local Text Channel deliver Tool construction") {
             LocalTextChannelDeliverTool(onOwnerNotified = ownerNotificationSink::notify)
@@ -1712,6 +1729,36 @@ class ParkerRuntime(
             evidenceArtifactId,
             UUID.randomUUID().toString(),
         )
+    }
+
+    /**
+     * Document Ingestion — Derivative Content Persistence and Retrieval. The one production entry
+     * point through which an already-persisted Tier A derivative's durable content may be
+     * retrieved by known identity -- **explicit, individually-authorized owner invocation only**,
+     * mirroring [invokeTierAIngestionAsOwner]'s own structural owner-only pattern exactly: no
+     * `requestingPrincipalId` parameter, always acts as `PrincipalId(config.ownerPrincipalId)`.
+     *
+     * Accepts only [evidenceArtifactId] and [derivativeGenerationId] -- both already-known Parker
+     * identities the caller must already possess (from a prior Upload/Process response), never a
+     * filesystem path. Performs no re-extraction: [tierAContentRetrievalCoordinator] resolves
+     * durable storage only (`DOCUMENT_INGESTION_DERIVATIVE_CONTENT_PERSISTENCE_RETRIEVAL_SCOPE_LOCK.md`
+     * §11/§12). No general enumeration/browse capability exists here or anywhere else in this
+     * class (Scope Lock §11).
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun retrieveTierAExtractedContentAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): TierAContentRetrievalOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info(
+            "Tier A derivative content retrieval invoked by owner " +
+                "(evidenceArtifactId=${evidenceArtifactId.value}, derivativeGenerationId=${derivativeGenerationId.value})",
+        )
+        return tierAContentRetrievalCoordinator.retrieve(evidenceArtifactId, derivativeGenerationId)
     }
 
     /**

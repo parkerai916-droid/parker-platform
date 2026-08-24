@@ -15,11 +15,15 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
+import parker.core.interfaces.DerivativeContentStorageException
+import parker.core.interfaces.DerivativeGenerationId
+import parker.core.interfaces.DerivativeGenerationStorageException
 import parker.core.interfaces.EvidenceArtifactId
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerEvidenceOperations
 import parker.ui.OwnerTierAContent
+import parker.ui.TierAContentRetrievalResult
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 
@@ -169,6 +173,8 @@ class OwnerEvidenceHttpServer(
                         handleProcess(exchange, segments[0])
                     segments.size == 2 && segments[1] == "ocr" && method == "POST" ->
                         handleOcr(exchange, segments[0])
+                    segments.size == 3 && segments[1] == "content" && method == "GET" ->
+                        handleRetrieveContent(exchange, segments[0], segments[2])
                     else -> {
                         runCatching { exchange.requestBody.use { it.readBytes() } }
                         writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -252,6 +258,7 @@ class OwnerEvidenceHttpServer(
                     "status" to "TIER_A_COMPLETE",
                     "format" to outcome.format,
                     "content" to outcome.content?.let { contentJson(it) },
+                    "derivativeGenerationId" to outcome.derivativeGenerationId?.value,
                 )
                 TierAProcessingOutcome.RequiresTierB -> jsonObject("status" to "REQUIRES_OCR")
                 is TierAProcessingOutcome.Unsupported -> jsonObject("status" to "FAILED", "message" to "Unsupported: ${outcome.reason}")
@@ -283,6 +290,64 @@ class OwnerEvidenceHttpServer(
                 )
                 is TierBProcessingOutcome.NotAuthorised -> jsonObject("status" to "FAILED", "message" to "Not authorised: ${outcome.reason}")
                 is TierBProcessingOutcome.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
+            }
+            writeJson(exchange, 200, body)
+        }
+
+        /**
+         * Document Ingestion — Derivative Content Persistence and Retrieval.
+         * Retrieves an already-persisted Tier A derivative's durable content
+         * by known [EvidenceArtifactId] + [DerivativeGenerationId] -- never
+         * re-runs Tier A extraction. No arbitrary filesystem path is ever
+         * accepted; both identifiers are parsed exactly as
+         * [handleProcess]/[handleOcr] already parse [EvidenceArtifactId],
+         * rejecting a blank/malformed value before it ever reaches
+         * [operations].
+         */
+        private fun handleRetrieveContent(exchange: HttpExchange, rawEvidenceArtifactId: String, rawDerivativeGenerationId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val evidenceArtifactId = try {
+                EvidenceArtifactId(rawEvidenceArtifactId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val derivativeGenerationId = try {
+                DerivativeGenerationId(rawDerivativeGenerationId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            }
+            // A caller-supplied derivativeGenerationId shaped in a way the durable stores' own
+            // safe-identifier discipline rejects (e.g. path-traversal-shaped, a reserved device
+            // name) is a malformed request, not an internal fault -- caught here specifically so
+            // it never falls through to the outer handler's generic 500/error-log path.
+            val outcome = try {
+                runBlocking { operations.retrieveTierAExtractedContent(evidenceArtifactId, derivativeGenerationId) }
+            } catch (e: DerivativeGenerationStorageException.UnsafeIdentifier) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            } catch (e: DerivativeContentStorageException.UnsafeIdentifier) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            }
+            val body = when (outcome) {
+                is TierAContentRetrievalResult.Retrieved -> jsonObject(
+                    "status" to "RETRIEVED",
+                    "content" to contentJson(outcome.content),
+                )
+                TierAContentRetrievalResult.UnknownGeneration -> jsonObject("status" to "UNKNOWN_GENERATION")
+                TierAContentRetrievalResult.SourceMismatch -> jsonObject("status" to "SOURCE_MISMATCH")
+                TierAContentRetrievalResult.ContentMissing -> jsonObject("status" to "CONTENT_MISSING")
+                is TierAContentRetrievalResult.ContentCorrupt -> jsonObject(
+                    "status" to "CONTENT_CORRUPT",
+                    "message" to outcome.safeMessage,
+                )
+                is TierAContentRetrievalResult.UnsupportedRepresentationVersion -> jsonObject(
+                    "status" to "UNSUPPORTED_VERSION",
+                    "version" to outcome.version,
+                )
+                is TierAContentRetrievalResult.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
             }
             writeJson(exchange, 200, body)
         }
@@ -757,21 +822,28 @@ function render() {
       b.onclick = () => ocrRow(index);
       actions.appendChild(b);
     }
-    if (row.status === 'TIER_A_COMPLETE' && row.content) {
+    if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
       const b = document.createElement('button');
       b.textContent = expandedIndex === index ? 'Hide Extracted Content' : 'View Extracted Content';
-      b.onclick = () => { expandedIndex = expandedIndex === index ? null : index; render(); };
+      b.onclick = () => viewContent(index);
       actions.appendChild(b);
     }
     tr.innerHTML = `<td>${'$'}{escapeHtml(row.originalFileName)}</td><td>${'$'}{row.byteLength}</td><td>${'$'}{row.status}</td><td>${'$'}{row.evidenceArtifactId || ''}</td><td>${'$'}{row.message || ''}</td>`;
     tr.appendChild(actions);
     tbody.appendChild(tr);
 
-    if (expandedIndex === index && row.content) {
+    if (expandedIndex === index && (row.content || row.contentError)) {
       const detailTr = document.createElement('tr');
       const detailTd = document.createElement('td');
       detailTd.colSpan = 6;
-      detailTd.appendChild(buildContentPanel(row.content));
+      if (row.content) {
+        detailTd.appendChild(buildContentPanel(row.content));
+      } else {
+        const p = document.createElement('p');
+        p.className = 'note';
+        p.textContent = 'Could not retrieve extracted content: ' + row.contentError;
+        detailTd.appendChild(p);
+      }
       detailTr.appendChild(detailTd);
       tbody.appendChild(detailTr);
     }
@@ -943,7 +1015,34 @@ async function processRow(index) {
   row.status = result.status;
   row.tierAFormat = result.format;
   row.message = result.message;
-  row.content = result.content || null;
+  row.derivativeGenerationId = result.derivativeGenerationId || null;
+  render();
+}
+
+// Document Ingestion -- Derivative Content Persistence and Retrieval. "View Extracted Content"
+// always fetches from the durable retrieval endpoint by (evidenceArtifactId, derivativeGenerationId)
+// -- never from the transient /process response -- so what the owner sees is proven to come from
+// persisted storage, not extraction held only in this page's own memory.
+async function viewContent(index) {
+  const row = rows[index];
+  if (expandedIndex === index) {
+    expandedIndex = null;
+    render();
+    return;
+  }
+  if (!row.content && !row.contentError) {
+    const resp = await fetch(
+      `/owner/evidence/${'$'}{row.evidenceArtifactId}/content/${'$'}{row.derivativeGenerationId}`,
+      { method: 'GET', headers: authHeaders() },
+    );
+    const result = await resp.json();
+    if (result.status === 'RETRIEVED') {
+      row.content = result.content;
+    } else {
+      row.contentError = result.status + (result.message ? (': ' + result.message) : '');
+    }
+  }
+  expandedIndex = index;
   render();
 }
 

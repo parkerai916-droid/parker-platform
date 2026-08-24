@@ -71,6 +71,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         evidenceStorageRootPath = Files.createTempDirectory("authz-purpose-composition-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("authz-purpose-composition-evidence-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("authz-purpose-composition-evidence-manifest-derivative-generation").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("authz-purpose-composition-evidence-manifest-derivative-generation-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("authz-purpose-composition-evidence-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("authz-purpose-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("authz-purpose-composition-memory").resolve("memory-core.log").toString(),

@@ -6,7 +6,10 @@ import java.util.UUID
 import parker.core.interfaces.CsvStructuralExtractionOutcome
 import parker.core.interfaces.CsvStructuralExtractor
 import parker.core.interfaces.CsvStructuralResult
+import parker.core.interfaces.DerivativeContentEntry
 import parker.core.interfaces.DerivativeContentIdentity
+import parker.core.interfaces.DerivativeContentStorage
+import parker.core.interfaces.DerivativeContentStorageException
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationRecord
 import parker.core.interfaces.DerivativeGenerationStorage
@@ -29,6 +32,7 @@ import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PdfStructuralExtractionOutcome
 import parker.core.interfaces.PdfStructuralExtractor
 import parker.core.interfaces.PdfStructuralResult
+import parker.core.interfaces.TierADerivativePayload
 
 data class CsvIngestionSource(
     val evidenceArtifactId: EvidenceArtifactId,
@@ -130,7 +134,44 @@ class DerivativeGenerationCoordinator(
     private val emlExtractor: EmlStructuralExtractor? = null,
     private val docxExtractor: DocxStructuralExtractor? = null,
     private val pdfExtractor: PdfStructuralExtractor? = null,
+    // Document Ingestion — Derivative Content Persistence and Retrieval
+    // (DOCUMENT_INGESTION_DERIVATIVE_CONTENT_PERSISTENCE_RETRIEVAL_SCOPE_LOCK.md §9): content is
+    // published to durable storage BEFORE the DerivativeGenerationRecord is ever prepared, so a
+    // generation is never reported admitted while its required content is absent. Nullable,
+    // defaulted null, purely so every existing test constructing this coordinator without content
+    // persistence in view keeps compiling unchanged; the real production composition always
+    // supplies a real instance (TierADocumentIngestionComposition.create).
+    private val contentStorage: DerivativeContentStorage? = null,
 ) {
+    /**
+     * Publishes [payload]'s own durable content representation for [id],
+     * strictly before [id]'s [DerivativeGenerationRecord] is ever prepared
+     * (Scope Lock §9). Returns `null` on success (or when [contentStorage]
+     * is absent, the test-only default above); a non-null String is the
+     * honest failure reason, which each caller below wraps in its own
+     * sealed outcome type's existing `PreparationFailed(id, reason)`
+     * variant -- reused, not a new variant, since either failure means the
+     * same truthful fact from the caller's own vantage point: nothing was
+     * ever admitted.
+     */
+    private suspend fun publishContentFirst(
+        id: DerivativeGenerationId,
+        sourceEvidenceArtifactId: EvidenceArtifactId,
+        payload: TierADerivativePayload,
+    ): String? {
+        val store = contentStorage ?: return null
+        try {
+            store.prepare(DerivativeContentEntry(id, sourceEvidenceArtifactId, payload))
+        } catch (e: DerivativeContentStorageException) {
+            return "content store prepare failed: ${e.message ?: e::class.simpleName.orEmpty()}"
+        }
+        try {
+            store.publishPrepared(id)
+        } catch (e: DerivativeContentStorageException) {
+            return "content store publish failed: ${e.message ?: e::class.simpleName.orEmpty()}"
+        }
+        return null
+    }
     suspend fun ingestCsv(
         source: CsvIngestionSource,
         requestingPrincipalId: PrincipalId,
@@ -161,6 +202,9 @@ class DerivativeGenerationCoordinator(
             operationalOutcome = DerivativeOperationalOutcome.USABLE,
             warnings = extracted.warnings,
         )
+        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Csv(extracted))?.let {
+            return DerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
+        }
         try {
             storage.prepare(record)
         } catch (e: DerivativeGenerationStorageException) {
@@ -216,6 +260,9 @@ class DerivativeGenerationCoordinator(
             warnings = extracted.warnings,
         )
         val candidates = extracted.attachmentCandidates.map { it.linkTo(source.evidenceArtifactId) }
+        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Eml(extracted, candidates.size))?.let {
+            return EmlDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
+        }
         try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) {
             return EmlDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty())
         }
@@ -249,6 +296,9 @@ class DerivativeGenerationCoordinator(
             DerivativeContentIdentity.NoCanonicalSerialization, extracted.completenessState,
             DerivativeOperationalOutcome.USABLE, extracted.warnings,
         )
+        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Docx(extracted))?.let {
+            return DocxDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
+        }
         try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) {
             return DocxDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty())
         }
@@ -280,6 +330,9 @@ class DerivativeGenerationCoordinator(
             DerivativeContentIdentity.NoCanonicalSerialization, extracted.completenessState,
             DerivativeOperationalOutcome.USABLE, extracted.warnings,
         )
+        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Pdf(extracted))?.let {
+            return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
+        }
         try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) { return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
         try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED)) }
         catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }

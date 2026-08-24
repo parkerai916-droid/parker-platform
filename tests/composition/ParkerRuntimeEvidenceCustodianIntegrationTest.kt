@@ -48,6 +48,7 @@ class ParkerRuntimeEvidenceCustodianIntegrationTest {
         evidenceStorageRootPath = Files.createTempDirectory("evidence-integration-storage").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-integration-storage-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-integration-storage-manifest-derivative-generation").toString(),
+        derivativeContentStorageRootPath = Files.createTempDirectory("evidence-integration-storage-manifest-derivative-generation-content").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-integration-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-integration-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-integration-memory").resolve("memory-core.log").toString(),

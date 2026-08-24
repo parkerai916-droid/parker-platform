@@ -15,6 +15,7 @@ import parker.ui.OwnerSubmissionAttempt
 import parker.ui.OwnerSubmissionDisposition
 import parker.ui.OwnerUiController
 import parker.ui.OwnerUiStatus
+import parker.ui.TierAContentRetrievalResult
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 import kotlin.test.Test
@@ -123,6 +124,7 @@ class OwnerUiRuntimeCompositionTest {
             "analyseEvidence(",
             "importEvidenceFileAsOwner(",
             "invokeTierAIngestionAsOwner(",
+            "retrieveTierAExtractedContentAsOwner(",
             "http://",
             "https://",
         )
@@ -134,6 +136,7 @@ class OwnerUiRuntimeCompositionTest {
         assertTrue("importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner" in composition)
         assertTrue("invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner" in composition)
         assertTrue("analyseEvidence = runtime::analyseEvidence" in composition)
+        assertTrue("retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner" in composition)
         assertTrue("OwnerUiController(result.interaction)" in launcher)
         assertTrue("OwnerEvidenceUiController(result.evidenceOperations)" in launcher)
         assertTrue("OwnerWindowPresentationMode.PARKER_RUNTIME" in launcher)
@@ -141,7 +144,7 @@ class OwnerUiRuntimeCompositionTest {
         assertTrue("runtime.start()" !in adapter && "runtime.shutdown()" !in adapter)
         assertTrue("runtime.start()" !in evidenceAdapter && "runtime.shutdown()" !in evidenceAdapter)
         assertTrue("androidx.compose" !in composition && "androidx.compose" !in adapter && "androidx.compose" !in evidenceAdapter)
-        // The evidence adapter must receive only the three named method references, never
+        // The evidence adapter must receive only the named method references, never
         // ParkerRuntime itself -- mirroring OwnerUiRuntimeAdapter's own identical discipline.
         assertTrue("ParkerRuntime," !in evidenceAdapter && "runtime: ParkerRuntime" !in evidenceAdapter)
     }
@@ -171,5 +174,10 @@ class OwnerUiRuntimeCompositionTest {
 
         override suspend fun processTierB(evidenceArtifactId: EvidenceArtifactId): TierBProcessingOutcome =
             TierBProcessingOutcome.Completed(1)
+
+        override suspend fun retrieveTierAExtractedContent(
+            evidenceArtifactId: EvidenceArtifactId,
+            derivativeGenerationId: parker.core.interfaces.DerivativeGenerationId,
+        ): TierAContentRetrievalResult = TierAContentRetrievalResult.UnknownGeneration
     }
 }
