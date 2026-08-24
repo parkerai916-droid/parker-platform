@@ -585,6 +585,140 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
+    // ================= Remember Owner Token On This Device =================
+    //
+    // A browser convenience only -- never sent to or read from the server. Every assertion here
+    // inspects the served page's own static HTML/JS source (never a real production token), since
+    // localStorage itself is a browser-side concern this JDK HttpClient-based test suite has no
+    // DOM to exercise directly.
+
+    @Test
+    fun `the served page offers an explicit Remember token checkbox and a trusted-device warning`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("id=\"rememberToken\""), "an explicit Remember-token checkbox must be present")
+            assertTrue(body.contains("Remember token on this device"))
+            assertTrue(body.contains("Use only on a trusted device."), "the trusted-device warning must be present near the checkbox")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the served page uses localStorage with a Parker-specific storage key, never cookies or the URL`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("TOKEN_STORAGE_KEY = 'parker.ownerHttpToken'"), "storage key must be Parker-specific and narrowly named")
+            assertTrue(body.contains("localStorage.setItem(TOKEN_STORAGE_KEY"))
+            assertTrue(body.contains("localStorage.getItem(TOKEN_STORAGE_KEY"))
+            assertTrue("document.cookie" !in body, "the token must never be persisted via cookies")
+            assertTrue("sessionStorage" !in body, "the token must never be persisted via sessionStorage")
+            assertTrue("indexedDB" !in body && "IndexedDB" !in body, "the token must never be persisted via IndexedDB")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a remembered token is restored into the field and the checkbox starts checked`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("function restoreRememberedToken"))
+            assertTrue(body.contains("document.getElementById('token').value = remembered"))
+            assertTrue(body.contains("document.getElementById('rememberToken').checked = true"))
+            assertTrue(body.contains("restoreRememberedToken();"), "restoration must actually run on page load, not merely be defined")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `unchecking Remember removes the persisted token without clearing the input field`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val handler = requireNotNull(
+                Regex("""function onRememberToggled\(\) \{.*?\n\}""", RegexOption.DOT_MATCHES_ALL).find(body),
+            ) { "expected an onRememberToggled handler" }.value
+            assertTrue(handler.contains("localStorage.removeItem(TOKEN_STORAGE_KEY)"))
+            assertTrue(
+                "getElementById('token').value = ''" !in handler && "getElementById(\"token\").value = ''" !in handler,
+                "unchecking Remember must not clear the currently entered token from the input field",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `editing the token while Remember is checked updates the persisted value`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("function onTokenFieldInput"))
+            assertTrue(body.contains("addEventListener('input', onTokenFieldInput)"))
+            val handler = requireNotNull(
+                Regex("""function onTokenFieldInput\(\) \{.*?\n\}""", RegexOption.DOT_MATCHES_ALL).find(body),
+            ) { "expected an onTokenFieldInput handler" }.value
+            assertTrue(handler.contains("localStorage.setItem(TOKEN_STORAGE_KEY"), "editing the token while Remember is checked must update the persisted value, enabling rotation")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the Authorization header still reads from the token input field, and remembering never bypasses authentication`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(
+                body.contains("'Authorization': 'Bearer ' + document.getElementById('token').value"),
+                "authHeaders() must be unchanged: still Bearer <the current token field value>",
+            )
+
+            // Remembering is a browser-side convenience only -- the server side of authentication is
+            // untouched by this unit; a real request with no/wrong token is still rejected.
+            val unauthorised = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence")).POST(HttpRequest.BodyPublishers.noBody()).build())
+            assertEquals(401, unauthorised.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the server never embeds a real token into the page and never places it in a URL or query parameter`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            // The server-configured owner token (`token` in startHarness) must not appear anywhere in
+            // the served page -- the page only ever reads whatever the owner has typed/restored
+            // client-side, never a value the server itself knows or injects.
+            assertTrue(token !in body, "the real server-side owner token must never be embedded in server-generated HTML")
+            assertTrue("?token=" !in body && "&token=" !in body, "the token must never be placed in a URL query parameter")
+            assertTrue(body.contains("id=\"token\" placeholder="), "the token field must remain owner-entered, not server-populated")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the token field is type password, and existing Upload, Process, Run OCR, and View Extracted Content actions remain structurally intact`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("<input type=\"password\" id=\"token\""), "the token field must be type=password")
+            assertTrue(body.contains("id=\"uploadButton\""))
+            assertTrue(body.contains("processRow(index)"))
+            assertTrue(body.contains("ocrRow(index)"))
+            assertTrue(body.contains("View Extracted Content"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
     // ================= UI state-mapping: Process action after a successful import =================
     //
     // Live server behavior: a successful upload returns EvidenceImportOutcome.Imported, which

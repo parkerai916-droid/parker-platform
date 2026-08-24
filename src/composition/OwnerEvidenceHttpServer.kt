@@ -664,12 +664,13 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <style>
   body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #111; color: #eee; }
   h1 { font-size: 1.3rem; }
-  input[type=text] { width: 100%; padding: 0.4rem; box-sizing: border-box; }
+  input[type=text], input[type=password] { padding: 0.4rem; box-sizing: border-box; }
   table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
   th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #333; font-size: 0.85rem; }
   button { padding: 0.3rem 0.7rem; margin-right: 0.3rem; }
   .row-actions button { font-size: 0.8rem; }
   #status { color: #f88; }
+  .note { color: #fd8; font-size: 0.85rem; }
   .content-panel { background: #1a1a1a; padding: 0.75rem; margin: 0.5rem 0; border: 1px solid #333; }
   .content-panel p { margin: 0.25rem 0; font-size: 0.85rem; }
   .content-panel .note { color: #fd8; }
@@ -679,7 +680,11 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 </head>
 <body>
 <h1>Parker Owner Evidence Upload</h1>
-<p>Owner token: <input type="text" id="token" placeholder="paste owner token"></p>
+<p>
+  Owner token: <input type="password" id="token" placeholder="paste owner token">
+  <label><input type="checkbox" id="rememberToken"> Remember token on this device</label>
+</p>
+<p class="note">Use only on a trusted device. Anyone with access to this browser profile could read a remembered token.</p>
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
 <p id="status"></p>
 <table>
@@ -689,6 +694,50 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <script>
 let rows = [];
 let expandedIndex = null;
+
+// Remember Owner Token On This Device -- a browser convenience only. Never sent to or read back
+// from the server: this key exists solely in this browser origin's own localStorage. The token
+// itself never appears in generated HTML, a URL, a query parameter, or a console.log call.
+const TOKEN_STORAGE_KEY = 'parker.ownerHttpToken';
+
+function restoreRememberedToken() {
+  try {
+    const remembered = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (remembered !== null) {
+      document.getElementById('token').value = remembered;
+      document.getElementById('rememberToken').checked = true;
+    }
+  } catch (e) {
+    // localStorage unavailable (private browsing, blocked site data, etc.) -- remembering is
+    // best-effort only; the token field simply starts empty, exactly as before this feature existed.
+  }
+}
+
+function onRememberToggled() {
+  try {
+    if (document.getElementById('rememberToken').checked) {
+      localStorage.setItem(TOKEN_STORAGE_KEY, document.getElementById('token').value);
+    } else {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch (e) {
+    // best-effort only, see restoreRememberedToken
+  }
+}
+
+function onTokenFieldInput() {
+  if (document.getElementById('rememberToken').checked) {
+    try {
+      localStorage.setItem(TOKEN_STORAGE_KEY, document.getElementById('token').value);
+    } catch (e) {
+      // best-effort only, see restoreRememberedToken
+    }
+  }
+}
+
+restoreRememberedToken();
+document.getElementById('rememberToken').onchange = onRememberToggled;
+document.getElementById('token').addEventListener('input', onTokenFieldInput);
 
 function render() {
   const tbody = document.getElementById('rows');
