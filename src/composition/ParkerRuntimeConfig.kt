@@ -212,6 +212,28 @@ import java.nio.file.Path
  *   those as configuration, mirroring how no prior runtime-composition
  *   Unit in this repository exposes an already-frozen numeric bound as a
  *   per-deployment override either.
+ * @param ownerHttpBindAddress Owner LAN Evidence Upload. The network
+ *   interface [parker.composition.OwnerEvidenceHttpServer] binds. Optional,
+ *   defaults to `"0.0.0.0"` (all interfaces) -- a headless server has no
+ *   way to know its own LAN-facing interface address in advance, so this
+ *   mirrors how self-hosted LAN tools (for example, Ollama) already
+ *   default; reachability from beyond the trusted LAN is a host
+ *   firewall/Docker-port-publishing decision, entirely outside this
+ *   process's own control, never widened by this default.
+ * @param ownerHttpPort Owner LAN Evidence Upload. Optional; `null` (the
+ *   default) means the feature is disabled entirely -- no port is opened,
+ *   [Main.kt]'s own composition never constructs
+ *   [parker.composition.OwnerEvidenceHttpServer] at all. Every existing
+ *   deployment, test, and the Compose Desktop owner UI are completely
+ *   unaffected unless this is explicitly set.
+ * @param ownerHttpToken Owner LAN Evidence Upload. The single-owner bearer
+ *   token every request to [parker.composition.OwnerEvidenceHttpServer]'s
+ *   endpoints must present. Optional at the type level; [ParkerRuntimeConfigLoader.load]
+ *   enforces that [ownerHttpPort] and this field are set together or not at
+ *   all -- a port opened with no token, or a token configured with no port,
+ *   is a startup configuration error, never a silently-anonymous server.
+ *   Never logged, never returned in any response, never committed to this
+ *   repository -- supplied only via environment/runtime configuration.
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -238,6 +260,9 @@ data class ParkerRuntimeConfig(
     val doclingBridgeScriptPath: String = Path.of("tools", "docling-ocr-bridge.py").toAbsolutePath().toString(),
     val doclingModelCacheDir: String? = null,
     val doclingTimeoutMillis: Long = 900_000L,
+    val ownerHttpBindAddress: String = "0.0.0.0",
+    val ownerHttpPort: Int? = null,
+    val ownerHttpToken: String? = null,
 )
 
 /**
@@ -281,6 +306,9 @@ object ParkerRuntimeConfigLoader {
     const val KEY_DOCLING_BRIDGE_SCRIPT_PATH = "PARKER_DOCLING_BRIDGE_SCRIPT_PATH"
     const val KEY_DOCLING_MODEL_CACHE_DIR = "PARKER_DOCLING_MODEL_CACHE_DIR"
     const val KEY_DOCLING_TIMEOUT_MILLIS = "PARKER_DOCLING_TIMEOUT_MILLIS"
+    const val KEY_OWNER_HTTP_BIND_ADDRESS = "PARKER_OWNER_HTTP_BIND_ADDRESS"
+    const val KEY_OWNER_HTTP_PORT = "PARKER_OWNER_HTTP_PORT"
+    const val KEY_OWNER_HTTP_TOKEN = "PARKER_OWNER_HTTP_TOKEN"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -366,6 +394,32 @@ object ParkerRuntimeConfigLoader {
             )
         }
 
+        // Owner LAN Evidence Upload. Optional and opt-in: with no
+        // PARKER_OWNER_HTTP_PORT set, ownerHttpPort stays null and
+        // Main.kt never constructs OwnerEvidenceHttpServer at all --
+        // every existing deployment/test is unaffected. Once a port is
+        // set, a token becomes mandatory (and vice versa) so the
+        // feature can never come up as an anonymous LAN file drop by
+        // accident -- fail closed at startup rather than silently
+        // serving unauthenticated.
+        val ownerHttpBindAddress = environment[KEY_OWNER_HTTP_BIND_ADDRESS]?.takeIf { it.isNotBlank() } ?: "0.0.0.0"
+        val ownerHttpPortRaw = environment[KEY_OWNER_HTTP_PORT]?.takeIf { it.isNotBlank() }
+        val ownerHttpPort = ownerHttpPortRaw?.let {
+            it.toIntOrNull()?.takeIf { port -> port in 1..65535 }
+                ?: throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_OWNER_HTTP_PORT,
+                    "must be an integer TCP port in 1..65535; was '$ownerHttpPortRaw'",
+                )
+        }
+        val ownerHttpToken = environment[KEY_OWNER_HTTP_TOKEN]?.takeIf { it.isNotBlank() }
+        if ((ownerHttpPort == null) != (ownerHttpToken == null)) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                if (ownerHttpPort == null) KEY_OWNER_HTTP_PORT else KEY_OWNER_HTTP_TOKEN,
+                "$KEY_OWNER_HTTP_PORT and $KEY_OWNER_HTTP_TOKEN must be set together or not at all " +
+                    "-- an owner HTTP port with no token would be an anonymous LAN file drop",
+            )
+        }
+
         return ParkerRuntimeConfig(
             modelEndpointUrl = requireKey(environment, KEY_MODEL_ENDPOINT_URL),
             modelName = requireKey(environment, KEY_MODEL_NAME),
@@ -394,6 +448,9 @@ object ParkerRuntimeConfigLoader {
                 ?: java.nio.file.Path.of("tools", "docling-ocr-bridge.py").toAbsolutePath().toString(),
             doclingModelCacheDir = environment[KEY_DOCLING_MODEL_CACHE_DIR]?.takeIf { it.isNotBlank() },
             doclingTimeoutMillis = doclingTimeoutMillis,
+            ownerHttpBindAddress = ownerHttpBindAddress,
+            ownerHttpPort = ownerHttpPort,
+            ownerHttpToken = ownerHttpToken,
         )
     }
 

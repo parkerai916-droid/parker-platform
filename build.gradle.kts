@@ -288,6 +288,23 @@ tasks.register<Test>("ownerEvidenceUiEndToEndLiveAcceptance") {
     shouldRunAfter(tasks.test)
 }
 
+// Owner LAN Evidence Upload -- this Unit's own opt-in live acceptance instrument, mirroring
+// ownerEvidenceUiEndToEndLiveAcceptance's own identical shape, but driving the real
+// OwnerEvidenceHttpServer over real HTTP (java.net.http.HttpClient) rather than in-process calls,
+// standing in for the Windows-laptop-side browser this Unit's own governing task describes.
+tasks.register<Test>("ownerEvidenceHttpEndToEndLiveAcceptance") {
+    description = "Runs the explicit opt-in Owner LAN Evidence Upload end-to-end live acceptance instrument (real HTTP transport, real Docling)"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.integration.OwnerEvidenceHttpEndToEndLiveAcceptanceTest")
+    }
+    systemProperty("parker.ocr.docling.live.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
 // Main-Promotion Gate / QMD Linux Portability Defect correction (Programme 3
 // Unit 9.7.6 follow-on, bounded investigation and correction). Root cause:
 // `QmdCanonicalMemoryRetrievalExperimentTest.kt` (commit `aadd596`) is a

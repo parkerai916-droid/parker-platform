@@ -80,6 +80,13 @@ RUN mkdir -p /data/evidence /data/evidence-audit /data/memory-core /data/knowled
     && chown -R parker:parker /opt/parker /data
 USER parker
 
+# Owner LAN Evidence Upload. Documentation only -- EXPOSE does not itself
+# publish anything; docker-compose.yml's own `ports:` mapping is what
+# actually makes this reachable from the LAN, and only once
+# PARKER_OWNER_HTTP_PORT/PARKER_OWNER_HTTP_TOKEN are both set (the feature
+# is opt-in and off by default; see docker-compose.yml's own comment).
+EXPOSE 8080
+
 # Exec form, so SIGTERM (docker stop) reaches the JVM directly -- the
 # `application` plugin's own generated start script already ends with
 # `exec "$JAVACMD" ...`, so no shell process sits between PID 1 and the JVM

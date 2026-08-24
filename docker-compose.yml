@@ -54,6 +54,32 @@ services:
       PARKER_QMD_TSX_CLI_PATH: "/opt/qmd/node_modules/tsx/dist/cli.mjs"
       PARKER_QMD_MODEL_CACHE_DIR: "/opt/qmd-models"
       PARKER_QMD_SOURCE_ROOT: "/opt/qmd"
+
+      # Owner LAN Evidence Upload. Opt-in and off by default: both
+      # variables below are blank unless set in a local, git-ignored .env
+      # file, and ParkerRuntimeConfigLoader.load collapses a blank value
+      # to `null` -- with either one null, Main.kt never constructs
+      # OwnerEvidenceHttpServer at all, so an unmodified .env leaves this
+      # deployment exactly as it was before this feature existed. To
+      # enable it, set both PARKER_OWNER_HTTP_PORT (e.g. 8080) and
+      # PARKER_OWNER_HTTP_TOKEN (a real secret, generated locally -- never
+      # committed to this repository) in .env; the loader enforces they
+      # are set together or not at all and fails startup otherwise, so a
+      # port can never come up anonymous. PARKER_OWNER_HTTP_BIND_ADDRESS
+      # keeps ParkerRuntimeConfig's own "0.0.0.0" default -- inside this
+      # container that already means "reachable via whatever the `ports:`
+      # mapping below publishes", never wider than that.
+      PARKER_OWNER_HTTP_BIND_ADDRESS: "${PARKER_OWNER_HTTP_BIND_ADDRESS:-0.0.0.0}"
+      PARKER_OWNER_HTTP_PORT: "${PARKER_OWNER_HTTP_PORT:-}"
+      PARKER_OWNER_HTTP_TOKEN: "${PARKER_OWNER_HTTP_TOKEN:-}"
+    ports:
+      # Always published so `docker compose up` never fails on an empty
+      # port spec; harmless while the feature above is disabled (nothing
+      # inside the container binds this port, so the mapping does
+      # nothing). Follows PARKER_OWNER_HTTP_PORT once that is set --
+      # <Parker-server-LAN-IP>:8080 (or your own PARKER_OWNER_HTTP_PORT)
+      # is what the owner's Windows laptop browser then opens.
+      - "${PARKER_OWNER_HTTP_PORT:-8080}:${PARKER_OWNER_HTTP_PORT:-8080}"
     volumes:
       - /mnt/parker-data/parker/evidence:/data/evidence
       - /mnt/parker-data/parker/evidence-audit:/data/evidence-audit

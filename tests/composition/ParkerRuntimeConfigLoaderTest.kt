@@ -391,4 +391,94 @@ class ParkerRuntimeConfigLoaderTest {
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_LOG_LEVEL, thrown.key)
     }
+
+    // ================= Owner LAN Evidence Upload =================
+
+    @Test
+    fun `with neither PARKER_OWNER_HTTP_PORT nor PARKER_OWNER_HTTP_TOKEN set, the owner HTTP feature stays entirely off`() {
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment())
+
+        assertEquals("0.0.0.0", config.ownerHttpBindAddress)
+        assertEquals(null, config.ownerHttpPort)
+        assertEquals(null, config.ownerHttpToken)
+    }
+
+    @Test
+    fun `setting only PARKER_OWNER_HTTP_PORT without a token throws InvalidConfiguration`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "8080"))
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN, thrown.key)
+    }
+
+    @Test
+    fun `setting only PARKER_OWNER_HTTP_TOKEN without a port throws InvalidConfiguration`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN to "secret-token"))
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT, thrown.key)
+    }
+
+    @Test
+    fun `setting both PARKER_OWNER_HTTP_PORT and PARKER_OWNER_HTTP_TOKEN enables the feature with those exact values`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "8080",
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN to "secret-token",
+            ),
+        )
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(8080, config.ownerHttpPort)
+        assertEquals("secret-token", config.ownerHttpToken)
+    }
+
+    @Test
+    fun `a non-numeric PARKER_OWNER_HTTP_PORT throws InvalidConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "not-a-port",
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN to "secret-token",
+            ),
+        )
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT, thrown.key)
+    }
+
+    @Test
+    fun `a PARKER_OWNER_HTTP_PORT out of the valid TCP port range throws InvalidConfiguration`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "99999",
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN to "secret-token",
+            ),
+        )
+
+        assertIs<ParkerRuntimeException.InvalidConfiguration>(
+            assertFailsWith<ParkerRuntimeException> { ParkerRuntimeConfigLoader.load(environment) },
+        )
+    }
+
+    @Test
+    fun `an explicit PARKER_OWNER_HTTP_BIND_ADDRESS overrides the 0-0-0-0 default`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_BIND_ADDRESS to "127.0.0.1",
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "8080",
+                ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN to "secret-token",
+            ),
+        )
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals("127.0.0.1", config.ownerHttpBindAddress)
+    }
 }

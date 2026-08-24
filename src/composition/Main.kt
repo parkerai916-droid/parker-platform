@@ -104,11 +104,34 @@ fun main(args: Array<String>) = runBlocking {
         exitProcess(1)
     }
 
+    // Owner LAN Evidence Upload. Opt-in: only constructed when both PARKER_OWNER_HTTP_PORT and
+    // PARKER_OWNER_HTTP_TOKEN are set (ParkerRuntimeConfigLoader enforces they are set together
+    // or not at all). Reuses the exact same OwnerEvidenceOperations seam the Compose Desktop
+    // owner UI already drives -- this is a transport, never a second evidence-ingress mechanism.
+    val ownerHttpServer = if (config.ownerHttpPort != null && config.ownerHttpToken != null) {
+        val adapter = OwnerUiEvidenceRuntimeAdapter(
+            ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+            importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
+            invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
+            analyseEvidence = runtime::analyseEvidence,
+        )
+        OwnerEvidenceHttpServer(
+            bindAddress = config.ownerHttpBindAddress,
+            port = config.ownerHttpPort,
+            token = config.ownerHttpToken,
+            operations = adapter,
+            logger = ConsoleParkerLogger("owner-http", minLevel = effectiveLogLevel),
+        ).also { it.start() }
+    } else {
+        null
+    }
+
     val shutdownComplete = CompletableDeferred<Unit>()
     Runtime.getRuntime().addShutdownHook(
         Thread(
             {
                 logger.info("Shutdown signal received")
+                runCatching { ownerHttpServer?.stop() }
                 runBlocking {
                     try {
                         runtime.shutdown()
