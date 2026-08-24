@@ -56,15 +56,112 @@ sealed interface EvidenceImportOutcome {
  * The truthful result of one [OwnerEvidenceOperations.processTierA] call.
  * [format] is always one of Document Ingestion's own four governed format
  * labels ("CSV"/"EML"/"DOCX"/"PDF") for [Admitted] -- never a fabricated or
- * inferred fifth value.
+ * inferred fifth value. [content] is the safe owner-facing projection of
+ * the already-produced admitted Tier A payload -- never a re-extraction.
+ * `null` only when a caller genuinely has no content to report (a fake
+ * test double, for instance); the real production adapter
+ * ([parker.composition.OwnerUiEvidenceRuntimeAdapter]) always supplies it.
  */
 sealed interface TierAProcessingOutcome {
-    data class Admitted(val format: String) : TierAProcessingOutcome
+    data class Admitted(val format: String, val content: OwnerTierAContent? = null) : TierAProcessingOutcome
     data object RequiresTierB : TierAProcessingOutcome
     data class Unsupported(val reason: String) : TierAProcessingOutcome
     data class IntegrityFailure(val reason: String) : TierAProcessingOutcome
     data class Failed(val stage: String, val safeMessage: String) : TierAProcessingOutcome
 }
+
+/**
+ * Owner Tier A Extracted Content Presentation. The smallest safe,
+ * owner-facing projection of an already-produced admitted Tier A payload
+ * (`TierADerivativePayload`) -- built once, from the specialist's own
+ * already-computed result, never by re-running extraction. No field here
+ * ever carries a server filesystem path, a temp path, a stack trace, or a
+ * secret/config value; every text field is exactly what the specialist
+ * itself claims, never invented or embellished.
+ *
+ * PDF is presented at full fidelity ([Pdf.documentText] is the specialist's
+ * own [parker.core.interfaces.PdfStructuralResult.documentText] verbatim,
+ * already bounded by [parker.core.runtime.TikaEvidenceExtractor]'s own
+ * governed 8 Mi-character extraction cap -- no further truncation is
+ * applied here). CSV/EML/DOCX are truthful, bounded summaries rather than
+ * an exhaustive dump of every structural field -- [Csv] discloses exactly
+ * how many rows exist and how many are actually shown
+ * ([Csv.rowsTruncatedForDisplay]), never silently truncating and then
+ * calling the result complete.
+ */
+sealed interface OwnerTierAContent {
+    data class Pdf(
+        val documentText: String,
+        val pageCount: Int?,
+        val pageTextAssociationAvailable: Boolean,
+        val producer: OwnerDerivativeProducerSummary,
+        val transformationHistory: List<String>,
+        val completenessState: String,
+        val warnings: List<String>,
+        val metadata: List<OwnerPdfMetadataValue>,
+    ) : OwnerTierAContent
+
+    data class Csv(
+        val headers: List<String>,
+        val previewRows: List<List<String>>,
+        val totalRowCount: Int,
+        val rowsTruncatedForDisplay: Boolean,
+        val producer: OwnerDerivativeProducerSummary,
+        val completenessState: String,
+        val warnings: List<String>,
+    ) : OwnerTierAContent
+
+    data class Eml(
+        val from: String?,
+        val to: String?,
+        val cc: String?,
+        val subject: String?,
+        val rawDate: String?,
+        val messageId: String?,
+        val bodyAlternatives: List<OwnerEmlBodySummary>,
+        val attachmentCandidateCount: Int,
+        val attachmentCandidates: List<OwnerEmlAttachmentSummary>,
+        val producer: OwnerDerivativeProducerSummary,
+        val completenessState: String,
+        val warnings: List<String>,
+    ) : OwnerTierAContent
+
+    data class Docx(
+        val paragraphs: List<String>,
+        val tables: List<OwnerDocxTableSummary>,
+        val headers: List<String>,
+        val footers: List<String>,
+        val producer: OwnerDerivativeProducerSummary,
+        val completenessState: String,
+        val warnings: List<String>,
+    ) : OwnerTierAContent
+
+    companion object {
+        /** Owner-facing CSV row display bound only -- never applied to extraction; [Csv.totalRowCount] always discloses the real count. */
+        const val CSV_PREVIEW_ROW_LIMIT: Int = 500
+    }
+}
+
+/** Producer/model identity fields only -- no configuration values, paths, or secrets. */
+data class OwnerDerivativeProducerSummary(
+    val pluginIdentity: String,
+    val pluginVersion: String,
+    val configurationIdentity: String,
+    val adapterIdentity: String?,
+    val adapterVersion: String?,
+    val modelIdentity: String?,
+    val modelVersion: String?,
+)
+
+data class OwnerPdfMetadataValue(val name: String, val value: String)
+
+/** [text] is the specialist's own decoded body text for one MIME alternative -- never attachment binary content. */
+data class OwnerEmlBodySummary(val mediaType: String, val charset: String?, val text: String)
+
+/** Metadata only -- never [parker.core.interfaces.EmlAttachmentCandidate.decodedBytes]. */
+data class OwnerEmlAttachmentSummary(val filename: String?, val declaredMimeType: String, val byteLength: Long)
+
+data class OwnerDocxTableSummary(val rows: List<List<String>>)
 
 /**
  * The truthful result of one [OwnerEvidenceOperations.processTierB] call.

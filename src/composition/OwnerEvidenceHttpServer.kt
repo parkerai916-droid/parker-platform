@@ -17,7 +17,9 @@ import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.EvidenceArtifactId
 import parker.ui.EvidenceImportOutcome
+import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerEvidenceOperations
+import parker.ui.OwnerTierAContent
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 
@@ -246,7 +248,11 @@ class OwnerEvidenceHttpServer(
             }
             val outcome = runBlocking { operations.processTierA(id) }
             val body = when (outcome) {
-                is TierAProcessingOutcome.Admitted -> jsonObject("status" to "TIER_A_COMPLETE", "format" to outcome.format)
+                is TierAProcessingOutcome.Admitted -> jsonObject(
+                    "status" to "TIER_A_COMPLETE",
+                    "format" to outcome.format,
+                    "content" to outcome.content?.let { contentJson(it) },
+                )
                 TierAProcessingOutcome.RequiresTierB -> jsonObject("status" to "REQUIRES_OCR")
                 is TierAProcessingOutcome.Unsupported -> jsonObject("status" to "FAILED", "message" to "Unsupported: ${outcome.reason}")
                 is TierAProcessingOutcome.IntegrityFailure -> jsonObject(
@@ -282,14 +288,90 @@ class OwnerEvidenceHttpServer(
         }
     }
 
+    // ---- Owner Tier A Extracted Content Presentation: safe owner-facing content -> JSON ----------
+    // Every value below is either a server-controlled literal or threaded through jsonString's own
+    // escaping (writeJsonValue), so extracted text/metadata can never break out of its JSON string
+    // context or inject markup -- the browser page also never inserts it as raw HTML (Phase 7 renders
+    // it via textContent, never innerHTML).
+
+    private fun contentJson(content: OwnerTierAContent): JsonObject = when (content) {
+        is OwnerTierAContent.Pdf -> jsonObject(
+            "kind" to "PDF",
+            "documentText" to content.documentText,
+            "pageCount" to content.pageCount,
+            "pageTextAssociationAvailable" to content.pageTextAssociationAvailable,
+            "producer" to producerJson(content.producer),
+            "transformationHistory" to jsonArray(content.transformationHistory),
+            "completenessState" to content.completenessState,
+            "warnings" to jsonArray(content.warnings),
+            "metadata" to jsonArray(content.metadata.map { jsonObject("name" to it.name, "value" to it.value) }),
+        )
+        is OwnerTierAContent.Csv -> jsonObject(
+            "kind" to "CSV",
+            "headers" to jsonArray(content.headers),
+            "previewRows" to jsonArray(content.previewRows.map { jsonArray(it) }),
+            "totalRowCount" to content.totalRowCount,
+            "rowsTruncatedForDisplay" to content.rowsTruncatedForDisplay,
+            "producer" to producerJson(content.producer),
+            "completenessState" to content.completenessState,
+            "warnings" to jsonArray(content.warnings),
+        )
+        is OwnerTierAContent.Eml -> jsonObject(
+            "kind" to "EML",
+            "from" to content.from,
+            "to" to content.to,
+            "cc" to content.cc,
+            "subject" to content.subject,
+            "rawDate" to content.rawDate,
+            "messageId" to content.messageId,
+            "bodyAlternatives" to jsonArray(
+                content.bodyAlternatives.map {
+                    jsonObject("mediaType" to it.mediaType, "charset" to it.charset, "text" to it.text)
+                },
+            ),
+            "attachmentCandidateCount" to content.attachmentCandidateCount,
+            "attachmentCandidates" to jsonArray(
+                content.attachmentCandidates.map {
+                    jsonObject("filename" to it.filename, "declaredMimeType" to it.declaredMimeType, "byteLength" to it.byteLength)
+                },
+            ),
+            "producer" to producerJson(content.producer),
+            "completenessState" to content.completenessState,
+            "warnings" to jsonArray(content.warnings),
+        )
+        is OwnerTierAContent.Docx -> jsonObject(
+            "kind" to "DOCX",
+            "paragraphs" to jsonArray(content.paragraphs),
+            "tables" to jsonArray(content.tables.map { table -> jsonArray(table.rows.map { row -> jsonArray(row) }) }),
+            "headers" to jsonArray(content.headers),
+            "footers" to jsonArray(content.footers),
+            "producer" to producerJson(content.producer),
+            "completenessState" to content.completenessState,
+            "warnings" to jsonArray(content.warnings),
+        )
+    }
+
+    private fun producerJson(producer: OwnerDerivativeProducerSummary): JsonObject = jsonObject(
+        "pluginIdentity" to producer.pluginIdentity,
+        "pluginVersion" to producer.pluginVersion,
+        "configurationIdentity" to producer.configurationIdentity,
+        "adapterIdentity" to producer.adapterIdentity,
+        "adapterVersion" to producer.adapterVersion,
+        "modelIdentity" to producer.modelIdentity,
+        "modelVersion" to producer.modelVersion,
+    )
+
     // ---- minimal JSON writer (no JSON library exists anywhere in this repository; every value
     // written below is either a server-controlled literal or passed through String escaping) ------
 
     private sealed interface JsonValue
     private class JsonObject(val fields: List<Pair<String, Any?>>) : JsonValue
-    private class JsonArray(val items: List<JsonValue>) : JsonValue
+    private class JsonArray(val items: List<Any?>) : JsonValue
 
     private fun jsonObject(vararg fields: Pair<String, Any?>): JsonObject = JsonObject(fields.toList())
+
+    /** An array of plain values (strings, numbers, nested objects/arrays) -- not only [JsonObject]s. */
+    private fun jsonArray(items: List<Any?>): JsonArray = JsonArray(items)
 
     private fun writeJsonValue(sb: StringBuilder, value: Any?) {
         when (value) {
@@ -588,6 +670,11 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   button { padding: 0.3rem 0.7rem; margin-right: 0.3rem; }
   .row-actions button { font-size: 0.8rem; }
   #status { color: #f88; }
+  .content-panel { background: #1a1a1a; padding: 0.75rem; margin: 0.5rem 0; border: 1px solid #333; }
+  .content-panel p { margin: 0.25rem 0; font-size: 0.85rem; }
+  .content-panel .note { color: #fd8; }
+  .extracted-text { max-height: 24rem; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #000; padding: 0.5rem; font-size: 0.8rem; }
+  .content-panel table { margin-top: 0.5rem; }
 </style>
 </head>
 <body>
@@ -601,6 +688,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 </table>
 <script>
 let rows = [];
+let expandedIndex = null;
 
 function render() {
   const tbody = document.getElementById('rows');
@@ -620,14 +708,148 @@ function render() {
       b.onclick = () => ocrRow(index);
       actions.appendChild(b);
     }
+    if (row.status === 'TIER_A_COMPLETE' && row.content) {
+      const b = document.createElement('button');
+      b.textContent = expandedIndex === index ? 'Hide Extracted Content' : 'View Extracted Content';
+      b.onclick = () => { expandedIndex = expandedIndex === index ? null : index; render(); };
+      actions.appendChild(b);
+    }
     tr.innerHTML = `<td>${'$'}{escapeHtml(row.originalFileName)}</td><td>${'$'}{row.byteLength}</td><td>${'$'}{row.status}</td><td>${'$'}{row.evidenceArtifactId || ''}</td><td>${'$'}{row.message || ''}</td>`;
     tr.appendChild(actions);
     tbody.appendChild(tr);
+
+    if (expandedIndex === index && row.content) {
+      const detailTr = document.createElement('tr');
+      const detailTd = document.createElement('td');
+      detailTd.colSpan = 6;
+      detailTd.appendChild(buildContentPanel(row.content));
+      detailTr.appendChild(detailTd);
+      tbody.appendChild(detailTr);
+    }
   });
 }
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Every field below is inserted via textContent (never innerHTML), so extracted text or metadata
+// (filenames, headers, warnings -- all owner/adversary-influenceable) can never be interpreted as
+// HTML or script, no matter what characters it contains.
+function appendField(container, label, value) {
+  const p = document.createElement('p');
+  p.textContent = label + ': ' + value;
+  container.appendChild(p);
+}
+
+function appendWarnings(container, warnings) {
+  if (!warnings || !warnings.length) return;
+  const p = document.createElement('p');
+  p.textContent = 'Warnings: ' + warnings.join('; ');
+  container.appendChild(p);
+}
+
+function appendProducer(container, producer) {
+  if (!producer) return;
+  let text = producer.pluginIdentity + ' ' + producer.pluginVersion;
+  if (producer.adapterIdentity) text += ' / ' + producer.adapterIdentity + ' ' + producer.adapterVersion;
+  if (producer.modelIdentity) text += ' / model ' + producer.modelIdentity + ' ' + producer.modelVersion;
+  appendField(container, 'Producer', text);
+}
+
+function appendTable(container, headerCells, bodyRows) {
+  const table = document.createElement('table');
+  if (headerCells) {
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    headerCells.forEach(h => { const th = document.createElement('th'); th.textContent = h; headRow.appendChild(th); });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+  }
+  const tbody2 = document.createElement('tbody');
+  bodyRows.forEach(row => {
+    const tr2 = document.createElement('tr');
+    row.forEach(cell => { const td2 = document.createElement('td'); td2.textContent = cell; tr2.appendChild(td2); });
+    tbody2.appendChild(tr2);
+  });
+  table.appendChild(tbody2);
+  container.appendChild(table);
+}
+
+function appendExtractedText(container, label, text) {
+  const div = document.createElement('div');
+  div.textContent = label;
+  container.appendChild(div);
+  const pre = document.createElement('pre');
+  pre.className = 'extracted-text';
+  pre.textContent = text;
+  container.appendChild(pre);
+}
+
+function buildContentPanel(content) {
+  const container = document.createElement('div');
+  container.className = 'content-panel';
+  if (content.kind === 'PDF') {
+    appendField(container, 'Page count', content.pageCount != null ? String(content.pageCount) : 'unknown');
+    appendField(container, 'Page/text association available', String(content.pageTextAssociationAvailable));
+    appendField(container, 'Completeness', content.completenessState);
+    appendWarnings(container, content.warnings);
+    appendProducer(container, content.producer);
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent = 'Whole-document text -- does not imply page-level association or coordinates.';
+    container.appendChild(note);
+    appendExtractedText(container, 'Extracted text:', content.documentText);
+  } else if (content.kind === 'CSV') {
+    appendField(container, 'Total rows', String(content.totalRowCount));
+    if (content.rowsTruncatedForDisplay) {
+      const note = document.createElement('p');
+      note.className = 'note';
+      note.textContent = 'PREVIEW -- showing ' + content.previewRows.length + ' of ' + content.totalRowCount + ' rows.';
+      container.appendChild(note);
+    }
+    appendField(container, 'Completeness', content.completenessState);
+    appendWarnings(container, content.warnings);
+    appendProducer(container, content.producer);
+    appendTable(container, content.headers, content.previewRows);
+  } else if (content.kind === 'EML') {
+    appendField(container, 'From', content.from || '');
+    appendField(container, 'To', content.to || '');
+    appendField(container, 'Cc', content.cc || '');
+    appendField(container, 'Subject', content.subject || '');
+    appendField(container, 'Date', content.rawDate || '');
+    appendField(container, 'Attachment candidates', String(content.attachmentCandidateCount));
+    appendField(container, 'Completeness', content.completenessState);
+    appendWarnings(container, content.warnings);
+    appendProducer(container, content.producer);
+    content.bodyAlternatives.forEach(alt => appendExtractedText(container, 'Body (' + alt.mediaType + '):', alt.text));
+    if (content.attachmentCandidates.length) {
+      const label = document.createElement('div');
+      label.textContent = 'Attachments:';
+      container.appendChild(label);
+      const ul = document.createElement('ul');
+      content.attachmentCandidates.forEach(a => {
+        const li = document.createElement('li');
+        li.textContent = (a.filename || '(unnamed)') + ' -- ' + a.declaredMimeType + ' -- ' + a.byteLength + ' bytes';
+        ul.appendChild(li);
+      });
+      container.appendChild(ul);
+    }
+  } else if (content.kind === 'DOCX') {
+    appendField(container, 'Completeness', content.completenessState);
+    appendWarnings(container, content.warnings);
+    appendProducer(container, content.producer);
+    appendExtractedText(container, 'Paragraphs:', content.paragraphs.join('\n\n'));
+    if (content.headers.length) appendExtractedText(container, 'Headers:', content.headers.join('\n'));
+    if (content.footers.length) appendExtractedText(container, 'Footers:', content.footers.join('\n'));
+    if (content.tables.length) {
+      const tlabel = document.createElement('div');
+      tlabel.textContent = 'Tables (' + content.tables.length + '):';
+      container.appendChild(tlabel);
+      content.tables.forEach(t => appendTable(container, null, t));
+    }
+  }
+  return container;
 }
 
 function authHeaders() {
@@ -672,6 +894,7 @@ async function processRow(index) {
   row.status = result.status;
   row.tierAFormat = result.format;
   row.message = result.message;
+  row.content = result.content || null;
   render();
 }
 

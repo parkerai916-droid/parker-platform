@@ -8,6 +8,7 @@ import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
 import parker.ui.EvidenceImportOutcome
+import parker.ui.OwnerTierAContent
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 import kotlin.test.Test
@@ -146,24 +147,79 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         val adapter = adapterFor(runtime)
 
         val csv = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("06-structured.csv").toAbsolutePath().toString(), "text/csv"))
-        assertEquals(TierAProcessingOutcome.Admitted("CSV"), adapter.processTierA(csv.evidenceArtifactId))
+        val csvAdmitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(csv.evidenceArtifactId))
+        assertEquals("CSV", csvAdmitted.format)
+        assertIs<OwnerTierAContent.Csv>(csvAdmitted.content)
 
         val eml = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("05-email-with-attachment.eml").toAbsolutePath().toString(), "message/rfc822"))
-        assertEquals(TierAProcessingOutcome.Admitted("EML"), adapter.processTierA(eml.evidenceArtifactId))
+        val emlAdmitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(eml.evidenceArtifactId))
+        assertEquals("EML", emlAdmitted.format)
+        assertIs<OwnerTierAContent.Eml>(emlAdmitted.content)
 
         val docx = assertIs<EvidenceImportOutcome.Imported>(
             adapter.importFile(fixtureRoot.resolve("04-structured.docx").toAbsolutePath().toString(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         )
-        assertEquals(TierAProcessingOutcome.Admitted("DOCX"), adapter.processTierA(docx.evidenceArtifactId))
+        val docxAdmitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(docx.evidenceArtifactId))
+        assertEquals("DOCX", docxAdmitted.format)
+        assertIs<OwnerTierAContent.Docx>(docxAdmitted.content)
 
         val pdf = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("01-searchable-simple.pdf").toAbsolutePath().toString(), "application/pdf"))
-        assertEquals(TierAProcessingOutcome.Admitted("PDF"), adapter.processTierA(pdf.evidenceArtifactId))
+        val pdfAdmitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(pdf.evidenceArtifactId))
+        assertEquals("PDF", pdfAdmitted.format)
+        assertIs<OwnerTierAContent.Pdf>(pdfAdmitted.content)
 
         val scanned = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("03-scanned.pdf").toAbsolutePath().toString(), "application/pdf"))
         assertEquals(TierAProcessingOutcome.RequiresTierB, adapter.processTierA(scanned.evidenceArtifactId))
 
         val png = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("07-text-image.png").toAbsolutePath().toString(), "image/png"))
         assertEquals(TierAProcessingOutcome.RequiresTierB, adapter.processTierA(png.evidenceArtifactId))
+
+        runtime.shutdown()
+    }
+
+    // ================= Owner Tier A Extracted Content Presentation =================
+
+    @Test
+    fun `Admitted PDF payload is no longer discarded -- exact documentText, pageCount, completeness, warnings, and producer identity all survive adapter mapping`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val adapter = adapterFor(runtime)
+        val sourcePath = fixtureRoot.resolve("01-searchable-simple.pdf").toAbsolutePath()
+
+        // Independently extract the same fixture via the real specialist (never re-run through the
+        // owner path itself) -- this is the ground truth the adapter must faithfully pass through,
+        // not discard.
+        val expected = assertIs<parker.core.interfaces.PdfStructuralExtractionOutcome.Extracted>(
+            parker.core.runtime.TikaPdfStructuralExtractor().extract(java.nio.file.Files.readAllBytes(sourcePath)),
+        ).result
+
+        val imported = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(sourcePath.toString(), "application/pdf"))
+        val admitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(imported.evidenceArtifactId))
+        val pdfContent = assertIs<OwnerTierAContent.Pdf>(admitted.content)
+
+        assertEquals(expected.documentText, pdfContent.documentText, "exact PdfStructuralResult.documentText must survive adapter mapping")
+        assertEquals(expected.pageCount, pdfContent.pageCount)
+        assertEquals(expected.pageTextAssociationAvailable, pdfContent.pageTextAssociationAvailable)
+        assertEquals(expected.completenessState.name, pdfContent.completenessState)
+        assertEquals(expected.warnings, pdfContent.warnings)
+        assertEquals(expected.producerIdentity.pluginIdentity, pdfContent.producer.pluginIdentity)
+        assertEquals(expected.producerIdentity.pluginVersion, pdfContent.producer.pluginVersion)
+        assertEquals(expected.metadata.map { it.name to it.value }, pdfContent.metadata.map { it.name to it.value })
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `unsupported and failure Tier A outcomes never carry Admitted content`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+
+        val outcome = adapterFor(runtime).processTierA(EvidenceArtifactId("evidence-never-registered"))
+
+        val failed = assertIs<TierAProcessingOutcome.Failed>(outcome)
+        assertTrue(failed.safeMessage.isNotBlank())
 
         runtime.shutdown()
     }
@@ -212,7 +268,8 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         val adapter = adapterFor(runtime)
 
         val csv = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("06-structured.csv").toAbsolutePath().toString(), "text/csv"))
-        assertEquals(TierAProcessingOutcome.Admitted("CSV"), adapter.processTierA(csv.evidenceArtifactId))
+        val csvAdmitted = assertIs<TierAProcessingOutcome.Admitted>(adapter.processTierA(csv.evidenceArtifactId))
+        assertEquals("CSV", csvAdmitted.format)
 
         assertTrue(Files.notExists(marker), "Tier A processing of a governed, non-OCR-eligible format must never invoke the OCR bridge")
 

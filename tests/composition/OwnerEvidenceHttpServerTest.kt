@@ -129,6 +129,47 @@ class OwnerEvidenceHttpServerTest {
     private fun extractAllFields(json: String, field: String): List<String> =
         Regex(""""$field"\s*:\s*"([^"]*)"""").findAll(json).map { it.groupValues[1] }.toList()
 
+    /**
+     * A correct (escape-aware) JSON string-field extractor -- [extractField]'s naive `[^"]*` regex
+     * cannot handle a value containing an escaped quote, backslash, or newline, which real extracted
+     * document text legitimately can. Used only where a field's value needs exact, faithful
+     * comparison against real extracted content.
+     */
+    private fun extractJsonStringField(json: String, field: String): String? {
+        val key = "\"$field\":\""
+        val start = json.indexOf(key)
+        if (start < 0) return null
+        var i = start + key.length
+        val sb = StringBuilder()
+        while (i < json.length) {
+            val c = json[i]
+            when {
+                c == '"' -> return sb.toString()
+                c == '\\' && i + 1 < json.length -> {
+                    val next = json[i + 1]
+                    when (next) {
+                        '"' -> sb.append('"')
+                        '\\' -> sb.append('\\')
+                        'n' -> sb.append('\n')
+                        'r' -> sb.append('\r')
+                        't' -> sb.append('\t')
+                        'u' -> {
+                            val hex = json.substring(i + 2, i + 6)
+                            sb.append(hex.toInt(16).toChar())
+                            i += 4
+                        }
+                        else -> sb.append(next)
+                    }
+                    i += 2
+                    continue
+                }
+                else -> sb.append(c)
+            }
+            i++
+        }
+        return null
+    }
+
     // ================= Authentication =================
 
     @Test
@@ -348,6 +389,157 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
+    // ================= Owner Tier A Extracted Content Presentation =================
+
+    @Test
+    fun `the HTTP Tier A response for a searchable PDF contains the exact extracted document text and provenance, without re-extraction`() = runTest {
+        val harness = startHarness("")
+        try {
+            val sourceBytes = Files.readAllBytes(fixtureRoot.resolve("01-searchable-simple.pdf"))
+            val expected = assertIsExtracted(
+                parker.core.runtime.TikaPdfStructuralExtractor().extract(sourceBytes),
+            )
+
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "01-searchable-simple.pdf", "application/pdf", sourceBytes))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            val processRequest = HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/process"))
+                .header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build()
+            val processResponse = send(processRequest)
+            val body = processResponse.body()
+
+            assertEquals(200, processResponse.statusCode())
+            assertEquals("TIER_A_COMPLETE", extractField(body, "status"))
+            assertEquals("PDF", extractField(body, "format"))
+            assertEquals("\"kind\":\"PDF\"", Regex(""""kind"\s*:\s*"PDF"""").find(body)?.value)
+            assertEquals(expected.documentText, extractJsonStringField(body, "documentText"), "the exact PdfStructuralResult.documentText must reach the HTTP response, not a re-extraction or a fabrication")
+            assertEquals(expected.completenessState.name, extractField(body, "completenessState"))
+            assertEquals(expected.producerIdentity.pluginIdentity, extractField(body, "pluginIdentity"))
+            assertEquals(expected.producerIdentity.pluginVersion, extractField(body, "pluginVersion"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `RequiresTierB never carries Tier A extracted content -- the owner must still explicitly Run OCR`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-http-scripts")
+        val marker = scriptDir.resolve("invoked.marker")
+        val scriptPath = Files.createTempFile(scriptDir, "fake-docling-bridge-", ".sh")
+        Files.writeString(scriptPath, "#!/bin/sh\ntouch '${marker.toAbsolutePath()}'\nexit 0\n")
+        scriptPath.toFile().setExecutable(true)
+        val harness = startHarness(scriptPath.toString())
+        try {
+            val uploadResponse = send(
+                uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))),
+            )
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            val processResponse = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/process"))
+                    .header("Authorization", "Bearer $token")
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build(),
+            )
+            val body = processResponse.body()
+
+            assertEquals("REQUIRES_OCR", extractField(body, "status"))
+            assertTrue("documentText" !in body, "a RequiresTierB result must never carry Tier A extracted content -- OCR has not run yet")
+            assertTrue("\"content\"" !in body, "RequiresTierB must carry no content field at all")
+            assertTrue(Files.notExists(marker), "viewing/requesting Tier A status must never automatically invoke OCR")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `an unsupported or failed Tier A outcome never carries fabricated extracted content`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/evidence-never-registered/process"))
+                    .header("Authorization", "Bearer $token")
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build(),
+            )
+            val body = response.body()
+
+            assertEquals("FAILED", extractField(body, "status"))
+            assertTrue("documentText" !in body)
+            assertTrue("\"content\"" !in body)
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the Tier A response for a CSV, EML, and DOCX fixture presents truthful format-specific summaries, never a fabricated common shape`() = runTest {
+        val harness = startHarness("")
+        try {
+            val csvUpload = send(uploadRequest(harness, listOf(UploadPart("files", "structured.csv", "text/csv", Files.readAllBytes(fixtureRoot.resolve("06-structured.csv"))))))
+            val csvId = requireNotNull(extractField(csvUpload.body(), "evidenceArtifactId"))
+            val csvProcess = post(harness, "/owner/evidence/$csvId/process").body()
+            assertEquals("\"kind\":\"CSV\"", Regex(""""kind"\s*:\s*"CSV"""").find(csvProcess)?.value)
+            assertTrue("headers" in csvProcess && "previewRows" in csvProcess && "totalRowCount" in csvProcess)
+
+            val emlUpload = send(uploadRequest(harness, listOf(UploadPart("files", "email.eml", "message/rfc822", Files.readAllBytes(fixtureRoot.resolve("05-email-with-attachment.eml"))))))
+            val emlId = requireNotNull(extractField(emlUpload.body(), "evidenceArtifactId"))
+            val emlProcess = post(harness, "/owner/evidence/$emlId/process").body()
+            assertEquals("\"kind\":\"EML\"", Regex(""""kind"\s*:\s*"EML"""").find(emlProcess)?.value)
+            assertTrue("attachmentCandidateCount" in emlProcess && "bodyAlternatives" in emlProcess)
+
+            val docxUpload = send(
+                uploadRequest(
+                    harness,
+                    listOf(
+                        UploadPart(
+                            "files", "structured.docx",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            Files.readAllBytes(fixtureRoot.resolve("04-structured.docx")),
+                        ),
+                    ),
+                ),
+            )
+            val docxId = requireNotNull(extractField(docxUpload.body(), "evidenceArtifactId"))
+            val docxProcess = post(harness, "/owner/evidence/$docxId/process").body()
+            assertEquals("\"kind\":\"DOCX\"", Regex(""""kind"\s*:\s*"DOCX"""").find(docxProcess)?.value)
+            assertTrue("paragraphs" in docxProcess && "tables" in docxProcess)
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `Tier A extracted content JSON carries no server temp path or stack trace`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "01-searchable-simple.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("01-searchable-simple.pdf"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            val body = post(harness, "/owner/evidence/$id/process").body()
+
+            assertTrue("/tmp" !in body && "owner-upload-" !in body, "no server temp path may appear in the extracted-content response")
+            assertTrue("Exception" !in body && "\tat " !in body, "no stack trace may appear in the extracted-content response")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    private fun post(harness: Harness, path: String): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
+            .header("Authorization", "Bearer $token")
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .build(),
+    )
+
+    private fun assertIsExtracted(
+        outcome: parker.core.interfaces.PdfStructuralExtractionOutcome,
+    ): parker.core.interfaces.PdfStructuralResult {
+        assertTrue(outcome is parker.core.interfaces.PdfStructuralExtractionOutcome.Extracted, "expected Extracted but was $outcome")
+        return outcome.result
+    }
+
     // ================= Static page =================
 
     @Test
@@ -357,6 +549,37 @@ class OwnerEvidenceHttpServerTest {
             val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
             assertEquals(200, response.statusCode())
             assertTrue(response.body().contains("Select"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the served page offers a View Extracted Content action for a completed Tier A row`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val body = response.body()
+            assertTrue(body.contains("View Extracted Content"), "the page must offer an explicit action to view extracted content")
+            assertTrue(body.contains("row.status === 'TIER_A_COMPLETE' && row.content"), "the action must only appear once Tier A has actually completed and content was returned")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the served page never renders extracted text or metadata via innerHTML -- only textContent, closing off HTML or script injection`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val body = response.body()
+            // pre.textContent = ... / td2.textContent = ... etc. is how extracted content actually
+            // reaches the DOM; the only innerHTML uses in the whole page are the two fixed, unrelated
+            // template-literal row layouts that already escape their one owner-controllable field
+            // (originalFileName, via escapeHtml).
+            assertTrue(body.contains("pre.textContent = text"), "extracted document/body text must be inserted via textContent, never innerHTML")
+            assertTrue(body.contains("li.textContent ="), "attachment metadata must be inserted via textContent, never innerHTML")
+            assertTrue(body.contains("td2.textContent = cell"), "table cell content (CSV/DOCX) must be inserted via textContent, never innerHTML")
         } finally {
             harness.shutdown()
         }
