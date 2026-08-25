@@ -174,15 +174,49 @@ enum class TranscriptionFidelity {
  * @param mechanismVersion The mechanism's own version, where available;
  *   `null` only when genuinely unknown (Scope Lock Section 9: "where
  *   available").
+ * @param modelIdentity Names the specific underlying model artifact this
+ *   recognition's text actually ran through -- distinct from
+ *   [mechanismIdentity] (the framework, e.g. `"docling"`) and
+ *   [configurationProfile] (the profile string). `null` unless a
+ *   provider's own bridge has cryptographically verified, against a
+ *   trusted manifest, that the bytes hashed for [modelVersion] are the
+ *   exact bytes the model actually ran on for this invocation (Tier B OCR
+ *   Truthful Mandatory Provenance Implementation Plan, Section 5/13:
+ *   "verified" branch only -- never populated by the "fallback" branch).
+ *   Never a filesystem path, never a semantic-version guess, never the
+ *   literal string `"unknown"`.
+ * @param modelVersion A content-addressed revision identifier of the
+ *   exact bytes [modelIdentity] names -- always exactly `sha256:` followed
+ *   by 64 lowercase hexadecimal digits when present, never a semantic
+ *   version, never a manifest version, never a filename. Present if, and
+ *   only if, [modelIdentity] is also present.
  */
 data class OcrRecognitionIdentity(
     val mechanismIdentity: String,
     val configurationProfile: String,
     val mechanismVersion: String? = null,
+    val modelIdentity: String? = null,
+    val modelVersion: String? = null,
 ) {
     init {
         require(mechanismIdentity.isNotBlank()) { "OcrRecognitionIdentity.mechanismIdentity must not be blank" }
         require(configurationProfile.isNotBlank()) { "OcrRecognitionIdentity.configurationProfile must not be blank" }
+        require((modelIdentity == null) == (modelVersion == null)) {
+            "OcrRecognitionIdentity.modelIdentity and modelVersion must be both present or both absent -- never one alone"
+        }
+        require(modelIdentity == null || modelIdentity.isNotBlank()) {
+            "OcrRecognitionIdentity.modelIdentity must not be blank when present"
+        }
+        require(modelIdentity == null || !modelIdentity.equals("unknown", ignoreCase = true)) {
+            "OcrRecognitionIdentity.modelIdentity must never be the literal 'unknown' -- absent (null) is the honest representation of unverified provenance"
+        }
+        require(modelVersion == null || MODEL_VERSION_PATTERN.matches(modelVersion)) {
+            "OcrRecognitionIdentity.modelVersion must exactly match sha256:<64 lowercase hex digits> when present"
+        }
+    }
+
+    private companion object {
+        val MODEL_VERSION_PATTERN = Regex("^sha256:[0-9a-f]{64}$")
     }
 }
 

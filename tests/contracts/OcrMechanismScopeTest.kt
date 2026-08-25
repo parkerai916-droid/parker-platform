@@ -141,10 +141,21 @@ class OcrMechanismScopeTest {
     }
 
     @Test
-    fun `OcrRecognitionIdentity carries exactly mechanismIdentity, configurationProfile, and mechanismVersion`() {
+    fun `OcrRecognitionIdentity carries exactly mechanismIdentity, configurationProfile, mechanismVersion, modelIdentity, and modelVersion`() {
+        // modelIdentity/modelVersion added by the Tier B OCR Truthful
+        // Mandatory Provenance Implementation Plan (Section 20) -- the
+        // Tier B scope lock's own named, lawful remedy path (Section 11a):
+        // "a future, separate OCR governance unit extends
+        // OcrRecognitionIdentity with a genuine, distinct model-version
+        // field." Still an exhaustive allow-list, not merely a superset
+        // check -- an unreviewed future field addition still fails this
+        // test.
         val fieldNames = OcrRecognitionIdentity::class.declaredMemberProperties.map { it.name }.toSet()
 
-        assertEquals(setOf("mechanismIdentity", "configurationProfile", "mechanismVersion"), fieldNames)
+        assertEquals(
+            setOf("mechanismIdentity", "configurationProfile", "mechanismVersion", "modelIdentity", "modelVersion"),
+            fieldNames,
+        )
     }
 
     // -- Constitutional boundaries: no requesting principal, no caller-declared confidence/evidential-state input --

@@ -653,7 +653,7 @@ class DoclingOcrProviderAdapterTest {
     @Test
     fun `provenance fields -- mechanismIdentity, mechanismVersion, configurationProfile -- are carried through`() = runTest {
         val invoker = FakeDoclingSubprocessInvoker { _, _ ->
-            success(extraFields = ""","mechanismVersion":"2.5.0","modelIdentity":"layout-v3"""")
+            success(extraFields = ""","mechanismVersion":"2.5.0"""")
         }
         val adapter = DoclingOcrProviderAdapter(configuration(), invoker)
 
@@ -663,8 +663,7 @@ class DoclingOcrProviderAdapterTest {
         val identity = (outcome as OcrRecognitionOutcome.Recognised).result.identity
         assertEquals("docling", identity.mechanismIdentity)
         assertEquals("2.5.0", identity.mechanismVersion)
-        assertTrue(identity.configurationProfile.contains("docling-bridge-v1"))
-        assertTrue(identity.configurationProfile.contains("layout-v3"))
+        assertEquals("docling-bridge-v1", identity.configurationProfile)
     }
 
     @Test
@@ -676,6 +675,85 @@ class DoclingOcrProviderAdapterTest {
 
         assertTrue(outcome is OcrRecognitionOutcome.Recognised)
         assertNull((outcome as OcrRecognitionOutcome.Recognised).result.identity.mechanismVersion)
+    }
+
+    @Test
+    fun `modelIdentity and modelVersion map directly onto OcrRecognitionIdentity -- never concatenated into configurationProfile`() = runTest {
+        val digest = "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+        val invoker = FakeDoclingSubprocessInvoker { _, _ ->
+            success(
+                extraFields = ""","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:$digest"""",
+            )
+        }
+        val adapter = DoclingOcrProviderAdapter(configuration(), invoker)
+
+        val outcome = adapter.recognise(sampleRequest())
+
+        assertTrue(outcome is OcrRecognitionOutcome.Recognised)
+        val identity = (outcome as OcrRecognitionOutcome.Recognised).result.identity
+        assertEquals("rapidocr-onnxruntime:PP-OCRv6_rec_small", identity.modelIdentity)
+        assertEquals("sha256:$digest", identity.modelVersion)
+        assertEquals("docling-bridge-v1", identity.configurationProfile, "configurationProfile must never carry a ';model=' suffix")
+    }
+
+    @Test
+    fun `modelIdentity and modelVersion are genuinely absent, never fabricated, when the bridge reports neither`() = runTest {
+        val invoker = FakeDoclingSubprocessInvoker { _, _ -> success() }
+        val adapter = DoclingOcrProviderAdapter(configuration(), invoker)
+
+        val outcome = adapter.recognise(sampleRequest())
+
+        assertTrue(outcome is OcrRecognitionOutcome.Recognised)
+        val identity = (outcome as OcrRecognitionOutcome.Recognised).result.identity
+        assertNull(identity.modelIdentity)
+        assertNull(identity.modelVersion)
+    }
+
+    @Test
+    fun `a bridge response reporting modelIdentity without modelVersion is rejected, never a fabricated one-field pairing`() = runTest {
+        val invoker = FakeDoclingSubprocessInvoker { _, _ ->
+            success(extraFields = ""","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small"""")
+        }
+        val adapter = DoclingOcrProviderAdapter(configuration(), invoker)
+
+        assertFailsWith<IllegalArgumentException> { adapter.recognise(sampleRequest()) }
+    }
+
+    @Test
+    fun `a bridge response reporting modelVersion without modelIdentity is rejected, never a fabricated one-field pairing`() = runTest {
+        val digest = "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+        val invoker = FakeDoclingSubprocessInvoker { _, _ ->
+            success(extraFields = ""","modelVersion":"sha256:$digest"""")
+        }
+        val adapter = DoclingOcrProviderAdapter(configuration(), invoker)
+
+        assertFailsWith<IllegalArgumentException> { adapter.recognise(sampleRequest()) }
+    }
+
+    @Test
+    fun `the malformed pairing diagnostic never leaks recognisedText, raw bridge JSON, or a model path -- even against sensitive OCR-shaped content`() = runTest {
+        // Codex correction pass, item 6: the diagnostic must be a bounded,
+        // static description of which field was present/absent, never an
+        // echo of the raw bridge response -- proven here with deliberately
+        // sensitive-looking content (a fake SSN-shaped string and a fake
+        // filesystem path) standing in for real OCR-recognised text or a
+        // model artifact path.
+        val sensitiveText = "SSN: 123-45-6789, patient record at /home/steve/private/patient-notes.pdf"
+        val invoker = FakeDoclingSubprocessInvoker { _, _ ->
+            success(
+                recognisedText = sensitiveText,
+                extraFields = ""","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small"""",
+            )
+        }
+        val adapter = DoclingOcrProviderAdapter(configuration(), invoker)
+
+        val error = assertFailsWith<IllegalArgumentException> { adapter.recognise(sampleRequest()) }
+        val message = error.message.orEmpty()
+        assertFalse(message.contains("123-45-6789"), "diagnostic must never contain recognised text content: $message")
+        assertFalse(message.contains("/home/steve"), "diagnostic must never contain a filesystem path: $message")
+        assertFalse(message.contains(sensitiveText), "diagnostic must never echo the raw recognisedText field: $message")
+        assertTrue(message.contains("modelIdentity"), "diagnostic should still name the fields involved: $message")
+        assertTrue(message.contains("modelVersion"), "diagnostic should still name the fields involved: $message")
     }
 
     // ---- 18. Source bytes unchanged ----

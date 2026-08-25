@@ -52,7 +52,96 @@ Every other section below is retained as originally drafted, for its own
 design rationale and citation trail — read alongside this addendum, not in
 place of it.
 
+## Addendum 2 — Tier B OCR Truthful Mandatory Provenance corrections
+
+`tools/docling-ocr-bridge.py`, `src/interfaces/OcrMechanism.kt`, and
+`src/runtime/DoclingOcrProviderAdapter.kt` have since been extended by
+`docs/architecture/TIER_B_OCR_TRUTHFUL_MANDATORY_PROVENANCE_IMPLEMENTATION_PLAN.md`
+to add a genuine, verified `modelIdentity`/`modelVersion` pair — the
+concrete implementation this document's own §7.1/§11/§15 originally
+described only speculatively (a single, unpaired `modelIdentity` field,
+"whatever model-identity/version fact Docling's own API exposes"). This
+addendum corrects the sections below to match the accepted, current,
+implemented protocol; it does not expand OCR authority or reopen any
+other section.
+
+- **§7.1's field table.** `modelIdentity` is no longer the only new field:
+  a paired `modelVersion` field (optional, string or `null`) exists
+  alongside it. **The two are never independent** — a real response
+  carries both or neither, never one alone (enforced at three independent
+  points: `build_response_json`'s own both-or-neither emission check,
+  `DoclingOcrProviderAdapter.kt`'s `parseRecognitionResponse` JSON-boundary
+  `require`, and `OcrRecognitionIdentity`'s own Kotlin `init` constraint).
+  `modelVersion`, when present, is always exactly `sha256:` followed by 64
+  lowercase hexadecimal characters — a content-addressed digest of the
+  exact recognition-model bytes actually used for that invocation, never a
+  semantic version, manifest version, or filename.
+- **§11 "Version/provenance extraction."** Corrected from "once a model
+  has genuinely been loaded... extract whatever model-identity/version
+  fact Docling's own API exposes": the implemented mechanism does not
+  extract identity from an already-loaded model at all. It resolves
+  RapidOCR's own bundled recognition-model artifact, reads its bytes
+  (bounded, single-open, single-read), verifies them against RapidOCR's
+  own bundled manifest, constructs an `onnxruntime.InferenceSession` from
+  those exact verified bytes, and substitutes a `TextRecognizer` built
+  around that session into the pipeline's already-constructed RapidOCR
+  engine (replacing, and thereby making unreachable, a preliminary,
+  unused default recognizer Docling's own ordinary pipeline construction
+  had already built moments earlier — see the implementation plan's own
+  §5/§13 for the full mechanism). Two distinct outcomes follow:
+  - **Verified branch:** every preparation step above succeeds; the
+    substituted recognizer is the one actually used for this invocation's
+    OCR; `modelIdentity`/`modelVersion` are populated truthfully.
+  - **Fallback branch:** any preparation step fails (file missing/
+    unreadable/oversized, manifest entry missing, manifest digest
+    malformed or mismatched, session-construction/binding failure); no
+    substitution occurs; the already-installed, ordinary RapidOCR
+    recognizer (built during Docling's own normal pipeline construction,
+    completely unmodified) remains in use for OCR; `modelIdentity`/
+    `modelVersion` are never populated in this branch, since the bridge
+    did not verify which bytes actually ran. Transient OCR succeeds in
+    both branches; only provenance differs.
+  This mechanism operates entirely from already-local, already-bundled
+  artifacts and has been proven to succeed under a real `docker run
+  --network none` acceptance run for the verified branch specifically.
+  **The fallback branch is not claimed to share this property**: it
+  reuses RapidOCR's own ordinary, pre-existing recognizer-construction
+  path, which (independent of, and unmodified by, this mechanism) may
+  itself attempt its own network self-heal/redownload in some failure
+  states unrelated to provenance (RapidOCR's own `download_file.py`,
+  discovered during Tier B provenance implementation testing) — this is
+  pre-existing RapidOCR behaviour, not introduced by this document's own
+  mechanism, and never provenance-bearing regardless of whether it
+  succeeds or fails.
+- **§15 "Configuration identity" bullet.** Corrected — this no longer
+  describes reality. The `"${configuration.configurationProfile};model=${parsed.modelIdentity}"`
+  suffix-concatenation construction this bullet cited has been removed
+  from `DoclingOcrProviderAdapter.kt`. `configurationProfile` is, and
+  remains, assembled entirely on the Kotlin side from
+  `DoclingOcrProviderAdapterConfiguration.configurationProfile` alone,
+  with no suffix of any kind. `modelIdentity`/`modelVersion` map directly,
+  independently, onto `OcrRecognitionIdentity`'s own like-named fields —
+  never concatenated into, or derived from, `configurationProfile`.
+- **§15 "Model identity/version" bullet.** Corrected to reflect the
+  paired fields and the verified/fallback distinction described above,
+  in place of the original single, unpaired `modelIdentity` description.
+
+Every other section below (including this document's own §10 network
+disclosures, already correctly hedged and unaffected by this addendum) is
+retained as originally drafted.
+
 ## Status
+
+**ORIGINAL / PRE-IMPLEMENTATION STATUS, retained for historical
+chronology only — superseded as to current implementation state by the
+two addenda above.** At the time this section was written, the
+statements below were true and described this document's own status as
+a not-yet-implemented design. They no longer describe the current
+repository state: `tools/docling-ocr-bridge.py` has since been
+implemented, provisioned, and further extended (Addendum/Addendum 2,
+above); Docling is installed; models are provisioned. This section is
+kept verbatim below for its own historical record of what this document
+was when drafted, not as a current assertion.
 
 **Draft for owner review. Governance/implementation-planning only — no
 Python, Kotlin, or shell code is implemented, proposed as a diff, or
@@ -1274,12 +1363,19 @@ fresh against the real source file, not assumed.
 
 ## 27. Files created/modified
 
-Exactly one —
+**Original scope statement, at the time this document was first
+drafted — superseded as to current implementation state by the two
+addenda at the top of this document, exactly as the Status section
+above now discloses.** Exactly one file was created by this document's
+own original drafting —
 `docs/architecture/OCR_MECHANISM_DOCLING_BRIDGE_SCRIPT_PYTHON_CONTRACT.md`
-(new). No other file is created, modified, staged, committed, or
-pushed. No dependency is added. Docling is not installed. No model is
-downloaded. No runtime/cache is provisioned. No Docker or
-runtime-composition file is changed.
+(new). No other file was created, modified, staged, committed, or
+pushed by *this document's own drafting act*. No dependency was added,
+no Docling installation, model download, runtime/cache provisioning, or
+Docker/runtime-composition change occurred *as part of drafting this
+document* — all true then, and still true of the act of writing this
+document, but not a current description of the repository, which has
+since been implemented, provisioned, and extended per the addenda.
 
 ---
 

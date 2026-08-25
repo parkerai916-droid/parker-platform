@@ -329,19 +329,23 @@ class DoclingOcrProviderAdapter(
             )
         }
 
-        val configurationProfile = if (parsed.modelIdentity != null) {
-            "${configuration.configurationProfile};model=${parsed.modelIdentity}"
-        } else {
-            configuration.configurationProfile
-        }
-
+        // parsed.modelIdentity/parsed.modelVersion map directly onto
+        // OcrRecognitionIdentity's own like-named fields -- never
+        // concatenated into configurationProfile (the now-removed
+        // `;model=` suffix hack). OcrRecognitionIdentity's own `init`
+        // defensively rejects a malformed one-field-only pairing here,
+        // even though parseBridgeResponse (below) already enforces the
+        // same both-or-neither invariant at the JSON boundary -- two
+        // independent enforcement points for the one invariant.
         val result = OcrRecognitionResult(
             recognisedText = parsed.recognisedText,
             fidelity = parsed.fidelity,
             identity = OcrRecognitionIdentity(
                 mechanismIdentity = DOCLING_MECHANISM_IDENTITY,
-                configurationProfile = configurationProfile,
+                configurationProfile = configuration.configurationProfile,
                 mechanismVersion = parsed.mechanismVersion,
+                modelIdentity = parsed.modelIdentity,
+                modelVersion = parsed.modelVersion,
             ),
             confidence = parsed.confidence,
             recognisedAt = Instant.now(),
@@ -660,6 +664,7 @@ private sealed class BridgeResponse {
         val segments: List<OcrRecognitionSegment>,
         val mechanismVersion: String?,
         val modelIdentity: String?,
+        val modelVersion: String?,
         val reason: String?,
     ) : BridgeResponse()
 
@@ -698,7 +703,10 @@ private fun parseBridgeResponse(rawJson: String): BridgeResponse {
 
 private fun parseRecognitionResponse(status: String, fields: Map<String, String>, rawJson: String): BridgeResponse.Recognition {
     val isPartial = status == "partial"
-    val allowedBase = setOf("status", "recognisedText", "fidelity", "confidence", "warnings", "segments", "mechanismVersion", "modelIdentity")
+    val allowedBase = setOf(
+        "status", "recognisedText", "fidelity", "confidence", "warnings", "segments",
+        "mechanismVersion", "modelIdentity", "modelVersion",
+    )
     val allowed = if (isPartial) allowedBase + "reason" else allowedBase
     val required = if (isPartial) {
         setOf("status", "recognisedText", "fidelity", "reason")
@@ -722,7 +730,25 @@ private fun parseRecognitionResponse(status: String, fields: Map<String, String>
     val segments = fields["segments"]?.let { parseSegmentsValue(it) } ?: emptyList()
     val mechanismVersion = fields["mechanismVersion"]?.let { parseJsonNullableStringValue(it, "mechanismVersion") }
     val modelIdentity = fields["modelIdentity"]?.let { parseJsonNullableStringValue(it, "modelIdentity") }
+    val modelVersion = fields["modelVersion"]?.let { parseJsonNullableStringValue(it, "modelVersion") }
     val reason = fields["reason"]?.let { parseJsonStringValue(it, "reason") }
+
+    // Both-or-neither, enforced here at the JSON parse boundary -- never
+    // one field alone crosses into BridgeResponse.Recognition, even before
+    // OcrRecognitionIdentity's own init constraint would independently
+    // catch the same defect further downstream (buildRecognitionOutcome).
+    // Deliberately never includes rawJson/recognisedText/any bridge
+    // payload content here -- unlike this function's other, pre-existing
+    // diagnostics above (out of scope for this correction), this
+    // diagnostic guards a field pair that can carry a real OCR-derived
+    // path/digest/identity string, so only a bounded, static description
+    // of which field was present/absent is reported (Codex correction
+    // pass, item 6).
+    require((modelIdentity == null) == (modelVersion == null)) {
+        "malformed Docling bridge response: modelIdentity and modelVersion must be both present or both absent " +
+            "(modelIdentity ${if (modelIdentity != null) "present" else "absent"}, " +
+            "modelVersion ${if (modelVersion != null) "present" else "absent"})"
+    }
 
     return BridgeResponse.Recognition(
         partial = isPartial,
@@ -733,6 +759,7 @@ private fun parseRecognitionResponse(status: String, fields: Map<String, String>
         segments = segments,
         mechanismVersion = mechanismVersion,
         modelIdentity = modelIdentity,
+        modelVersion = modelVersion,
         reason = reason,
     )
 }

@@ -135,6 +135,21 @@ class DoclingRecognitionOutcome:
     reason: str | None = None
     mechanism_version: str | None = None
     model_identity: str | None = None
+    model_version: str | None = None
+
+    def __post_init__(self) -> None:
+        # Both-or-neither is an internal invariant, not merely a JSON-
+        # serialisation convention -- a one-field-only outcome would mean
+        # some earlier code path already violated the paired-presence rule
+        # this file exists to guarantee, and `build_response_json` silently
+        # treating that as "neither" would mask the defect rather than
+        # surface it. Fails safely: a fixed, static message only, never the
+        # actual field values (which could carry a real identity/digest, or
+        # in a genuinely broken future caller, arbitrary content).
+        if (self.model_identity is None) != (self.model_version is None):
+            raise ValueError(
+                "DoclingRecognitionOutcome: model_identity and model_version must be both present or both absent"
+            )
 
 
 # ---------------------------------------------------------------------
@@ -375,6 +390,199 @@ def _build_converter():
     )
 
 
+class _VerifiedRecognitionUnavailable(Exception):
+    """Internal-only signal that verified OCR model provenance could not be
+    prepared for this invocation -- never reaches the JSON response or maps
+    to an exit code of its own. Every preparation failure (model file
+    missing/unreadable/oversized, manifest entry missing, digest mismatch,
+    InferenceSession construction failure) folds into this single class so
+    callers have exactly one thing to catch (contract-equivalent plan
+    Section 11: "folded into the single existing verification failed
+    branch... it does not need its own, third, separately-reported
+    state")."""
+
+
+# Defensive ceiling on the recognition-model file read, independent of
+# MAX_OUTPUT_BYTES (contract Section 13's own bound on the *response*). The
+# real bundled artifact is a few MB; this only guards the verified-path
+# preparation step against reading an implausibly large substituted file
+# into memory before hashing it -- a preparation failure here folds into
+# the same fallback branch as every other verification failure, never a
+# resource-limit exit code, since fallback (Plan Section 13) is defined to
+# never disrupt transient OCR.
+MAX_MODEL_BYTES = 200 * 1024 * 1024
+
+
+def _is_lowercase_sha256_hex(value: str) -> bool:
+    """Exactly 64 lowercase hexadecimal characters -- rejects wrong length,
+    uppercase, and any non-hex character explicitly, rather than relying on
+    length alone or on eventual inequality with a computed digest to catch
+    a malformed manifest value."""
+    import re
+
+    return re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _resolve_and_verify_recognition_model(reader) -> tuple[bytes, str, str]:
+    """Deterministically resolves RapidOCR's own bundled recognition-model
+    artifact by reading the resolved engine/version/task/lang/model-type
+    enums directly off the already-constructed `reader.text_rec.cfg` --
+    never by re-deriving Docling's own language/version selection logic
+    independently, which would risk silent drift from Docling's actual
+    choice. Opens the artifact exactly once and reads at most
+    `MAX_MODEL_BYTES + 1` bytes from that single open file object --
+    `file.read(n)` never reads more than `n` bytes regardless of the
+    underlying file's actual size, so this is a true bound enforced by the
+    read call itself, never a `stat()`-then-`read_bytes()` pair (which
+    leaves a window in which the file could grow between the size check
+    and an unbounded full read). Verifies the read bytes against
+    RapidOCR's own bundled `default_models.yaml` manifest entry for that
+    exact (engine, version, task, lang, size) key -- including that the
+    manifest's own expected digest is itself a syntactically valid,
+    lowercase SHA-256 hex string, never merely "some string of length 64",
+    before ever comparing against it.
+
+    Returns `(model_bytes, model_url, verified_digest)` on success.
+    Raises `_VerifiedRecognitionUnavailable` on any failure -- the bytes
+    hashed here are always the exact bytes that get handed to
+    `onnxruntime.InferenceSession` next; no second, independent file load
+    of the recognition model occurs anywhere in this path (this does not
+    describe RapidOCR's own separate, ordinary construction, which loads
+    an unused default recognizer earlier and independently -- see
+    `_prepare_verified_recognition`'s own docstring)."""
+    from pathlib import Path
+
+    from rapidocr.inference_engine.base import FileInfo, InferSession  # type: ignore
+
+    try:
+        cfg = reader.text_rec.cfg
+        file_info = FileInfo(
+            cfg.engine_type, cfg.ocr_version, cfg.task_type, cfg.lang_type, cfg.model_type
+        )
+        manifest_entry = InferSession.get_model_url(file_info)
+        model_url = str(manifest_entry["model_dir"])
+        # Validated against the manifest's own raw, unnormalised value --
+        # never after a `.strip().lower()` pass, which would silently
+        # accept an uppercase or whitespace-padded manifest entry by
+        # normalising away the exact defect this check exists to catch
+        # (Codex correction pass, item 6/7).
+        expected_digest = str(manifest_entry["SHA256"])
+        if not _is_lowercase_sha256_hex(expected_digest):
+            raise _VerifiedRecognitionUnavailable("manifest digest is not a well-formed lowercase sha256 hex string")
+
+        local_path = Path(cfg.model_root_dir) / Path(model_url).name
+        if not local_path.is_file():
+            raise _VerifiedRecognitionUnavailable("resolved recognition model artifact is not a regular file")
+
+        with open(local_path, "rb") as handle:
+            model_bytes = handle.read(MAX_MODEL_BYTES + 1)
+        if len(model_bytes) == 0:
+            raise _VerifiedRecognitionUnavailable("resolved recognition model artifact is empty")
+        if len(model_bytes) > MAX_MODEL_BYTES:
+            raise _VerifiedRecognitionUnavailable("resolved recognition model artifact exceeds the maximum bound")
+
+        import hashlib
+
+        actual_digest = hashlib.sha256(model_bytes).hexdigest()
+        if actual_digest != expected_digest:
+            raise _VerifiedRecognitionUnavailable("recognition model artifact digest did not match the bundled manifest")
+
+        return model_bytes, model_url, actual_digest
+    except _VerifiedRecognitionUnavailable:
+        raise
+    except Exception as error:  # noqa: BLE001 -- every preparation failure folds into the one fallback branch (plan Section 13)
+        raise _VerifiedRecognitionUnavailable(type(error).__name__) from error
+
+
+def _prepare_verified_recognition(pipeline) -> tuple[str, str] | None:
+    """Attempts the corrected implementation plan's Section 5 verified
+    binding: resolve and hash-verify the bundled Rec model, build an
+    `onnxruntime.InferenceSession` from those exact verified bytes,
+    construct a `TextRecognizer` directly around that session (via
+    OmegaConf's own documented `allow_objects` flag, never the disproven
+    high-level `RapidOCR(params={"Rec": {"session": ...}}})` call), and
+    substitute it onto the pipeline's already-constructed RapidOCR engine
+    in place of its own default recognizer.
+
+    **Preliminary default load, distinguished from the model actually
+    used.** By the time this function runs, Docling's own ordinary
+    pipeline construction has already, unconditionally, built a complete
+    default RapidOCR engine -- including a default `TextRecognizer`
+    loaded from a separate, independent file read RapidOCR itself
+    performs internally. This preliminary construction cannot be skipped
+    without reimplementing Docling/RapidOCR's own initialization (rejected
+    as out of scope; no supported hook to suppress it was found). It is
+    never used for OCR after a successful call to this function: the
+    substitution below (`reader.text_rec = verified_recognizer`) replaces
+    the *only* attribute `RapidOCR.__call__` ever reads for recognition
+    (confirmed: `self.text_rec(rec_input)`, one call site, no caching), so
+    the preliminary recognizer becomes unreachable from `reader` the
+    moment substitution succeeds. Provenance (`modelIdentity`/`modelVersion`)
+    describes and binds *only* the verified recognizer this function
+    builds and substitutes -- never the preliminary, unused one.
+
+    **Configuration isolation.** `reader.text_rec.cfg` is the *live*
+    configuration object the preliminary, already-installed default
+    recognizer's own `OrtInferSession` was built from. This function never
+    mutates that shared object -- it deep-copies it first, and only the
+    copy is flagged `allow_objects`/given the verified session. If any
+    step below fails after the copy is made, the original `reader.text_rec`
+    and its own `.cfg` remain completely unmutated; the already-installed
+    default recognizer's own behaviour (should the fallback branch end up
+    using it) is unaffected by this function ever having run.
+
+    Returns `(model_identity, model_version)` and performs the
+    substitution as a side effect, ONLY on success. Returns `None` and
+    performs no substitution at all on any failure -- RapidOCR's own
+    default, already-loaded recognizer is left completely untouched in
+    that case, so a provenance-preparation failure can never disrupt
+    transient OCR (plan Section 13)."""
+    ocr_model = getattr(pipeline, "ocr_model", None)
+    reader = getattr(ocr_model, "reader", None)
+    if reader is None or getattr(reader, "text_rec", None) is None:
+        return None
+
+    try:
+        model_bytes, model_url, digest = _resolve_and_verify_recognition_model(reader)
+
+        import copy
+
+        import onnxruntime  # type: ignore
+        from pathlib import Path
+
+        from rapidocr.ch_ppocr_rec.main import TextRecognizer  # type: ignore
+
+        session = onnxruntime.InferenceSession(model_bytes, providers=["CPUExecutionProvider"])
+
+        # Deep-copied before mutation -- reader.text_rec.cfg itself (the
+        # preliminary, already-installed default recognizer's own live
+        # config) is never touched, per this function's own docstring.
+        rec_cfg = copy.deepcopy(reader.text_rec.cfg)
+        rec_cfg._set_flag("allow_objects", True)
+        rec_cfg.session = session
+        verified_recognizer = TextRecognizer(rec_cfg)
+
+        # Defensive, runtime object-identity check -- mirrors the mandatory
+        # test of the same name. If a future RapidOCR version silently
+        # ignored the injected session and built its own instead, this
+        # stops the verified digest from ever being paired with bytes that
+        # were not actually bound into the recognizer in use.
+        if verified_recognizer.session.session is not session:
+            raise _VerifiedRecognitionUnavailable("constructed recognizer did not bind the verified session")
+
+        reader.text_rec = verified_recognizer
+    except Exception as error:  # noqa: BLE001 -- preparation failure only; never disrupts transient OCR (plan Section 13)
+        sys.stderr.write(
+            f"verified OCR model provenance unavailable for this invocation ({type(error).__name__}); "
+            "falling back to RapidOCR's own default recognizer without provenance\n"
+        )
+        return None
+
+    model_identity = f"rapidocr-onnxruntime:{Path(model_url).stem}"
+    model_version = f"sha256:{digest}"
+    return model_identity, model_version
+
+
 def _real_docling_backend(source_file_path: str, media_type: str, model_cache_dir: str | None) -> DoclingRecognitionOutcome:
     # Resource-bound preflight checks run first, before even checking whether
     # Docling itself is importable (Unit 3 acceptance finding, corrected from
@@ -392,10 +600,11 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
         _check_image_dimensions_preflight(source_file_path)
 
     try:
-        from docling.datamodel.base_models import ConversionStatus  # type: ignore
+        from docling.datamodel.base_models import ConversionStatus, InputFormat  # type: ignore
     except ImportError as error:
         raise DoclingUnavailableError(f"Docling package could not be imported: {error}") from error
 
+    provenance: tuple[str, str] | None = None
     try:
         # Any stray print()/progress-bar output a transitive dependency emits
         # during model loading or conversion is redirected to stderr, never
@@ -410,6 +619,21 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
         # eliminated by this document alone").
         with contextlib.redirect_stdout(sys.stderr):
             converter = _build_converter()
+            # Force pipeline construction (and, with it, RapidOcrModel's own
+            # normal, unmodified engine construction) before conversion, so
+            # the verified-provenance preparation below has a real,
+            # already-built RapidOCR engine to inspect and, on success,
+            # substitute into -- `initialize_pipeline` reuses Docling's own
+            # public pipeline cache (`DocumentConverter.initialized_pipelines`,
+            # keyed by (pipeline class, options hash)), so `convert()` below
+            # reuses this exact same pipeline instance rather than building a
+            # second one (verified empirically: same object identity across
+            # the two calls).
+            docling_format = InputFormat.PDF if media_type == "application/pdf" else InputFormat.IMAGE
+            converter.initialize_pipeline(docling_format)
+            pipeline = next(iter(converter.initialized_pipelines.values()), None)
+            if pipeline is not None:
+                provenance = _prepare_verified_recognition(pipeline)
             result = converter.convert(source_file_path)
     except (DoclingUnavailableError, DoclingProcessingError, ResourceLimitBreach):
         raise
@@ -464,12 +688,15 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
 
     text = document.export_to_text()
     confidence = result.confidence.mean_score if result.confidence is not None else None
+    model_identity, model_version = provenance if provenance is not None else (None, None)
 
     if not text or not text.strip():
         return DoclingRecognitionOutcome(
             status="no_recognisable_content",
             reason="Docling completed without error but recognised no usable content",
             mechanism_version=_docling_version(),
+            model_identity=model_identity,
+            model_version=model_version,
         )
 
     accumulator = OutputSizeAccumulator()
@@ -484,6 +711,8 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
             confidence=confidence,
             reason=error_messages,
             mechanism_version=_docling_version(),
+            model_identity=model_identity,
+            model_version=model_version,
         )
 
     return DoclingRecognitionOutcome(
@@ -492,6 +721,8 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
         fidelity="VERBATIM",
         confidence=confidence,
         mechanism_version=_docling_version(),
+        model_identity=model_identity,
+        model_version=model_version,
     )
 
 
@@ -545,8 +776,14 @@ def build_response_json(outcome: DoclingRecognitionOutcome) -> str:
         ]
     if outcome.mechanism_version is not None:
         payload["mechanismVersion"] = outcome.mechanism_version
-    if outcome.model_identity is not None:
+    # Both-or-neither, deliberately checked on both fields together (never
+    # either field alone) -- mirrors the paired-presence invariant
+    # `OcrRecognitionIdentity`'s own `init` enforces on the Kotlin side, so
+    # a defect here would still be caught defensively at that boundary, not
+    # only trusted from this end.
+    if outcome.model_identity is not None and outcome.model_version is not None:
         payload["modelIdentity"] = outcome.model_identity
+        payload["modelVersion"] = outcome.model_version
     if outcome.status == "partial":
         payload["reason"] = outcome.reason
 

@@ -183,6 +183,94 @@ class DoclingOcrProviderAdapterLiveAcceptanceTest {
         assertTrue(result.recognisedText.contains("PARKER TEXT IMAGE"), "expected the fixture's own known text, got: ${result.recognisedText}")
     }
 
+    // ---- Tier B OCR Truthful Mandatory Provenance acceptance work ----
+
+    /**
+     * Runs a short Python snippet against the *same* interpreter this live
+     * test's own [DOCLING_TEST_PYTHON] configuration already uses, to
+     * independently compute the SHA-256 digest of the real, currently
+     * bundled RapidOCR recognition-model artifact on this machine -- never
+     * a hard-coded digest, so this test remains correct across a future
+     * `rapidocr` pin upgrade. Deliberately re-derives the digest via a
+     * wholly separate code path (a fresh subprocess, no shared Python
+     * object) from the one the bridge script itself uses, so a match here
+     * is a genuine independent proof, not a tautology.
+     */
+    private fun independentBundledRecognitionModelDigest(pythonExecutablePath: String): String {
+        val script = """
+            import hashlib
+            from rapidocr import RapidOCR
+            from rapidocr.inference_engine.base import FileInfo, InferSession
+            engine = RapidOCR()
+            cfg = engine.text_rec.cfg
+            file_info = FileInfo(cfg.engine_type, cfg.ocr_version, cfg.task_type, cfg.lang_type, cfg.model_type)
+            manifest = InferSession.get_model_url(file_info)
+            from pathlib import Path
+            model_path = Path(cfg.model_root_dir) / Path(manifest["model_dir"]).name
+            print(hashlib.sha256(model_path.read_bytes()).hexdigest())
+        """.trimIndent()
+        val process = ProcessBuilder(listOf(pythonExecutablePath, "-c", script)).redirectErrorStream(false).start()
+        val stdout = process.inputStream.bufferedReader().readText().trim()
+        val stderr = process.errorStream.bufferedReader().readText()
+        val finished = process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+        check(finished && process.exitValue() == 0) {
+            "independent digest computation failed (exit=${if (finished) process.exitValue() else "timed out"}): $stderr"
+        }
+        return stdout.lines().last { it.isNotBlank() }
+    }
+
+    @Test
+    fun `live Docling subprocess reports verified modelIdentity+modelVersion matching an independently computed digest`() = runTest {
+        assumeTrue(System.getProperty(LIVE_PROPERTY) == "true", "Live Docling property absent; no subprocess invoked")
+        assumeLiveDoclingPrerequisitesProvisioned()
+
+        val configuration = liveConfiguration()
+        val adapter = DoclingOcrProviderAdapter(configuration, ProcessBuilderDoclingSubprocessInvoker(configuration))
+
+        val outcome = adapter.recognise(
+            OcrRecognitionRequest(
+                sourceEvidenceId = EvidenceArtifactId("live-acceptance-provenance"),
+                content = fixtureBytes("07-text-image.png"),
+                mediaType = "image/png",
+            ),
+        )
+
+        assertTrue(outcome is OcrRecognitionOutcome.Recognised, "expected Recognised, got: $outcome")
+        val identity = (outcome as OcrRecognitionOutcome.Recognised).result.identity
+
+        assertEquals("docling", identity.mechanismIdentity)
+        assertTrue(identity.mechanismVersion != null, "mechanismVersion must remain independently populated")
+
+        assertTrue(identity.modelIdentity != null, "expected the verified branch: modelIdentity must be populated against a real, unmodified bundled model")
+        assertTrue(identity.modelVersion != null, "expected the verified branch: modelVersion must be populated")
+        assertFalse(identity.modelIdentity!!.contains("/"), "modelIdentity must never contain a filesystem path")
+        assertFalse(identity.modelIdentity!!.contains("unknown", ignoreCase = true))
+        assertTrue(identity.modelVersion!!.matches(Regex("^sha256:[0-9a-f]{64}$")), "modelVersion must exactly match sha256:<64 lowercase hex>, got: ${identity.modelVersion}")
+
+        val independentDigest = independentBundledRecognitionModelDigest(configuration.pythonExecutablePath)
+        assertEquals("sha256:$independentDigest", identity.modelVersion, "modelVersion must equal an independently computed sha256 of the real bundled recognition-model artifact")
+    }
+
+    @Test
+    fun `verified modelIdentity+modelVersion are stable across independent adapter instances -- restart stability`() = runTest {
+        assumeTrue(System.getProperty(LIVE_PROPERTY) == "true", "Live Docling property absent; no subprocess invoked")
+        assumeLiveDoclingPrerequisitesProvisioned()
+
+        val configuration = liveConfiguration()
+        val request = OcrRecognitionRequest(EvidenceArtifactId("live-acceptance-restart-stability"), fixtureBytes("07-text-image.png"), "image/png")
+
+        val firstOutcome = DoclingOcrProviderAdapter(configuration, ProcessBuilderDoclingSubprocessInvoker(configuration)).recognise(request)
+        val secondOutcome = DoclingOcrProviderAdapter(configuration, ProcessBuilderDoclingSubprocessInvoker(configuration)).recognise(request)
+
+        assertTrue(firstOutcome is OcrRecognitionOutcome.Recognised)
+        assertTrue(secondOutcome is OcrRecognitionOutcome.Recognised)
+        val firstIdentity = (firstOutcome as OcrRecognitionOutcome.Recognised).result.identity
+        val secondIdentity = (secondOutcome as OcrRecognitionOutcome.Recognised).result.identity
+
+        assertEquals(firstIdentity.modelIdentity, secondIdentity.modelIdentity, "modelIdentity must be stable across independent subprocess invocations for unchanged model bytes")
+        assertEquals(firstIdentity.modelVersion, secondIdentity.modelVersion, "modelVersion must be stable across independent subprocess invocations for unchanged model bytes")
+    }
+
     @Test
     fun `live Docling subprocess fails closed, never a fabricated success, when the model cache is genuinely empty`() = runTest {
         // Mirrors QmdRelevanceMechanismLiveAcceptanceTest.kt's own "a missing local embedding

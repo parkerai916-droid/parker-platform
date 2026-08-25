@@ -294,17 +294,66 @@ class ResponseJsonConstructionTest(unittest.TestCase):
             text="hi",
             fidelity="VERBATIM",
             mechanism_version="2.5.0",
-            model_identity="layout-v3",
+            model_identity="rapidocr-onnxruntime:PP-OCRv6_rec_small",
+            model_version="sha256:" + ("a" * 64),
         )
         parsed = json.loads(bridge.build_response_json(outcome))
         self.assertEqual(parsed["mechanismVersion"], "2.5.0")
-        self.assertEqual(parsed["modelIdentity"], "layout-v3")
+        self.assertEqual(parsed["modelIdentity"], "rapidocr-onnxruntime:PP-OCRv6_rec_small")
+        self.assertEqual(parsed["modelVersion"], "sha256:" + ("a" * 64))
 
     def test_provenance_fields_genuinely_absent_when_unknown(self) -> None:
         outcome = bridge.DoclingRecognitionOutcome(status="recognised", text="hi", fidelity="VERBATIM")
         parsed = json.loads(bridge.build_response_json(outcome))
         self.assertNotIn("mechanismVersion", parsed)
         self.assertNotIn("modelIdentity", parsed)
+        self.assertNotIn("modelVersion", parsed)
+
+    def test_model_identity_alone_without_model_version_is_an_internal_invariant_violation(self) -> None:
+        """Both-or-neither is an internal invariant, not merely a JSON-
+        serialisation convention: a `DoclingRecognitionOutcome` that
+        (incorrectly, hypothetically) set `model_identity` without
+        `model_version` must fail loudly and safely at construction --
+        never silently degrade to "neither" inside `build_response_json`,
+        which would mask the defect rather than surface it (Codex
+        correction pass, item 8). Mirrors the paired-presence invariant
+        `OcrRecognitionIdentity.init` enforces on the Kotlin side of the
+        same boundary."""
+        with self.assertRaises(ValueError) as ctx:
+            bridge.DoclingRecognitionOutcome(
+                status="recognised",
+                text="hi",
+                fidelity="VERBATIM",
+                model_identity="rapidocr-onnxruntime:PP-OCRv6_rec_small",
+                model_version=None,
+            )
+        # The failure message is a fixed, static string -- never the actual
+        # field values -- so it can never leak real identity/digest/content.
+        self.assertNotIn("rapidocr-onnxruntime", str(ctx.exception))
+
+    def test_model_version_alone_without_model_identity_is_an_internal_invariant_violation(self) -> None:
+        digest = "sha256:" + ("a" * 64)
+        with self.assertRaises(ValueError) as ctx:
+            bridge.DoclingRecognitionOutcome(
+                status="recognised",
+                text="hi",
+                fidelity="VERBATIM",
+                model_identity=None,
+                model_version=digest,
+            )
+        self.assertNotIn(digest, str(ctx.exception))
+
+    def test_both_model_identity_and_model_version_absent_is_valid(self) -> None:
+        bridge.DoclingRecognitionOutcome(status="recognised", text="hi", fidelity="VERBATIM")  # must not raise
+
+    def test_both_model_identity_and_model_version_present_is_valid(self) -> None:
+        bridge.DoclingRecognitionOutcome(
+            status="recognised",
+            text="hi",
+            fidelity="VERBATIM",
+            model_identity="rapidocr-onnxruntime:PP-OCRv6_rec_small",
+            model_version="sha256:" + ("a" * 64),
+        )  # must not raise
 
     def test_unicode_round_trips_exactly(self) -> None:
         original = "Café 中文 🎉"
@@ -347,6 +396,33 @@ class ResponseJsonConstructionTest(unittest.TestCase):
         accumulator.add("x" * 1000)  # exactly at the cap -- must not raise
         with self.assertRaises(bridge.ResourceLimitBreach):
             accumulator.add("x")  # one byte over -- must raise
+
+
+class LowercaseSha256ValidationTest(unittest.TestCase):
+    """`_is_lowercase_sha256_hex` -- the manifest expected-digest validator
+    (Codex correction pass, item 7): the expected digest read from
+    RapidOCR's own bundled manifest must be validated as exactly 64
+    lowercase hexadecimal characters, never merely "some 64-character
+    string", before it is ever compared against a computed digest. No
+    Docling/rapidocr dependency -- pure string validation."""
+
+    def test_valid_lowercase_digest_is_accepted(self) -> None:
+        self.assertTrue(bridge._is_lowercase_sha256_hex("a" * 64))
+        self.assertTrue(bridge._is_lowercase_sha256_hex("0123456789abcdef" * 4))
+
+    def test_wrong_length_is_rejected(self) -> None:
+        self.assertFalse(bridge._is_lowercase_sha256_hex("a" * 63))
+        self.assertFalse(bridge._is_lowercase_sha256_hex("a" * 65))
+        self.assertFalse(bridge._is_lowercase_sha256_hex(""))
+
+    def test_uppercase_is_rejected(self) -> None:
+        self.assertFalse(bridge._is_lowercase_sha256_hex("A" * 64))
+        self.assertFalse(bridge._is_lowercase_sha256_hex(("a" * 63) + "F"))
+
+    def test_non_hex_characters_are_rejected(self) -> None:
+        self.assertFalse(bridge._is_lowercase_sha256_hex(("a" * 63) + "g"))
+        self.assertFalse(bridge._is_lowercase_sha256_hex(("a" * 63) + " "))
+        self.assertFalse(bridge._is_lowercase_sha256_hex(("a" * 60) + "12-3"))
 
 
 class RecogniseOrchestrationTest(unittest.TestCase):
