@@ -360,17 +360,18 @@ class OcrProvenanceDisclosureTest {
     }
 
     @Test
-    fun `no file implementing Units 1-8 references Provenance, CandidateProvenance, or MemoryCore -- the prohibition named by Unit 8 governs production code, not this required verification test`() {
-        val forbiddenFragments = listOf("Provenance", "MemoryCore")
+    fun `OCR provenance contracts remain isolated from CandidateProvenance and MemoryCore`() {
+        val files = ocrUnitFiles + java.io.File("src/interfaces/OcrTranscriptionProvenance.kt")
+        val forbiddenFragments = listOf("CandidateProvenance", "MemoryCore")
 
-        ocrUnitFiles.forEach { file ->
+        files.forEach { file ->
             check(file.exists()) { "${file.path} not found from working directory ${java.io.File(".").absolutePath}" }
             val codeOnly = file.readText().codeOnly()
             forbiddenFragments.forEach { forbidden ->
                 assertFalse(
                     codeOnly.contains(forbidden),
-                    "${file.path} must not reference '$forbidden' -- Implementation Plan Unit 8's own Files " +
-                        "explicitly prohibited names exactly this for Units 1-8's own production files.",
+                        "${file.path} must not reference '$forbidden' -- OCR-specific provenance must not acquire " +
+                        "Candidate Provenance or Memory Core authority.",
                 )
             }
         }
@@ -379,14 +380,16 @@ class OcrProvenanceDisclosureTest {
     // -- No provider-specific, truth, reliability, validation, or acceptance field in this Unit's own additions --
 
     @Test
-    fun `this Unit introduced no new public production field -- OcrRecognitionResult's own field set is unchanged from Unit 6-7`() {
+    fun `OcrRecognitionResult adds only the three authorized optional Unit B provenance and accounting fields`() {
         val fieldNames = OcrRecognitionResult::class.declaredMemberProperties.map { it.name }.toSet()
 
         assertEquals(
-            setOf("recognisedText", "fidelity", "identity", "confidence", "recognisedAt", "warnings", "segments"),
+            setOf(
+                "recognisedText", "fidelity", "identity", "confidence", "recognisedAt", "warnings", "segments",
+                "pageAccounting", "processingProvenance", "providerProvenance",
+            ),
             fieldNames,
-            "Implementation Plan Unit 8 is a verification unit -- 'Outputs: Confirmation (by test, not by new " +
-                "code)' -- and this test confirms no field was added: found $fieldNames",
+            "No provider-specific, truth, reliability, validation, or acceptance field may leak into the result: found $fieldNames",
         )
     }
 

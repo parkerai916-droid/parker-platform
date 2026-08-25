@@ -189,9 +189,10 @@ class OcrProgrammeVerificationTest {
     }
 
     @Test
-    fun `regression -- every OCR production file created across Units 1-3 is still present, and no fourth production file has appeared`() {
+    fun `regression -- the OCR production surface is exactly the original three files plus the authorized Unit B contract`() {
         val expectedFiles = setOf(
             "src/interfaces/OcrMechanism.kt",
+            "src/interfaces/OcrTranscriptionProvenance.kt",
             "src/interfaces/OcrProviderAdapter.kt",
             "src/runtime/OcrExecutionSequencer.kt",
         )
@@ -200,6 +201,6 @@ class OcrProgrammeVerificationTest {
             .map { it.path.replace('\\', '/') }
             .toSet()
 
-        assertEquals(expectedFiles, actualFiles, "the OCR mechanism's own production surface must remain exactly Units 1-3's own three files -- no Unit 12 runtime-composition file, and no concrete provider file, has appeared")
+        assertEquals(expectedFiles, actualFiles, "the OCR mechanism's production surface must remain exactly the original three files plus Unit B's provider-neutral contract -- no runtime-composition or concrete provider file may appear")
     }
 }

@@ -54,6 +54,7 @@ class OcrStructuralIsolationTest {
 
     private val ocrProductionFiles = listOf(
         java.io.File("src/interfaces/OcrMechanism.kt"),
+        java.io.File("src/interfaces/OcrTranscriptionProvenance.kt"),
         java.io.File("src/interfaces/OcrProviderAdapter.kt"),
         java.io.File("src/runtime/OcrExecutionSequencer.kt"),
     )
@@ -73,6 +74,12 @@ class OcrStructuralIsolationTest {
         OcrMechanism::class, OcrProviderAdapter::class, OcrExecutionSequencer::class,
         OcrRecognitionRequest::class, OcrRecognitionIdentity::class, OcrRecognitionSegment::class,
         OcrRecognitionResult::class, OcrRecognitionOutcome::class,
+        OcrPageScope::class, OcrPageOutcomeKind::class, OcrUncertaintyKind::class,
+        OcrUncertaintySpan::class, OcrPageOutcomeReason::class, OcrPageOutcome::class,
+        OcrPageAccounting::class, OcrSha256Digest::class, OcrPixelDimensions::class,
+        OcrCropParameters::class, OcrMaterialTransformation::class, OcrProcessingProvenance::class,
+        OcrModelSnapshot::class, OcrModelSnapshot.Present::class, OcrModelSnapshot.NotExposed::class,
+        OcrProviderProvenance::class,
         OcrRecognitionOutcome.Recognised::class, OcrRecognitionOutcome.Failed::class,
         OcrRecognitionOutcome.NotAuthorised::class, OcrRecognitionOutcome.UnsupportedOrInaccessibleInput::class,
         OcrRecognitionOutcome.NoRecognisableContent::class, OcrRecognitionOutcome.PartialOrDegradedOutput::class,
@@ -261,20 +268,21 @@ class OcrStructuralIsolationTest {
             val supertypeNames = type.supertypes.mapNotNull { (it.classifier as? KClass<*>)?.qualifiedName }
             supertypeNames.forEach { qualifiedName ->
                 val isAllowed = qualifiedName == Any::class.qualifiedName ||
+                    qualifiedName == Enum::class.qualifiedName ||
                     ocrOwnTypes.any { it.qualifiedName == qualifiedName }
                 assertTrue(isAllowed, "${type.simpleName} declares a supertype '$qualifiedName' outside Any and the OCR mechanism's own type set")
             }
         }
     }
 
-    // -- Behaviour isolation: no retry, batching, caching, authorisation, registration, provenance, persistence, or orchestration --
+    // -- Behaviour isolation: no retry, batching, caching, authorisation, registration, persistence, or orchestration --
 
     @Test
-    fun `no production OCR file contains retry, batching, caching, authorisation, registration, provenance, or persistence vocabulary`() {
+    fun `no production OCR file contains retry, batching, caching, authorisation, registration, persistence, or orchestration vocabulary`() {
         val forbiddenFragments = listOf(
             "retry", "Retry", "batch", "Batch", "cache", "Cache",
             "authoris", "authoriz", "register(", "Registration",
-            "Provenance", "persist", "Persist", "orchestrat", "Orchestrat",
+            "persist", "Persist", "orchestrat", "Orchestrat",
         )
         ocrProductionFiles.forEach { file ->
             val codeOnly = file.readText().codeOnly()
@@ -282,8 +290,8 @@ class OcrStructuralIsolationTest {
                 assertFalse(
                     codeOnly.contains(forbidden),
                     "${file.path} must not contain '$forbidden' -- Scope Lock Section 4, Section 16 forbid retry, " +
-                        "batching, caching, authorisation, evidence registration, provenance construction, " +
-                        "persistence, and orchestration in the OCR mechanism's own code.",
+                        "batching, caching, authorisation, evidence registration, persistence, and orchestration " +
+                        "in the OCR mechanism's own code.",
                 )
             }
         }

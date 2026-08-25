@@ -69,17 +69,14 @@ interface OcrMechanism {
  * Scope Lock Section 5 permits -- no requesting principal (audit context
  * remains at Evidence Intelligence's own tier, Scope Lock Section 5), no
  * caller-declared confidence or evidential-state value (Contract Design
- * Section 4), and no provenance context as a distinct field (provenance
- * is an output obligation, Section 7 there, never an input here).
+ * Section 4). Unit B adds only optional, Parker-established processing-
+ * representation provenance and requested page scope: facts about the
+ * exact bounded input supplied, never provider authority or evidential truth.
  *
- * **"Processing context" is not a separate field.** Scope Lock Section 5
- * describes "processing context" as "the fixed set of facts Evidence
- * Intelligence supplies alongside the content itself" -- exactly the
- * fields already present below ([sourceEvidenceId], [mediaType],
- * [pageCount]), taken together. No further, generic context field is
- * introduced; doing so before a concrete need is identified would be
- * exactly the kind of speculative scaffolding the Implementation Plan's
- * own "no scaffolding for future units" discipline forbids.
+ * **No generic processing context.** [processingProvenance] is a closed,
+ * OCR-specific record required by the adopted external-transcription scope;
+ * it is not an extensible context map and carries no source bytes, path,
+ * credential, authorization, provider-specific vocabulary, or truth claim.
  *
  * Not a `data class`: a Kotlin `data class`'s auto-generated `equals`/
  * `hashCode` compare a `ByteArray` property by reference, not by
@@ -105,12 +102,20 @@ interface OcrMechanism {
  * @param pageCount The source's own page count, where known -- `null`
  *   only when genuinely unknown, never a placeholder for zero (mirroring
  *   [ExtractionOutcome.RequiresOcr]'s own identical convention).
+ * @param requestedPageScope The explicitly requested one-based pages, where
+ *   established. `null` preserves the current local/legacy call shape and
+ *   means unavailable, never inferred from [pageCount].
+ * @param processingProvenance Parker-established facts about the bounded
+ *   representation supplied to recognition, where available. `null` for
+ *   current local/legacy calls; never provider-generated authority.
  */
 class OcrRecognitionRequest(
     val sourceEvidenceId: EvidenceArtifactId,
     val content: ByteArray,
     val mediaType: String,
     val pageCount: Int? = null,
+    val requestedPageScope: OcrPageScope? = null,
+    val processingProvenance: OcrProcessingProvenance? = null,
 ) {
     init {
         require(mediaType.isNotBlank()) { "OcrRecognitionRequest.mediaType must not be blank" }
@@ -121,19 +126,24 @@ class OcrRecognitionRequest(
             sourceEvidenceId == other.sourceEvidenceId &&
             content.contentEquals(other.content) &&
             mediaType == other.mediaType &&
-            pageCount == other.pageCount
+            pageCount == other.pageCount &&
+            requestedPageScope == other.requestedPageScope &&
+            processingProvenance == other.processingProvenance
 
     override fun hashCode(): Int {
         var result = sourceEvidenceId.hashCode()
         result = 31 * result + content.contentHashCode()
         result = 31 * result + mediaType.hashCode()
         result = 31 * result + (pageCount ?: 0)
+        result = 31 * result + (requestedPageScope?.hashCode() ?: 0)
+        result = 31 * result + (processingProvenance?.hashCode() ?: 0)
         return result
     }
 
     override fun toString(): String =
         "OcrRecognitionRequest(sourceEvidenceId=$sourceEvidenceId, content=<${content.size} bytes>, " +
-            "mediaType=$mediaType, pageCount=$pageCount)"
+            "mediaType=$mediaType, pageCount=$pageCount, requestedPageScope=$requestedPageScope, " +
+            "processingProvenance=$processingProvenance)"
 }
 
 /**
@@ -343,6 +353,9 @@ data class OcrRecognitionResult(
     val recognisedAt: Instant,
     val warnings: List<String> = emptyList(),
     val segments: List<OcrRecognitionSegment> = emptyList(),
+    val pageAccounting: OcrPageAccounting? = null,
+    val processingProvenance: OcrProcessingProvenance? = null,
+    val providerProvenance: OcrProviderProvenance? = null,
 ) {
     init {
         require(recognisedText.isNotBlank()) { "OcrRecognitionResult.recognisedText must not be blank" }

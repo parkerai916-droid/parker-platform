@@ -26,6 +26,10 @@ enum class OcrDerivativeOutcomeKind {
  * their own content payload, not only via the Record built from it).
  * [degradationReason] is non-null if, and only if, [outcomeKind] is
  * [OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED] (Tier B scope lock §13).
+ * Unit B's optional page/processing/provider facts are in-memory contract
+ * locations only. The unchanged version-1 durable codec neither writes nor
+ * reconstructs them; durable representation support belongs to the later,
+ * separately authorized version-2 admission unit.
  */
 data class OcrDerivativeExtractedResult(
     val recognisedText: String,
@@ -37,6 +41,9 @@ data class OcrDerivativeExtractedResult(
     val producerIdentity: DerivativeProducerIdentity,
     val transformationHistory: List<DerivativeTransformation>,
     val completenessState: DerivativeCompletenessState,
+    val pageAccounting: OcrPageAccounting? = null,
+    val processingProvenance: OcrProcessingProvenance? = null,
+    val providerProvenance: OcrProviderProvenance? = null,
 ) {
     init {
         require(recognisedText.isNotBlank()) { "OcrDerivativeExtractedResult.recognisedText must not be blank" }
