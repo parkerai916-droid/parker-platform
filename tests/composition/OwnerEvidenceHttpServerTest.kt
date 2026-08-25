@@ -899,6 +899,9 @@ class OwnerEvidenceHttpServerTest {
     // structurally re-parse JavaScript out of an HTML/JS test fixture.
     private val processRenderCondition = "if (row.status === 'IMPORTED' || row.status === 'READY_TO_PROCESS') {"
     private val ocrRenderCondition = "} else if (row.status === 'REQUIRES_OCR') {"
+    private val durableOcrRenderCondition = "if (row.status === 'REQUIRES_OCR' || row.status === 'COMPLETE') {"
+    private val tierAAnalysisEligibility = "row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId"
+    private val tierBAnalysisEligibility = "row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId"
 
     @Test
     fun `a successful upload returns status IMPORTED, and the served page renders Process for that exact status`() = runTest {
@@ -960,6 +963,55 @@ class OwnerEvidenceHttpServerTest {
                 !processRenderCondition.contains("REQUIRES_OCR") && body.contains(ocrRenderCondition),
                 "REQUIRES_OCR must be in its own separate branch (Run OCR), never part of the Process-button condition",
             )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `REQUIRES_OCR shows the explicit durable OCR action`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains(durableOcrRenderCondition))
+            assertTrue(body.contains("bd.textContent = 'Run OCR (Durable)'"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `transient COMPLETE still shows durable OCR but does not satisfy analysis eligibility`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains(durableOcrRenderCondition), "COMPLETE must retain the explicit durable OCR action")
+            assertTrue("row.status === 'COMPLETE' && row.ocrDerivativeGenerationId" !in body)
+            assertTrue("row.status === 'COMPLETE' && row.derivativeGenerationId" !in body)
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `durable Tier B with a real generation id is the sole Tier B analysis eligibility path`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains(tierBAnalysisEligibility))
+            assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.ocrDerivativeGenerationId })"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `Tier A analysis eligibility remains unchanged`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains(tierAAnalysisEligibility))
+            assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.derivativeGenerationId })"))
         } finally {
             harness.shutdown()
         }

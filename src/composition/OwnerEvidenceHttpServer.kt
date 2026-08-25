@@ -1457,9 +1457,12 @@ function render() {
       b.textContent = 'Run OCR';
       b.onclick = () => ocrRow(index);
       actions.appendChild(b);
-      // Document Ingestion -- Tier B Durable OCR Derivative Content. A separate button, never a
-      // change to the existing transient "Run OCR" button above -- distinct capability, distinct
-      // durable result, retrievable after restart without rerunning OCR.
+    }
+    // Document Ingestion -- Tier B Durable OCR Derivative Content. A separate, explicit owner
+    // action, available both before and after ordinary transient OCR. A transient COMPLETE result
+    // carries no durable generation identity and remains ineligible for analysis; only this action's
+    // existing TIER_B_DURABLE_COMPLETE + real ocrDerivativeGenerationId path changes that.
+    if (row.status === 'REQUIRES_OCR' || row.status === 'COMPLETE') {
       const bd = document.createElement('button');
       bd.textContent = 'Run OCR (Durable)';
       bd.onclick = () => ocrDurableRow(index);
