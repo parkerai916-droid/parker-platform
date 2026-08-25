@@ -155,6 +155,7 @@ class OcrMechanismUnit12CompositionLiveAcceptanceTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("ocr-unit12-live-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("ocr-unit12-live-derivative").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("ocr-unit12-live-derivative-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("ocr-unit12-live-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("ocr-unit12-live-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("ocr-unit12-live-memory").resolve("memory-core.log").toString(),

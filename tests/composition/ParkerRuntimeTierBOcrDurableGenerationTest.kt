@@ -50,6 +50,7 @@ class ParkerRuntimeTierBOcrDurableGenerationTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("tierb-durable-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("tierb-durable-derivative").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("tierb-durable-derivative-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("tierb-durable-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("tierb-durable-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("tierb-durable-memory").resolve("memory-core.log").toString(),

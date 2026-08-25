@@ -1,8 +1,11 @@
 package parker.ui
 
+import java.time.Instant
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceGenerationSelection
+import parker.core.interfaces.PendingAnalysisId
+import parker.core.interfaces.SavedAnalysisId
 
 /**
  * Owner Evidence Upload & Processing (first version). The owner UI's
@@ -96,10 +99,42 @@ interface OwnerEvidenceOperations {
      * currently configured LOCAL model-inference seam for a
      * human-reviewable analysis. Structurally owner-only, exactly like
      * every other operation on this interface: no `requestingPrincipalId`
-     * parameter of any kind. Never persists the returned analysis, never
-     * writes to Memory/Knowledge/QMD/RKS, never re-runs extraction or OCR.
+     * parameter of any kind. Never persists the returned analysis on its
+     * own, never writes to Memory/Knowledge/QMD/RKS, never re-runs
+     * extraction or OCR. On [OwnerDocumentAnalysisOutcome.Completed], the
+     * returned [OwnerDocumentAnalysisInvocationOutcome.pendingAnalysisId]
+     * is the only identity a later, separate, explicit [saveAnalysis] call
+     * may use to durably preserve exactly this result -- this interface
+     * never accepts resubmitted analysis text as something to save.
      */
-    suspend fun analyseDocuments(selections: List<EvidenceGenerationSelection>, instruction: String): OwnerDocumentAnalysisOutcome
+    suspend fun analyseDocuments(selections: List<EvidenceGenerationSelection>, instruction: String): OwnerDocumentAnalysisInvocationOutcome
+
+    /**
+     * Reviewed Analysis Result — Explicit Owner Save. Durably preserves the
+     * exact, already-completed analysis registered under [pendingAnalysisId]
+     * by a prior [analyseDocuments] call -- never accepts, and never
+     * trusts, caller-resubmitted analysis text. Structurally owner-only.
+     * Never automatic: reachable only via this explicit, separate call, and
+     * only after the owner has already seen the transient result.
+     */
+    suspend fun saveAnalysis(pendingAnalysisId: PendingAnalysisId): OwnerSaveAnalysisOutcome
+
+    /**
+     * Reviewed Analysis Result — Explicit Owner Save. Retrieves an
+     * already-saved analysis by known [savedAnalysisId] -- never re-runs
+     * analysis, never invokes the model, never re-runs OCR/extraction.
+     * Structurally owner-only.
+     */
+    suspend fun retrieveSavedAnalysis(savedAnalysisId: SavedAnalysisId): OwnerRetrieveSavedAnalysisOutcome
+
+    /**
+     * Reviewed Analysis Result — Explicit Owner Save. The bounded, most
+     * recently saved analyses, newest first -- metadata only (see
+     * [OwnerSavedAnalysisSummary]), never full analysis text or evidence
+     * references. No search, filter, or pagination beyond this fixed cap.
+     * Structurally owner-only.
+     */
+    suspend fun listSavedAnalyses(): List<OwnerSavedAnalysisSummary>
 }
 
 /** The truthful result of one [OwnerEvidenceOperations.importFile] call. */
@@ -363,3 +398,68 @@ sealed interface OwnerDocumentAnalysisOutcome {
     data class ResponseTooLarge(val actualCharacters: Int, val max: Int) : OwnerDocumentAnalysisOutcome
     data class ModelInvocationFailed(val safeMessage: String) : OwnerDocumentAnalysisOutcome
 }
+
+/**
+ * The truthful result of one [OwnerEvidenceOperations.analyseDocuments]
+ * invocation, wrapping the existing [OwnerDocumentAnalysisOutcome]
+ * unchanged with the opaque [pendingAnalysisId] a `Completed` result was
+ * registered under -- present if and only if [outcome] is `Completed`.
+ * Deliberately not a field of [OwnerDocumentAnalysisPresentation] itself,
+ * the same reasoning [parker.core.interfaces.DocumentAnalysisInvocationResult]'s
+ * own KDoc gives: a housekeeping token, not a truthful fact about the
+ * analysis.
+ */
+data class OwnerDocumentAnalysisInvocationOutcome(
+    val outcome: OwnerDocumentAnalysisOutcome,
+    val pendingAnalysisId: PendingAnalysisId?,
+)
+
+/**
+ * The truthful result of one [OwnerEvidenceOperations.saveAnalysis] call.
+ * Mirrors [parker.core.interfaces.SaveAnalysisOutcome]'s own distinctions
+ * -- every failure distinct and honest, never collapsed into a single
+ * generic failure.
+ */
+sealed interface OwnerSaveAnalysisOutcome {
+    data class Saved(val savedAnalysisId: SavedAnalysisId) : OwnerSaveAnalysisOutcome
+    data object UnknownOrExpiredPendingAnalysis : OwnerSaveAnalysisOutcome
+    data object SaveAlreadyInProgress : OwnerSaveAnalysisOutcome
+    data class Failed(val safeMessage: String) : OwnerSaveAnalysisOutcome
+}
+
+/**
+ * The truthful, owner-facing presentation of one saved analysis --
+ * everything the browser needs to display it, reusing
+ * [OwnerDocumentEvidenceReference] directly for evidence references
+ * (identical shape, never a parallel provenance concept).
+ */
+data class OwnerSavedAnalysisPresentation(
+    val savedAnalysisId: SavedAnalysisId,
+    val savedAt: Instant,
+    val analysedAt: Instant,
+    val instruction: String,
+    val analysisText: String,
+    val evidenceReferences: List<OwnerDocumentEvidenceReference>,
+    val mechanismIdentity: String?,
+    val mechanismVersion: String?,
+)
+
+/** The truthful result of one [OwnerEvidenceOperations.retrieveSavedAnalysis] call. */
+sealed interface OwnerRetrieveSavedAnalysisOutcome {
+    data class Retrieved(val presentation: OwnerSavedAnalysisPresentation) : OwnerRetrieveSavedAnalysisOutcome
+    data object UnknownSavedAnalysis : OwnerRetrieveSavedAnalysisOutcome
+    data class Failed(val safeMessage: String) : OwnerRetrieveSavedAnalysisOutcome
+}
+
+/**
+ * The smallest metadata-only projection of a saved analysis needed to
+ * choose one from a bounded listing -- never the full analysis text, never
+ * full evidence references. [instructionPreview] is a bounded,
+ * presentation-only excerpt; the full, stored instruction is never
+ * truncated -- only visible via [OwnerRetrieveSavedAnalysisOutcome].
+ */
+data class OwnerSavedAnalysisSummary(
+    val savedAnalysisId: SavedAnalysisId,
+    val savedAt: Instant,
+    val instructionPreview: String,
+)

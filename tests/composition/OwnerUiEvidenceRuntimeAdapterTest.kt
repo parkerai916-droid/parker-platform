@@ -45,6 +45,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-ui-adapter-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-ui-adapter-derivative").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("evidence-ui-adapter-derivative-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-ui-adapter-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-ui-adapter-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-ui-adapter-memory").resolve("memory-core.log").toString(),
@@ -73,6 +74,9 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
         retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
         analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
+        saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
+        retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
+        listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
     )
 
     // ================= Import =================

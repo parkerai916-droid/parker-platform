@@ -30,6 +30,8 @@ class ParkerRuntimeConfigLoaderTest {
                 Files.createTempDirectory("config-loader-test-derivative-generation-storage").toString(),
             ParkerRuntimeConfigLoader.KEY_DERIVATIVE_CONTENT_STORAGE_ROOT to
                 Files.createTempDirectory("config-loader-test-derivative-content-storage").toString(),
+            ParkerRuntimeConfigLoader.KEY_SAVED_ANALYSIS_STORAGE_ROOT to
+                Files.createTempDirectory("config-loader-test-saved-analysis-storage").toString(),
             ParkerRuntimeConfigLoader.KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH to
                 Files.createTempDirectory("config-loader-test-document-ingestion-audit").resolve("audit.log").toString(),
             ParkerRuntimeConfigLoader.KEY_EVIDENCE_DELETION_AUDIT_LOG_PATH to
@@ -69,6 +71,10 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(
             environment[ParkerRuntimeConfigLoader.KEY_DERIVATIVE_CONTENT_STORAGE_ROOT],
             config.derivativeContentStorageRootPath,
+        )
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_SAVED_ANALYSIS_STORAGE_ROOT],
+            config.savedAnalysisStorageRootPath,
         )
         assertEquals(
             environment[ParkerRuntimeConfigLoader.KEY_DOCUMENT_INGESTION_AUDIT_LOG_PATH],
@@ -257,6 +263,18 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.load(environment)
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_DERIVATIVE_CONTENT_STORAGE_ROOT, thrown.key)
+    }
+
+    @Test
+    fun `missing PARKER_SAVED_ANALYSIS_STORAGE_ROOT throws MissingConfiguration naming that key`() {
+        val environment = fullEnvironment(
+            overrides = mapOf(ParkerRuntimeConfigLoader.KEY_SAVED_ANALYSIS_STORAGE_ROOT to null),
+        )
+
+        val thrown = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_SAVED_ANALYSIS_STORAGE_ROOT, thrown.key)
     }
 
     @Test

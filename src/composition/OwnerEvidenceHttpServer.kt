@@ -20,10 +20,17 @@ import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationStorageException
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceGenerationSelection
+import parker.core.interfaces.PendingAnalysisId
+import parker.core.interfaces.SavedAnalysisId
+import parker.core.interfaces.SavedAnalysisStorageException
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerDocumentAnalysisOutcome
 import parker.ui.OwnerEvidenceOperations
+import parker.ui.OwnerRetrieveSavedAnalysisOutcome
+import parker.ui.OwnerSaveAnalysisOutcome
+import parker.ui.OwnerSavedAnalysisPresentation
+import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
 import parker.ui.OwnerTierBOcrContent
 import parker.ui.TierAContentRetrievalResult
@@ -88,6 +95,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/", RootPageHandler())
         httpServer.createContext("/owner/evidence", EvidenceHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
+        httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
@@ -496,7 +504,7 @@ class OwnerEvidenceHttpServer(
                 }
                 val (selections, instruction) = parsed
 
-                val outcome = try {
+                val invocation = try {
                     runBlocking { operations.analyseDocuments(selections, instruction) }
                 } catch (e: DerivativeGenerationStorageException.UnsafeIdentifier) {
                     writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
@@ -510,7 +518,7 @@ class OwnerEvidenceHttpServer(
                     writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
                     return
                 }
-                writeJson(exchange, 200, analysisOutcomeJson(outcome))
+                writeJson(exchange, 200, analysisOutcomeJson(invocation.outcome, invocation.pendingAnalysisId))
             } catch (e: Exception) {
                 logger.error("Owner HTTP: unexpected failure handling ${exchange.requestURI}", e)
                 runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
@@ -520,9 +528,146 @@ class OwnerEvidenceHttpServer(
         }
     }
 
-    private fun analysisOutcomeJson(outcome: OwnerDocumentAnalysisOutcome): JsonObject = when (outcome) {
+    // ---- /owner/saved-analyses, /owner/saved-analyses/{savedAnalysisId} -------------------
+
+    /**
+     * Reviewed Analysis Result — Explicit Owner Save. `POST /owner/saved-analyses` durably saves
+     * the pending analysis named by the request body's `pendingAnalysisId` -- never accepts, and
+     * never trusts, resubmitted analysis text (the browser sends only the opaque id
+     * `/owner/analyse` already returned). `GET /owner/saved-analyses` returns a bounded, metadata-
+     * only listing; `GET /owner/saved-analyses/{savedAnalysisId}` retrieves one full saved
+     * analysis by known id. Mirrors [AnalyseHandler]'s own authentication/bounded-body/error-shape
+     * discipline exactly.
+     */
+    private inner class SavedAnalysisHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) {
+                    rejectUnauthorised(exchange)
+                    return
+                }
+                val path = exchange.requestURI.path
+                val method = exchange.requestMethod
+                val segments = path.removePrefix("/owner/saved-analyses").trim('/').split('/').filter { it.isNotEmpty() }
+
+                when {
+                    segments.isEmpty() && method == "POST" -> handleSave(exchange)
+                    segments.isEmpty() && method == "GET" -> handleList(exchange)
+                    segments.size == 1 && method == "GET" -> handleRetrieve(exchange, segments[0])
+                    else -> {
+                        runCatching { exchange.requestBody.use { it.readBytes() } }
+                        writeJson(exchange, 404, jsonObject("error" to "not found"))
+                    }
+                }
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: unexpected failure handling ${exchange.requestURI}", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally {
+                exchange.close()
+            }
+        }
+
+        private fun handleSave(exchange: HttpExchange) {
+            val bodyBytes = try {
+                exchange.requestBody.use { readBounded(it, MAX_SAVE_REQUEST_BODY_BYTES) }
+            } catch (e: RequestBodyTooLargeException) {
+                writeJson(exchange, 400, jsonObject("error" to "request body too large"))
+                return
+            }
+            val pendingAnalysisIdRaw = try {
+                parseSaveRequestBody(bodyBytes)
+            } catch (e: JsonParseException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                return
+            }
+            val pendingAnalysisId = try {
+                PendingAnalysisId(pendingAnalysisIdRaw)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                return
+            }
+
+            val outcome = runBlocking { operations.saveAnalysis(pendingAnalysisId) }
+            val body = when (outcome) {
+                is OwnerSaveAnalysisOutcome.Saved -> jsonObject("status" to "SAVED", "savedAnalysisId" to outcome.savedAnalysisId.value)
+                OwnerSaveAnalysisOutcome.UnknownOrExpiredPendingAnalysis ->
+                    jsonObject("status" to "FAILED", "message" to "Unknown or expired pending analysis.")
+                OwnerSaveAnalysisOutcome.SaveAlreadyInProgress ->
+                    jsonObject("status" to "FAILED", "message" to "This analysis is already being saved.")
+                is OwnerSaveAnalysisOutcome.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
+            }
+            writeJson(exchange, 200, body)
+        }
+
+        private fun handleRetrieve(exchange: HttpExchange, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val savedAnalysisId = try {
+                SavedAnalysisId(rawId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid saved analysis id"))
+                return
+            }
+            val outcome = try {
+                runBlocking { operations.retrieveSavedAnalysis(savedAnalysisId) }
+            } catch (e: SavedAnalysisStorageException.UnsafeIdentifier) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid saved analysis id"))
+                return
+            }
+            val body = when (outcome) {
+                is OwnerRetrieveSavedAnalysisOutcome.Retrieved -> jsonObject(
+                    "status" to "RETRIEVED",
+                    "result" to savedAnalysisJson(outcome.presentation),
+                )
+                OwnerRetrieveSavedAnalysisOutcome.UnknownSavedAnalysis -> jsonObject("status" to "UNKNOWN_SAVED_ANALYSIS")
+                is OwnerRetrieveSavedAnalysisOutcome.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
+            }
+            writeJson(exchange, 200, body)
+        }
+
+        private fun handleList(exchange: HttpExchange) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val summaries = runBlocking { operations.listSavedAnalyses() }
+            writeJson(
+                exchange,
+                200,
+                jsonObject(
+                    "savedAnalyses" to jsonArray(
+                        summaries.map {
+                            jsonObject(
+                                "savedAnalysisId" to it.savedAnalysisId.value,
+                                "savedAt" to it.savedAt.toString(),
+                                "instructionPreview" to it.instructionPreview,
+                            )
+                        },
+                    ),
+                ),
+            )
+        }
+    }
+
+    private fun savedAnalysisJson(presentation: OwnerSavedAnalysisPresentation): JsonObject = jsonObject(
+        "savedAnalysisId" to presentation.savedAnalysisId.value,
+        "savedAt" to presentation.savedAt.toString(),
+        "analysedAt" to presentation.analysedAt.toString(),
+        "instruction" to presentation.instruction,
+        "analysisText" to presentation.analysisText,
+        "evidenceReferences" to jsonArray(
+            presentation.evidenceReferences.map {
+                jsonObject(
+                    "evidenceArtifactId" to it.evidenceArtifactId.value,
+                    "derivativeGenerationId" to it.derivativeGenerationId.value,
+                    "derivativeKind" to it.derivativeKind,
+                )
+            },
+        ),
+        "mechanismIdentity" to presentation.mechanismIdentity,
+        "mechanismVersion" to presentation.mechanismVersion,
+    )
+
+    private fun analysisOutcomeJson(outcome: OwnerDocumentAnalysisOutcome, pendingAnalysisId: PendingAnalysisId?): JsonObject = when (outcome) {
         is OwnerDocumentAnalysisOutcome.Completed -> jsonObject(
             "status" to "COMPLETED",
+            "pendingAnalysisId" to pendingAnalysisId?.value,
             "result" to jsonObject(
                 "analysisText" to outcome.result.analysisText,
                 "evidenceReferences" to jsonArray(
@@ -741,6 +886,14 @@ class OwnerEvidenceHttpServer(
          * 4 bytes/char in UTF-8), with headroom for JSON structure/escaping overhead.
          */
         const val MAX_ANALYSE_REQUEST_BODY_BYTES: Long = 32L * 1024L
+
+        /**
+         * Reviewed Analysis Result — Explicit Owner Save. A finite bound on the
+         * `POST /owner/saved-analyses` JSON request body -- this route never carries analysis
+         * content, only one opaque pending-analysis identifier (a UUID string), so a small,
+         * generous bound comfortably covers it with headroom for JSON structure.
+         */
+        const val MAX_SAVE_REQUEST_BODY_BYTES: Long = 4L * 1024L
     }
 }
 
@@ -802,6 +955,14 @@ private fun parseAnalyseRequestBody(bodyBytes: ByteArray): Pair<List<EvidenceGen
 
     val instruction = obj["instruction"] as? String ?: throw JsonParseException("expected an 'instruction' string")
     return selections to instruction
+}
+
+/** Reviewed Analysis Result — Explicit Owner Save. The `POST /owner/saved-analyses` request body's own tiny, single-field shape -- `{"pendingAnalysisId":"..."}` -- never the analysis content itself. */
+private fun parseSaveRequestBody(bodyBytes: ByteArray): String {
+    val text = String(bodyBytes, StandardCharsets.UTF_8)
+    val root = SimpleJsonReader(text).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    return obj["pendingAnalysisId"] as? String ?: throw JsonParseException("expected a 'pendingAnalysisId' string")
 }
 
 /** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */
@@ -1219,10 +1380,18 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   <tbody id="rows"></tbody>
 </table>
 <h2>Analyse Selected Documents</h2>
-<p class="note">Select one or more processed documents above (checkbox in the "Analyse" column), enter an instruction, then click Analyse. The result is provider-generated material for human review -- not Evidence, Memory, Knowledge, or canonical Parker truth, and is never saved.</p>
+<p class="note">Select one or more processed documents above (checkbox in the "Analyse" column), enter an instruction, then click Analyse. The result is provider-generated material for human review -- not Evidence, Memory, Knowledge, or canonical Parker truth. It is not saved unless you explicitly click Save Analysis afterward.</p>
 <p><textarea id="analysisInstruction" rows="3" style="width:100%; box-sizing:border-box;" placeholder="What would you like Parker to look for or summarise across the selected documents?"></textarea></p>
 <p><button id="analyseButton">Analyse Selected</button></p>
 <div id="analysisResults"></div>
+<h2>Saved Analyses</h2>
+<p class="note">Analyses you have explicitly saved. Selecting one retrieves it from durable storage -- it never re-runs analysis or invokes the model.</p>
+<p><button id="refreshSavedAnalysesButton">Refresh</button></p>
+<table>
+  <thead><tr><th>Saved</th><th>Instruction</th><th>Actions</th></tr></thead>
+  <tbody id="savedAnalysisRows"></tbody>
+</table>
+<div id="savedAnalysisDetail"></div>
 <script>
 let rows = [];
 let expandedIndex = null;
@@ -1689,10 +1858,16 @@ async function analyseSelected() {
   }
 }
 
+// Reviewed Analysis Result -- Explicit Owner Save. Holds only the opaque pendingAnalysisId the
+// server returned alongside the most recently completed analysis -- never the analysis text
+// itself, which is never resubmitted to Save it.
+let currentPendingAnalysisId = null;
+
 // Every field below is inserted via appendField/appendExtractedText/textContent (never innerHTML),
 // so the local model's own response -- provider-generated, human-review-only material -- can never
 // be interpreted as HTML or script, no matter what characters it contains.
 function renderAnalysisResult(container, result) {
+  currentPendingAnalysisId = null;
   if (result.status !== 'COMPLETED') {
     const p = document.createElement('p');
     p.className = 'note';
@@ -1700,6 +1875,7 @@ function renderAnalysisResult(container, result) {
     container.appendChild(p);
     return;
   }
+  currentPendingAnalysisId = result.pendingAnalysisId || null;
   const panel = document.createElement('div');
   panel.className = 'content-panel';
   const disclaimer = document.createElement('p');
@@ -1721,8 +1897,141 @@ function renderAnalysisResult(container, result) {
     ul.appendChild(li);
   });
   panel.appendChild(ul);
+  if (currentPendingAnalysisId) {
+    const saveButton = document.createElement('button');
+    saveButton.textContent = 'Save Analysis';
+    saveButton.onclick = saveCurrentAnalysis;
+    panel.appendChild(saveButton);
+    const saveStatus = document.createElement('p');
+    saveStatus.id = 'saveAnalysisStatus';
+    saveStatus.className = 'note';
+    panel.appendChild(saveStatus);
+  }
   container.appendChild(panel);
 }
+
+// Reviewed Analysis Result -- Explicit Owner Save. Sends only the opaque pendingAnalysisId, never
+// analysis text -- the server resolves and persists the exact result it already produced and
+// holds; nothing this page submits here can ever become the saved content.
+async function saveCurrentAnalysis() {
+  const statusEl = document.getElementById('saveAnalysisStatus');
+  if (!currentPendingAnalysisId) {
+    if (statusEl) statusEl.textContent = 'No analysis available to save.';
+    return;
+  }
+  if (statusEl) statusEl.textContent = 'Saving...';
+  try {
+    const resp = await fetch('/owner/saved-analyses', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ pendingAnalysisId: currentPendingAnalysisId }),
+    });
+    if (resp.status === 401) {
+      if (statusEl) statusEl.textContent = 'Unauthorised: check owner token.';
+      return;
+    }
+    const result = await resp.json();
+    if (result.status === 'SAVED') {
+      if (statusEl) statusEl.textContent = 'Saved. Saved analysis ID: ' + result.savedAnalysisId;
+      currentPendingAnalysisId = null;
+      refreshSavedAnalyses();
+    } else if (statusEl) {
+      statusEl.textContent = 'Save failed: ' + (result.message || result.status);
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Save request failed: ' + e;
+  }
+}
+
+// Reviewed Analysis Result -- Explicit Owner Save. Bounded, metadata-only listing -- never the
+// full analysis text of any listed entry.
+async function refreshSavedAnalyses() {
+  const tbody = document.getElementById('savedAnalysisRows');
+  try {
+    const resp = await fetch('/owner/saved-analyses', { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) {
+      tbody.innerHTML = '';
+      return;
+    }
+    const result = await resp.json();
+    tbody.innerHTML = '';
+    (result.savedAnalyses || []).forEach(entry => {
+      const tr = document.createElement('tr');
+      const savedTd = document.createElement('td');
+      savedTd.textContent = entry.savedAt;
+      const instructionTd = document.createElement('td');
+      instructionTd.textContent = entry.instructionPreview;
+      const actionsTd = document.createElement('td');
+      const viewButton = document.createElement('button');
+      viewButton.textContent = 'View';
+      viewButton.onclick = () => viewSavedAnalysis(entry.savedAnalysisId);
+      actionsTd.appendChild(viewButton);
+      tr.appendChild(savedTd);
+      tr.appendChild(instructionTd);
+      tr.appendChild(actionsTd);
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    // best-effort refresh only -- the owner can retry via the Refresh button.
+  }
+}
+
+// Reviewed Analysis Result -- Explicit Owner Save. Retrieval only -- never re-runs analysis, never
+// invokes the model.
+async function viewSavedAnalysis(savedAnalysisId) {
+  const detail = document.getElementById('savedAnalysisDetail');
+  detail.innerHTML = '';
+  try {
+    const resp = await fetch('/owner/saved-analyses/' + encodeURIComponent(savedAnalysisId), { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) {
+      const p = document.createElement('p');
+      p.className = 'note';
+      p.textContent = 'Unauthorised: check owner token.';
+      detail.appendChild(p);
+      return;
+    }
+    const result = await resp.json();
+    if (result.status !== 'RETRIEVED') {
+      const p = document.createElement('p');
+      p.className = 'note';
+      p.textContent = 'Could not retrieve saved analysis: ' + (result.message || result.status);
+      detail.appendChild(p);
+      return;
+    }
+    const panel = document.createElement('div');
+    panel.className = 'content-panel';
+    const disclaimer = document.createElement('p');
+    disclaimer.className = 'note';
+    disclaimer.textContent = 'Provider-generated material for human review -- not Evidence, Memory, Knowledge, or canonical Parker truth.';
+    panel.appendChild(disclaimer);
+    appendField(panel, 'Saved at', result.result.savedAt);
+    appendField(panel, 'Analysed at', result.result.analysedAt);
+    appendField(panel, 'Instruction', result.result.instruction);
+    if (result.result.mechanismIdentity) {
+      appendField(panel, 'Model', result.result.mechanismIdentity + ' ' + (result.result.mechanismVersion || ''));
+    }
+    appendExtractedText(panel, 'Analysis:', result.result.analysisText);
+    const label = document.createElement('div');
+    label.textContent = 'Evidence references supplied:';
+    panel.appendChild(label);
+    const ul = document.createElement('ul');
+    result.result.evidenceReferences.forEach(ref => {
+      const li = document.createElement('li');
+      li.textContent = ref.evidenceArtifactId + ' / ' + ref.derivativeGenerationId + ' (' + ref.derivativeKind + ')';
+      ul.appendChild(li);
+    });
+    panel.appendChild(ul);
+    detail.appendChild(panel);
+  } catch (e) {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.textContent = 'Retrieval request failed: ' + e;
+    detail.appendChild(p);
+  }
+}
+
+document.getElementById('refreshSavedAnalysesButton').onclick = refreshSavedAnalyses;
+refreshSavedAnalyses();
 </script>
 </body>
 </html>

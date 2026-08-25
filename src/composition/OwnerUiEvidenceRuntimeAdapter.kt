@@ -2,6 +2,7 @@ package parker.composition
 
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeProducerIdentity
+import parker.core.interfaces.DocumentAnalysisInvocationResult
 import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
@@ -9,7 +10,12 @@ import parker.core.interfaces.EvidenceGenerationSelection
 import parker.core.interfaces.OcrDerivativeExtractedResult
 import parker.core.interfaces.OwnerDocumentAnalysisRequest
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
+import parker.core.interfaces.PendingAnalysisId
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.RetrieveSavedAnalysisOutcome
+import parker.core.interfaces.SaveAnalysisOutcome
+import parker.core.interfaces.SavedAnalysisId
+import parker.core.interfaces.SavedAnalysisSummary
 import parker.core.interfaces.TierAContentRetrievalOutcome
 import parker.core.interfaces.TierADerivativePayload
 import parker.core.interfaces.TierADocumentFormat
@@ -19,6 +25,7 @@ import parker.core.interfaces.TierBOcrContentRetrievalOutcome
 import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
+import parker.ui.OwnerDocumentAnalysisInvocationOutcome
 import parker.ui.OwnerDocumentAnalysisOutcome
 import parker.ui.OwnerDocumentAnalysisPresentation
 import parker.ui.OwnerDocumentEvidenceReference
@@ -28,6 +35,10 @@ import parker.ui.OwnerEmlBodySummary
 import parker.ui.OwnerEvidenceOperations
 import parker.ui.OwnerOcrSegmentSummary
 import parker.ui.OwnerPdfMetadataValue
+import parker.ui.OwnerRetrieveSavedAnalysisOutcome
+import parker.ui.OwnerSaveAnalysisOutcome
+import parker.ui.OwnerSavedAnalysisPresentation
+import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
 import parker.ui.OwnerTierBOcrContent
 import parker.ui.TierAContentRetrievalResult
@@ -68,7 +79,10 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val retrieveTierAExtractedContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome,
     private val invokeTierBOcrDurableGenerationAsOwner: suspend (EvidenceArtifactId) -> TierBOcrOwnerInvocationOutcome,
     private val retrieveTierBOcrContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome,
-    private val analyseDocumentsAsOwner: suspend (OwnerDocumentAnalysisRequest) -> DocumentAnalysisOutcome,
+    private val analyseDocumentsAsOwner: suspend (OwnerDocumentAnalysisRequest) -> DocumentAnalysisInvocationResult,
+    private val saveAnalysisAsOwner: suspend (PendingAnalysisId) -> SaveAnalysisOutcome,
+    private val retrieveSavedAnalysisAsOwner: suspend (SavedAnalysisId) -> RetrieveSavedAnalysisOutcome,
+    private val listSavedAnalysesAsOwner: suspend () -> List<SavedAnalysisSummary>,
 ) : OwnerEvidenceOperations {
 
     override suspend fun importFile(absolutePath: String, declaredMediaType: String?): EvidenceImportOutcome =
@@ -314,8 +328,14 @@ class OwnerUiEvidenceRuntimeAdapter(
     override suspend fun analyseDocuments(
         selections: List<EvidenceGenerationSelection>,
         instruction: String,
-    ): OwnerDocumentAnalysisOutcome =
-        when (val outcome = analyseDocumentsAsOwner(OwnerDocumentAnalysisRequest(selections, instruction))) {
+    ): OwnerDocumentAnalysisInvocationOutcome {
+        val invocation = analyseDocumentsAsOwner(OwnerDocumentAnalysisRequest(selections, instruction))
+        val mapped = mapAnalysisOutcome(invocation.outcome)
+        return OwnerDocumentAnalysisInvocationOutcome(mapped, invocation.pendingAnalysisId)
+    }
+
+    private fun mapAnalysisOutcome(outcome: DocumentAnalysisOutcome): OwnerDocumentAnalysisOutcome =
+        when (outcome) {
             is DocumentAnalysisOutcome.Completed -> OwnerDocumentAnalysisOutcome.Completed(
                 OwnerDocumentAnalysisPresentation(
                     analysisText = outcome.result.analysisText,
@@ -346,4 +366,39 @@ class OwnerUiEvidenceRuntimeAdapter(
             is DocumentAnalysisOutcome.ResponseTooLarge -> OwnerDocumentAnalysisOutcome.ResponseTooLarge(outcome.actualCharacters, outcome.max)
             is DocumentAnalysisOutcome.ModelInvocationFailed -> OwnerDocumentAnalysisOutcome.ModelInvocationFailed(outcome.safeMessage)
         }
+
+    override suspend fun saveAnalysis(pendingAnalysisId: PendingAnalysisId): OwnerSaveAnalysisOutcome =
+        when (val outcome = saveAnalysisAsOwner(pendingAnalysisId)) {
+            is SaveAnalysisOutcome.Saved -> OwnerSaveAnalysisOutcome.Saved(outcome.savedAnalysisId)
+            SaveAnalysisOutcome.UnknownOrExpiredPendingAnalysis -> OwnerSaveAnalysisOutcome.UnknownOrExpiredPendingAnalysis
+            SaveAnalysisOutcome.SaveAlreadyInProgress -> OwnerSaveAnalysisOutcome.SaveAlreadyInProgress
+            is SaveAnalysisOutcome.PersistenceFailed -> OwnerSaveAnalysisOutcome.Failed(outcome.safeMessage)
+            is SaveAnalysisOutcome.SavedRecordTooLarge ->
+                OwnerSaveAnalysisOutcome.Failed("The reviewed analysis exceeds the maximum accepted size (${outcome.field}).")
+        }
+
+    override suspend fun retrieveSavedAnalysis(savedAnalysisId: SavedAnalysisId): OwnerRetrieveSavedAnalysisOutcome =
+        when (val outcome = retrieveSavedAnalysisAsOwner(savedAnalysisId)) {
+            is RetrieveSavedAnalysisOutcome.Retrieved -> OwnerRetrieveSavedAnalysisOutcome.Retrieved(
+                OwnerSavedAnalysisPresentation(
+                    savedAnalysisId = outcome.record.savedAnalysisId,
+                    savedAt = outcome.record.savedAt,
+                    analysedAt = outcome.record.analysedAt,
+                    instruction = outcome.record.instruction,
+                    analysisText = outcome.record.analysisText,
+                    evidenceReferences = outcome.record.evidenceReferences.map {
+                        OwnerDocumentEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind)
+                    },
+                    mechanismIdentity = outcome.record.mechanismIdentity,
+                    mechanismVersion = outcome.record.mechanismVersion,
+                ),
+            )
+            RetrieveSavedAnalysisOutcome.UnknownSavedAnalysis -> OwnerRetrieveSavedAnalysisOutcome.UnknownSavedAnalysis
+            is RetrieveSavedAnalysisOutcome.CorruptRecord -> OwnerRetrieveSavedAnalysisOutcome.Failed("The saved analysis is corrupt.")
+            is RetrieveSavedAnalysisOutcome.UnsupportedRepresentationVersion ->
+                OwnerRetrieveSavedAnalysisOutcome.Failed("The saved analysis representation is not supported.")
+        }
+
+    override suspend fun listSavedAnalyses(): List<OwnerSavedAnalysisSummary> =
+        listSavedAnalysesAsOwner().map { OwnerSavedAnalysisSummary(it.savedAnalysisId, it.savedAt, it.instructionPreview) }
 }

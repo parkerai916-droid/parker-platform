@@ -17,6 +17,7 @@ import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeMemoryRegistrationOutcome
+import parker.core.interfaces.DocumentAnalysisInvocationResult
 import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
@@ -34,6 +35,11 @@ import parker.core.interfaces.ModuleId
 import parker.core.interfaces.ModulePermissionRequirement
 import parker.core.interfaces.OcrMechanism
 import parker.core.interfaces.OwnerDocumentAnalysisRequest
+import parker.core.interfaces.PendingAnalysisId
+import parker.core.interfaces.RetrieveSavedAnalysisOutcome
+import parker.core.interfaces.SaveAnalysisOutcome
+import parker.core.interfaces.SavedAnalysisId
+import parker.core.interfaces.SavedAnalysisSummary
 import parker.core.interfaces.OwnerEvidenceDeletionAuthority
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PermissionAction
@@ -83,6 +89,9 @@ import parker.core.runtime.DefaultDocumentAnalysisPromptBuilder
 import parker.core.runtime.DerivativeMemoryRegistrationCoordinator
 import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.DocumentAnalysisCoordinator
+import parker.core.runtime.FileSystemSavedAnalysisStorage
+import parker.core.runtime.PendingAnalysisCache
+import parker.core.runtime.SavedAnalysisCoordinator
 import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
@@ -293,6 +302,13 @@ class ParkerRuntime(
     // narrow class, mirroring tierBOcrContentRetrievalCoordinator's own isolation -- no other
     // coordinator constructed in buildAndRegisterRuntimeGraph ever receives a reference to it.
     private lateinit var documentAnalysisCoordinator: DocumentAnalysisCoordinator
+
+    // Reviewed Analysis Result — Explicit Owner Save. pendingAnalysisCache is read directly by
+    // analyseDocumentsAsOwner (to register a freshly completed result) and held internally by
+    // savedAnalysisCoordinator (to claim/finalize/release a pending id during Save) -- the only
+    // two readers, mirroring this class's own established narrow-isolation discipline.
+    private lateinit var pendingAnalysisCache: PendingAnalysisCache
+    private lateinit var savedAnalysisCoordinator: SavedAnalysisCoordinator
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -1327,6 +1343,21 @@ class ParkerRuntime(
             modelTimeoutMs = config.modelTimeoutMs,
         )
 
+        // Reviewed Analysis Result — Explicit Owner Save. pendingAnalysisCache is the entire
+        // anti-forgery mechanism (see its own KDoc): a small, bounded, TTL-expiring, in-memory-only
+        // map, never durable on its own. savedAnalysisStorage is a wholly separate storage root
+        // from every other store this class already constructs -- never nested inside, never
+        // sharing an identifier namespace with, Evidence/Derivative Generation/Derivative Content/
+        // Memory/Knowledge.
+        pendingAnalysisCache = PendingAnalysisCache()
+        val savedAnalysisStorage = stage("Saved analysis storage construction") {
+            FileSystemSavedAnalysisStorage(Path.of(config.savedAnalysisStorageRootPath))
+        }
+        savedAnalysisCoordinator = SavedAnalysisCoordinator(
+            pendingAnalysisCache = pendingAnalysisCache,
+            storage = savedAnalysisStorage,
+        )
+
         // The existing raw memoryCore, not a PermissionGatedMemoryCore wrapper: this coordinator
         // already gates its own CandidateRecordProduced dispatch internally (its own
         // permissionEngine, MEMORY_CORE_ACCEPTANCE_RESOURCE_ID/ACCEPT_MEMORY_CORE_CANDIDATE_ACTION_NAME),
@@ -1914,12 +1945,76 @@ class ParkerRuntime(
      *
      * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
      */
-    suspend fun analyseDocumentsAsOwner(request: OwnerDocumentAnalysisRequest): DocumentAnalysisOutcome {
+    suspend fun analyseDocumentsAsOwner(request: OwnerDocumentAnalysisRequest): DocumentAnalysisInvocationResult {
         if (state != RuntimeLifecycleState.RUNNING) {
             throw ParkerRuntimeException.NotRunning(state)
         }
         logger.info("Document analysis invoked by owner (selectionCount=${request.selections.size})")
-        return documentAnalysisCoordinator.analyse(PrincipalId(config.ownerPrincipalId), request)
+        val outcome = documentAnalysisCoordinator.analyse(PrincipalId(config.ownerPrincipalId), request)
+        val pendingAnalysisId = if (outcome is DocumentAnalysisOutcome.Completed) {
+            pendingAnalysisCache.register(outcome.result)
+        } else {
+            null
+        }
+        return DocumentAnalysisInvocationResult(outcome, pendingAnalysisId)
+    }
+
+    /**
+     * Reviewed Analysis Result — Explicit Owner Save. The one production entry point through
+     * which an already-completed, still-pending analysis (identified only by the opaque
+     * [PendingAnalysisId] [analyseDocumentsAsOwner] returned alongside it) may be durably saved --
+     * **explicit, individually-authorized owner invocation only**, mirroring
+     * [analyseDocumentsAsOwner]'s own structural owner-only pattern exactly: no
+     * `requestingPrincipalId` parameter. Carries no Permission Engine gate of its own -- saving an
+     * already-produced, already-authorised analysis touches no Evidence, no OCR, and no
+     * reasoning-model invocation (see [SavedAnalysisCoordinator]'s own KDoc for the precedent this
+     * follows). Never trusts caller-submitted analysis content: [savedAnalysisCoordinator] resolves
+     * the exact server-held pending result by id only.
+     *
+     * The log line below records no analysis content, no instruction, and no evidence reference --
+     * only that an invocation occurred.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun saveAnalysisAsOwner(pendingAnalysisId: PendingAnalysisId): SaveAnalysisOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Analysis save invoked by owner")
+        return savedAnalysisCoordinator.save(pendingAnalysisId)
+    }
+
+    /**
+     * Reviewed Analysis Result — Explicit Owner Save. The one production entry point through
+     * which an already-saved analysis may be retrieved by known [SavedAnalysisId] --
+     * **explicit, individually-authorized owner invocation only**. Never re-runs analysis, never
+     * invokes the model, never re-runs OCR/extraction: [savedAnalysisCoordinator] resolves durable
+     * storage only.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun retrieveSavedAnalysisAsOwner(savedAnalysisId: SavedAnalysisId): RetrieveSavedAnalysisOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Saved analysis retrieval invoked by owner")
+        return savedAnalysisCoordinator.retrieve(savedAnalysisId)
+    }
+
+    /**
+     * Reviewed Analysis Result — Explicit Owner Save. The one production entry point through
+     * which a bounded listing of the most recently saved analyses may be retrieved --
+     * **explicit, individually-authorized owner invocation only**. Metadata only (see
+     * [SavedAnalysisSummary]) -- never the full analysis text or evidence references of any listed
+     * entry.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun listSavedAnalysesAsOwner(): List<SavedAnalysisSummary> {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        return savedAnalysisCoordinator.listRecent()
     }
 
     /**

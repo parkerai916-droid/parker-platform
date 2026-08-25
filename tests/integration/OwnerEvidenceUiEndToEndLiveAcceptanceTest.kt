@@ -73,6 +73,7 @@ class OwnerEvidenceUiEndToEndLiveAcceptanceTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-ui-e2e-live-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-ui-e2e-live-derivative").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("evidence-ui-e2e-live-derivative-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-ui-e2e-live-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-ui-e2e-live-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-ui-e2e-live-memory").resolve("memory-core.log").toString(),
@@ -100,6 +101,10 @@ class OwnerEvidenceUiEndToEndLiveAcceptanceTest {
             retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
             retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
+            analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
+            saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
+            retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
+            listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
         )
         val controller = OwnerEvidenceUiController(adapter)
 

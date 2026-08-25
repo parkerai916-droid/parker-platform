@@ -47,6 +47,7 @@ class ParkerRuntimeOwnerLocalFileIngressIntegrationTest {
             Files.createTempDirectory("local-file-ingress-integration-derivative-generation").toString(),
         derivativeContentStorageRootPath =
             Files.createTempDirectory("local-file-ingress-integration-derivative-generation-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath =
             Files.createTempDirectory("local-file-ingress-integration-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("local-file-ingress-integration-deletion-audit").resolve("audit.log").toString(),

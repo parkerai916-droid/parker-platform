@@ -45,6 +45,7 @@ class OwnerEvidenceHttpServerTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-http-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-http-derivative").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("evidence-http-derivative-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-http-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-http-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-http-memory").resolve("memory-core.log").toString(),
@@ -93,6 +94,9 @@ class OwnerEvidenceHttpServerTest {
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
             retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
             analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
+            saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
+            retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
+            listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
@@ -1603,6 +1607,169 @@ class OwnerEvidenceHttpServerTest {
             }
         } finally {
             harness.shutdown()
+        }
+    }
+
+    // ================= Reviewed Analysis Result -- Explicit Owner Save =================
+
+    @Test
+    fun `E DocumentAnalysisCoordinator's own directly declared fields hold no SavedAnalysisStorage or PendingAnalysisCache reference -- analysis alone never saves anything`() = runTest {
+        val harness = startHarness("")
+        try {
+            val coordinator = harness.runtime.privateField<Any>("documentAnalysisCoordinator")
+            val fieldTypeNames = coordinator::class.java.declaredFields.map { it.type.simpleName }.toSet()
+            assertTrue(fieldTypeNames.none { it.contains("SavedAnalysisStorage") || it.contains("PendingAnalysisCache") })
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `R a save-analysis request with no Authorization header is rejected with 401`() = runTest {
+        val harness = startHarness("")
+        try {
+            assertEquals(401, postJson(harness, "/owner/saved-analyses", """{"pendingAnalysisId":"x"}""", authToken = null).statusCode())
+            assertEquals(401, get(harness, "/owner/saved-analyses", authToken = null).statusCode())
+            assertEquals(401, get(harness, "/owner/saved-analyses/x", authToken = null).statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `S a save-analysis request with the wrong token is rejected with 401`() = runTest {
+        val harness = startHarness("")
+        try {
+            assertEquals(401, postJson(harness, "/owner/saved-analyses", """{"pendingAnalysisId":"x"}""", authToken = "wrong-token").statusCode())
+            assertEquals(401, get(harness, "/owner/saved-analyses", authToken = "wrong-token").statusCode())
+            assertEquals(401, get(harness, "/owner/saved-analyses/x", authToken = "wrong-token").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `L a path-traversal-shaped or reserved-device-name-shaped saved analysis id is rejected with a clean 400, never an internal error`() = runTest {
+        val harness = startHarness("")
+        try {
+            assertEquals(400, get(harness, "/owner/saved-analyses/..").statusCode())
+            assertEquals(400, get(harness, "/owner/saved-analyses/con").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `retrieving an unknown saved analysis id returns a clean UNKNOWN_SAVED_ANALYSIS status, never 500`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = get(harness, "/owner/saved-analyses/never-saved-analysis-id")
+            assertEquals(200, response.statusCode())
+            assertEquals("UNKNOWN_SAVED_ANALYSIS", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    // The route's own request parser only ever reads "pendingAnalysisId" -- an "analysisText"/
+    // "instruction" field the client adds is never read, let alone trusted or persisted. Because
+    // the pending id below was never issued by a real /owner/analyse call, this must fail
+    // regardless of what other fields accompany it.
+    fun `C a save request naming an unknown pending id is rejected even with forged content fields present`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = """{"pendingAnalysisId":"forged-pending-id","analysisText":"FORGED CONTENT","instruction":"forged instruction"}"""
+            val response = postJson(harness, "/owner/saved-analyses", body)
+
+            assertEquals(200, response.statusCode())
+            assertEquals("FAILED", extractField(response.body(), "status"))
+            assertEquals(emptyList<String>(), extractAllFields(get(harness, "/owner/saved-analyses").body(), "savedAnalysisId"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `Q the served page renders retrieved saved analyses via textContent only, never innerHTML`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("id=\"savedAnalysisRows\""), "the page must offer a saved-analyses listing area")
+            assertTrue(body.contains("id=\"savedAnalysisDetail\""), "the page must offer a saved-analysis detail area")
+            assertTrue(body.contains("saveButton.onclick = saveCurrentAnalysis"), "the page must offer an explicit Save Analysis action")
+            assertTrue(body.contains("instructionTd.textContent = entry.instructionPreview"), "listing instruction previews must be inserted via textContent, never innerHTML")
+            assertTrue(body.contains("appendExtractedText(panel, 'Analysis:', result.result.analysisText)"), "a retrieved saved analysis's own text must be inserted via the existing textContent-only appendExtractedText helper")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    // Full end-to-end proof over real HTTP: upload, process, analyse, explicitly Save, list, and
+    // retrieve a saved analysis -- exact instruction/references/evidence survive, and no
+    // evidence/instruction/prompt/model-response content ever appears in a log.
+    fun `end-to-end -- upload, process, analyse, Save, list, and retrieve a saved analysis over real HTTP`() = runTest {
+        StubModelServer.start("The Case-ID is PF-007/26.").use { stub ->
+            val harness = startHarness("", modelEndpointUrl = stub.endpointUrl)
+            try {
+                val uploadResponse = send(
+                    uploadRequest(
+                        harness,
+                        listOf(UploadPart("files", "01-searchable-simple.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("01-searchable-simple.pdf")))),
+                    ),
+                )
+                val evidenceArtifactId = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+                val processBody = post(harness, "/owner/evidence/$evidenceArtifactId/process").body()
+                val derivativeGenerationId = requireNotNull(extractField(processBody, "derivativeGenerationId"))
+                val originalText = requireNotNull(extractJsonStringField(processBody, "documentText"))
+                val instruction = "What is the Case-ID?"
+
+                val analyseBody = """{"selections":[{"evidenceArtifactId":"$evidenceArtifactId","derivativeGenerationId":"$derivativeGenerationId"}],"instruction":"$instruction"}"""
+                val analyseResponse = postJson(harness, "/owner/analyse", analyseBody)
+                assertEquals("COMPLETED", extractField(analyseResponse.body(), "status"))
+                val pendingAnalysisId = requireNotNull(extractField(analyseResponse.body(), "pendingAnalysisId"))
+
+                // No saved analyses exist yet.
+                assertEquals(emptyList<String>(), extractAllFields(get(harness, "/owner/saved-analyses").body(), "savedAnalysisId"))
+
+                val saveResponse = postJson(harness, "/owner/saved-analyses", """{"pendingAnalysisId":"$pendingAnalysisId"}""")
+                assertEquals(200, saveResponse.statusCode())
+                assertEquals("SAVED", extractField(saveResponse.body(), "status"))
+                val savedAnalysisId = requireNotNull(extractField(saveResponse.body(), "savedAnalysisId"))
+
+                // A second Save attempt on the same (now-consumed) pending id fails cleanly.
+                val secondSaveResponse = postJson(harness, "/owner/saved-analyses", """{"pendingAnalysisId":"$pendingAnalysisId"}""")
+                assertEquals("FAILED", extractField(secondSaveResponse.body(), "status"))
+
+                // N, O: bounded listing, metadata only -- never the full analysis text.
+                val listResponse = get(harness, "/owner/saved-analyses")
+                assertEquals(200, listResponse.statusCode())
+                assertEquals(listOf(savedAnalysisId), extractAllFields(listResponse.body(), "savedAnalysisId"))
+                assertFalse("Case-ID is PF-007/26" in listResponse.body(), "a listing entry must never carry the full analysis text")
+
+                // P: retrieve-by-id exact equality.
+                val retrieveResponse = get(harness, "/owner/saved-analyses/$savedAnalysisId")
+                assertEquals(200, retrieveResponse.statusCode())
+                assertEquals("RETRIEVED", extractField(retrieveResponse.body(), "status"))
+                assertEquals(instruction, extractJsonStringField(retrieveResponse.body(), "instruction"))
+                assertEquals("The Case-ID is PF-007/26.", extractJsonStringField(retrieveResponse.body(), "analysisText"))
+                assertEquals(evidenceArtifactId, extractField(retrieveResponse.body(), "evidenceArtifactId"))
+                assertEquals(derivativeGenerationId, extractField(retrieveResponse.body(), "derivativeGenerationId"))
+
+                // U, W: no new derivative generation and no OCR/extraction occurred from analysing or saving.
+                assertFalse("OCR" in harness.runtimeLogger.messages().joinToString(" "))
+
+                // X: evidence content, the owner's own instruction, and the model's own response never
+                // appear in either logger's own recorded messages, across the entire analyse+save+
+                // retrieve+list sequence.
+                val allLogMessages = (harness.runtimeLogger.messages() + harness.serverLogger.messages()).joinToString("\n")
+                assertFalse(originalText in allLogMessages, "evidence content must never appear in a log line")
+                assertFalse(instruction in allLogMessages, "the owner's own instruction content must never appear in a log line")
+                assertFalse("The Case-ID is PF-007/26." in allLogMessages, "the model's own response must never appear in a log line")
+            } finally {
+                harness.shutdown()
+            }
         }
     }
 }

@@ -62,6 +62,7 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("gap54-unit2-evidence-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("gap54-unit2-evidence-manifest-derivative-generation").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("gap54-unit2-evidence-manifest-derivative-generation-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("gap54-unit2-evidence-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("gap54-unit2-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("gap54-unit2-memory").resolve("memory.log").toString(),

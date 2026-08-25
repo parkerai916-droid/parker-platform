@@ -26,6 +26,10 @@ services:
       PARKER_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT: /data/evidence-source-manifests
       PARKER_DERIVATIVE_GENERATION_STORAGE_ROOT: /data/derivative-generations
       PARKER_DERIVATIVE_CONTENT_STORAGE_ROOT: /data/derivative-content
+      # Reviewed Analysis Result — Explicit Owner Save. A wholly separate storage root from every
+      # other store above, never nested inside any of them -- a saved analysis is never Evidence,
+      # a derivative, Memory, or Knowledge.
+      PARKER_SAVED_ANALYSIS_STORAGE_ROOT: /data/saved-analyses
       PARKER_DOCUMENT_INGESTION_AUDIT_LOG_PATH: /data/document-ingestion-audit/audit.log
       # Memory Core Durability, Unit 9 (Container Durability). Same fixed
       # in-container path convention as the two Evidence Custodian paths
@@ -114,6 +118,7 @@ services:
       - /mnt/parker-data/parker/evidence-source-manifests:/data/evidence-source-manifests
       - /mnt/parker-data/parker/derivative-generations:/data/derivative-generations
       - /mnt/parker-data/parker/derivative-content:/data/derivative-content
+      - /mnt/parker-data/parker/saved-analyses:/data/saved-analyses
       - /mnt/parker-data/parker/document-ingestion-audit:/data/document-ingestion-audit
       # QMD Docker-Runtime Enablement. The Parker host's own
       # already-governed QMD 2.8.3 checkout and local embedding-model

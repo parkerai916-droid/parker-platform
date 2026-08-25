@@ -333,6 +333,15 @@ class OwnerEvidenceUiControllerTest {
         override suspend fun analyseDocuments(
             selections: List<parker.core.interfaces.EvidenceGenerationSelection>,
             instruction: String,
-        ): parker.ui.OwnerDocumentAnalysisOutcome = parker.ui.OwnerDocumentAnalysisOutcome.NotAuthorised("not authorised")
+        ): parker.ui.OwnerDocumentAnalysisInvocationOutcome =
+            parker.ui.OwnerDocumentAnalysisInvocationOutcome(parker.ui.OwnerDocumentAnalysisOutcome.NotAuthorised("not authorised"), null)
+
+        override suspend fun saveAnalysis(pendingAnalysisId: parker.core.interfaces.PendingAnalysisId): parker.ui.OwnerSaveAnalysisOutcome =
+            parker.ui.OwnerSaveAnalysisOutcome.UnknownOrExpiredPendingAnalysis
+
+        override suspend fun retrieveSavedAnalysis(savedAnalysisId: parker.core.interfaces.SavedAnalysisId): parker.ui.OwnerRetrieveSavedAnalysisOutcome =
+            parker.ui.OwnerRetrieveSavedAnalysisOutcome.UnknownSavedAnalysis
+
+        override suspend fun listSavedAnalyses(): List<parker.ui.OwnerSavedAnalysisSummary> = emptyList()
     }
 }

@@ -51,6 +51,7 @@ class ParkerRuntimeDerivativeMemoryRegistrationIntegrationTest {
             Files.createTempDirectory("derivative-memory-registration-integration-derivative-generation").toString(),
         derivativeContentStorageRootPath =
             Files.createTempDirectory("derivative-memory-registration-integration-derivative-generation-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath =
             Files.createTempDirectory("derivative-memory-registration-integration-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("derivative-memory-registration-integration-deletion-audit").resolve("audit.log").toString(),

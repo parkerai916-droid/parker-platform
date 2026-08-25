@@ -43,6 +43,7 @@ class DerivativeContentPersistenceRestartAcceptanceTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("restart-acceptance-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("restart-acceptance-derivative").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("restart-acceptance-derivative-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("restart-acceptance-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("restart-acceptance-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("restart-acceptance-memory").resolve("memory-core.log").toString(),

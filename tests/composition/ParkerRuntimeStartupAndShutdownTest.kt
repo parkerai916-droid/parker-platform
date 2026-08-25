@@ -35,6 +35,7 @@ class ParkerRuntimeStartupAndShutdownTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("unused-evidence-storage-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("unused-evidence-storage-manifest-derivative-generation").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("unused-evidence-storage-manifest-derivative-generation-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("unused-evidence-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("unused-memory-core").resolve("memory-core.log").toString(),

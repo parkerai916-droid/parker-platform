@@ -99,6 +99,7 @@ class ParkerRuntimeOcrCompositionTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("ocr-composition-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("ocr-composition-derivative").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("ocr-composition-derivative-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("ocr-composition-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("ocr-composition-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("ocr-composition-memory").resolve("memory-core.log").toString(),

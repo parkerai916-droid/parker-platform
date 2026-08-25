@@ -109,6 +109,7 @@ class ParkerRuntimeReasoningKnowledgeSourceCompositionTest {
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("reasoning-knowledge-source-composition-storage-manifest").toString(),
         derivativeGenerationStorageRootPath = Files.createTempDirectory("reasoning-knowledge-source-composition-storage-manifest-derivative-generation").toString(),
         derivativeContentStorageRootPath = Files.createTempDirectory("reasoning-knowledge-source-composition-storage-manifest-derivative-generation-content").toString(),
+        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("reasoning-knowledge-source-composition-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("reasoning-knowledge-source-composition-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("reasoning-knowledge-source-composition-memory").resolve("memory-core.log").toString(),

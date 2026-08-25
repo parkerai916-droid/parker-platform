@@ -81,6 +81,9 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
         retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
         analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
+        saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
+        retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
+        listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
     )
     return OwnerUiRuntimeSession(
         startRuntime = runtime::start,
