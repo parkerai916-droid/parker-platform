@@ -19,8 +19,10 @@ import parker.core.interfaces.DerivativeContentStorageException
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationStorageException
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.EvidenceGenerationSelection
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
+import parker.ui.OwnerDocumentAnalysisOutcome
 import parker.ui.OwnerEvidenceOperations
 import parker.ui.OwnerTierAContent
 import parker.ui.OwnerTierBOcrContent
@@ -85,6 +87,7 @@ class OwnerEvidenceHttpServer(
         httpServer.executor = fixedThreadPool
         httpServer.createContext("/", RootPageHandler())
         httpServer.createContext("/owner/evidence", EvidenceHandler())
+        httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
@@ -443,6 +446,132 @@ class OwnerEvidenceHttpServer(
         }
     }
 
+    // ---- /owner/analyse -------------------------------------------------------------------
+
+    /**
+     * Minimum Production Document Pipeline — Local Reasoning Implementation.
+     * The one owner-authenticated HTTP route through which one or more
+     * already-admitted evidence derivative generations may be submitted for
+     * analysis via [OwnerEvidenceOperations.analyseDocuments]. Accepts only
+     * a JSON body of already-known identifiers plus the owner's own
+     * instruction text -- never a filesystem path, never an enumeration
+     * request. Mirrors [EvidenceHandler]'s own authentication/error-shape
+     * discipline exactly: missing/wrong token is 401, a malformed body is a
+     * clean 400, and an unexpected fault is a safe 500 that never exposes
+     * an internal path, stack trace, credential, prompt, or raw exception
+     * message.
+     */
+    private inner class AnalyseHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) {
+                    rejectUnauthorised(exchange)
+                    return
+                }
+                if (exchange.requestURI.path != "/owner/analyse" || exchange.requestMethod != "POST") {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
+                    writeJson(exchange, 404, jsonObject("error" to "not found"))
+                    return
+                }
+
+                val bodyBytes = try {
+                    exchange.requestBody.use { readBounded(it, MAX_ANALYSE_REQUEST_BODY_BYTES) }
+                } catch (e: RequestBodyTooLargeException) {
+                    // The stream is deliberately left un-drained here (readBounded stops reading the
+                    // instant it confirms the body exceeds the limit, never buffering the rest of an
+                    // oversized body) -- exchange.close() below closes the underlying connection
+                    // instead of attempting to reuse it, which is exactly the documented, safe
+                    // HttpExchange behaviour for a request whose body was never fully read.
+                    writeJson(exchange, 400, jsonObject("error" to "request body too large"))
+                    return
+                }
+                val parsed = try {
+                    parseAnalyseRequestBody(bodyBytes)
+                } catch (e: JsonParseException) {
+                    writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                    return
+                } catch (e: IllegalArgumentException) {
+                    writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                    return
+                }
+                val (selections, instruction) = parsed
+
+                val outcome = try {
+                    runBlocking { operations.analyseDocuments(selections, instruction) }
+                } catch (e: DerivativeGenerationStorageException.UnsafeIdentifier) {
+                    writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                    return
+                } catch (e: DerivativeContentStorageException.UnsafeIdentifier) {
+                    writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                    return
+                } catch (e: IllegalArgumentException) {
+                    // OwnerDocumentAnalysisRequest's own init{} require() blocks (empty selections,
+                    // blank instruction) surface here as a caller error, never an internal fault.
+                    writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                    return
+                }
+                writeJson(exchange, 200, analysisOutcomeJson(outcome))
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: unexpected failure handling ${exchange.requestURI}", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally {
+                exchange.close()
+            }
+        }
+    }
+
+    private fun analysisOutcomeJson(outcome: OwnerDocumentAnalysisOutcome): JsonObject = when (outcome) {
+        is OwnerDocumentAnalysisOutcome.Completed -> jsonObject(
+            "status" to "COMPLETED",
+            "result" to jsonObject(
+                "analysisText" to outcome.result.analysisText,
+                "evidenceReferences" to jsonArray(
+                    outcome.result.evidenceReferences.map {
+                        jsonObject(
+                            "evidenceArtifactId" to it.evidenceArtifactId.value,
+                            "derivativeGenerationId" to it.derivativeGenerationId.value,
+                            "derivativeKind" to it.derivativeKind,
+                        )
+                    },
+                ),
+                "mechanismIdentity" to outcome.result.mechanismIdentity,
+                "mechanismVersion" to outcome.result.mechanismVersion,
+                "instruction" to outcome.result.instruction,
+                "warnings" to jsonArray(outcome.result.warnings),
+            ),
+        )
+        is OwnerDocumentAnalysisOutcome.NotAuthorised ->
+            jsonObject("status" to "FAILED", "message" to "Not authorised: ${outcome.reason}")
+        is OwnerDocumentAnalysisOutcome.TooManySelections ->
+            jsonObject("status" to "FAILED", "message" to "Too many documents selected (max ${outcome.max}).")
+        is OwnerDocumentAnalysisOutcome.InstructionTooLarge ->
+            jsonObject("status" to "FAILED", "message" to "The analysis instruction exceeds the maximum accepted length (max ${outcome.max} characters).")
+        is OwnerDocumentAnalysisOutcome.PromptTooLarge ->
+            jsonObject("status" to "FAILED", "message" to "The assembled analysis request exceeds the maximum accepted size.")
+        is OwnerDocumentAnalysisOutcome.UnknownGeneration ->
+            jsonObject("status" to "FAILED", "message" to "Unknown derivative generation.")
+        is OwnerDocumentAnalysisOutcome.SourceMismatch ->
+            jsonObject("status" to "FAILED", "message" to "A derivative generation does not belong to the specified evidence artefact.")
+        is OwnerDocumentAnalysisOutcome.ContentMissing ->
+            jsonObject("status" to "FAILED", "message" to "Derivative content is missing.")
+        is OwnerDocumentAnalysisOutcome.ContentCorrupt ->
+            jsonObject("status" to "FAILED", "message" to "Derivative content is corrupt: ${outcome.safeMessage}")
+        is OwnerDocumentAnalysisOutcome.UnsupportedRepresentationVersion ->
+            jsonObject("status" to "FAILED", "message" to "Unsupported derivative representation version (${outcome.version}).")
+        is OwnerDocumentAnalysisOutcome.UnsupportedDerivativeKind ->
+            jsonObject("status" to "FAILED", "message" to "Unsupported derivative kind (${outcome.derivativeKind}).")
+        is OwnerDocumentAnalysisOutcome.ContentTooLarge ->
+            jsonObject(
+                "status" to "FAILED",
+                "message" to "Selected evidence content exceeds the maximum accepted size " +
+                    "(${outcome.actualCharacters}/${outcome.max} characters).",
+            )
+        is OwnerDocumentAnalysisOutcome.ResponseTooLarge ->
+            jsonObject("status" to "FAILED", "message" to "The local model's response exceeded the maximum accepted size.")
+        is OwnerDocumentAnalysisOutcome.ModelInvocationFailed ->
+            jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
+    }
+
     private fun ocrContentJson(content: OwnerTierBOcrContent): JsonObject = jsonObject(
         "recognisedText" to content.recognisedText,
         "fidelity" to content.fidelity,
@@ -601,6 +730,236 @@ class OwnerEvidenceHttpServer(
 
         /** A conservative bound on files per request -- convenience-only multi-select, never a batch evidence authority. */
         const val MAX_FILES_PER_REQUEST: Int = 32
+
+        /**
+         * Minimum Production Document Pipeline — Local Reasoning Implementation. A finite bound on
+         * the `/owner/analyse` JSON request body -- deliberately not MAX_PART_BYTES (a 64 MiB upload
+         * bound; this route never carries evidence content, only already-known identifiers plus the
+         * owner's own instruction text). Sized generously for the actual request shape: up to
+         * `DocumentAnalysisCoordinator.MAX_SELECTIONS` (20) identifier pairs plus an instruction up
+         * to `DocumentAnalysisCoordinator.MAX_INSTRUCTION_CHARACTERS` (4,000 characters, worst case
+         * 4 bytes/char in UTF-8), with headroom for JSON structure/escaping overhead.
+         */
+        const val MAX_ANALYSE_REQUEST_BODY_BYTES: Long = 32L * 1024L
+    }
+}
+
+/**
+ * Minimum Production Document Pipeline — Local Reasoning Implementation.
+ * Thrown by [readBounded] the instant more than [RequestBodyTooLargeException.limitBytes] bytes
+ * have been read -- never after buffering an unbounded body and inspecting its size afterward.
+ */
+internal class RequestBodyTooLargeException(val limitBytes: Long) : Exception("request body exceeds $limitBytes bytes")
+
+/**
+ * Reads at most `limit + 1` bytes from [input], throwing [RequestBodyTooLargeException] the
+ * instant the `(limit + 1)`th byte is confirmed present -- this function never calls an unbounded
+ * `readBytes()` and inspects the resulting size afterward, and never buffers more than `limit + 1`
+ * bytes of an oversized body before rejecting it.
+ */
+internal fun readBounded(input: InputStream, limit: Long): ByteArray {
+    val out = ByteArrayOutputStream(minOf(limit + 1, 8192L).toInt())
+    val chunk = ByteArray(8192)
+    var total = 0L
+    while (true) {
+        val remainingToConfirmOverflow = limit + 1 - total
+        if (remainingToConfirmOverflow <= 0) throw RequestBodyTooLargeException(limit)
+        val toRead = minOf(chunk.size.toLong(), remainingToConfirmOverflow).toInt()
+        val n = input.read(chunk, 0, toRead)
+        if (n == -1) break
+        total += n
+        if (total > limit) throw RequestBodyTooLargeException(limit)
+        out.write(chunk, 0, n)
+    }
+    return out.toByteArray()
+}
+
+/**
+ * Minimum Production Document Pipeline — Local Reasoning Implementation.
+ * Parses the fixed `{"selections":[{"evidenceArtifactId":"...","derivativeGenerationId":"..."}],"instruction":"..."}`
+ * request-body shape [OwnerEvidenceHttpServer.AnalyseHandler] accepts.
+ * Deliberately not a general-purpose JSON deserializer -- [SimpleJsonReader]
+ * below is the smallest generic value parser that lets this function
+ * reject a malformed body cleanly (`JsonParseException`, mapped by the
+ * caller to a 400) rather than risk misparsing a hand-rolled, shape-specific
+ * scan.
+ */
+private fun parseAnalyseRequestBody(bodyBytes: ByteArray): Pair<List<EvidenceGenerationSelection>, String> {
+    val text = String(bodyBytes, StandardCharsets.UTF_8)
+    val root = SimpleJsonReader(text).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+
+    val selectionsRaw = obj["selections"] as? List<*> ?: throw JsonParseException("expected a 'selections' array")
+    if (selectionsRaw.isEmpty()) throw JsonParseException("'selections' must not be empty")
+    val selections = selectionsRaw.map { item ->
+        val itemObj = item as? Map<*, *> ?: throw JsonParseException("expected a selection object")
+        val evidenceArtifactIdRaw = itemObj["evidenceArtifactId"] as? String
+            ?: throw JsonParseException("expected an 'evidenceArtifactId' string")
+        val derivativeGenerationIdRaw = itemObj["derivativeGenerationId"] as? String
+            ?: throw JsonParseException("expected a 'derivativeGenerationId' string")
+        EvidenceGenerationSelection(EvidenceArtifactId(evidenceArtifactIdRaw), DerivativeGenerationId(derivativeGenerationIdRaw))
+    }
+
+    val instruction = obj["instruction"] as? String ?: throw JsonParseException("expected an 'instruction' string")
+    return selections to instruction
+}
+
+/** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */
+internal class JsonParseException(message: String) : Exception(message)
+
+/**
+ * Final correction pass §3: the `/owner/analyse` request schema is genuinely shallow -- a root
+ * object, containing a "selections" array, containing selection objects (three levels) -- so this
+ * bound need not be large. Sized with reasonable headroom above that legitimate depth, not merely
+ * exactly at it, while still ruling out unbounded/pathological nesting (a StackOverflowError from
+ * unbounded recursion is never the effective bound here; this check fires first).
+ */
+private const val MAX_JSON_NESTING_DEPTH = 10
+
+/**
+ * The smallest generic JSON value reader [parseAnalyseRequestBody] needs --
+ * objects, arrays, and strings only (this route's own request shape never
+ * carries a number or boolean); any other token is a malformed request,
+ * reported as [JsonParseException] rather than silently misparsed.
+ */
+private class SimpleJsonReader(private val text: String) {
+    private var pos = 0
+    private var depth = 0
+
+    /**
+     * Parses exactly one JSON value, then requires that only whitespace (if
+     * anything) remains -- unlike [parseValue] alone, which stops the
+     * instant a complete value is recognised and never inspects what
+     * follows it. A well-formed root JSON document has no trailing
+     * non-whitespace content; anything else is a malformed request, never
+     * silently accepted.
+     */
+    fun parseRootValue(): Any {
+        val value = parseValue()
+        skipWhitespace()
+        if (pos != text.length) throw JsonParseException("unexpected trailing content after JSON value at position $pos")
+        return value
+    }
+
+    fun parseValue(): Any {
+        skipWhitespace()
+        if (pos >= text.length) throw JsonParseException("unexpected end of JSON")
+        return when (text[pos]) {
+            '{' -> parseObject()
+            '[' -> parseArray()
+            '"' -> parseString()
+            else -> throw JsonParseException("unexpected token at position $pos")
+        }
+    }
+
+    /**
+     * Every object/array level enters here (or [parseArray]) before recursing into [parseValue]
+     * for its own children -- this is the one place nesting depth actually grows, so it is the one
+     * place it needs to be bounded. [depth] is decremented in `finally` so sibling structures (not
+     * nested inside one another) are never incorrectly accumulated against the same bound.
+     */
+    private fun enterNestedStructure() {
+        depth++
+        if (depth > MAX_JSON_NESTING_DEPTH) {
+            throw JsonParseException("JSON nesting exceeds the maximum permitted depth of $MAX_JSON_NESTING_DEPTH")
+        }
+    }
+
+    private fun parseObject(): Map<String, Any> {
+        enterNestedStructure()
+        try {
+            expect('{')
+            val map = LinkedHashMap<String, Any>()
+            skipWhitespace()
+            if (peek() == '}') { pos++; return map }
+            while (true) {
+                skipWhitespace()
+                val key = parseString()
+                if (map.containsKey(key)) throw JsonParseException("duplicate key '$key' in object")
+                skipWhitespace()
+                expect(':')
+                map[key] = parseValue()
+                skipWhitespace()
+                when (peek()) {
+                    ',' -> { pos++ }
+                    '}' -> { pos++; return map }
+                    else -> throw JsonParseException("expected ',' or '}' in object")
+                }
+            }
+        } finally {
+            depth--
+        }
+    }
+
+    private fun parseArray(): List<Any> {
+        enterNestedStructure()
+        try {
+            expect('[')
+            val list = mutableListOf<Any>()
+            skipWhitespace()
+            if (peek() == ']') { pos++; return list }
+            while (true) {
+                list += parseValue()
+                skipWhitespace()
+                when (peek()) {
+                    ',' -> { pos++ }
+                    ']' -> { pos++; return list }
+                    else -> throw JsonParseException("expected ',' or ']' in array")
+                }
+            }
+        } finally {
+            depth--
+        }
+    }
+
+    private fun parseString(): String {
+        expect('"')
+        val sb = StringBuilder()
+        while (true) {
+            if (pos >= text.length) throw JsonParseException("unterminated string")
+            val c = text[pos]
+            pos++
+            when {
+                c == '"' -> return sb.toString()
+                c == '\\' -> {
+                    if (pos >= text.length) throw JsonParseException("unterminated escape sequence")
+                    val esc = text[pos]
+                    pos++
+                    when (esc) {
+                        '"' -> sb.append('"')
+                        '\\' -> sb.append('\\')
+                        '/' -> sb.append('/')
+                        'n' -> sb.append('\n')
+                        'r' -> sb.append('\r')
+                        't' -> sb.append('\t')
+                        'b' -> sb.append('\b')
+                        'u' -> {
+                            if (pos + 4 > text.length) throw JsonParseException("truncated unicode escape")
+                            val hex = text.substring(pos, pos + 4)
+                            sb.append(hex.toInt(16).toChar())
+                            pos += 4
+                        }
+                        else -> throw JsonParseException("invalid escape sequence")
+                    }
+                }
+                else -> sb.append(c)
+            }
+        }
+    }
+
+    private fun skipWhitespace() {
+        while (pos < text.length && text[pos].isWhitespace()) pos++
+    }
+
+    private fun peek(): Char {
+        if (pos >= text.length) throw JsonParseException("unexpected end of JSON")
+        return text[pos]
+    }
+
+    private fun expect(c: Char) {
+        skipWhitespace()
+        if (pos >= text.length || text[pos] != c) throw JsonParseException("expected '$c'")
+        pos++
     }
 }
 
@@ -856,9 +1215,14 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
 <p id="status"></p>
 <table>
-  <thead><tr><th>File</th><th>Size</th><th>Status</th><th>Evidence ID</th><th>Result</th><th>Actions</th></tr></thead>
+  <thead><tr><th>File</th><th>Size</th><th>Status</th><th>Evidence ID</th><th>Result</th><th>Analyse</th><th>Actions</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
+<h2>Analyse Selected Documents</h2>
+<p class="note">Select one or more processed documents above (checkbox in the "Analyse" column), enter an instruction, then click Analyse. The result is provider-generated material for human review -- not Evidence, Memory, Knowledge, or canonical Parker truth, and is never saved.</p>
+<p><textarea id="analysisInstruction" rows="3" style="width:100%; box-sizing:border-box;" placeholder="What would you like Parker to look for or summarise across the selected documents?"></textarea></p>
+<p><button id="analyseButton">Analyse Selected</button></p>
+<div id="analysisResults"></div>
 <script>
 let rows = [];
 let expandedIndex = null;
@@ -945,13 +1309,27 @@ function render() {
       actions.appendChild(b);
     }
     tr.innerHTML = `<td>${'$'}{escapeHtml(row.originalFileName)}</td><td>${'$'}{row.byteLength}</td><td>${'$'}{row.status}</td><td>${'$'}{row.evidenceArtifactId || ''}</td><td>${'$'}{row.message || ''}</td>`;
+
+    // Minimum Production Document Pipeline -- a row is selectable for analysis once it carries a
+    // durable derivative generation identity (Tier A or Tier B durable OCR) the owner can already
+    // retrieve content for -- never for a row that has not reached that state yet.
+    const analyseTd = document.createElement('td');
+    if ((row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) ||
+        (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId)) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!row.selectedForAnalysis;
+      cb.onchange = () => { row.selectedForAnalysis = cb.checked; };
+      analyseTd.appendChild(cb);
+    }
+    tr.appendChild(analyseTd);
     tr.appendChild(actions);
     tbody.appendChild(tr);
 
     if (expandedIndex === index && (row.content || row.contentError)) {
       const detailTr = document.createElement('tr');
       const detailTd = document.createElement('td');
-      detailTd.colSpan = 6;
+      detailTd.colSpan = 7;
       if (row.content) {
         detailTd.appendChild(buildContentPanel(row.content));
       } else {
@@ -966,7 +1344,7 @@ function render() {
     if (expandedIndex === index && (row.ocrContent || row.ocrContentError)) {
       const detailTr = document.createElement('tr');
       const detailTd = document.createElement('td');
-      detailTd.colSpan = 6;
+      detailTd.colSpan = 7;
       if (row.ocrContent) {
         detailTd.appendChild(buildOcrContentPanel(row.ocrContent));
       } else {
@@ -1251,6 +1629,99 @@ async function viewOcrContent(index) {
   }
   expandedIndex = index;
   render();
+}
+
+// Minimum Production Document Pipeline -- Local Reasoning Implementation. Submits the owner's own
+// selected, already-admitted derivative generations plus their instruction to the one owner-authenticated
+// /owner/analyse route. Never persisted anywhere by this page; a fresh analysis is requested every time.
+document.getElementById('analyseButton').onclick = analyseSelected;
+
+function collectAnalysisSelections() {
+  const selections = [];
+  rows.forEach(row => {
+    if (!row.selectedForAnalysis) return;
+    if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
+      selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.derivativeGenerationId });
+    } else if (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId) {
+      selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.ocrDerivativeGenerationId });
+    }
+  });
+  return selections;
+}
+
+function showAnalysisNote(text) {
+  const resultsDiv = document.getElementById('analysisResults');
+  resultsDiv.innerHTML = '';
+  const p = document.createElement('p');
+  p.className = 'note';
+  p.textContent = text;
+  resultsDiv.appendChild(p);
+}
+
+async function analyseSelected() {
+  const selections = collectAnalysisSelections();
+  const instruction = document.getElementById('analysisInstruction').value;
+  if (!selections.length) {
+    showAnalysisNote('Select at least one processed document above before analysing.');
+    return;
+  }
+  if (!instruction.trim()) {
+    showAnalysisNote('Enter an analysis instruction before analysing.');
+    return;
+  }
+  showAnalysisNote('Analysing...');
+  try {
+    const resp = await fetch('/owner/analyse', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ selections, instruction }),
+    });
+    if (resp.status === 401) {
+      showAnalysisNote('Unauthorised: check owner token.');
+      return;
+    }
+    const result = await resp.json();
+    const resultsDiv = document.getElementById('analysisResults');
+    resultsDiv.innerHTML = '';
+    renderAnalysisResult(resultsDiv, result);
+  } catch (e) {
+    showAnalysisNote('Analysis request failed: ' + e);
+  }
+}
+
+// Every field below is inserted via appendField/appendExtractedText/textContent (never innerHTML),
+// so the local model's own response -- provider-generated, human-review-only material -- can never
+// be interpreted as HTML or script, no matter what characters it contains.
+function renderAnalysisResult(container, result) {
+  if (result.status !== 'COMPLETED') {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.textContent = 'Analysis failed: ' + (result.message || result.status);
+    container.appendChild(p);
+    return;
+  }
+  const panel = document.createElement('div');
+  panel.className = 'content-panel';
+  const disclaimer = document.createElement('p');
+  disclaimer.className = 'note';
+  disclaimer.textContent = 'Provider-generated material for human review -- not Evidence, Memory, Knowledge, or canonical Parker truth.';
+  panel.appendChild(disclaimer);
+  appendExtractedText(panel, 'Analysis:', result.result.analysisText);
+  if (result.result.mechanismIdentity) {
+    appendField(panel, 'Model', result.result.mechanismIdentity + ' ' + (result.result.mechanismVersion || ''));
+  }
+  appendWarnings(panel, result.result.warnings);
+  const label = document.createElement('div');
+  label.textContent = 'Evidence references supplied:';
+  panel.appendChild(label);
+  const ul = document.createElement('ul');
+  result.result.evidenceReferences.forEach(ref => {
+    const li = document.createElement('li');
+    li.textContent = ref.evidenceArtifactId + ' / ' + ref.derivativeGenerationId + ' (' + ref.derivativeKind + ')';
+    ul.appendChild(li);
+  });
+  panel.appendChild(ul);
+  container.appendChild(panel);
 }
 </script>
 </body>

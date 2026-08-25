@@ -2,9 +2,12 @@ package parker.composition
 
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeProducerIdentity
+import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.EvidenceGenerationSelection
 import parker.core.interfaces.OcrDerivativeExtractedResult
+import parker.core.interfaces.OwnerDocumentAnalysisRequest
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.TierAContentRetrievalOutcome
@@ -16,6 +19,9 @@ import parker.core.interfaces.TierBOcrContentRetrievalOutcome
 import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
+import parker.ui.OwnerDocumentAnalysisOutcome
+import parker.ui.OwnerDocumentAnalysisPresentation
+import parker.ui.OwnerDocumentEvidenceReference
 import parker.ui.OwnerDocxTableSummary
 import parker.ui.OwnerEmlAttachmentSummary
 import parker.ui.OwnerEmlBodySummary
@@ -62,6 +68,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val retrieveTierAExtractedContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome,
     private val invokeTierBOcrDurableGenerationAsOwner: suspend (EvidenceArtifactId) -> TierBOcrOwnerInvocationOutcome,
     private val retrieveTierBOcrContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome,
+    private val analyseDocumentsAsOwner: suspend (OwnerDocumentAnalysisRequest) -> DocumentAnalysisOutcome,
 ) : OwnerEvidenceOperations {
 
     override suspend fun importFile(absolutePath: String, declaredMediaType: String?): EvidenceImportOutcome =
@@ -303,4 +310,40 @@ class OwnerUiEvidenceRuntimeAdapter(
         producer = extracted.producerIdentity.toSummary(),
         completenessState = extracted.completenessState.name,
     )
+
+    override suspend fun analyseDocuments(
+        selections: List<EvidenceGenerationSelection>,
+        instruction: String,
+    ): OwnerDocumentAnalysisOutcome =
+        when (val outcome = analyseDocumentsAsOwner(OwnerDocumentAnalysisRequest(selections, instruction))) {
+            is DocumentAnalysisOutcome.Completed -> OwnerDocumentAnalysisOutcome.Completed(
+                OwnerDocumentAnalysisPresentation(
+                    analysisText = outcome.result.analysisText,
+                    evidenceReferences = outcome.result.evidenceItems.map {
+                        OwnerDocumentEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind)
+                    },
+                    mechanismIdentity = outcome.result.mechanismIdentity,
+                    mechanismVersion = outcome.result.mechanismVersion,
+                    instruction = outcome.result.instruction,
+                    warnings = outcome.result.warnings,
+                ),
+            )
+            is DocumentAnalysisOutcome.NotAuthorised -> OwnerDocumentAnalysisOutcome.NotAuthorised(outcome.reason)
+            is DocumentAnalysisOutcome.TooManySelections -> OwnerDocumentAnalysisOutcome.TooManySelections(outcome.requested, outcome.max)
+            is DocumentAnalysisOutcome.InstructionTooLarge -> OwnerDocumentAnalysisOutcome.InstructionTooLarge(outcome.actualCharacters, outcome.max)
+            is DocumentAnalysisOutcome.PromptTooLarge -> OwnerDocumentAnalysisOutcome.PromptTooLarge(outcome.actualCharacters, outcome.max)
+            is DocumentAnalysisOutcome.UnknownGeneration -> OwnerDocumentAnalysisOutcome.UnknownGeneration(outcome.derivativeGenerationId)
+            is DocumentAnalysisOutcome.SourceMismatch ->
+                OwnerDocumentAnalysisOutcome.SourceMismatch(outcome.evidenceArtifactId, outcome.derivativeGenerationId)
+            is DocumentAnalysisOutcome.ContentMissing -> OwnerDocumentAnalysisOutcome.ContentMissing(outcome.derivativeGenerationId)
+            is DocumentAnalysisOutcome.ContentCorrupt ->
+                OwnerDocumentAnalysisOutcome.ContentCorrupt(outcome.derivativeGenerationId, outcome.reason)
+            is DocumentAnalysisOutcome.UnsupportedRepresentationVersion ->
+                OwnerDocumentAnalysisOutcome.UnsupportedRepresentationVersion(outcome.derivativeGenerationId, outcome.version)
+            is DocumentAnalysisOutcome.UnsupportedDerivativeKind ->
+                OwnerDocumentAnalysisOutcome.UnsupportedDerivativeKind(outcome.derivativeGenerationId, outcome.derivativeKind)
+            is DocumentAnalysisOutcome.ContentTooLarge -> OwnerDocumentAnalysisOutcome.ContentTooLarge(outcome.actualCharacters, outcome.max)
+            is DocumentAnalysisOutcome.ResponseTooLarge -> OwnerDocumentAnalysisOutcome.ResponseTooLarge(outcome.actualCharacters, outcome.max)
+            is DocumentAnalysisOutcome.ModelInvocationFailed -> OwnerDocumentAnalysisOutcome.ModelInvocationFailed(outcome.safeMessage)
+        }
 }

@@ -2,6 +2,7 @@ package parker.ui
 
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.EvidenceGenerationSelection
 
 /**
  * Owner Evidence Upload & Processing (first version). The owner UI's
@@ -85,6 +86,20 @@ interface OwnerEvidenceOperations {
         evidenceArtifactId: EvidenceArtifactId,
         derivativeGenerationId: DerivativeGenerationId,
     ): TierBOcrContentRetrievalResult
+
+    /**
+     * Minimum Production Document Pipeline — Local Reasoning Implementation.
+     * Submits one or more already-admitted evidence derivative generations
+     * ([selections] -- identities the caller already possesses from a prior
+     * [processTierA]/[processTierBDurable] response, never a filesystem path
+     * or enumeration) plus the owner's own [instruction] to Parker's
+     * currently configured LOCAL model-inference seam for a
+     * human-reviewable analysis. Structurally owner-only, exactly like
+     * every other operation on this interface: no `requestingPrincipalId`
+     * parameter of any kind. Never persists the returned analysis, never
+     * writes to Memory/Knowledge/QMD/RKS, never re-runs extraction or OCR.
+     */
+    suspend fun analyseDocuments(selections: List<EvidenceGenerationSelection>, instruction: String): OwnerDocumentAnalysisOutcome
 }
 
 /** The truthful result of one [OwnerEvidenceOperations.importFile] call. */
@@ -293,4 +308,58 @@ sealed interface TierBOcrContentRetrievalResult {
     data class ContentCorrupt(val safeMessage: String) : TierBOcrContentRetrievalResult
     data class UnsupportedRepresentationVersion(val version: Int) : TierBOcrContentRetrievalResult
     data class Failed(val safeMessage: String) : TierBOcrContentRetrievalResult
+}
+
+/**
+ * One evidence derivative generation actually submitted for one
+ * [OwnerEvidenceOperations.analyseDocuments] call, presented back to the
+ * owner alongside the analysis so it is clear exactly what material was
+ * supplied. No content, no producer/model detail beyond a bare kind label
+ * -- the owner already saw the full content via [OwnerTierAContent]/
+ * [OwnerTierBOcrContent] when they selected it.
+ */
+data class OwnerDocumentEvidenceReference(
+    val evidenceArtifactId: EvidenceArtifactId,
+    val derivativeGenerationId: DerivativeGenerationId,
+    val derivativeKind: String,
+)
+
+/**
+ * The truthful, owner-facing presentation of one completed
+ * [OwnerEvidenceOperations.analyseDocuments] invocation. [analysisText] is
+ * the local model's own raw response -- provider-generated material for
+ * human review, never Evidence, Memory, Knowledge, or canonical truth.
+ * [mechanismIdentity]/[mechanismVersion] are `null` when Parker cannot
+ * truthfully determine them -- never fabricated.
+ */
+data class OwnerDocumentAnalysisPresentation(
+    val analysisText: String,
+    val evidenceReferences: List<OwnerDocumentEvidenceReference>,
+    val mechanismIdentity: String?,
+    val mechanismVersion: String?,
+    val instruction: String,
+    val warnings: List<String>,
+)
+
+/**
+ * The truthful result of one [OwnerEvidenceOperations.analyseDocuments]
+ * call. Mirrors [parker.core.interfaces.DocumentAnalysisOutcome]'s own
+ * distinctions exactly -- every failure distinct and honest, never
+ * collapsed into a single generic failure.
+ */
+sealed interface OwnerDocumentAnalysisOutcome {
+    data class Completed(val result: OwnerDocumentAnalysisPresentation) : OwnerDocumentAnalysisOutcome
+    data class NotAuthorised(val reason: String) : OwnerDocumentAnalysisOutcome
+    data class TooManySelections(val requested: Int, val max: Int) : OwnerDocumentAnalysisOutcome
+    data class InstructionTooLarge(val actualCharacters: Int, val max: Int) : OwnerDocumentAnalysisOutcome
+    data class PromptTooLarge(val actualCharacters: Int, val max: Int) : OwnerDocumentAnalysisOutcome
+    data class UnknownGeneration(val derivativeGenerationId: DerivativeGenerationId) : OwnerDocumentAnalysisOutcome
+    data class SourceMismatch(val evidenceArtifactId: EvidenceArtifactId, val derivativeGenerationId: DerivativeGenerationId) : OwnerDocumentAnalysisOutcome
+    data class ContentMissing(val derivativeGenerationId: DerivativeGenerationId) : OwnerDocumentAnalysisOutcome
+    data class ContentCorrupt(val derivativeGenerationId: DerivativeGenerationId, val safeMessage: String) : OwnerDocumentAnalysisOutcome
+    data class UnsupportedRepresentationVersion(val derivativeGenerationId: DerivativeGenerationId, val version: Int) : OwnerDocumentAnalysisOutcome
+    data class UnsupportedDerivativeKind(val derivativeGenerationId: DerivativeGenerationId, val derivativeKind: String) : OwnerDocumentAnalysisOutcome
+    data class ContentTooLarge(val actualCharacters: Int, val max: Int) : OwnerDocumentAnalysisOutcome
+    data class ResponseTooLarge(val actualCharacters: Int, val max: Int) : OwnerDocumentAnalysisOutcome
+    data class ModelInvocationFailed(val safeMessage: String) : OwnerDocumentAnalysisOutcome
 }

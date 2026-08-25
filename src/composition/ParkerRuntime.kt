@@ -17,6 +17,7 @@ import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeMemoryRegistrationOutcome
+import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
@@ -32,6 +33,7 @@ import parker.core.interfaces.ModuleDescriptor
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.ModulePermissionRequirement
 import parker.core.interfaces.OcrMechanism
+import parker.core.interfaces.OwnerDocumentAnalysisRequest
 import parker.core.interfaces.OwnerEvidenceDeletionAuthority
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PermissionAction
@@ -77,8 +79,10 @@ import parker.core.runtime.DefaultPlanCandidateGenerator
 import parker.core.runtime.DefaultReasoningContextAssembler
 import parker.core.runtime.DefaultReasoningKnowledgeSource
 import parker.core.runtime.DefaultReasoningPromptBuilder
+import parker.core.runtime.DefaultDocumentAnalysisPromptBuilder
 import parker.core.runtime.DerivativeMemoryRegistrationCoordinator
 import parker.core.runtime.DeterministicAgentStepSource
+import parker.core.runtime.DocumentAnalysisCoordinator
 import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
@@ -284,6 +288,11 @@ class ParkerRuntime(
     // tierAContentRetrievalCoordinator (never modified or repurposed, Tier B scope lock §28),
     // mirroring its own isolation.
     private lateinit var tierBOcrContentRetrievalCoordinator: TierBOcrContentRetrievalCoordinator
+
+    // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
+    // narrow class, mirroring tierBOcrContentRetrievalCoordinator's own isolation -- no other
+    // coordinator constructed in buildAndRegisterRuntimeGraph ever receives a reference to it.
+    private lateinit var documentAnalysisCoordinator: DocumentAnalysisCoordinator
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -994,6 +1003,11 @@ class ParkerRuntime(
             logger,
         )
 
+        // Hoisted so the Minimum Production Document Pipeline's own documentAnalysisCoordinator
+        // (wired below, after tierBOcrContentRetrievalCoordinator) can reuse this exact same
+        // ModelInferenceClient instance -- the currently configured LOCAL implementation only --
+        // rather than constructing a second HTTP client instance pointed at the same endpoint.
+        val modelInferenceClient = LocalHttpModelInferenceClient(config.modelEndpointUrl, config.modelName)
         val reasoningProvider = stage("Reasoning Provider construction") {
             LoggingReasoningProvider(
                 ExplicitOwnerPersistenceDirectiveReasoningProvider(
@@ -1001,7 +1015,7 @@ class ParkerRuntime(
                     classifier = DefaultExplicitOwnerPersistenceDirectiveClassifier(),
                     delegate = ModelReasoningProvider(
                         promptBuilder = DefaultReasoningPromptBuilder(),
-                        modelInferenceClient = LocalHttpModelInferenceClient(config.modelEndpointUrl, config.modelName),
+                        modelInferenceClient = modelInferenceClient,
                         responseParser = TaggedReasoningResponseParser(),
                         timeoutMs = config.modelTimeoutMs,
                     ),
@@ -1296,6 +1310,22 @@ class ParkerRuntime(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
+
+        // Minimum Production Document Pipeline — Local Reasoning Implementation. Reuses
+        // permissionEngine (the same, already-registered EvidenceIntelligenceInvocationGate
+        // (EXECUTE, DOCUMENT) proposal class tierBOcrOwnerInvocationCoordinator, above, already
+        // evaluates), tierAContentRetrievalCoordinator/tierBOcrContentRetrievalCoordinator
+        // (already wired above), and modelInferenceClient (hoisted above, the same instance
+        // reasoningProvider's own ModelReasoningProvider already uses) -- no new dependency of
+        // any kind is constructed for this coordinator alone.
+        documentAnalysisCoordinator = DocumentAnalysisCoordinator(
+            permissionEngine = permissionEngine,
+            tierAContentRetrievalCoordinator = tierAContentRetrievalCoordinator,
+            tierBOcrContentRetrievalCoordinator = tierBOcrContentRetrievalCoordinator,
+            modelInferenceClient = modelInferenceClient,
+            promptBuilder = DefaultDocumentAnalysisPromptBuilder(),
+            modelTimeoutMs = config.modelTimeoutMs,
+        )
 
         // The existing raw memoryCore, not a PermissionGatedMemoryCore wrapper: this coordinator
         // already gates its own CandidateRecordProduced dispatch internally (its own
@@ -1855,6 +1885,41 @@ class ParkerRuntime(
                 "(evidenceArtifactId=${evidenceArtifactId.value}, derivativeGenerationId=${derivativeGenerationId.value})",
         )
         return tierBOcrContentRetrievalCoordinator.retrieve(evidenceArtifactId, derivativeGenerationId)
+    }
+
+    /**
+     * Minimum Production Document Pipeline — Local Reasoning Implementation. The one production
+     * entry point through which one or more already-admitted evidence derivative generations may
+     * be submitted, as a bounded package, to Parker's currently configured LOCAL model-inference
+     * seam for a human-reviewable analysis -- **explicit, individually-authorized owner invocation
+     * only**, mirroring [invokeTierBOcrDurableGenerationAsOwner]'s own structural owner-only
+     * pattern exactly: no `requestingPrincipalId` parameter, always acts as
+     * `PrincipalId(config.ownerPrincipalId)`. Also gated by a real Permission Engine evaluation
+     * (the same `EvidenceIntelligenceInvocationGate` proposal class
+     * [invokeTierBOcrDurableGenerationAsOwner] already evaluates) before any derivative retrieval
+     * or model invocation begins.
+     *
+     * [documentAnalysisCoordinator] performs the entire governed chain: authorisation,
+     * per-selection derivative resolution (Tier B OCR first, Tier A fallback -- never
+     * re-extraction, never re-running OCR), bounded evidence-package assembly, prompt
+     * construction, and exactly one call to the configured LOCAL [ModelInferenceClient]. Creates
+     * no durable side effect of any kind: no Evidence write, no derivative write, no Memory/
+     * Knowledge/QMD/RKS write, no analysis-result persistence, no new audit store. The returned
+     * analysis text is provider-generated material for human review only, never automatically
+     * promoted to canonical Parker truth.
+     *
+     * The log line below records no evidence content, no prompt content, and no model response --
+     * only that an invocation occurred, mirroring every other owner entry point's own logging
+     * discipline.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun analyseDocumentsAsOwner(request: OwnerDocumentAnalysisRequest): DocumentAnalysisOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Document analysis invoked by owner (selectionCount=${request.selections.size})")
+        return documentAnalysisCoordinator.analyse(PrincipalId(config.ownerPrincipalId), request)
     }
 
     /**

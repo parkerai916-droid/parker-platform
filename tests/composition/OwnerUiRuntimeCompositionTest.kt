@@ -187,5 +187,10 @@ class OwnerUiRuntimeCompositionTest {
             evidenceArtifactId: EvidenceArtifactId,
             derivativeGenerationId: parker.core.interfaces.DerivativeGenerationId,
         ): parker.ui.TierBOcrContentRetrievalResult = parker.ui.TierBOcrContentRetrievalResult.UnknownGeneration
+
+        override suspend fun analyseDocuments(
+            selections: List<parker.core.interfaces.EvidenceGenerationSelection>,
+            instruction: String,
+        ): parker.ui.OwnerDocumentAnalysisOutcome = parker.ui.OwnerDocumentAnalysisOutcome.NotAuthorised("not authorised")
     }
 }

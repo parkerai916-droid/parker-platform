@@ -72,6 +72,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
         invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
         retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
+        analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
     )
 
     // ================= Import =================

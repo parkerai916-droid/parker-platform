@@ -117,6 +117,7 @@ fun main(args: Array<String>) = runBlocking {
             retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
             retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
+            analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
         )
         OwnerEvidenceHttpServer(
             bindAddress = config.ownerHttpBindAddress,

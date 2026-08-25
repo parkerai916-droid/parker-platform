@@ -1,6 +1,7 @@
 package parker.composition
 
 import java.io.ByteArrayOutputStream
+import java.lang.reflect.Field
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -10,11 +11,13 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
+import parker.core.runtime.DocumentAnalysisCoordinator
 
 /**
  * Owner LAN Evidence Upload. Decisive proof for [OwnerEvidenceHttpServer]
@@ -33,8 +36,8 @@ class OwnerEvidenceHttpServerTest {
     private val client: HttpClient = HttpClient.newHttpClient()
     private val token = "test-owner-http-token-1234"
 
-    private fun config(doclingBridgeScriptPath: String): ParkerRuntimeConfig = ParkerRuntimeConfig(
-        modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable
+    private fun config(doclingBridgeScriptPath: String, modelEndpointUrl: String = "http://127.0.0.1:1/api/generate"): ParkerRuntimeConfig = ParkerRuntimeConfig(
+        modelEndpointUrl = modelEndpointUrl, // deliberately unreachable by default
         modelName = "test-model",
         ownerPrincipalId = ownerPrincipalId,
         localTextChannelModuleId = "channel.local-text-evidence-http-test",
@@ -61,7 +64,12 @@ class OwnerEvidenceHttpServerTest {
         return scriptPath
     }
 
-    private class Harness(val runtime: ParkerRuntime, val server: OwnerEvidenceHttpServer) {
+    private class Harness(
+        val runtime: ParkerRuntime,
+        val server: OwnerEvidenceHttpServer,
+        val runtimeLogger: RecordingParkerLogger,
+        val serverLogger: RecordingParkerLogger,
+    ) {
         fun baseUri(): String = "http://127.0.0.1:${server.boundPort}"
         fun shutdown() {
             server.stop()
@@ -69,10 +77,12 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
-    private fun startHarness(doclingBridgeScriptPath: String, tokenOverride: String = token): Harness {
+    private fun startHarness(doclingBridgeScriptPath: String, tokenOverride: String = token, modelEndpointUrl: String = "http://127.0.0.1:1/api/generate"): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
-        val runtime = ParkerRuntime(config(bridgePath), RecordingParkerLogger())
+        val runtimeLogger = RecordingParkerLogger()
+        val serverLogger = RecordingParkerLogger()
+        val runtime = ParkerRuntime(config(bridgePath, modelEndpointUrl), runtimeLogger)
         kotlinx.coroutines.runBlocking { runtime.start() }
         val adapter = OwnerUiEvidenceRuntimeAdapter(
             ownerPrincipalId = PrincipalId(ownerPrincipalId),
@@ -82,16 +92,17 @@ class OwnerEvidenceHttpServerTest {
             retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
             retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
+            analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
             port = 0,
             token = tokenOverride,
             operations = adapter,
-            logger = RecordingParkerLogger(),
+            logger = serverLogger,
         )
         server.start()
-        return Harness(runtime, server)
+        return Harness(runtime, server, runtimeLogger, serverLogger)
     }
 
     private data class UploadPart(val fieldName: String, val fileName: String, val contentType: String?, val bytes: ByteArray)
@@ -541,6 +552,22 @@ class OwnerEvidenceHttpServerTest {
         val builder = HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path")).GET()
         if (authToken != null) builder.header("Authorization", "Bearer $authToken")
         return send(builder.build())
+    }
+
+    private fun postJson(harness: Harness, path: String, body: String, authToken: String? = token): HttpResponse<String> {
+        val builder = HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+        if (authToken != null) builder.header("Authorization", "Bearer $authToken")
+        return send(builder.build())
+    }
+
+    /** Mirrors `ParkerRuntimeOcrCompositionTest`'s own identical reflection helper. */
+    private fun <T> Any.privateField(name: String): T {
+        val field: Field = this::class.java.declaredFields.first { it.name == name }
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return field.get(this) as T
     }
 
     // ================= Document Ingestion -- Derivative Content Persistence and Retrieval =================
@@ -1152,6 +1179,428 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(".onnx" !in body, "response must never carry a model artifact filename: $body")
             assertTrue("Exception" !in body, "response must never carry a raw exception name: $body")
             assertTrue("\tat " !in body, "response must never carry a stack trace: $body")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // ================= Minimum Production Document Pipeline -- Local Reasoning Implementation =================
+
+    @Test
+    fun `M an analyse request with no Authorization header is rejected with 401`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = postJson(
+                harness, "/owner/analyse",
+                """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"Summarise"}""",
+                authToken = null,
+            )
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `M an analyse request with the wrong token is rejected with 401`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = postJson(
+                harness, "/owner/analyse",
+                """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"Summarise"}""",
+                authToken = "wrong-token",
+            )
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `N a malformed or invalid analyse request body returns a clean 400, never an internal error`() = runTest {
+        val harness = startHarness("")
+        try {
+            assertEquals(400, postJson(harness, "/owner/analyse", "not json at all").statusCode())
+            assertEquals(400, postJson(harness, "/owner/analyse", "{}").statusCode())
+            assertEquals(400, postJson(harness, "/owner/analyse", """{"selections":[],"instruction":"x"}""").statusCode())
+            assertEquals(400, postJson(harness, "/owner/analyse", """{"selections":[{"evidenceArtifactId":"e"}],"instruction":"x"}""").statusCode())
+            assertEquals(400, postJson(harness, "/owner/analyse", """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}]}""").statusCode())
+            assertEquals(400, postJson(harness, "/owner/analyse", """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":""}""").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a GET request to the analyse route is rejected, never treated as a valid invocation`() = runTest {
+        val harness = startHarness("")
+        try {
+            assertEquals(404, get(harness, "/owner/analyse").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `I too many selections on the analyse route fails closed cleanly, never a 500`() = runTest {
+        val harness = startHarness("")
+        try {
+            val selections = (1..(DocumentAnalysisCoordinator.MAX_SELECTIONS + 1))
+                .joinToString(",") { """{"evidenceArtifactId":"e-$it","derivativeGenerationId":"g-$it"}""" }
+            val response = postJson(harness, "/owner/analyse", """{"selections":[$selections],"instruction":"Summarise"}""")
+
+            assertEquals(200, response.statusCode())
+            assertEquals("FAILED", extractField(response.body(), "status"))
+            assertTrue("Too many documents" in (extractField(response.body(), "message") ?: ""))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `end-to-end -- a real Tier A document, selected and analysed, returns the exact evidence references supplied, and neither evidence, prompt, nor model response content ever appears in a log`() = runTest {
+        StubModelServer.start("The document appears to be a simple searchable PDF.").use { stub ->
+            val harness = startHarness("", modelEndpointUrl = stub.endpointUrl)
+            try {
+                val uploadResponse = send(
+                    uploadRequest(
+                        harness,
+                        listOf(UploadPart("files", "01-searchable-simple.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("01-searchable-simple.pdf")))),
+                    ),
+                )
+                val evidenceArtifactId = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+                val processBody = post(harness, "/owner/evidence/$evidenceArtifactId/process").body()
+                val derivativeGenerationId = requireNotNull(extractField(processBody, "derivativeGenerationId"))
+                val originalText = requireNotNull(extractJsonStringField(processBody, "documentText"))
+                val instruction = "What kind of document is this?"
+
+                val analyseBody = """{"selections":[{"evidenceArtifactId":"$evidenceArtifactId","derivativeGenerationId":"$derivativeGenerationId"}],"instruction":"$instruction"}"""
+                val response = postJson(harness, "/owner/analyse", analyseBody)
+
+                assertEquals(200, response.statusCode())
+                assertEquals("COMPLETED", extractField(response.body(), "status"))
+                assertEquals("The document appears to be a simple searchable PDF.", extractJsonStringField(response.body(), "analysisText"))
+                assertEquals(evidenceArtifactId, extractField(response.body(), "evidenceArtifactId"))
+                assertEquals(derivativeGenerationId, extractField(response.body(), "derivativeGenerationId"))
+
+                // W -- no re-extraction/OCR occurred: the exact same documentText the earlier
+                // /process response already returned is what reached the (stubbed) model verbatim,
+                // never re-derived from the source a second time. Escaped TWICE: once by
+                // DefaultDocumentAnalysisPromptBuilder's own JSON framing (correction pass §4 --
+                // evidence content is embedded as a JSON string value inside the prompt), then
+                // again by LocalHttpModelInferenceClient's own defaultOllamaRequestBody/jsonEscape,
+                // since the stub records the raw outbound Ollama JSON request body (the prompt
+                // itself is that request's own JSON string field value).
+                fun jsonEscapeOnce(s: String) = s
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t")
+                val doublyEscapedOriginalText = jsonEscapeOnce(jsonEscapeOnce(originalText))
+                assertTrue(doublyEscapedOriginalText in stub.receivedRequestBodies.single())
+
+                // P, Q, R -- evidence content, the owner's own prompt/instruction content, and the
+                // model's own response never appear in either logger's own recorded messages.
+                val allLogMessages = (harness.runtimeLogger.messages() + harness.serverLogger.messages()).joinToString("\n")
+                assertFalse(originalText in allLogMessages, "evidence content must never appear in a log line")
+                assertFalse(instruction in allLogMessages, "the owner's own instruction/prompt content must never appear in a log line")
+                assertFalse("The document appears to be a simple searchable PDF." in allLogMessages, "the model's own response must never appear in a log line")
+            } finally {
+                harness.shutdown()
+            }
+        }
+    }
+
+    @Test
+    fun `S the served page selects and renders analysis results via textContent only, never innerHTML, for owner- or model-controlled content`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val body = response.body()
+            assertTrue(body.contains("id=\"analysisInstruction\""), "the page must offer an instruction input for document analysis")
+            assertTrue(body.contains("id=\"analyseButton\""), "the page must offer one explicit Analyse action")
+            assertTrue(body.contains("id=\"analysisResults\""), "the page must offer a results area")
+            assertTrue(body.contains("appendExtractedText(panel, 'Analysis:'"), "the model's own analysis text must be inserted via the existing textContent-only appendExtractedText helper")
+            assertTrue(
+                body.contains("li.textContent = ref.evidenceArtifactId"),
+                "evidence references must be inserted via textContent, never innerHTML",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // ================= Correction pass §1: bound /owner/analyse request body =================
+
+    private class CountingInfiniteInputStream : java.io.InputStream() {
+        var bytesRequested: Long = 0
+            private set
+
+        override fun read(): Int {
+            bytesRequested += 1
+            return 'x'.code
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            bytesRequested += len
+            b.fill('x'.code.toByte(), off, off + len)
+            return len
+        }
+    }
+
+    @Test
+    fun `A a request body at or below the permitted limit is processed normally, never rejected for size`() = runTest {
+        val harness = startHarness("")
+        try {
+            // Well under MAX_ANALYSE_REQUEST_BODY_BYTES (32 KiB) and well under the coordinator's
+            // own MAX_INSTRUCTION_CHARACTERS (4,000) -- this body must reach real JSON parsing and
+            // coordinator logic, not be rejected for size.
+            val instruction = "x".repeat(3_000)
+            val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"$instruction"}"""
+            assertTrue(body.toByteArray(StandardCharsets.UTF_8).size < OwnerEvidenceHttpServer.MAX_ANALYSE_REQUEST_BODY_BYTES)
+
+            val response = postJson(harness, "/owner/analyse", body)
+
+            // Reaching a real "FAILED" (unknown generation) outcome -- not a 400/"request body too
+            // large" -- proves this body was actually parsed and passed to the coordinator, not
+            // rejected for size.
+            assertEquals(200, response.statusCode())
+            assertEquals("FAILED", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `B a request body above the permitted limit is rejected with a clean 400, never processed`() = runTest {
+        val harness = startHarness("")
+        try {
+            val oversizedInstruction = "x".repeat(64 * 1024)
+            val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"$oversizedInstruction"}"""
+            assertTrue(body.toByteArray(StandardCharsets.UTF_8).size > OwnerEvidenceHttpServer.MAX_ANALYSE_REQUEST_BODY_BYTES)
+
+            val response = postJson(harness, "/owner/analyse", body)
+
+            assertEquals(400, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `C overflow is detected by a bounded read -- readBounded never requests substantially more than the limit from the stream, never buffers an unbounded body first`() {
+        val limit = 1_000L
+        val source = CountingInfiniteInputStream()
+
+        assertFailsWithRequestBodyTooLarge { readBounded(source, limit) }
+
+        // At most one 8 KiB chunk's worth beyond the limit is ever requested from the stream --
+        // proving overflow is detected while reading, never by first calling an unbounded
+        // readBytes() and inspecting the resulting size afterward.
+        assertTrue(
+            source.bytesRequested <= limit + 8192,
+            "readBounded must never request substantially more than the limit from the stream; requested ${source.bytesRequested}",
+        )
+    }
+
+    private fun assertFailsWithRequestBodyTooLarge(block: () -> Unit) {
+        try {
+            block()
+            throw AssertionError("expected RequestBodyTooLargeException, but no exception was thrown")
+        } catch (e: RequestBodyTooLargeException) {
+            // expected
+        }
+    }
+
+    @Test
+    fun `D no model invocation occurs after an oversized request body is rejected`() = runTest {
+        StubModelServer.start("must never be called").use { stub ->
+            val harness = startHarness("", modelEndpointUrl = stub.endpointUrl)
+            try {
+                val oversizedInstruction = "x".repeat(64 * 1024)
+                val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"$oversizedInstruction"}"""
+
+                val response = postJson(harness, "/owner/analyse", body)
+
+                assertEquals(400, response.statusCode())
+                assertTrue(stub.receivedRequestBodies.isEmpty(), "no request must ever reach the model endpoint after an oversized body is rejected")
+            } finally {
+                harness.shutdown()
+            }
+        }
+    }
+
+    // ================= Correction pass §5: stricten the purpose-built JSON parser =================
+
+    @Test
+    fun `A duplicate "instruction" key is rejected with a clean 400`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"first","instruction":"second"}"""
+            assertEquals(400, postJson(harness, "/owner/analyse", body).statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `B duplicate "selections" key is rejected with a clean 400`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"selections":[],"instruction":"x"}"""
+            assertEquals(400, postJson(harness, "/owner/analyse", body).statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `C a duplicate nested selection field is rejected with a clean 400`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = """{"selections":[{"evidenceArtifactId":"e1","evidenceArtifactId":"e2","derivativeGenerationId":"g"}],"instruction":"x"}"""
+            assertEquals(400, postJson(harness, "/owner/analyse", body).statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `D a valid JSON object followed by trailing garbage is rejected with a clean 400`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"x"} garbage"""
+            assertEquals(400, postJson(harness, "/owner/analyse", body).statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `E a valid JSON object followed only by trailing whitespace remains valid`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = "{\"selections\":[{\"evidenceArtifactId\":\"e\",\"derivativeGenerationId\":\"g\"}],\"instruction\":\"x\"}\n  \t\n"
+            val response = postJson(harness, "/owner/analyse", body)
+            assertEquals(200, response.statusCode())
+            assertEquals("FAILED", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // ================= Final correction pass §3: JSON parser nesting-depth limit =================
+
+    @Test
+    fun `A ordinary valid analysis JSON succeeds`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"Summarise"}"""
+            val response = postJson(harness, "/owner/analyse", body)
+            assertEquals(200, response.statusCode())
+            assertEquals("FAILED", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `B legitimate nested selection structures (object containing an array of objects) succeed`() = runTest {
+        val harness = startHarness("")
+        try {
+            // The real request schema's own maximum legitimate depth: root object -> "selections"
+            // array -> selection object (three levels) -- well within MAX_JSON_NESTING_DEPTH.
+            val body = """{"selections":[{"evidenceArtifactId":"e1","derivativeGenerationId":"g1"},{"evidenceArtifactId":"e2","derivativeGenerationId":"g2"}],"instruction":"Summarise"}"""
+            val response = postJson(harness, "/owner/analyse", body)
+            assertEquals(200, response.statusCode())
+            assertEquals("FAILED", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `C deeply nested unknown content is rejected`() = runTest {
+        val harness = startHarness("")
+        try {
+            // Well beyond MAX_JSON_NESTING_DEPTH (10) and beyond the real schema's own maximum
+            // legitimate depth (3) -- an arbitrary, pathologically nested array structure.
+            val nestingLevels = 30
+            val body = "{\"selections\":" + "[".repeat(nestingLevels) + "\"x\"" + "]".repeat(nestingLevels) + ",\"instruction\":\"x\"}"
+
+            val response = postJson(harness, "/owner/analyse", body)
+
+            // D: rejection maps to a clean HTTP 400.
+            assertEquals(400, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `E no analysis or model invocation occurs after a deeply nested JSON body is rejected`() = runTest {
+        StubModelServer.start("must never be called").use { stub ->
+            val harness = startHarness("", modelEndpointUrl = stub.endpointUrl)
+            try {
+                val nestingLevels = 30
+                val body = "{\"selections\":" + "[".repeat(nestingLevels) + "\"x\"" + "]".repeat(nestingLevels) + ",\"instruction\":\"x\"}"
+
+                val response = postJson(harness, "/owner/analyse", body)
+
+                assertEquals(400, response.statusCode())
+                assertTrue(stub.receivedRequestBodies.isEmpty(), "no request must ever reach the model endpoint after a deeply nested JSON body is rejected")
+                // The response body itself never exposes parser internals (position counters, stack
+                // traces) -- only the generic malformed-request shape every other 400 on this route uses.
+                assertFalse("StackOverflow" in response.body())
+                assertFalse("Exception" in response.body())
+            } finally {
+                harness.shutdown()
+            }
+        }
+    }
+
+    // ================= Correction pass §6 / Final correction pass §4: composition direct-dependency check =================
+
+    /**
+     * Final correction pass §4: this test proves exactly three things, no more --
+     * 1. the actual, currently-running [ParkerRuntime] contains a `documentAnalysisCoordinator`
+     *    field, of type [parker.core.runtime.DocumentAnalysisCoordinator];
+     * 2. that coordinator's own DIRECTLY DECLARED collaborator fields (its constructor
+     *    parameters) contain no OCR/extraction/Memory/Knowledge/QMD/RKS/external-provider
+     *    coordinator TYPE;
+     * 3. this is a direct-dependency check against the CURRENT production composition only.
+     *
+     * It is **not** a transitive proof over every collaborator those fields themselves hold (a
+     * `PermissionEngine`/`TierAContentRetrievalCoordinator`/etc. instance's own further internals
+     * are not inspected here), and it is **not** a permanent architectural guarantee -- a future
+     * edit to this class or to how [ParkerRuntime] composes it could change what it holds. It does
+     * **not** prove "OCR can never be invoked" in any absolute sense; it proves "the current
+     * coordinator has no direct OCR/extraction collaborator." The stronger no-regeneration
+     * conclusion this repository relies on rests on the *combination* of this test, coordinator
+     * source inspection (`DocumentAnalysisCoordinator.kt`'s own reuse of the already-governed,
+     * non-regenerating Tier A/Tier B content-retrieval coordinators), behavioural tests
+     * (`DocumentAnalysisCoordinatorTest`), and synthetic live acceptance -- never this test alone.
+     */
+    @Test
+    fun `composition -- the real ParkerRuntime's documentAnalysisCoordinator has no direct OCR-Memory-Knowledge-QMD-RKS collaborator field`() = runTest {
+        val harness = startHarness("")
+        try {
+            val coordinator = harness.runtime.privateField<Any>("documentAnalysisCoordinator")
+            assertEquals("DocumentAnalysisCoordinator", coordinator::class.simpleName)
+
+            val fieldTypeNames = coordinator::class.java.declaredFields.map { it.type.simpleName }.toSet()
+            val forbidden = listOf(
+                "MemoryCore", "KnowledgeRetrieval", "KnowledgeSubmission", "RelevanceMechanism", "QmdRelevanceMechanism",
+                "OcrMechanism", "EvidenceIntelligenceOcrCoordinator", "DerivativeGenerationCoordinator",
+                "TierADocumentIngestionRouter", "ReasoningProvider", "EvidenceIntelligence",
+            )
+            forbidden.forEach { forbiddenType ->
+                assertTrue(
+                    fieldTypeNames.none { it.contains(forbiddenType) },
+                    "the real, currently-composed DocumentAnalysisCoordinator's own directly declared fields must contain no $forbiddenType type reference -- found: $fieldTypeNames",
+                )
+            }
         } finally {
             harness.shutdown()
         }
