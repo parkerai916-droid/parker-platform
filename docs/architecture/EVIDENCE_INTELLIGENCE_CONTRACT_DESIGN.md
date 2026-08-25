@@ -704,22 +704,31 @@ own explanatory language is itself extracted evidence.
 
 **Where a `CandidateEvidenceArtifact` is produced by transcription (OCR
 or otherwise), it must recognise the distinction between verbatim
-transcription, normalised transcription, and inferred reconstruction,
-and must never silently conflate them.** These three carry different
-evidential meanings: a **verbatim transcription** reproduces the
-original's exact characters, spelling, and layout as read; a
-**normalised transcription** corrects or standardises what was read
+transcription, unverified literal transcription, normalised
+transcription, and inferred reconstruction, and must never silently
+conflate them.** These four carry different evidential meanings: a
+**verbatim transcription** reproduces the original's exact characters,
+spelling, and layout as read, and is a strict source-fidelity claim that
+requires independently established exactness for the classified scope;
+an **unverified literal transcription** is a machine-produced attempt to
+reproduce readable source content without intentional normalisation,
+substantive correction, or inferred reconstruction, where exact
+correspondence with the source has not been independently established;
+a **normalised transcription** corrects or standardises what was read
 (spelling, spacing, character encoding) for readability, at the cost of
 no longer being an exact character-for-character reproduction; an
 **inferred reconstruction** fills a gap the original does not clearly
 support (a damaged, illegible, or ambiguous passage) with Evidence
 Intelligence's own best analytical judgement of what the original likely
-said. Because these differ in how much of the resulting text is drawn
-directly from the original versus supplied by Evidence Intelligence's
-own analysis, a `CandidateEvidenceArtifact` produced by transcription
-must make which of the three it is — or which portions are which, where
+said. A provider success status, confidence value, fluent output, absence
+of warnings, or exact preservation of provider-returned bytes does not
+by itself establish verbatim source fidelity. Because these categories
+differ in how much of the resulting text is established from the source
+versus supplied or transformed by analytical machinery, a
+`CandidateEvidenceArtifact` produced by transcription must make which
+category applies — or which portions are which, where
 more than one applies within the same artefact — apparent, rather than
-presenting all three uniformly as if each were an equally direct
+presenting all four uniformly as if each were an equally direct
 rendering of the original. This document does not prescribe the
 mechanism by which that distinction is expressed, and introduces no new
 artefact class, field, or type to carry it: `CandidateEvidenceArtifact`
