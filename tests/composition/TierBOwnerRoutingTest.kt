@@ -110,8 +110,8 @@ class TierBOwnerRoutingTest {
         return scriptPath
     }
 
-    private val recognisedJson = """{"status":"recognised","recognisedText":"TIER B RECOGNISED TEXT","fidelity":"VERBATIM","mechanismVersion":"fake-1.0.0"}"""
-    private val partialJson = """{"status":"partial","recognisedText":"TIER B PARTIAL TEXT","fidelity":"NORMALISED","reason":"page 2 unreadable"}"""
+    private val recognisedJson = """{"status":"recognised","recognisedText":"TIER B RECOGNISED TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0"}"""
+    private val partialJson = """{"status":"partial","recognisedText":"TIER B PARTIAL TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","reason":"page 2 unreadable"}"""
     private val noContentJson = """{"status":"no_recognisable_content","reason":"blank page"}"""
 
     private suspend fun ParkerRuntime.importFixtureAsOwner(fileName: String, receivedMediaType: String): EvidenceArtifactId {

@@ -251,7 +251,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
     @Test
     fun `processTierB returns Completed with the genuine result count for a real, successful OCR recognition`() = runTest {
         val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
-        val recognisedJson = """{"status":"recognised","recognisedText":"ADAPTER TEST TEXT","fidelity":"VERBATIM","mechanismVersion":"fake-1.0.0"}"""
+        val recognisedJson = """{"status":"recognised","recognisedText":"ADAPTER TEST TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0"}"""
         val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString()), RecordingParkerLogger())
         runtime.start()
         val adapter = adapterFor(runtime)

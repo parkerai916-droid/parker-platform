@@ -365,7 +365,7 @@ class OwnerEvidenceHttpServerTest {
 
     @Test
     fun `the explicit ocr endpoint invokes the real owner Tier B path and completes a scanned PDF`() = runTest {
-        val recognisedJson = """{"status":"recognised","recognisedText":"HTTP TEST TEXT","fidelity":"VERBATIM","mechanismVersion":"fake-1.0.0"}"""
+        val recognisedJson = """{"status":"recognised","recognisedText":"HTTP TEST TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0"}"""
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
         try {
@@ -1099,7 +1099,7 @@ class OwnerEvidenceHttpServerTest {
 
     @Test
     fun `the explicit durable ocr endpoint mints a durable generation, and the durable ocr-content endpoint retrieves it back, matching exactly`() = runTest {
-        val recognisedJson = """{"status":"recognised","recognisedText":"HTTP DURABLE OCR TEXT","fidelity":"VERBATIM","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val recognisedJson = """{"status":"recognised","recognisedText":"HTTP DURABLE OCR TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
         try {
@@ -1221,7 +1221,7 @@ class OwnerEvidenceHttpServerTest {
 
     @Test
     fun `the durable ocr response carries no server temp path, model path, or stack trace`() = runTest {
-        val recognisedJson = """{"status":"recognised","recognisedText":"NO LEAKAGE TEXT","fidelity":"VERBATIM","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val recognisedJson = """{"status":"recognised","recognisedText":"NO LEAKAGE TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
         try {

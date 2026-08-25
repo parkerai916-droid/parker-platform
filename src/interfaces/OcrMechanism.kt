@@ -138,16 +138,24 @@ class OcrRecognitionRequest(
 
 /**
  * The recognised text's fidelity to the original image content -- exactly
- * the three categories `EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md` Section
- * 5 already freezes for any transcription-produced candidate, realised
- * here in Kotlin for the first time because no earlier unit had reason
- * to. Owned, in substance, by the Evidence Intelligence Contract Design;
- * this file only gives its already-frozen prose a closed Kotlin shape,
- * introducing no fourth category (Implementation Plan Unit 1).
+ * the four categories governed by `EVIDENCE_INTELLIGENCE_CONTRACT_DESIGN.md`
+ * Section 5 and `OCR_TRANSCRIPTION_FIDELITY_VERIFICATION_AMENDMENT.md`.
+ * Ordinary machine recognition is never sufficient to establish [VERBATIM].
  */
 enum class TranscriptionFidelity {
-    /** Reproduces the original's exact characters, spelling, and layout as read. */
+    /**
+     * Reproduces the source's exact characters, spelling, and layout for a scope whose exact
+     * correspondence has been established through a separately governed verification method.
+     * Ordinary successful OCR is not sufficient to assign this value.
+     */
     VERBATIM,
+
+    /**
+     * A machine-produced attempt to reproduce readable source content without intentional
+     * normalisation, substantive correction, or inferred reconstruction, whose exact
+     * correspondence with the source has not been independently established.
+     */
+    UNVERIFIED_LITERAL_TRANSCRIPTION,
 
     /** Corrects or standardises what was read, at the cost of exact reproduction. */
     NORMALISED,
@@ -230,7 +238,7 @@ data class OcrRecognitionIdentity(
  * (Scope Lock Section 6); and "or, where more than one [fidelity]
  * applies within a single recognition, which portions are which" (Contract
  * Design Section 5), itself restating Evidence Intelligence Contract
- * Design Section 5's own "the output must make which of the three it is --
+ * Design Section 5's amended "the output must make which of the four it is --
  * or which portions are which, where more than one applies within the
  * same artefact -- apparent."
  *
@@ -292,7 +300,7 @@ data class OcrRecognitionSegment(
  * @param recognisedText The text a human reader would recognise in the
  *   supplied image content -- the complete, document-level text, present
  *   and non-blank regardless of whether [segments] is populated.
- * @param fidelity Which of [TranscriptionFidelity]'s three categories this
+ * @param fidelity Which of [TranscriptionFidelity]'s four categories this
  *   recognition represents as a whole. Remains a single, required value
  *   exactly as Unit 1 fixed it -- when [segments] carries differing
  *   per-portion fidelity values, each segment's own [OcrRecognitionSegment.fidelity]

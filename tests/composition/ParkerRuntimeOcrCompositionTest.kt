@@ -160,7 +160,7 @@ class ParkerRuntimeOcrCompositionTest {
         return scriptPath
     }
 
-    private val successJson = """{"status":"recognised","recognisedText":"FAKE COMPOSITION TEXT","fidelity":"VERBATIM","mechanismVersion":"fake-1.0.0"}"""
+    private val successJson = """{"status":"recognised","recognisedText":"FAKE COMPOSITION TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0"}"""
 
     // ================= 1. Construction =================
 

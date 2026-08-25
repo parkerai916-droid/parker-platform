@@ -79,10 +79,10 @@ class ParkerRuntimeTierBOcrDurableGenerationTest {
     }
 
     private fun successJson(text: String = "FAKE TIER B DURABLE TEXT", digest: String = digestA): String =
-        """{"status":"recognised","recognisedText":"$text","fidelity":"VERBATIM","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:$digest"}"""
+        """{"status":"recognised","recognisedText":"$text","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:$digest"}"""
 
     private val missingModelVersionJson =
-        """{"status":"recognised","recognisedText":"no model provenance","fidelity":"VERBATIM","mechanismVersion":"docling-2.5.0"}"""
+        """{"status":"recognised","recognisedText":"no model provenance","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0"}"""
 
     private suspend fun registerImage(runtime: ParkerRuntime): EvidenceArtifactId {
         val registered = assertIs<EvidenceRegistrationOutcome.Registered>(

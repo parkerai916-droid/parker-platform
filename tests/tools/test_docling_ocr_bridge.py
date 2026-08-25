@@ -244,12 +244,19 @@ class OutputSizeAccumulatorTest(unittest.TestCase):
 
 class ResponseJsonConstructionTest(unittest.TestCase):
     def test_recognised_status_schema_exact(self) -> None:
-        outcome = bridge.DoclingRecognitionOutcome(status="recognised", text="hello world", fidelity="VERBATIM")
+        outcome = bridge.DoclingRecognitionOutcome(status="recognised", text="hello world")
         parsed = json.loads(bridge.build_response_json(outcome))
         self.assertEqual(parsed["status"], "recognised")
         self.assertEqual(parsed["recognisedText"], "hello world")
-        self.assertEqual(parsed["fidelity"], "VERBATIM")
+        self.assertEqual(parsed["fidelity"], "UNVERIFIED_LITERAL_TRANSCRIPTION")
         self.assertNotIn("reason", parsed, "a full success must never carry a reason field")
+
+    def test_ordinary_partial_default_is_unverified_literal_transcription(self) -> None:
+        outcome = bridge.DoclingRecognitionOutcome(status="partial", text="partial", reason="page degraded")
+        parsed = json.loads(bridge.build_response_json(outcome))
+
+        self.assertEqual(parsed["fidelity"], "UNVERIFIED_LITERAL_TRANSCRIPTION")
+        self.assertNotEqual(parsed["fidelity"], "VERBATIM")
 
     def test_partial_status_requires_reason(self) -> None:
         outcome = bridge.DoclingRecognitionOutcome(

@@ -41,6 +41,7 @@ import parker.ui.OwnerSavedAnalysisPresentation
 import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
 import parker.ui.OwnerTierBOcrContent
+import parker.ui.transcriptionFidelityLabel
 import parker.ui.TierAContentRetrievalResult
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBDurableProcessingOutcome
@@ -316,7 +317,7 @@ class OwnerUiEvidenceRuntimeAdapter(
      */
     private fun toOwnerOcrContent(extracted: OcrDerivativeExtractedResult): OwnerTierBOcrContent = OwnerTierBOcrContent(
         recognisedText = extracted.recognisedText,
-        fidelity = extracted.fidelity.name,
+        fidelity = transcriptionFidelityLabel(extracted.fidelity),
         outcomeKind = extracted.outcomeKind.name,
         degradationReason = extracted.degradationReason,
         warnings = extracted.warnings,

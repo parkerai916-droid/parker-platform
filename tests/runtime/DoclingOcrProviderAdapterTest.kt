@@ -25,6 +25,7 @@ import parker.core.interfaces.OcrProviderAdapter
 import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.OcrRecognitionRequest
 import parker.core.interfaces.PermissionEngine
+import parker.core.interfaces.TranscriptionFidelity
 
 /**
  * OCR Mechanism -- Docling Concrete Adapter Implementation Unit. Pure
@@ -86,7 +87,7 @@ class DoclingOcrProviderAdapterTest {
     private fun success(recognisedText: String = "hello world", extraFields: String = "") =
         DoclingSubprocessInvocationResult(
             exitCode = 0,
-            stdout = """{"status":"recognised","recognisedText":${jsonQuote(recognisedText)},"fidelity":"VERBATIM"$extraFields}""",
+            stdout = """{"status":"recognised","recognisedText":${jsonQuote(recognisedText)},"fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION"$extraFields}""",
             stderr = "",
             timedOut = false,
         )
@@ -146,6 +147,16 @@ class DoclingOcrProviderAdapterTest {
     @Test
     fun `DoclingOcrProviderAdapter implements OcrProviderAdapter`() {
         assertTrue(OcrProviderAdapter::class.java.isAssignableFrom(DoclingOcrProviderAdapter::class.java))
+    }
+
+    @Test
+    fun `ordinary successful Docling OCR is unverified literal transcription, never verbatim`() = runTest {
+        val adapter = DoclingOcrProviderAdapter(configuration(), FakeDoclingSubprocessInvoker { _, _ -> success() })
+
+        val outcome = adapter.recognise(sampleRequest()) as OcrRecognitionOutcome.Recognised
+
+        assertEquals(TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, outcome.result.fidelity)
+        assertFalse(outcome.result.fidelity == TranscriptionFidelity.VERBATIM)
     }
 
     @Test
@@ -547,6 +558,23 @@ class DoclingOcrProviderAdapterTest {
     }
 
     @Test
+    fun `unknown fidelity remains rejected rather than falling back to a known classification`() = runTest {
+        val invoker = FakeDoclingSubprocessInvoker { _, _ ->
+            DoclingSubprocessInvocationResult(
+                exitCode = 0,
+                stdout = """{"status":"recognised","recognisedText":"hi","fidelity":"UNREVIEWED_GUESS"}""",
+                stderr = "",
+                timedOut = false,
+            )
+        }
+        val adapter = DoclingOcrProviderAdapter(configuration(), invoker)
+
+        val failure = assertFailsWith<IllegalArgumentException> { adapter.recognise(sampleRequest()) }
+
+        assertTrue(failure.message.orEmpty().contains("unknown fidelity value"))
+    }
+
+    @Test
     fun `an unexpected extra field fails loudly`() = runTest {
         val invoker = FakeDoclingSubprocessInvoker { _, _ ->
             DoclingSubprocessInvocationResult(
@@ -803,11 +831,11 @@ class DoclingOcrProviderAdapterTest {
     }
 
     @Test
-    fun `a partial recognition preserves the actual partial text, never discarded`() = runTest {
+    fun `ordinary partial Docling OCR is unverified literal transcription and preserves its text`() = runTest {
         val invoker = FakeDoclingSubprocessInvoker { _, _ ->
             DoclingSubprocessInvocationResult(
                 exitCode = 0,
-                stdout = """{"status":"partial","recognisedText":"partial text","fidelity":"NORMALISED","reason":"page 3 unreadable"}""",
+                stdout = """{"status":"partial","recognisedText":"partial text","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","reason":"page 3 unreadable"}""",
                 stderr = "",
                 timedOut = false,
             )
@@ -819,6 +847,8 @@ class DoclingOcrProviderAdapterTest {
         assertTrue(outcome is OcrRecognitionOutcome.PartialOrDegradedOutput)
         val partial = outcome as OcrRecognitionOutcome.PartialOrDegradedOutput
         assertEquals("partial text", partial.partialResult.recognisedText)
+        assertEquals(TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, partial.partialResult.fidelity)
+        assertFalse(partial.partialResult.fidelity == TranscriptionFidelity.VERBATIM)
         assertEquals("page 3 unreadable", partial.reason)
     }
 

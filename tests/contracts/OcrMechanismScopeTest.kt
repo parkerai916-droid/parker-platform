@@ -133,9 +133,9 @@ class OcrMechanismScopeTest {
     }
 
     @Test
-    fun `TranscriptionFidelity has exactly three values, matching Evidence Intelligence Contract Design Section 5`() {
+    fun `TranscriptionFidelity has exactly four governed values`() {
         assertEquals(
-            listOf("VERBATIM", "NORMALISED", "INFERRED_RECONSTRUCTION"),
+            listOf("VERBATIM", "UNVERIFIED_LITERAL_TRANSCRIPTION", "NORMALISED", "INFERRED_RECONSTRUCTION"),
             TranscriptionFidelity.entries.map { it.name },
         )
     }

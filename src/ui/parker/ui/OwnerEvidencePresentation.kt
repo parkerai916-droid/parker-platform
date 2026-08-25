@@ -1,5 +1,7 @@
 package parker.ui
 
+import parker.core.interfaces.TranscriptionFidelity
+
 /** Small pure presentation decisions kept independent of Compose rendering. */
 
 fun canProcessTierA(row: OwnerEvidenceFileRow): Boolean =
@@ -28,6 +30,14 @@ fun evidenceStatusLabel(status: OwnerEvidenceFileStatus): String = when (status)
     OwnerEvidenceFileStatus.OCR_PROCESSING -> "Running OCR…"
     OwnerEvidenceFileStatus.COMPLETE -> "Complete"
     OwnerEvidenceFileStatus.FAILED -> "Failed"
+}
+
+/** Owner-facing wording that does not turn a stored classification into a verification claim. */
+fun transcriptionFidelityLabel(fidelity: TranscriptionFidelity): String = when (fidelity) {
+    TranscriptionFidelity.VERBATIM -> "Verbatim classification — verification basis not shown"
+    TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION -> "Machine transcription — unverified"
+    TranscriptionFidelity.NORMALISED -> "Normalised"
+    TranscriptionFidelity.INFERRED_RECONSTRUCTION -> "Inferred reconstruction"
 }
 
 /** Human-readable byte count, smallest unit that keeps at most one decimal place. */

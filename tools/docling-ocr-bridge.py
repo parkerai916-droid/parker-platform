@@ -128,7 +128,7 @@ class DoclingRecognitionOutcome:
 
     status: str  # "recognised" | "partial" | "no_recognisable_content"
     text: str = ""
-    fidelity: str = "VERBATIM"
+    fidelity: str = "UNVERIFIED_LITERAL_TRANSCRIPTION"
     segments: list[RecognisedSegment] = field(default_factory=list)
     confidence: float | None = None
     warnings: list[str] = field(default_factory=list)
@@ -723,7 +723,7 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
         return DoclingRecognitionOutcome(
             status="partial",
             text=text,
-            fidelity="VERBATIM",
+            fidelity="UNVERIFIED_LITERAL_TRANSCRIPTION",
             confidence=confidence,
             reason=error_messages,
             mechanism_version=_docling_version(),
@@ -734,7 +734,7 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
     return DoclingRecognitionOutcome(
         status="recognised",
         text=text,
-        fidelity="VERBATIM",
+        fidelity="UNVERIFIED_LITERAL_TRANSCRIPTION",
         confidence=confidence,
         mechanism_version=_docling_version(),
         model_identity=model_identity,

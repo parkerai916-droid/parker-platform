@@ -121,10 +121,10 @@ class OcrOutputModelTest {
         assertEquals("document level text", withSegments.recognisedText, "recognisedText must remain the complete, document-level text even when segments are also present")
     }
 
-    // -- All three transcription-fidelity values, at both granularities ------
+    // -- All four transcription-fidelity values, at both granularities ------
 
     @Test
-    fun `all three TranscriptionFidelity values are accepted as a result's own whole-recognition fidelity`() {
+    fun `all four TranscriptionFidelity values are accepted as a result's own whole-recognition fidelity`() {
         TranscriptionFidelity.values().forEach { fidelity ->
             val result = sampleResult(fidelity = fidelity)
             assertEquals(fidelity, result.fidelity)
@@ -132,7 +132,7 @@ class OcrOutputModelTest {
     }
 
     @Test
-    fun `all three TranscriptionFidelity values are accepted as a segment's own portion-level fidelity, independent of the result's own value`() {
+    fun `all four TranscriptionFidelity values are accepted as a segment's own portion-level fidelity, independent of the result's own value`() {
         TranscriptionFidelity.values().forEach { fidelity ->
             val segment = OcrRecognitionSegment(text = "portion", fidelity = fidelity)
             assertEquals(fidelity, segment.fidelity)
@@ -143,13 +143,14 @@ class OcrOutputModelTest {
     fun `a single recognition may carry segments of differing fidelity, discoverable per segment rather than only in prose`() {
         val segments = listOf(
             OcrRecognitionSegment(text = "clean passage", fidelity = TranscriptionFidelity.VERBATIM, pageNumber = 1),
-            OcrRecognitionSegment(text = "standardised passage", fidelity = TranscriptionFidelity.NORMALISED, pageNumber = 1),
-            OcrRecognitionSegment(text = "reconstructed passage", fidelity = TranscriptionFidelity.INFERRED_RECONSTRUCTION, pageNumber = 2),
+            OcrRecognitionSegment(text = "unverified literal passage", fidelity = TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, pageNumber = 1),
+            OcrRecognitionSegment(text = "standardised passage", fidelity = TranscriptionFidelity.NORMALISED, pageNumber = 2),
+            OcrRecognitionSegment(text = "reconstructed passage", fidelity = TranscriptionFidelity.INFERRED_RECONSTRUCTION, pageNumber = 3),
         )
         val result = sampleResult(fidelity = TranscriptionFidelity.VERBATIM, segments = segments)
 
         assertEquals(
-            listOf(TranscriptionFidelity.VERBATIM, TranscriptionFidelity.NORMALISED, TranscriptionFidelity.INFERRED_RECONSTRUCTION),
+            listOf(TranscriptionFidelity.VERBATIM, TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, TranscriptionFidelity.NORMALISED, TranscriptionFidelity.INFERRED_RECONSTRUCTION),
             result.segments.map { it.fidelity },
             "each segment's own fidelity must remain independently discoverable -- a mixed-fidelity recognition must not collapse to one value",
         )

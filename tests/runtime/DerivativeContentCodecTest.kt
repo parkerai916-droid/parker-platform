@@ -200,6 +200,55 @@ class DerivativeContentCodecTest {
     }
 
     @Test
+    fun `historical version one VERBATIM OCR payload decodes and re-encodes without migration`() {
+        val historical = TierADerivativePayloadFixtures.ocr(
+            fidelity = parker.core.interfaces.TranscriptionFidelity.VERBATIM,
+            segments = listOf(
+                parker.core.interfaces.OcrRecognitionSegment(
+                    "historical segment",
+                    parker.core.interfaces.TranscriptionFidelity.VERBATIM,
+                    1,
+                ),
+            ),
+        )
+        val entry = DerivativeContentEntry(
+            DerivativeGenerationId("historical-version-one-verbatim"),
+            EvidenceArtifactId("historical-source"),
+            TierADerivativePayload.Ocr(historical),
+        )
+        val historicalBytes = DerivativeContentCodec.encode(entry)
+
+        val decoded = DerivativeContentCodec.decode(historicalBytes)
+
+        assertEquals(parker.core.interfaces.TranscriptionFidelity.VERBATIM, (decoded.payload as TierADerivativePayload.Ocr).value.fidelity)
+        assertContentEquals(historicalBytes, DerivativeContentCodec.encode(decoded))
+        assertEquals(1, ByteBuffer.wrap(historicalBytes).getInt(4 + 4 + 4 + entry.derivativeGenerationId.value.toByteArray().size + 4 + entry.rootSourceEvidenceArtifactId.value.toByteArray().size + 1))
+    }
+
+    @Test
+    fun `version one OCR payload round trips unverified literal transcription`() {
+        val unverified = TierADerivativePayloadFixtures.ocr(
+            fidelity = parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            segments = listOf(
+                parker.core.interfaces.OcrRecognitionSegment(
+                    "machine-recognised segment",
+                    parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+                    1,
+                ),
+            ),
+        )
+        val entry = DerivativeContentEntry(
+            DerivativeGenerationId("version-one-unverified-literal"),
+            EvidenceArtifactId("unverified-source"),
+            TierADerivativePayload.Ocr(unverified),
+        )
+
+        val decoded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(entry))
+
+        assertEquals(entry, decoded)
+    }
+
+    @Test
     fun `OCR partial-or-degraded payload round trips its own degradation reason exactly`() {
         val entry = DerivativeContentEntry(
             DerivativeGenerationId("generation-ocr-degraded"),

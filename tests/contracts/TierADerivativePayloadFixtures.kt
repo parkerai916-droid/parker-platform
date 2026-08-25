@@ -105,12 +105,13 @@ object TierADerivativePayloadFixtures {
 
     fun ocr(
         recognisedText: String = "Recognised text with a Māori macron ā for UTF-8 fidelity.",
+        fidelity: TranscriptionFidelity = TranscriptionFidelity.VERBATIM,
         outcomeKind: OcrDerivativeOutcomeKind = OcrDerivativeOutcomeKind.RECOGNISED,
         degradationReason: String? = null,
         segments: List<OcrRecognitionSegment> = listOf(OcrRecognitionSegment("segment one", TranscriptionFidelity.VERBATIM, 1)),
     ) = OcrDerivativeExtractedResult(
         recognisedText = recognisedText,
-        fidelity = TranscriptionFidelity.VERBATIM,
+        fidelity = fidelity,
         outcomeKind = outcomeKind,
         degradationReason = degradationReason,
         warnings = listOf("page 2 low scan quality"),
