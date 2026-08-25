@@ -61,6 +61,30 @@ interface OwnerEvidenceOperations {
         evidenceArtifactId: EvidenceArtifactId,
         derivativeGenerationId: DerivativeGenerationId,
     ): TierAContentRetrievalResult
+
+    /**
+     * Document Ingestion — Tier B Durable OCR Derivative Content
+     * (`DOCUMENT_INGESTION_TIER_B_DURABLE_OCR_DERIVATIVE_CONTENT_SCOPE_LOCK.md`).
+     * Explicit, owner-triggered durable Tier B OCR for one already-custodied
+     * artefact -- distinct from [processTierB] (the existing, unchanged
+     * transient-only Evidence Intelligence path): on success, this durably
+     * admits a new `DerivativeGenerationRecord` and subordinate content
+     * entry, retrievable after restart without rerunning OCR. Structurally
+     * owner-only, exactly like every other operation on this interface: no
+     * `requestingPrincipalId` parameter of any kind.
+     */
+    suspend fun processTierBDurable(evidenceArtifactId: EvidenceArtifactId): TierBDurableProcessingOutcome
+
+    /**
+     * Retrieves an already-persisted Tier B durable OCR generation's
+     * content by known identity -- never re-runs OCR. [derivativeGenerationId]
+     * must be one the caller already possesses (from a prior
+     * [processTierBDurable] response). Structurally owner-only.
+     */
+    suspend fun retrieveTierBOcrContent(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): TierBOcrContentRetrievalResult
 }
 
 /** The truthful result of one [OwnerEvidenceOperations.importFile] call. */
@@ -216,4 +240,57 @@ sealed interface TierAContentRetrievalResult {
     data class ContentCorrupt(val safeMessage: String) : TierAContentRetrievalResult
     data class UnsupportedRepresentationVersion(val version: Int) : TierAContentRetrievalResult
     data class Failed(val safeMessage: String) : TierAContentRetrievalResult
+}
+
+/**
+ * Owner Tier B Durable OCR Content Presentation. The smallest safe,
+ * owner-facing projection of an already-produced, already-admitted
+ * durable Tier B OCR generation -- built once, from the OCR mechanism's
+ * own already-computed result, never by rerunning OCR. No field here ever
+ * carries a server filesystem path, a model path, a temp path, a stack
+ * trace, or a secret/config value.
+ */
+data class OwnerTierBOcrContent(
+    val recognisedText: String,
+    val fidelity: String,
+    val outcomeKind: String,
+    val degradationReason: String?,
+    val warnings: List<String>,
+    val segments: List<OwnerOcrSegmentSummary>,
+    val producer: OwnerDerivativeProducerSummary,
+    val completenessState: String,
+)
+
+data class OwnerOcrSegmentSummary(val text: String, val fidelity: String, val pageNumber: Int?)
+
+/**
+ * The truthful result of one [OwnerEvidenceOperations.processTierBDurable]
+ * call. Distinct, non-fabricated outcomes mirroring
+ * [parker.core.interfaces.TierBOcrOwnerInvocationOutcome]'s own
+ * distinctions -- never collapsed into a single generic failure.
+ */
+sealed interface TierBDurableProcessingOutcome {
+    data class Admitted(val content: OwnerTierBOcrContent, val derivativeGenerationId: DerivativeGenerationId) : TierBDurableProcessingOutcome
+    data class NotAuthorised(val reason: String) : TierBDurableProcessingOutcome
+    data class MandatoryProvenanceUnavailable(val reason: String) : TierBDurableProcessingOutcome
+    data class OcrNotAdmissible(val reason: String) : TierBDurableProcessingOutcome
+    data class IntegrityFailure(val reason: String) : TierBDurableProcessingOutcome
+    data class Failed(val stage: String, val safeMessage: String) : TierBDurableProcessingOutcome
+}
+
+/**
+ * The truthful result of one [OwnerEvidenceOperations.retrieveTierBOcrContent]
+ * call. Mirrors [TierAContentRetrievalResult]'s own identical distinctions,
+ * plus [WrongDerivativeKind] for the Tier A/Tier B kind-discrimination
+ * requirement.
+ */
+sealed interface TierBOcrContentRetrievalResult {
+    data class Retrieved(val content: OwnerTierBOcrContent) : TierBOcrContentRetrievalResult
+    data object UnknownGeneration : TierBOcrContentRetrievalResult
+    data object SourceMismatch : TierBOcrContentRetrievalResult
+    data object WrongDerivativeKind : TierBOcrContentRetrievalResult
+    data object ContentMissing : TierBOcrContentRetrievalResult
+    data class ContentCorrupt(val safeMessage: String) : TierBOcrContentRetrievalResult
+    data class UnsupportedRepresentationVersion(val version: Int) : TierBOcrContentRetrievalResult
+    data class Failed(val safeMessage: String) : TierBOcrContentRetrievalResult
 }

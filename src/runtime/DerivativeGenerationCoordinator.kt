@@ -14,8 +14,11 @@ import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationRecord
 import parker.core.interfaces.DerivativeGenerationStorage
 import parker.core.interfaces.DerivativeGenerationStorageException
+import parker.core.interfaces.DerivativeCompletenessState
 import parker.core.interfaces.DerivativeOperationalOutcome
 import parker.core.interfaces.DerivativeParentReference
+import parker.core.interfaces.DerivativeProducerIdentity
+import parker.core.interfaces.DerivativeTransformation
 import parker.core.interfaces.DocumentIngestionAudit
 import parker.core.interfaces.DocumentIngestionAuditRecord
 import parker.core.interfaces.DocumentIngestionAuditException
@@ -28,6 +31,9 @@ import parker.core.interfaces.EmlAttachmentCandidate
 import parker.core.interfaces.EmlStructuralExtractionOutcome
 import parker.core.interfaces.EmlStructuralExtractor
 import parker.core.interfaces.EmlStructuralResult
+import parker.core.interfaces.OcrDerivativeExtractedResult
+import parker.core.interfaces.OcrDerivativeOutcomeKind
+import parker.core.interfaces.OcrRecognitionResult
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PdfStructuralExtractionOutcome
 import parker.core.interfaces.PdfStructuralExtractor
@@ -123,6 +129,23 @@ sealed class DerivativeGenerationCoordinationOutcome {
         val csvStructure: CsvStructuralResult,
         val reason: String,
     ) : DerivativeGenerationCoordinationOutcome()
+}
+
+/**
+ * Document Ingestion — Tier B Durable OCR Derivative Content. The
+ * generic-admission-side outcome [DerivativeGenerationCoordinator.ingestOcr]
+ * returns -- mirrors [PdfDerivativeGenerationCoordinationOutcome]'s own
+ * established shape, plus [MandatoryProvenanceUnavailable] for the Tier B
+ * scope lock's own §11/§19 fail-closed gate, checked before any
+ * [DerivativeGenerationId] is minted.
+ */
+sealed class OcrDerivativeGenerationCoordinationOutcome {
+    data class Admitted(val record: DerivativeGenerationRecord, val extracted: OcrDerivativeExtractedResult) : OcrDerivativeGenerationCoordinationOutcome()
+    data class MandatoryProvenanceUnavailable(val reason: String) : OcrDerivativeGenerationCoordinationOutcome()
+    data class PreparationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : OcrDerivativeGenerationCoordinationOutcome()
+    data class AuthorisationAuditFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : OcrDerivativeGenerationCoordinationOutcome()
+    data class PublicationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : OcrDerivativeGenerationCoordinationOutcome()
+    data class AdmittedAuditFailed(val record: DerivativeGenerationRecord, val extracted: OcrDerivativeExtractedResult, val reason: String) : OcrDerivativeGenerationCoordinationOutcome()
 }
 
 class DerivativeGenerationCoordinator(
@@ -340,6 +363,110 @@ class DerivativeGenerationCoordinator(
         try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
         catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
         return PdfDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+    }
+
+    /**
+     * Document Ingestion — Tier B Durable OCR Derivative Content Scope
+     * Lock §9/§11/§19. Called only after: (a) the caller has already
+     * evaluated Permission Engine authorisation for this invocation, (b)
+     * [result] is an already-completed OCR execution's own truthful
+     * output ([outcomeKind]/[degradationReason] classify which of the two
+     * admissible outcomes it represents, §13) -- this method never
+     * invokes OCR itself. Performs the mandatory-provenance check (§11)
+     * *before* minting any [DerivativeGenerationId] -- fabricating a
+     * placeholder value to satisfy a missing field is never authorised;
+     * absence fails closed instead.
+     */
+    suspend fun ingestOcr(
+        evidenceArtifactId: EvidenceArtifactId,
+        result: OcrRecognitionResult,
+        outcomeKind: OcrDerivativeOutcomeKind,
+        degradationReason: String?,
+        requestingPrincipalId: PrincipalId,
+        correlationValue: String,
+    ): OcrDerivativeGenerationCoordinationOutcome {
+        require(correlationValue.isNotBlank()) { "correlationValue must not be blank" }
+
+        val identity = result.identity
+        val mechanismVersion = identity.mechanismVersion
+        val modelIdentity = identity.modelIdentity
+        val modelVersion = identity.modelVersion
+        if (mechanismVersion == null || modelIdentity == null || modelVersion == null) {
+            return OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable(
+                "OCR recognition identity does not truthfully carry every field the Derivative Generation Record " +
+                    "requires as mandatory for Tier B (mechanismVersion/modelIdentity/modelVersion) -- durable " +
+                    "admission fails closed rather than fabricating a placeholder value",
+            )
+        }
+
+        val producerIdentity = DerivativeProducerIdentity(
+            pluginIdentity = identity.mechanismIdentity,
+            pluginVersion = mechanismVersion,
+            configurationIdentity = identity.configurationProfile,
+            modelIdentity = modelIdentity,
+            modelVersion = modelVersion,
+        )
+        val transformationHistory = listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE)
+        // Tier B scope lock §14: RECOGNISED and PARTIAL_OR_DEGRADED both map to
+        // AccountedForWithQualifications today -- AccountedFor requires governed coverage
+        // evidence no current OCR result field provides; never assigned by this method.
+        val completenessState = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS
+        val extracted = OcrDerivativeExtractedResult(
+            recognisedText = result.recognisedText,
+            fidelity = result.fidelity,
+            outcomeKind = outcomeKind,
+            degradationReason = degradationReason,
+            warnings = result.warnings,
+            segments = result.segments,
+            producerIdentity = producerIdentity,
+            transformationHistory = transformationHistory,
+            completenessState = completenessState,
+        )
+
+        val id = idFactory()
+        // The degradation reason is carried alongside the generation's own warnings on the
+        // Record (Tier B scope lock §14) -- the Record shape itself has no separate field;
+        // OcrDerivativeExtractedResult.degradationReason (above) is the distinct, structured
+        // fact the durable content payload itself preserves.
+        val recordWarnings = if (degradationReason != null) result.warnings + degradationReason else result.warnings
+        val record = DerivativeGenerationRecord(
+            derivativeGenerationId = id,
+            rootSourceEvidenceArtifactId = evidenceArtifactId,
+            parents = listOf(DerivativeParentReference.RootEvidenceArtifact(evidenceArtifactId)),
+            derivativeKind = "OCR recognised text",
+            producerIdentity = producerIdentity,
+            transformationHistory = transformationHistory,
+            generatedAt = result.recognisedAt,
+            contentIdentity = DerivativeContentIdentity.NoCanonicalSerialization,
+            completenessState = completenessState,
+            operationalOutcome = DerivativeOperationalOutcome.USABLE,
+            warnings = recordWarnings,
+            confidence = null,
+        )
+        publishContentFirst(id, evidenceArtifactId, TierADerivativePayload.Ocr(extracted))?.let {
+            return OcrDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
+        }
+        try {
+            storage.prepare(record)
+        } catch (e: DerivativeGenerationStorageException) {
+            return OcrDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try {
+            audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED))
+        } catch (e: DocumentIngestionAuditException) {
+            return OcrDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try {
+            storage.publishPrepared(id)
+        } catch (e: DerivativeGenerationStorageException) {
+            return OcrDerivativeGenerationCoordinationOutcome.PublicationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try {
+            audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED))
+        } catch (e: DocumentIngestionAuditException) {
+            return OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty())
+        }
+        return OcrDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
     }
 
     private fun EmlAttachmentCandidate.linkTo(root: EvidenceArtifactId) = CandidateChildSource(

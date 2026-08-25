@@ -4,6 +4,7 @@ import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeProducerIdentity
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.OcrDerivativeExtractedResult
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.TierAContentRetrievalOutcome
@@ -11,16 +12,22 @@ import parker.core.interfaces.TierADerivativePayload
 import parker.core.interfaces.TierADocumentFormat
 import parker.core.interfaces.TierADocumentRoutingResult
 import parker.core.interfaces.TierAOwnerInvocationOutcome
+import parker.core.interfaces.TierBOcrContentRetrievalOutcome
+import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerDocxTableSummary
 import parker.ui.OwnerEmlAttachmentSummary
 import parker.ui.OwnerEmlBodySummary
 import parker.ui.OwnerEvidenceOperations
+import parker.ui.OwnerOcrSegmentSummary
 import parker.ui.OwnerPdfMetadataValue
 import parker.ui.OwnerTierAContent
+import parker.ui.OwnerTierBOcrContent
 import parker.ui.TierAContentRetrievalResult
 import parker.ui.TierAProcessingOutcome
+import parker.ui.TierBDurableProcessingOutcome
+import parker.ui.TierBOcrContentRetrievalResult
 import parker.ui.TierBProcessingOutcome
 
 /** OCR Mechanism Unit 12's own, unmodified, already-governed analysisKind convention. */
@@ -53,6 +60,8 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val invokeTierAIngestionAsOwner: suspend (EvidenceArtifactId) -> TierAOwnerInvocationOutcome,
     private val analyseEvidence: suspend (PrincipalId, EvidenceAnalysisRequest) -> EvidenceIntelligenceInvocationOutcome,
     private val retrieveTierAExtractedContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome,
+    private val invokeTierBOcrDurableGenerationAsOwner: suspend (EvidenceArtifactId) -> TierBOcrOwnerInvocationOutcome,
+    private val retrieveTierBOcrContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome,
 ) : OwnerEvidenceOperations {
 
     override suspend fun importFile(absolutePath: String, declaredMediaType: String?): EvidenceImportOutcome =
@@ -183,6 +192,10 @@ class OwnerUiEvidenceRuntimeAdapter(
                 warnings = r.warnings,
             )
         }
+        is TierADerivativePayload.Ocr -> error(
+            "TierADerivativePayload.Ocr is never routed through Tier A content presentation -- " +
+                "it is retrieved exclusively via retrieveTierBOcrContent/toOwnerOcrContent",
+        )
     }
 
     private fun DerivativeProducerIdentity.toSummary(): OwnerDerivativeProducerSummary = OwnerDerivativeProducerSummary(
@@ -225,4 +238,69 @@ class OwnerUiEvidenceRuntimeAdapter(
                 TierBProcessingOutcome.Completed(outcome.acceptanceOutcomes.size)
         }
     }
+
+    override suspend fun processTierBDurable(evidenceArtifactId: EvidenceArtifactId): TierBDurableProcessingOutcome =
+        when (val outcome = invokeTierBOcrDurableGenerationAsOwner(evidenceArtifactId)) {
+            is TierBOcrOwnerInvocationOutcome.Admitted ->
+                TierBDurableProcessingOutcome.Admitted(toOwnerOcrContent(outcome.extracted), outcome.record.derivativeGenerationId)
+            is TierBOcrOwnerInvocationOutcome.NotAuthorised -> TierBDurableProcessingOutcome.NotAuthorised(outcome.reason)
+            is TierBOcrOwnerInvocationOutcome.MandatoryProvenanceUnavailable ->
+                TierBDurableProcessingOutcome.MandatoryProvenanceUnavailable(outcome.reason)
+            is TierBOcrOwnerInvocationOutcome.OcrNotAdmissible -> TierBDurableProcessingOutcome.OcrNotAdmissible(outcome.reason)
+            is TierBOcrOwnerInvocationOutcome.ManifestNotFound ->
+                TierBDurableProcessingOutcome.Failed("MANIFEST", "No evidence manifest was found for this artefact.")
+            is TierBOcrOwnerInvocationOutcome.SourceRetrievalRejected ->
+                TierBDurableProcessingOutcome.Failed("SOURCE", "The evidence source could not be retrieved.")
+            is TierBOcrOwnerInvocationOutcome.SourceNotFound ->
+                TierBDurableProcessingOutcome.Failed("SOURCE", "The evidence source was not found.")
+            is TierBOcrOwnerInvocationOutcome.ByteLengthMismatch ->
+                TierBDurableProcessingOutcome.IntegrityFailure("stored byte length does not match the evidence manifest")
+            is TierBOcrOwnerInvocationOutcome.DigestMismatch ->
+                TierBDurableProcessingOutcome.IntegrityFailure("stored content does not match the evidence manifest")
+            is TierBOcrOwnerInvocationOutcome.NotOcrEligible ->
+                TierBDurableProcessingOutcome.Failed("MEDIA_TYPE", "This evidence artefact is not OCR-eligible.")
+            is TierBOcrOwnerInvocationOutcome.PreparationFailed ->
+                TierBDurableProcessingOutcome.Failed("PREPARATION", "Durable OCR content or record preparation failed.")
+            is TierBOcrOwnerInvocationOutcome.AuthorisationAuditFailed ->
+                TierBDurableProcessingOutcome.Failed("AUDIT", "The durable generation's authorisation audit entry could not be recorded.")
+            is TierBOcrOwnerInvocationOutcome.PublicationFailed ->
+                TierBDurableProcessingOutcome.Failed("PUBLICATION", "The durable generation record could not be published.")
+            is TierBOcrOwnerInvocationOutcome.AdmittedAuditFailed ->
+                // Genuinely admitted (record and content both durably published) but the final
+                // ADMITTED audit entry is missing -- reconciliation-required, never presented as
+                // an unqualified success (Tier B scope lock §19/§21).
+                TierBDurableProcessingOutcome.Failed("RECONCILIATION_REQUIRED", "Admitted, but the audit trail's own final entry is missing.")
+        }
+
+    override suspend fun retrieveTierBOcrContent(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): TierBOcrContentRetrievalResult =
+        when (val outcome = retrieveTierBOcrContentAsOwner(evidenceArtifactId, derivativeGenerationId)) {
+            is TierBOcrContentRetrievalOutcome.Retrieved -> TierBOcrContentRetrievalResult.Retrieved(toOwnerOcrContent(outcome.extracted))
+            is TierBOcrContentRetrievalOutcome.UnknownGeneration -> TierBOcrContentRetrievalResult.UnknownGeneration
+            is TierBOcrContentRetrievalOutcome.SourceMismatch -> TierBOcrContentRetrievalResult.SourceMismatch
+            is TierBOcrContentRetrievalOutcome.WrongDerivativeKind -> TierBOcrContentRetrievalResult.WrongDerivativeKind
+            is TierBOcrContentRetrievalOutcome.ContentMissing -> TierBOcrContentRetrievalResult.ContentMissing
+            is TierBOcrContentRetrievalOutcome.ContentCorrupt -> TierBOcrContentRetrievalResult.ContentCorrupt(outcome.reason)
+            is TierBOcrContentRetrievalOutcome.UnsupportedRepresentationVersion ->
+                TierBOcrContentRetrievalResult.UnsupportedRepresentationVersion(outcome.version)
+        }
+
+    /**
+     * Owner Tier B Durable OCR Content Presentation. Projects the OCR
+     * mechanism's own already-produced, already-admitted
+     * [OcrDerivativeExtractedResult] into the safe, owner-facing
+     * [OwnerTierBOcrContent] shape -- never a re-recognition.
+     */
+    private fun toOwnerOcrContent(extracted: OcrDerivativeExtractedResult): OwnerTierBOcrContent = OwnerTierBOcrContent(
+        recognisedText = extracted.recognisedText,
+        fidelity = extracted.fidelity.name,
+        outcomeKind = extracted.outcomeKind.name,
+        degradationReason = extracted.degradationReason,
+        warnings = extracted.warnings,
+        segments = extracted.segments.map { OwnerOcrSegmentSummary(it.text, it.fidelity.name, it.pageNumber) },
+        producer = extracted.producerIdentity.toSummary(),
+        completenessState = extracted.completenessState.name,
+    )
 }

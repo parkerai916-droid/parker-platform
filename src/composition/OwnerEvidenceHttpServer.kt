@@ -23,8 +23,11 @@ import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerEvidenceOperations
 import parker.ui.OwnerTierAContent
+import parker.ui.OwnerTierBOcrContent
 import parker.ui.TierAContentRetrievalResult
 import parker.ui.TierAProcessingOutcome
+import parker.ui.TierBDurableProcessingOutcome
+import parker.ui.TierBOcrContentRetrievalResult
 import parker.ui.TierBProcessingOutcome
 
 /**
@@ -173,8 +176,12 @@ class OwnerEvidenceHttpServer(
                         handleProcess(exchange, segments[0])
                     segments.size == 2 && segments[1] == "ocr" && method == "POST" ->
                         handleOcr(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "ocr-durable" && method == "POST" ->
+                        handleOcrDurable(exchange, segments[0])
                     segments.size == 3 && segments[1] == "content" && method == "GET" ->
                         handleRetrieveContent(exchange, segments[0], segments[2])
+                    segments.size == 3 && segments[1] == "ocr-content" && method == "GET" ->
+                        handleRetrieveOcrContent(exchange, segments[0], segments[2])
                     else -> {
                         runCatching { exchange.requestBody.use { it.readBytes() } }
                         writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -351,7 +358,103 @@ class OwnerEvidenceHttpServer(
             }
             writeJson(exchange, 200, body)
         }
+
+        /**
+         * Document Ingestion — Tier B Durable OCR Derivative Content.
+         * Explicit, owner-triggered durable Tier B OCR -- distinct from
+         * [handleOcr] (the existing, unchanged transient-only path). On
+         * success, durably admits a new `DerivativeGenerationRecord` and
+         * subordinate content entry, retrievable after restart.
+         */
+        private fun handleOcrDurable(exchange: HttpExchange, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val id = try {
+                EvidenceArtifactId(rawId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val outcome = runBlocking { operations.processTierBDurable(id) }
+            val body = when (outcome) {
+                is TierBDurableProcessingOutcome.Admitted -> jsonObject(
+                    "status" to "TIER_B_DURABLE_COMPLETE",
+                    "content" to ocrContentJson(outcome.content),
+                    "derivativeGenerationId" to outcome.derivativeGenerationId.value,
+                )
+                is TierBDurableProcessingOutcome.NotAuthorised -> jsonObject("status" to "FAILED", "message" to "Not authorised: ${outcome.reason}")
+                is TierBDurableProcessingOutcome.MandatoryProvenanceUnavailable -> jsonObject(
+                    "status" to "FAILED",
+                    "message" to "OCR model provenance was not available for this invocation -- durable admission fails closed.",
+                )
+                is TierBDurableProcessingOutcome.OcrNotAdmissible -> jsonObject("status" to "FAILED", "message" to outcome.reason)
+                is TierBDurableProcessingOutcome.IntegrityFailure -> jsonObject("status" to "FAILED", "message" to "Integrity check failed: ${outcome.reason}")
+                is TierBDurableProcessingOutcome.Failed -> jsonObject("status" to "FAILED", "message" to "Failed (${outcome.stage}): ${outcome.safeMessage}")
+            }
+            writeJson(exchange, 200, body)
+        }
+
+        /**
+         * Document Ingestion — Tier B Durable OCR Derivative Content.
+         * Retrieves an already-persisted Tier B durable OCR generation's
+         * content by known [EvidenceArtifactId] + [DerivativeGenerationId]
+         * -- never reruns OCR. Mirrors [handleRetrieveContent]'s own
+         * identical unsafe-identifier handling exactly.
+         */
+        private fun handleRetrieveOcrContent(exchange: HttpExchange, rawEvidenceArtifactId: String, rawDerivativeGenerationId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val evidenceArtifactId = try {
+                EvidenceArtifactId(rawEvidenceArtifactId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val derivativeGenerationId = try {
+                DerivativeGenerationId(rawDerivativeGenerationId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            }
+            val outcome = try {
+                runBlocking { operations.retrieveTierBOcrContent(evidenceArtifactId, derivativeGenerationId) }
+            } catch (e: DerivativeGenerationStorageException.UnsafeIdentifier) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            } catch (e: DerivativeContentStorageException.UnsafeIdentifier) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            }
+            val body = when (outcome) {
+                is TierBOcrContentRetrievalResult.Retrieved -> jsonObject(
+                    "status" to "RETRIEVED",
+                    "content" to ocrContentJson(outcome.content),
+                )
+                TierBOcrContentRetrievalResult.UnknownGeneration -> jsonObject("status" to "UNKNOWN_GENERATION")
+                TierBOcrContentRetrievalResult.SourceMismatch -> jsonObject("status" to "SOURCE_MISMATCH")
+                TierBOcrContentRetrievalResult.WrongDerivativeKind -> jsonObject("status" to "WRONG_DERIVATIVE_KIND")
+                TierBOcrContentRetrievalResult.ContentMissing -> jsonObject("status" to "CONTENT_MISSING")
+                is TierBOcrContentRetrievalResult.ContentCorrupt -> jsonObject("status" to "CONTENT_CORRUPT", "message" to outcome.safeMessage)
+                is TierBOcrContentRetrievalResult.UnsupportedRepresentationVersion -> jsonObject(
+                    "status" to "UNSUPPORTED_VERSION",
+                    "version" to outcome.version,
+                )
+                is TierBOcrContentRetrievalResult.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
+            }
+            writeJson(exchange, 200, body)
+        }
     }
+
+    private fun ocrContentJson(content: OwnerTierBOcrContent): JsonObject = jsonObject(
+        "recognisedText" to content.recognisedText,
+        "fidelity" to content.fidelity,
+        "outcomeKind" to content.outcomeKind,
+        "degradationReason" to content.degradationReason,
+        "warnings" to jsonArray(content.warnings),
+        "segments" to jsonArray(
+            content.segments.map { jsonObject("text" to it.text, "fidelity" to it.fidelity, "pageNumber" to it.pageNumber) },
+        ),
+        "producer" to producerJson(content.producer),
+        "completenessState" to content.completenessState,
+    )
 
     // ---- Owner Tier A Extracted Content Presentation: safe owner-facing content -> JSON ----------
     // Every value below is either a server-controlled literal or threaded through jsonString's own
@@ -821,11 +924,24 @@ function render() {
       b.textContent = 'Run OCR';
       b.onclick = () => ocrRow(index);
       actions.appendChild(b);
+      // Document Ingestion -- Tier B Durable OCR Derivative Content. A separate button, never a
+      // change to the existing transient "Run OCR" button above -- distinct capability, distinct
+      // durable result, retrievable after restart without rerunning OCR.
+      const bd = document.createElement('button');
+      bd.textContent = 'Run OCR (Durable)';
+      bd.onclick = () => ocrDurableRow(index);
+      actions.appendChild(bd);
     }
     if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
       const b = document.createElement('button');
       b.textContent = expandedIndex === index ? 'Hide Extracted Content' : 'View Extracted Content';
       b.onclick = () => viewContent(index);
+      actions.appendChild(b);
+    }
+    if (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId) {
+      const b = document.createElement('button');
+      b.textContent = expandedIndex === index ? 'Hide Extracted Content' : 'View Extracted Content';
+      b.onclick = () => viewOcrContent(index);
       actions.appendChild(b);
     }
     tr.innerHTML = `<td>${'$'}{escapeHtml(row.originalFileName)}</td><td>${'$'}{row.byteLength}</td><td>${'$'}{row.status}</td><td>${'$'}{row.evidenceArtifactId || ''}</td><td>${'$'}{row.message || ''}</td>`;
@@ -842,6 +958,21 @@ function render() {
         const p = document.createElement('p');
         p.className = 'note';
         p.textContent = 'Could not retrieve extracted content: ' + row.contentError;
+        detailTd.appendChild(p);
+      }
+      detailTr.appendChild(detailTd);
+      tbody.appendChild(detailTr);
+    }
+    if (expandedIndex === index && (row.ocrContent || row.ocrContentError)) {
+      const detailTr = document.createElement('tr');
+      const detailTd = document.createElement('td');
+      detailTd.colSpan = 6;
+      if (row.ocrContent) {
+        detailTd.appendChild(buildOcrContentPanel(row.ocrContent));
+      } else {
+        const p = document.createElement('p');
+        p.className = 'note';
+        p.textContent = 'Could not retrieve durable OCR content: ' + row.ocrContentError;
         detailTd.appendChild(p);
       }
       detailTr.appendChild(detailTd);
@@ -973,6 +1104,31 @@ function buildContentPanel(content) {
   return container;
 }
 
+// Document Ingestion -- Tier B Durable OCR Derivative Content. Mirrors buildContentPanel's own
+// discipline exactly: every field inserted via appendField/appendExtractedText (textContent, never
+// innerHTML), so OCR-recognised text can never be interpreted as HTML or script (Tier B scope lock
+// §27), no matter what characters the source document contained.
+function buildOcrContentPanel(content) {
+  const container = document.createElement('div');
+  container.className = 'content-panel';
+  appendField(container, 'Outcome', content.outcomeKind);
+  if (content.degradationReason) appendField(container, 'Degradation reason', content.degradationReason);
+  appendField(container, 'Fidelity', content.fidelity);
+  appendField(container, 'Completeness', content.completenessState);
+  appendWarnings(container, content.warnings);
+  appendProducer(container, content.producer);
+  appendExtractedText(container, 'Recognised text:', content.recognisedText);
+  if (content.segments && content.segments.length) {
+    const label = document.createElement('div');
+    label.textContent = 'Segments (' + content.segments.length + '):';
+    container.appendChild(label);
+    content.segments.forEach(s => {
+      appendExtractedText(container, (s.pageNumber != null ? 'Page ' + s.pageNumber : 'Segment') + ':', s.text);
+    });
+  }
+  return container;
+}
+
 function authHeaders() {
   return { 'Authorization': 'Bearer ' + document.getElementById('token').value };
 }
@@ -1054,6 +1210,46 @@ async function ocrRow(index) {
   const result = await resp.json();
   row.status = result.status;
   row.message = result.message;
+  render();
+}
+
+// Document Ingestion -- Tier B Durable OCR Derivative Content. Explicit, owner-triggered durable
+// OCR -- distinct from ocrRow (the existing, unchanged transient-only path) above. On success,
+// carries the new DerivativeGenerationId; "View Extracted Content" thereafter always fetches from
+// the durable retrieval endpoint (viewOcrContent, below), never from this response held only in
+// this page's own memory -- mirroring viewContent's own identical discipline for Tier A.
+async function ocrDurableRow(index) {
+  const row = rows[index];
+  row.status = 'OCR_DURABLE_PROCESSING';
+  render();
+  const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/ocr-durable`, { method: 'POST', headers: authHeaders() });
+  const result = await resp.json();
+  row.status = result.status;
+  row.message = result.message;
+  row.ocrDerivativeGenerationId = result.derivativeGenerationId || null;
+  render();
+}
+
+async function viewOcrContent(index) {
+  const row = rows[index];
+  if (expandedIndex === index) {
+    expandedIndex = null;
+    render();
+    return;
+  }
+  if (!row.ocrContent && !row.ocrContentError) {
+    const resp = await fetch(
+      `/owner/evidence/${'$'}{row.evidenceArtifactId}/ocr-content/${'$'}{row.ocrDerivativeGenerationId}`,
+      { method: 'GET', headers: authHeaders() },
+    );
+    const result = await resp.json();
+    if (result.status === 'RETRIEVED') {
+      row.ocrContent = result.content;
+    } else {
+      row.ocrContentError = result.status + (result.message ? (': ' + result.message) : '');
+    }
+  }
+  expandedIndex = index;
   render();
 }
 </script>

@@ -98,6 +98,8 @@ class OwnerEvidenceUiEndToEndLiveAcceptanceTest {
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
             retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
+            invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
+            retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
         )
         val controller = OwnerEvidenceUiController(adapter)
 

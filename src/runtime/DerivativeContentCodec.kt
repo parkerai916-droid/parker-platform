@@ -28,10 +28,14 @@ import parker.core.interfaces.EmlHeader
 import parker.core.interfaces.EmlMimeEntity
 import parker.core.interfaces.EmlStructuralResult
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.OcrDerivativeExtractedResult
+import parker.core.interfaces.OcrDerivativeOutcomeKind
+import parker.core.interfaces.OcrRecognitionSegment
 import parker.core.interfaces.OoxmlPartInventoryEntry
 import parker.core.interfaces.PdfMetadataValue
 import parker.core.interfaces.PdfStructuralResult
 import parker.core.interfaces.TierADerivativePayload
+import parker.core.interfaces.TranscriptionFidelity
 import java.time.Instant
 
 /**
@@ -60,16 +64,25 @@ internal object DerivativeContentCodec {
     const val EML_REPRESENTATION_VERSION = 1
     const val DOCX_REPRESENTATION_VERSION = 1
     const val PDF_REPRESENTATION_VERSION = 1
+    const val OCR_REPRESENTATION_VERSION = 1
 
     private const val FORMAT_CSV: Byte = 1
     private const val FORMAT_EML: Byte = 2
     private const val FORMAT_DOCX: Byte = 3
     private const val FORMAT_PDF: Byte = 4
+    private const val FORMAT_OCR: Byte = 5
 
     private const val MAX_SHORT_STRING_BYTES = 1024 * 1024 // 1 MiB -- identifiers/names
     private const val MAX_LARGE_TEXT_BYTES = 32 * 1024 * 1024 // 32 MiB -- documentText/body/paragraph blobs
     private const val MAX_COLLECTION_SIZE = 1_000_000
     const val MAX_ENTRY_BYTES = 64L * 1024 * 1024 // matches the existing 64 MiB source-ingress bound
+
+    // Tier B OCR-specific bounds -- TIER_B_OCR_DURABLE_REPRESENTATION_BOUNDS_DECISION.md §2.
+    // Every value reuses an already-governed number (MAX_PDF_PAGES=200, the 20 MiB OCR
+    // recognisedText ceiling, MAX_SHORT_STRING_BYTES); the outer MAX_ENTRY_BYTES check above
+    // remains the final backstop regardless of these per-field bounds.
+    private const val MAX_OCR_COLLECTION_SIZE = 200 // segment count, warning count -- reuses MAX_PDF_PAGES (page-aligned facts)
+    private const val MAX_OCR_TEXT_BYTES = 20 * 1024 * 1024 // recognisedText / individual segment text -- reuses the OCR mechanism's own MAX_OUTPUT_BYTES
 
     class MalformedRepresentationException(message: String) : Exception(message)
     class UnsupportedRepresentationVersionException(val version: Int) : Exception("unsupported representation version $version")
@@ -87,6 +100,7 @@ internal object DerivativeContentCodec {
                     is TierADerivativePayload.Eml -> { output.writeByte(FORMAT_EML.toInt()); output.writeInt(EML_REPRESENTATION_VERSION); output.writeEml(payload.value, payload.childSourceCandidateCount) }
                     is TierADerivativePayload.Docx -> { output.writeByte(FORMAT_DOCX.toInt()); output.writeInt(DOCX_REPRESENTATION_VERSION); output.writeDocx(payload.value) }
                     is TierADerivativePayload.Pdf -> { output.writeByte(FORMAT_PDF.toInt()); output.writeInt(PDF_REPRESENTATION_VERSION); output.writePdf(payload.value) }
+                    is TierADerivativePayload.Ocr -> { output.writeByte(FORMAT_OCR.toInt()); output.writeInt(OCR_REPRESENTATION_VERSION); output.writeOcr(payload.value) }
                 }
             }
             bytes.toByteArray()
@@ -132,6 +146,10 @@ internal object DerivativeContentCodec {
                     if (representationVersion != PDF_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
                     TierADerivativePayload.Pdf(input.readPdf())
                 }
+                FORMAT_OCR -> {
+                    if (representationVersion != OCR_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
+                    TierADerivativePayload.Ocr(input.readOcr())
+                }
                 else -> throw MalformedRepresentationException("unknown format kind byte $formatByte")
             }
             DerivativeContentEntry(id, root, payload)
@@ -166,6 +184,53 @@ internal object DerivativeContentCodec {
         val completeness = enumValueOf<DerivativeCompletenessState>(readString(MAX_SHORT_STRING_BYTES))
         val warnings = readStrings()
         return PdfStructuralResult(documentText, pageCount, pageTextAssociationAvailable, metadata, embeddedResources, producer, transformations, completeness, warnings)
+    }
+
+    // ---- OCR (Tier B durable, TIER_B_OCR_DURABLE_REPRESENTATION_BOUNDS_DECISION.md) -----------
+
+    private fun DataOutputStream.writeOcr(r: OcrDerivativeExtractedResult) {
+        writeString(r.recognisedText, MAX_OCR_TEXT_BYTES)
+        writeString(r.fidelity.name, MAX_SHORT_STRING_BYTES)
+        writeString(r.outcomeKind.name, MAX_SHORT_STRING_BYTES)
+        writeNullableString(r.degradationReason)
+        require(r.warnings.size <= MAX_OCR_COLLECTION_SIZE) { "OCR warnings exceed the $MAX_OCR_COLLECTION_SIZE-entry codec limit" }
+        writeCollectionSize(r.warnings.size)
+        r.warnings.forEach { writeString(it, MAX_SHORT_STRING_BYTES) }
+        require(r.segments.size <= MAX_OCR_COLLECTION_SIZE) { "OCR segments exceed the $MAX_OCR_COLLECTION_SIZE-entry codec limit" }
+        writeCollectionSize(r.segments.size)
+        r.segments.forEach { segment ->
+            writeString(segment.text, MAX_OCR_TEXT_BYTES)
+            writeString(segment.fidelity.name, MAX_SHORT_STRING_BYTES)
+            writeBoolean(segment.pageNumber != null)
+            segment.pageNumber?.let(::writeInt)
+        }
+        writeProducer(r.producerIdentity)
+        writeTransformations(r.transformationHistory)
+        writeString(r.completenessState.name, MAX_SHORT_STRING_BYTES)
+    }
+
+    private fun DataInputStream.readOcr(): OcrDerivativeExtractedResult {
+        val recognisedText = readString(MAX_OCR_TEXT_BYTES)
+        val fidelity = enumValueOf<TranscriptionFidelity>(readString(MAX_SHORT_STRING_BYTES))
+        val outcomeKind = enumValueOf<OcrDerivativeOutcomeKind>(readString(MAX_SHORT_STRING_BYTES))
+        val degradationReason = readNullableString()
+        val warningCount = readCollectionSize()
+        if (warningCount > MAX_OCR_COLLECTION_SIZE) throw MalformedRepresentationException("OCR warning count $warningCount exceeds the $MAX_OCR_COLLECTION_SIZE-entry codec limit")
+        val warnings = List(warningCount) { readString(MAX_SHORT_STRING_BYTES) }
+        val segmentCount = readCollectionSize()
+        if (segmentCount > MAX_OCR_COLLECTION_SIZE) throw MalformedRepresentationException("OCR segment count $segmentCount exceeds the $MAX_OCR_COLLECTION_SIZE-entry codec limit")
+        val segments = List(segmentCount) {
+            val text = readString(MAX_OCR_TEXT_BYTES)
+            val segmentFidelity = enumValueOf<TranscriptionFidelity>(readString(MAX_SHORT_STRING_BYTES))
+            val pageNumber = if (readBoolean()) readInt() else null
+            OcrRecognitionSegment(text, segmentFidelity, pageNumber)
+        }
+        val producer = readProducer()
+        val transformations = readTransformations()
+        val completeness = enumValueOf<DerivativeCompletenessState>(readString(MAX_SHORT_STRING_BYTES))
+        return OcrDerivativeExtractedResult(
+            recognisedText, fidelity, outcomeKind, degradationReason, warnings, segments, producer, transformations, completeness,
+        )
     }
 
     // ---- CSV ----------------------------------------------------------------------------------

@@ -80,6 +80,8 @@ class OwnerEvidenceHttpServerTest {
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
             retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
+            invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
+            retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
@@ -1007,6 +1009,151 @@ class OwnerEvidenceHttpServerTest {
             throw AssertionError("expected ${T::class.simpleName} but nothing was thrown")
         } catch (e: Throwable) {
             if (e !is T) throw AssertionError("expected ${T::class.simpleName} but got $e", e)
+        }
+    }
+
+    // ================= Document Ingestion — Tier B Durable OCR Derivative Content =================
+
+    @Test
+    fun `the explicit durable ocr endpoint mints a durable generation, and the durable ocr-content endpoint retrieves it back, matching exactly`() = runTest {
+        val recognisedJson = """{"status":"recognised","recognisedText":"HTTP DURABLE OCR TEXT","fidelity":"VERBATIM","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val scriptDir = Files.createTempDirectory("evidence-http-scripts")
+        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
+        try {
+            val uploadResponse = send(
+                uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))),
+            )
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            assertEquals("REQUIRES_OCR", extractField(post(harness, "/owner/evidence/$id/process").body(), "status"))
+
+            val durableResponse = post(harness, "/owner/evidence/$id/ocr-durable")
+            assertEquals(200, durableResponse.statusCode())
+            assertEquals("TIER_B_DURABLE_COMPLETE", extractField(durableResponse.body(), "status"))
+            val derivativeGenerationId = requireNotNull(extractField(durableResponse.body(), "derivativeGenerationId"))
+            assertEquals("HTTP DURABLE OCR TEXT", extractJsonStringField(durableResponse.body(), "recognisedText"))
+
+            val retrieveResponse = get(harness, "/owner/evidence/$id/ocr-content/$derivativeGenerationId")
+            assertEquals(200, retrieveResponse.statusCode())
+            assertEquals("RETRIEVED", extractField(retrieveResponse.body(), "status"))
+            assertEquals("HTTP DURABLE OCR TEXT", extractJsonStringField(retrieveResponse.body(), "recognisedText"))
+            assertEquals("rapidocr-onnxruntime:PP-OCRv6_rec_small", extractField(retrieveResponse.body(), "modelIdentity"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the durable ocr endpoint requires authentication -- no token, no durable generation`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            val response = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/ocr-durable"))
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build(),
+            )
+
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the durable ocr endpoint rejects the wrong token`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            val response = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/ocr-durable"))
+                    .header("Authorization", "Bearer wrong-token")
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build(),
+            )
+
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the durable ocr-content endpoint requires authentication -- no token, no content`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = get(harness, "/owner/evidence/evidence-1/ocr-content/generation-1", authToken = null)
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `an unknown derivative generation id on the ocr-content endpoint returns UNKNOWN_GENERATION, never fabricated content`() = runTest {
+        val harness = startHarness("")
+        try {
+            val response = get(harness, "/owner/evidence/evidence-1/ocr-content/generation-never-registered")
+            assertEquals(200, response.statusCode())
+            assertEquals("UNKNOWN_GENERATION", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a Tier A generation retrieved through the ocr-content endpoint returns WRONG_DERIVATIVE_KIND, never a mis-decoded result`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "structured.csv", "text/csv", Files.readAllBytes(fixtureRoot.resolve("06-structured.csv"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            val processBody = post(harness, "/owner/evidence/$id/process").body()
+            val derivativeGenerationId = requireNotNull(extractField(processBody, "derivativeGenerationId"))
+
+            val response = get(harness, "/owner/evidence/$id/ocr-content/$derivativeGenerationId")
+
+            assertEquals(200, response.statusCode())
+            assertEquals("WRONG_DERIVATIVE_KIND", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a path-traversal-shaped or reserved-device-name-shaped generation id on the ocr-content endpoint is rejected with 400, never an internal error`() = runTest {
+        val harness = startHarness("")
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "structured.csv", "text/csv", Files.readAllBytes(fixtureRoot.resolve("06-structured.csv"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            assertEquals(400, get(harness, "/owner/evidence/$id/ocr-content/..").statusCode())
+            assertEquals(400, get(harness, "/owner/evidence/$id/ocr-content/con").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the durable ocr response carries no server temp path, model path, or stack trace`() = runTest {
+        val recognisedJson = """{"status":"recognised","recognisedText":"NO LEAKAGE TEXT","fidelity":"VERBATIM","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val scriptDir = Files.createTempDirectory("evidence-http-scripts")
+        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
+        try {
+            val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))))
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            post(harness, "/owner/evidence/$id/process")
+
+            val body = post(harness, "/owner/evidence/$id/ocr-durable").body()
+
+            assertTrue("/tmp" !in body, "response must never carry a server temp path: $body")
+            assertTrue(".onnx" !in body, "response must never carry a model artifact filename: $body")
+            assertTrue("Exception" !in body, "response must never carry a raw exception name: $body")
+            assertTrue("\tat " !in body, "response must never carry a stack trace: $body")
+        } finally {
+            harness.shutdown()
         }
     }
 }

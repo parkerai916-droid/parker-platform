@@ -186,6 +186,74 @@ class DerivativeContentCodecTest {
         assertFailsWith<IllegalArgumentException> { DerivativeContentCodec.encode(entry) }
     }
 
+    // ---- Tier B OCR (TIER_B_OCR_DURABLE_REPRESENTATION_BOUNDS_DECISION.md) --------------------
+
+    @Test
+    fun `OCR payload round trips every governed field exactly`() {
+        val entry = DerivativeContentEntry(
+            DerivativeGenerationId("generation-ocr"),
+            EvidenceArtifactId("source-ocr"),
+            TierADerivativePayload.Ocr(TierADerivativePayloadFixtures.ocr()),
+        )
+        val decoded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(entry))
+        assertEquals(entry, decoded)
+    }
+
+    @Test
+    fun `OCR partial-or-degraded payload round trips its own degradation reason exactly`() {
+        val entry = DerivativeContentEntry(
+            DerivativeGenerationId("generation-ocr-degraded"),
+            EvidenceArtifactId("source-ocr"),
+            TierADerivativePayload.Ocr(
+                TierADerivativePayloadFixtures.ocr(
+                    outcomeKind = parker.core.interfaces.OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED,
+                    degradationReason = "page 4 could not be fully processed",
+                ),
+            ),
+        )
+        val decoded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(entry))
+        assertEquals(entry, decoded)
+    }
+
+    @Test
+    fun `OCR segment count exactly at the 200-entry bound is accepted, 201 is rejected at encode time`() {
+        val atBound = TierADerivativePayloadFixtures.ocr(
+            segments = (1..200).map { parker.core.interfaces.OcrRecognitionSegment("segment $it", parker.core.interfaces.TranscriptionFidelity.VERBATIM, it) },
+        )
+        val entry = DerivativeContentEntry(DerivativeGenerationId("generation-ocr-200"), EvidenceArtifactId("source-ocr"), TierADerivativePayload.Ocr(atBound))
+        val decoded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(entry))
+        assertEquals(entry, decoded)
+
+        val overBound = TierADerivativePayloadFixtures.ocr(
+            segments = (1..201).map { parker.core.interfaces.OcrRecognitionSegment("segment $it", parker.core.interfaces.TranscriptionFidelity.VERBATIM, it) },
+        )
+        val overEntry = DerivativeContentEntry(DerivativeGenerationId("generation-ocr-201"), EvidenceArtifactId("source-ocr"), TierADerivativePayload.Ocr(overBound))
+        assertFailsWith<IllegalArgumentException> { DerivativeContentCodec.encode(overEntry) }
+    }
+
+    @Test
+    fun `OCR warning count over the 200-entry bound is rejected at encode time, never silently truncated`() {
+        val overWarnings = TierADerivativePayloadFixtures.ocr().copy(warnings = (1..201).map { "warning $it" })
+        val entry = DerivativeContentEntry(DerivativeGenerationId("generation-ocr-warn"), EvidenceArtifactId("source-ocr"), TierADerivativePayload.Ocr(overWarnings))
+        assertFailsWith<IllegalArgumentException> { DerivativeContentCodec.encode(entry) }
+    }
+
+    @Test
+    fun `OCR recognisedText over the 20 MiB bound is rejected at encode time`() {
+        val oversized = TierADerivativePayloadFixtures.ocr(recognisedText = "x".repeat(21 * 1024 * 1024))
+        val entry = DerivativeContentEntry(DerivativeGenerationId("generation-ocr-text"), EvidenceArtifactId("source-ocr"), TierADerivativePayload.Ocr(oversized))
+        assertFailsWith<IllegalArgumentException> { DerivativeContentCodec.encode(entry) }
+    }
+
+    @Test
+    fun `OCR individual segment text over the 20 MiB bound is rejected at encode time`() {
+        val oversized = TierADerivativePayloadFixtures.ocr(
+            segments = listOf(parker.core.interfaces.OcrRecognitionSegment("x".repeat(21 * 1024 * 1024), parker.core.interfaces.TranscriptionFidelity.VERBATIM, 1)),
+        )
+        val entry = DerivativeContentEntry(DerivativeGenerationId("generation-ocr-segtext"), EvidenceArtifactId("source-ocr"), TierADerivativePayload.Ocr(oversized))
+        assertFailsWith<IllegalArgumentException> { DerivativeContentCodec.encode(entry) }
+    }
+
     /** Recomputes and appends a fresh trailing SHA-256 digest over [bytes] minus its own last 32 bytes -- mirrors [DerivativeContentCodec.encode]'s own digest step exactly, for tests that mutate a field and must isolate that mutation from digest rejection. */
     private fun reSign(bytes: ByteArray): ByteArray {
         val body = bytes.copyOfRange(0, bytes.size - 32)

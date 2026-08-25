@@ -128,6 +128,8 @@ class OwnerEvidenceHttpEndToEndLiveAcceptanceTest {
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
             retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
+            invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
+            retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",

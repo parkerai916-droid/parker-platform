@@ -321,5 +321,13 @@ class OwnerEvidenceUiControllerTest {
             evidenceArtifactId: EvidenceArtifactId,
             derivativeGenerationId: DerivativeGenerationId,
         ): TierAContentRetrievalResult = TierAContentRetrievalResult.UnknownGeneration
+
+        override suspend fun processTierBDurable(evidenceArtifactId: EvidenceArtifactId): parker.ui.TierBDurableProcessingOutcome =
+            parker.ui.TierBDurableProcessingOutcome.NotAuthorised("not authorised")
+
+        override suspend fun retrieveTierBOcrContent(
+            evidenceArtifactId: EvidenceArtifactId,
+            derivativeGenerationId: DerivativeGenerationId,
+        ): parker.ui.TierBOcrContentRetrievalResult = parker.ui.TierBOcrContentRetrievalResult.UnknownGeneration
     }
 }

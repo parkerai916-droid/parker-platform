@@ -56,6 +56,8 @@ import parker.core.interfaces.TierAContentRetrievalOutcome
 import parker.core.interfaces.TierADocumentIngestionRouter
 import parker.core.interfaces.TierADocumentRoutingResult
 import parker.core.interfaces.TierAOwnerInvocationOutcome
+import parker.core.interfaces.TierBOcrContentRetrievalOutcome
+import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
 import parker.core.interfaces.WorldModelSource
 import parker.core.runtime.ActionMapper
 import parker.core.runtime.CommunicationConversationCoordinator
@@ -128,10 +130,14 @@ import parker.core.runtime.QmdRelevanceMechanismConfiguration
 import parker.core.runtime.ReplyDeliveryCoordinator
 import parker.core.runtime.ResponseComposer
 import parker.core.runtime.ResponseDelivery
+import parker.core.runtime.ApacheCommonsCsvExtractor
+import parker.core.runtime.DerivativeGenerationCoordinator
 import parker.core.runtime.TaggedReasoningResponseParser
 import parker.core.runtime.TierADocumentIngestionComposition
 import parker.core.runtime.TierAContentRetrievalCoordinator
 import parker.core.runtime.TierAOwnerInvocationCoordinator
+import parker.core.runtime.TierBOcrContentRetrievalCoordinator
+import parker.core.runtime.TierBOcrOwnerInvocationCoordinator
 
 /**
  * [ParkerRuntime]'s own lifecycle, restated as an explicit, observable
@@ -268,6 +274,16 @@ class ParkerRuntime(
     // class, mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
     // constructed in buildAndRegisterRuntimeGraph ever receives a reference to it.
     private lateinit var tierAContentRetrievalCoordinator: TierAContentRetrievalCoordinator
+
+    // Document Ingestion — Tier B Durable OCR Derivative Content. Held as its own narrow class,
+    // mirroring tierAOwnerInvocationCoordinator's own isolation exactly -- no other coordinator
+    // constructed in buildAndRegisterRuntimeGraph ever receives a reference to it.
+    private lateinit var tierBOcrOwnerInvocationCoordinator: TierBOcrOwnerInvocationCoordinator
+
+    // Document Ingestion — Tier B Durable OCR Derivative Content Retrieval. A separate class from
+    // tierAContentRetrievalCoordinator (never modified or repurposed, Tier B scope lock §28),
+    // mirroring its own isolation.
+    private lateinit var tierBOcrContentRetrievalCoordinator: TierBOcrContentRetrievalCoordinator
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -1261,6 +1277,26 @@ class ParkerRuntime(
 
         evidenceIntelligence = DefaultEvidenceIntelligence(evidenceIntelligenceInputResolver, evidenceIntelligenceReasoningCoordinator, evidenceIntelligenceOcrCoordinator)
 
+        // Document Ingestion — Tier B Durable OCR Derivative Content
+        // (DOCUMENT_INGESTION_TIER_B_DURABLE_OCR_DERIVATIVE_CONTENT_SCOPE_LOCK.md,
+        // TIER_B_OCR_DURABLE_REPRESENTATION_BOUNDS_DECISION.md). Reuses the exact same
+        // derivativeGenerationStorage/documentIngestionAudit/derivativeContentStorage instances
+        // Tier A's own wiring above already constructed -- one unified generation-identity space
+        // (scope lock §5), never a parallel store. csvExtractor is DerivativeGenerationCoordinator's
+        // own required (non-nullable) constructor parameter -- a fresh ApacheCommonsCsvExtractor is
+        // supplied purely to satisfy it; this Tier B instance never calls ingestCsv/ingestEml/
+        // ingestDocx/ingestPdf, only the new ingestOcr.
+        val tierBDerivativeGenerationCoordinator = DerivativeGenerationCoordinator(
+            csvExtractor = ApacheCommonsCsvExtractor(),
+            storage = derivativeGenerationStorage,
+            audit = documentIngestionAudit,
+            contentStorage = derivativeContentStorage,
+        )
+        tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
+            defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
+        )
+        tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
+
         // The existing raw memoryCore, not a PermissionGatedMemoryCore wrapper: this coordinator
         // already gates its own CandidateRecordProduced dispatch internally (its own
         // permissionEngine, MEMORY_CORE_ACCEPTANCE_RESOURCE_ID/ACCEPT_MEMORY_CORE_CANDIDATE_ACTION_NAME),
@@ -1759,6 +1795,66 @@ class ParkerRuntime(
                 "(evidenceArtifactId=${evidenceArtifactId.value}, derivativeGenerationId=${derivativeGenerationId.value})",
         )
         return tierAContentRetrievalCoordinator.retrieve(evidenceArtifactId, derivativeGenerationId)
+    }
+
+    /**
+     * Document Ingestion — Tier B Durable OCR Derivative Content. The one production entry point
+     * through which durable Tier B OCR may be invoked -- **explicit, individually-authorized owner
+     * invocation only**, mirroring [invokeTierAIngestionAsOwner]'s own structural owner-only
+     * pattern exactly: no `requestingPrincipalId` parameter, always acts as
+     * `PrincipalId(config.ownerPrincipalId)`.
+     *
+     * Unlike [invokeTierAIngestionAsOwner], this operation is **also** gated by a real Permission
+     * Engine evaluation before any OCR work begins (Tier B scope lock §9) -- structural owner-only
+     * and Permission-Engine-authorised are two distinct, both-required guarantees, neither a
+     * substitute for the other. [tierBOcrOwnerInvocationCoordinator] performs the entire governed
+     * chain: authorisation, source retrieval, OCR invocation (via the existing, unmodified
+     * [EvidenceIntelligenceOcrCoordinator]/[parker.core.interfaces.OcrMechanism] path), the
+     * mandatory-provenance fail-closed gate (§11), `DerivativeGenerationId` minting, and the full
+     * prepare/publish/audit ordering (§19). Never invoked automatically -- not by upload, not by
+     * Tier A completion, not by retrieval, not by restart (§26).
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun invokeTierBOcrDurableGenerationAsOwner(evidenceArtifactId: EvidenceArtifactId): TierBOcrOwnerInvocationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Tier B durable OCR generation invoked by owner (evidenceArtifactId=${evidenceArtifactId.value})")
+        return tierBOcrOwnerInvocationCoordinator.invoke(
+            PrincipalId(config.ownerPrincipalId),
+            evidenceArtifactId,
+            UUID.randomUUID().toString(),
+        )
+    }
+
+    /**
+     * Document Ingestion — Tier B Durable OCR Derivative Content. The one production entry point
+     * through which an already-persisted Tier B OCR durable content may be retrieved by known
+     * identity -- **explicit, individually-authorized owner invocation only**, mirroring
+     * [retrieveTierAExtractedContentAsOwner]'s own structural owner-only pattern exactly: no
+     * `requestingPrincipalId` parameter.
+     *
+     * Performs no re-extraction and holds no path to OCR of any kind (Tier B scope lock §35's own
+     * structural non-regeneration guarantee): [tierBOcrContentRetrievalCoordinator] resolves
+     * durable storage only, verifying the resolved record's own kind discriminator before ever
+     * decoding content as the Tier B representation shape (§28) -- never reachable through, and
+     * never affecting, [retrieveTierAExtractedContentAsOwner]/[tierAContentRetrievalCoordinator].
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    suspend fun retrieveTierBOcrContentAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): TierBOcrContentRetrievalOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info(
+            "Tier B durable OCR content retrieval invoked by owner " +
+                "(evidenceArtifactId=${evidenceArtifactId.value}, derivativeGenerationId=${derivativeGenerationId.value})",
+        )
+        return tierBOcrContentRetrievalCoordinator.retrieve(evidenceArtifactId, derivativeGenerationId)
     }
 
     /**

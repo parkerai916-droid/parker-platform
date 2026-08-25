@@ -29,6 +29,17 @@ sealed class TierADerivativePayload {
     data class Eml(val value: EmlStructuralResult, val childSourceCandidateCount: Int) : TierADerivativePayload()
     data class Docx(val value: DocxStructuralResult) : TierADerivativePayload()
     data class Pdf(val value: PdfStructuralResult) : TierADerivativePayload()
+
+    /**
+     * Tier B durable OCR content -- reuses this same sealed payload type
+     * (Document Ingestion — Tier B Durable OCR Derivative Content Scope
+     * Lock §5: "DerivativeContentStorage/DerivativeContentEntry shape --
+     * Yes, extended with a new content kind"), never a parallel store.
+     * [DerivativeGenerationRecord.derivativeKind]/`transformationHistory`
+     * remain the actual Tier A/Tier B discriminator (scope lock §28) --
+     * this variant's own name is a storage-shape label only.
+     */
+    data class Ocr(val value: OcrDerivativeExtractedResult) : TierADerivativePayload()
 }
 
 sealed class TierADocumentRoutingResult {

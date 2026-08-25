@@ -425,6 +425,44 @@ class LowercaseSha256ValidationTest(unittest.TestCase):
         self.assertFalse(bridge._is_lowercase_sha256_hex(("a" * 60) + "12-3"))
 
 
+class DoclingVersionResolutionTest(unittest.TestCase):
+    """`_docling_version` -- tries both real distribution names ("docling",
+    then "docling-slim") a genuine `docling-slim[standard]` install can
+    register the importable `docling` module under, discovered during
+    Tier B live acceptance against a real container build where only
+    "docling-slim" resolves. Mocked at the `importlib.metadata.version`
+    boundary -- no Docling installation required."""
+
+    def test_docling_distribution_found_directly(self) -> None:
+        import importlib.metadata
+        from unittest import mock
+
+        with mock.patch.object(importlib.metadata, "version", return_value="2.121.0") as mocked:
+            self.assertEqual(bridge._docling_version(), "2.121.0")
+        mocked.assert_called_once_with("docling")
+
+    def test_falls_back_to_docling_slim_when_docling_distribution_absent(self) -> None:
+        import importlib.metadata
+        from unittest import mock
+
+        def fake_version(name: str) -> str:
+            if name == "docling":
+                raise importlib.metadata.PackageNotFoundError(name)
+            if name == "docling-slim":
+                return "2.121.0"
+            raise AssertionError(f"unexpected distribution name queried: {name}")
+
+        with mock.patch.object(importlib.metadata, "version", side_effect=fake_version):
+            self.assertEqual(bridge._docling_version(), "2.121.0")
+
+    def test_neither_distribution_present_is_an_honest_none_never_fabricated(self) -> None:
+        import importlib.metadata
+        from unittest import mock
+
+        with mock.patch.object(importlib.metadata, "version", side_effect=importlib.metadata.PackageNotFoundError("x")):
+            self.assertIsNone(bridge._docling_version())
+
+
 class RecogniseOrchestrationTest(unittest.TestCase):
     def test_missing_assets_short_circuits_before_backend_is_invoked(self) -> None:
         backend_called = {"value": False}

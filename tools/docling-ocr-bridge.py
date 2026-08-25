@@ -346,12 +346,28 @@ class OutputSizeAccumulator:
 
 
 def _docling_version() -> str | None:
-    try:
-        import importlib.metadata
+    # "docling" is this package's importable module name, but is not
+    # guaranteed to be its own installed distribution name -- confirmed,
+    # this pass, against a real container build: `pip install
+    # docling-slim[standard]` registers exactly one distribution,
+    # "docling-slim" (its own real PyPI name; "Modular version of the
+    # Docling package" per its own summary), with no separate "docling"
+    # dist-info at all, so `importlib.metadata.version("docling")` alone
+    # genuinely, honestly finds nothing there -- not a bug in that
+    # lookup, but an incomplete list of the one real distribution name
+    # this environment actually uses. Tried in order; the first
+    # distribution genuinely found wins. Never fabricated: an absent
+    # version remains an honest `None` if neither name resolves.
+    for distribution_name in ("docling", "docling-slim"):
+        try:
+            import importlib.metadata
 
-        return importlib.metadata.version("docling")
-    except Exception:  # noqa: BLE001 -- genuinely unavailable is an honest null, never fabricated
-        return None
+            return importlib.metadata.version(distribution_name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        except Exception:  # noqa: BLE001 -- genuinely unavailable is an honest null, never fabricated
+            return None
+    return None
 
 
 def _build_converter():

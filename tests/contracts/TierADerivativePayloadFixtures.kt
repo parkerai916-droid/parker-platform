@@ -93,4 +93,30 @@ object TierADerivativePayloadFixtures {
         completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
         warnings = emptyList(),
     )
+
+    /** Tier B OCR producer identity -- unlike [PRODUCER], carries the mandatory modelIdentity/modelVersion pair (Tier B scope lock §11). */
+    val OCR_PRODUCER = DerivativeProducerIdentity(
+        pluginIdentity = "docling",
+        pluginVersion = "2.121.0",
+        configurationIdentity = "docling-bridge-v1",
+        modelIdentity = "rapidocr-onnxruntime:PP-OCRv6_rec_small",
+        modelVersion = "sha256:" + "a".repeat(64),
+    )
+
+    fun ocr(
+        recognisedText: String = "Recognised text with a Māori macron ā for UTF-8 fidelity.",
+        outcomeKind: OcrDerivativeOutcomeKind = OcrDerivativeOutcomeKind.RECOGNISED,
+        degradationReason: String? = null,
+        segments: List<OcrRecognitionSegment> = listOf(OcrRecognitionSegment("segment one", TranscriptionFidelity.VERBATIM, 1)),
+    ) = OcrDerivativeExtractedResult(
+        recognisedText = recognisedText,
+        fidelity = TranscriptionFidelity.VERBATIM,
+        outcomeKind = outcomeKind,
+        degradationReason = degradationReason,
+        warnings = listOf("page 2 low scan quality"),
+        segments = segments,
+        producerIdentity = OCR_PRODUCER,
+        transformationHistory = listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE),
+        completenessState = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
+    )
 }
