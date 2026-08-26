@@ -20,6 +20,8 @@ import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceGenerationSelection
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.OwnerDocumentAnalysisRequest
+import parker.core.interfaces.OcrModelSnapshot
+import parker.core.interfaces.OcrProviderProvenance
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
 import parker.core.interfaces.PermissionDecisionOutcome
@@ -82,8 +84,15 @@ class DocumentAnalysisCoordinatorTest {
         contentStorage: DerivativeContentStorage,
         id: DerivativeGenerationId,
         evidenceArtifactId: EvidenceArtifactId,
+        recognisedText: String = TierADerivativePayloadFixtures.ocr().recognisedText,
+        providerIdentity: String? = null,
     ): DerivativeGenerationRecord {
-        val extracted = TierADerivativePayloadFixtures.ocr()
+        val extracted = TierADerivativePayloadFixtures.ocr().copy(
+            recognisedText = recognisedText,
+            providerProvenance = providerIdentity?.let {
+                OcrProviderProvenance(it, "adapter", "1.0.0", "literal-v1", "model", OcrModelSnapshot.NotExposed, "correlation-$it")
+            },
+        )
         val record = DerivativeGenerationTest.record(id.value).copy(
             rootSourceEvidenceArtifactId = evidenceArtifactId,
             parents = listOf(DerivativeParentReference.RootEvidenceArtifact(evidenceArtifactId)),
@@ -150,6 +159,68 @@ class DocumentAnalysisCoordinatorTest {
     )
 
     private val owner = PrincipalId("owner-1")
+
+    @Test
+    fun `Unit L exact selected OCR generation controls analysed content and provenance despite newer provider-coexisting generations`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-with-three-generations")
+        val generationA = DerivativeGenerationId("generation-a-local")
+        val generationB = DerivativeGenerationId("generation-b-external")
+        val generationC = DerivativeGenerationId("generation-c-external-newest")
+
+        // Publication order is deliberate: C is newest. A is local OCR; B and C are separate
+        // generations from the same external provider. Selection must remain ID-driven only.
+        admitTierBOcr(generationStorage, contentStorage, generationA, evidence, "GENERATION_A_TEXT")
+        admitTierBOcr(generationStorage, contentStorage, generationB, evidence, "GENERATION_B_TEXT", "provider-one")
+        admitTierBOcr(generationStorage, contentStorage, generationC, evidence, "GENERATION_C_TEXT", "provider-one")
+
+        listOf(
+            generationA to "GENERATION_A_TEXT",
+            generationB to "GENERATION_B_TEXT",
+            generationC to "GENERATION_C_TEXT",
+            // Re-select the oldest after both newer generations exist.
+            generationA to "GENERATION_A_TEXT",
+        ).forEach { (selectedGeneration, selectedMarker) ->
+            val model = FakeModelInferenceClient()
+            val outcome = coordinator(generationStorage, contentStorage, modelInferenceClient = model).analyse(
+                owner,
+                OwnerDocumentAnalysisRequest(
+                    listOf(EvidenceGenerationSelection(evidence, selectedGeneration)),
+                    "Analyse the selected generation",
+                ),
+            )
+
+            val completed = assertIs<DocumentAnalysisOutcome.Completed>(outcome)
+            val prompt = model.receivedPrompts.single()
+            assertTrue(selectedMarker in prompt)
+            listOf("GENERATION_A_TEXT", "GENERATION_B_TEXT", "GENERATION_C_TEXT")
+                .filterNot { it == selectedMarker }
+                .forEach { assertFalse(it in prompt, "unselected generation content must not reach analysis") }
+            assertEquals(evidence, completed.result.evidenceItems.single().evidenceArtifactId)
+            assertEquals(selectedGeneration, completed.result.evidenceItems.single().derivativeGenerationId)
+        }
+    }
+
+    @Test
+    fun `Unit L wrong evidence pairing and missing generation never substitute a coexisting generation`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-real")
+        val generation = DerivativeGenerationId("generation-real")
+        admitTierBOcr(generationStorage, contentStorage, generation, evidence, "GENERATION_REAL_TEXT")
+        val model = FakeModelInferenceClient()
+        val coord = coordinator(generationStorage, contentStorage, modelInferenceClient = model)
+
+        assertEquals(
+            DocumentAnalysisOutcome.SourceMismatch(EvidenceArtifactId("evidence-wrong"), generation),
+            coord.analyse(owner, OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(EvidenceArtifactId("evidence-wrong"), generation)), "Analyse")),
+        )
+        val missing = DerivativeGenerationId("generation-missing")
+        assertEquals(
+            DocumentAnalysisOutcome.UnknownGeneration(missing),
+            coord.analyse(owner, OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, missing)), "Analyse")),
+        )
+        assertEquals(0, model.invocationCount)
+    }
 
     // ================= A =================
 

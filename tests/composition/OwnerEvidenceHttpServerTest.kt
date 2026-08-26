@@ -1112,6 +1112,50 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
+    fun `Unit L each analysable row submits its own evidence and generation pair without evidence-level inference`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("rows.forEach(row => {"))
+            assertTrue(body.contains("if (!row.selectedForAnalysis) return;"))
+            assertTrue(body.contains("rows.push({"), "a later durable generation must remain a separate visible row")
+            assertTrue(body.contains("cb.onchange = () => { row.selectedForAnalysis = cb.checked; };"), "each checkbox must update only its own row")
+            assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.derivativeGenerationId })"))
+            assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.ocrDerivativeGenerationId })"))
+            assertFalse(body.contains("latestForEvidence"))
+            assertFalse(body.contains("preferredGeneration"))
+            assertFalse(body.contains("newestOcr"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `Unit L analyse HTTP accepts the exact pair shape and malformed identifiers fail closed`() = runTest {
+        val harness = startHarness("")
+        try {
+            val exact = postJson(
+                harness,
+                "/owner/analyse",
+                """{"selections":[{"evidenceArtifactId":"evidence-exact","derivativeGenerationId":"generation-exact"}],"instruction":"Analyse"}""",
+            )
+            assertEquals(200, exact.statusCode())
+            assertEquals("FAILED", extractField(exact.body(), "status"))
+
+            assertEquals(
+                400,
+                postJson(harness, "/owner/analyse", """{"selections":[{"evidenceArtifactId":"","derivativeGenerationId":"generation"}],"instruction":"Analyse"}""").statusCode(),
+            )
+            assertEquals(
+                400,
+                postJson(harness, "/owner/analyse", """{"selections":[{"evidenceArtifactId":"evidence","derivativeGenerationId":""}],"instruction":"Analyse"}""").statusCode(),
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
     fun `a successful upload response carries no Tier A or Tier B outcome fields -- no automatic processing occurs`() = runTest {
         val harness = startHarness("")
         try {

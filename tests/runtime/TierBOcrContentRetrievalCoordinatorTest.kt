@@ -10,6 +10,7 @@ import parker.core.interfaces.DerivativeContentIdentity
 import parker.core.interfaces.DerivativeContentStorage
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationRecord
+import parker.core.interfaces.DerivativeGenerationTest
 import parker.core.interfaces.DerivativeOperationalOutcome
 import parker.core.interfaces.DerivativeParentReference
 import parker.core.interfaces.DerivativeTransformation
@@ -125,6 +126,39 @@ class TierBOcrContentRetrievalCoordinatorTest {
 
         assertEquals(record, outcome.record)
         assertEquals(TierADerivativePayloadFixtures.ocr(), outcome.extracted)
+    }
+
+    @Test
+    fun `exact supplied generation is retrieved when one evidence artefact has multiple generations`() = runTest {
+        val generationStorage = FileSystemDerivativeGenerationStorage(Files.createTempDirectory("tierb-retrieval-generation"))
+        val contentStorage = FileSystemDerivativeContentStorage(Files.createTempDirectory("tierb-retrieval-content"))
+        val coordinator = TierBOcrContentRetrievalCoordinator(generationStorage, contentStorage)
+        val evidence = EvidenceArtifactId("evidence-multiple")
+        val ids = listOf("a", "b", "c").map { DerivativeGenerationId("generation-$it") }
+
+        ids.zip(listOf("GENERATION_A_TEXT", "GENERATION_B_TEXT", "GENERATION_C_TEXT")).forEach { (id, marker) ->
+            val extracted = TierADerivativePayloadFixtures.ocr().copy(recognisedText = marker)
+            val record = DerivativeGenerationTest.record(id.value).copy(
+                rootSourceEvidenceArtifactId = evidence,
+                parents = listOf(DerivativeParentReference.RootEvidenceArtifact(evidence)),
+                derivativeKind = "OCR recognised text",
+                producerIdentity = extracted.producerIdentity,
+                transformationHistory = extracted.transformationHistory,
+            )
+            contentStorage.prepare(DerivativeContentEntry(id, evidence, TierADerivativePayload.Ocr(extracted)))
+            contentStorage.publishPrepared(id)
+            generationStorage.prepare(record)
+            generationStorage.publishPrepared(id)
+        }
+
+        ids.zip(listOf("GENERATION_A_TEXT", "GENERATION_B_TEXT", "GENERATION_C_TEXT")).forEach { (id, marker) ->
+            val retrieved = assertIs<TierBOcrContentRetrievalOutcome.Retrieved>(coordinator.retrieve(evidence, id))
+            assertEquals(id, retrieved.record.derivativeGenerationId)
+            assertEquals(marker, retrieved.extracted.recognisedText)
+        }
+        // A remains retrievable after B and C were published; no newest-generation substitution.
+        val oldest = assertIs<TierBOcrContentRetrievalOutcome.Retrieved>(coordinator.retrieve(evidence, ids.first()))
+        assertEquals("GENERATION_A_TEXT", oldest.extracted.recognisedText)
     }
 
     @Test
