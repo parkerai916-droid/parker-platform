@@ -264,6 +264,9 @@ class ParkerRuntime(
     private val stateLock = Mutex()
     var state: RuntimeLifecycleState = RuntimeLifecycleState.NOT_STARTED
         private set
+    var openAiExternalTranscriptionReadiness: OpenAiExternalTranscriptionReadiness =
+        OpenAiExternalTranscriptionReadiness.Disabled
+        private set
 
     private lateinit var reasoningContextAssembler: ReasoningContextAssembler
     private lateinit var conversationEngine: ConversationEngine
@@ -465,6 +468,13 @@ class ParkerRuntime(
 
     @Suppress("LongMethod")
     private suspend fun buildAndRegisterRuntimeGraph() {
+        openAiExternalTranscriptionReadiness = stage("OpenAI external transcription provider profile readiness") {
+            OpenAiExternalTranscriptionProviderReadinessEvaluator { clock().atZone(java.time.ZoneOffset.UTC).toLocalDate() }
+                .evaluate(
+                    config.openAiExternalTranscriptionEnabled,
+                    config.openAiExternalTranscriptionProviderProfilePath,
+                )
+        }
         val resourceRegistry = InMemoryResourceRegistry()
         val vocabulary = InMemoryActionVocabulary()
         val actionMapper = ActionMapper(vocabulary)

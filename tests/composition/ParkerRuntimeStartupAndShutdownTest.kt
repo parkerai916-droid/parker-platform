@@ -13,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.assertIs
 import kotlin.reflect.KParameter
 
 /**
@@ -182,6 +183,7 @@ class ParkerRuntimeStartupAndShutdownTest {
 
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
+        assertIs<OpenAiExternalTranscriptionReadiness.Disabled>(runtime.openAiExternalTranscriptionReadiness)
         val coordinatorField = ParkerRuntime::class.java.declaredFields.single {
             it.name == "externalTranscriptionOwnerInvocationCoordinator"
         }.apply { isAccessible = true }

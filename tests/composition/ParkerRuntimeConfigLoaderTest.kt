@@ -517,4 +517,37 @@ class ParkerRuntimeConfigLoaderTest {
 
         assertEquals("127.0.0.1", config.ownerHttpBindAddress)
     }
+
+    @Test
+    fun `external transcription is disabled with no profile path by default`() {
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment())
+
+        assertEquals(false, config.openAiExternalTranscriptionEnabled)
+        assertEquals(null, config.openAiExternalTranscriptionProviderProfilePath)
+    }
+
+    @Test
+    fun `external transcription enablement and credential-free profile path load explicitly`() {
+        val config = ParkerRuntimeConfigLoader.load(
+            fullEnvironment(
+                mapOf(
+                    ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED to "true",
+                    ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH to "/reviewed/profile.properties",
+                ),
+            ),
+        )
+
+        assertEquals(true, config.openAiExternalTranscriptionEnabled)
+        assertEquals("/reviewed/profile.properties", config.openAiExternalTranscriptionProviderProfilePath)
+    }
+
+    @Test
+    fun `invalid external transcription enablement flag fails closed`() {
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(
+                fullEnvironment(mapOf(ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED to "yes")),
+            )
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED, thrown.key)
+    }
 }

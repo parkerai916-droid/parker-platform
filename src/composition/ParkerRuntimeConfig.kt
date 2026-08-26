@@ -280,6 +280,8 @@ data class ParkerRuntimeConfig(
     val ownerHttpBindAddress: String = "0.0.0.0",
     val ownerHttpPort: Int? = null,
     val ownerHttpToken: String? = null,
+    val openAiExternalTranscriptionEnabled: Boolean = false,
+    val openAiExternalTranscriptionProviderProfilePath: String? = null,
 )
 
 /**
@@ -328,6 +330,8 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OWNER_HTTP_BIND_ADDRESS = "PARKER_OWNER_HTTP_BIND_ADDRESS"
     const val KEY_OWNER_HTTP_PORT = "PARKER_OWNER_HTTP_PORT"
     const val KEY_OWNER_HTTP_TOKEN = "PARKER_OWNER_HTTP_TOKEN"
+    const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED"
+    const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -439,6 +443,13 @@ object ParkerRuntimeConfigLoader {
             )
         }
 
+        val externalTranscriptionEnabledRaw = environment[KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED]?.takeIf { it.isNotBlank() }
+        val externalTranscriptionEnabled = externalTranscriptionEnabledRaw?.trim()?.toBooleanStrictOrNull()
+            ?: if (externalTranscriptionEnabledRaw == null) false else throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED,
+                "must be true or false; was '$externalTranscriptionEnabledRaw'",
+            )
+
         return ParkerRuntimeConfig(
             modelEndpointUrl = requireKey(environment, KEY_MODEL_ENDPOINT_URL),
             modelName = requireKey(environment, KEY_MODEL_NAME),
@@ -472,6 +483,9 @@ object ParkerRuntimeConfigLoader {
             ownerHttpBindAddress = ownerHttpBindAddress,
             ownerHttpPort = ownerHttpPort,
             ownerHttpToken = ownerHttpToken,
+            openAiExternalTranscriptionEnabled = externalTranscriptionEnabled,
+            openAiExternalTranscriptionProviderProfilePath =
+                environment[KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH]?.takeIf { it.isNotBlank() },
         )
     }
 
