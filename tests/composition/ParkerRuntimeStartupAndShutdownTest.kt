@@ -31,6 +31,8 @@ class ParkerRuntimeStartupAndShutdownTest {
     // by any test below.
     private fun config(
         localTextChannelModuleId: String = "channel.local-text-lifecycle-test",
+        openAiExternalTranscriptionEnabled: Boolean = false,
+        openAiExternalTranscriptionProviderProfilePath: String? = null,
         openAiApiCredential: OpenAiApiCredential? = null,
     ) = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by these tests
@@ -47,6 +49,8 @@ class ParkerRuntimeStartupAndShutdownTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("unused-memory-core").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
+        openAiExternalTranscriptionEnabled = openAiExternalTranscriptionEnabled,
+        openAiExternalTranscriptionProviderProfilePath = openAiExternalTranscriptionProviderProfilePath,
         openAiApiCredential = openAiApiCredential,
     )
 
@@ -180,7 +184,7 @@ class ParkerRuntimeStartupAndShutdownTest {
     }
 
     @Test
-    fun `external transcription backend entry is owner-only and composed with a disabled mechanism`() = runTest {
+    fun `external transcription backend entry is owner-only and disabled when enablement is false`() = runTest {
         val method = ParkerRuntime::class.members.single { it.name == "invokeExternalTranscriptionAsOwner" }
         val valueParameters = method.parameters.filter { it.kind == KParameter.Kind.VALUE }
         assertEquals(listOf(EvidenceArtifactId::class), valueParameters.map { it.type.classifier })
@@ -200,6 +204,42 @@ class ParkerRuntimeStartupAndShutdownTest {
         assertTrue(mechanismType.contains("DisabledExternalTranscriptionMechanism"))
         assertTrue(!mechanismType.contains("Http") && !mechanismType.contains("OpenAI"))
         runtime.shutdown()
+    }
+
+    @Test
+    fun `external transcription composition follows every fail-closed readiness state without startup egress`() = runTest {
+        val validProfile = profileFile()
+        val staleProfile = profileFile(nextReviewDate = "2026-08-25")
+        val validCredential = OpenAiApiCredential.fromEnvironment("unit-n-valid-fake-credential")!!
+        val unsafeCredential = OpenAiApiCredential.fromEnvironment("unit-n${0x1b.toChar()}unsafe")
+
+        suspend fun assertComposition(
+            cfg: ParkerRuntimeConfig,
+            backendType: kotlin.reflect.KClass<*>,
+            uiType: kotlin.reflect.KClass<*>,
+            realAdapter: Boolean,
+        ) {
+            val runtime = ParkerRuntime(cfg, RecordingParkerLogger(), clock = { Instant.parse("2026-08-26T00:00:00Z") })
+            runtime.start()
+            assertEquals(RuntimeLifecycleState.RUNNING, runtime.state)
+            assertTrue(backendType.isInstance(runtime.openAiExternalTranscriptionBackendReadiness))
+            assertTrue(uiType.isInstance(runtime.ownerEnhancedTranscriptionReadiness()))
+            val coordinatorField = ParkerRuntime::class.java.getDeclaredField("externalTranscriptionOwnerInvocationCoordinator").apply { isAccessible = true }
+            val coordinator = coordinatorField.get(runtime) as ExternalTranscriptionOwnerInvocationCoordinator
+            val mechanismField = ExternalTranscriptionOwnerInvocationCoordinator::class.java.getDeclaredField("externalMechanism").apply { isAccessible = true }
+            val mechanismName = mechanismField.get(coordinator)::class.java.name
+            assertEquals(realAdapter, mechanismName.contains("OpenAiResponsesExternalTranscriptionAdapter"))
+            assertEquals(!realAdapter, mechanismName.contains("DisabledExternalTranscriptionMechanism"))
+            runtime.shutdown()
+        }
+
+        assertComposition(config(), OpenAiExternalTranscriptionBackendReadiness.Disabled::class, parker.ui.EnhancedTranscriptionReadiness.Disabled::class, false)
+        assertComposition(config(openAiExternalTranscriptionEnabled = true, openAiExternalTranscriptionProviderProfilePath = "missing-profile.properties"), OpenAiExternalTranscriptionBackendReadiness.ProfileNotReady::class, parker.ui.EnhancedTranscriptionReadiness.ProfileNotReady::class, false)
+        assertComposition(config(openAiExternalTranscriptionEnabled = true, openAiExternalTranscriptionProviderProfilePath = staleProfile.toString(), openAiApiCredential = validCredential), OpenAiExternalTranscriptionBackendReadiness.ProfileNotReady::class, parker.ui.EnhancedTranscriptionReadiness.ProfileNotReady::class, false)
+        assertComposition(config(openAiExternalTranscriptionEnabled = true, openAiExternalTranscriptionProviderProfilePath = validProfile.toString()), OpenAiExternalTranscriptionBackendReadiness.MissingCredential::class, parker.ui.EnhancedTranscriptionReadiness.MissingCredential::class, false)
+        assertEquals(null, unsafeCredential)
+        assertComposition(config(openAiExternalTranscriptionEnabled = true, openAiExternalTranscriptionProviderProfilePath = validProfile.toString(), openAiApiCredential = unsafeCredential), OpenAiExternalTranscriptionBackendReadiness.MissingCredential::class, parker.ui.EnhancedTranscriptionReadiness.MissingCredential::class, false)
+        assertComposition(config(openAiExternalTranscriptionEnabled = true, openAiExternalTranscriptionProviderProfilePath = validProfile.toString(), openAiApiCredential = validCredential), OpenAiExternalTranscriptionBackendReadiness.Ready::class, parker.ui.EnhancedTranscriptionReadiness.Ready::class, true)
     }
 
     @Test
@@ -225,4 +265,33 @@ class ParkerRuntimeStartupAndShutdownTest {
         timestamp = Instant.parse("2026-01-01T00:00:00Z"),
         correlationId = CorrelationId("corr-lifecycle-1"),
     )
+
+    private fun profileFile(nextReviewDate: String = "2026-09-01") =
+        Files.createTempFile("openai-composition-profile", ".properties").also { path ->
+            Files.writeString(path, """schemaVersion=1
+providerIdentity=OpenAI
+apiProductPath=/v1/responses
+store=false
+modelSelectionRule=gpt-4.1-mini
+modelSnapshotPolicy=RECORD_PRESENT_OR_NOT_EXPOSED
+maximumPdfBytes=67108864
+maximumImageBytes=16777216
+maximumOutputBytes=20971520
+timeoutMillis=120000
+allowedNetworkDestination=https://api.openai.com
+retentionTreatment=reviewed
+dataUseTrainingTreatment=reviewed
+zdrMamStatus=NOT_AVAILABLE_OR_ENABLED
+projectAccountStatus=reviewed
+projectAccountControls=reviewed
+authenticationMechanism=BEARER_API_CREDENTIAL
+requestLoggingConsiderations=reviewed
+regionalStorageConsiderations=reviewed
+verifiedOn=2026-08-01
+approvingOwnerReference=owner-review
+nextReviewDate=$nextReviewDate
+verificationReferences=provider-review
+reverificationTriggers=provider terms change
+""")
+        }
 }

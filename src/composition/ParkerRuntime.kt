@@ -103,6 +103,8 @@ import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
 import parker.core.runtime.ExternalTranscriptionInvocationGate
 import parker.core.runtime.ExternalTranscriptionOwnerInvocationCoordinator
+import parker.core.runtime.JdkOpenAiResponsesTransport
+import parker.core.runtime.OpenAiResponsesExternalTranscriptionAdapter
 import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
@@ -316,8 +318,8 @@ class ParkerRuntime(
     // mirroring its own isolation.
     private lateinit var tierBOcrContentRetrievalCoordinator: TierBOcrContentRetrievalCoordinator
 
-    // External transcription Unit E: a separate owner-only, pre-admission operation. Production
-    // deliberately supplies a disabled provider-neutral mechanism until later enablement units.
+    // External transcription Unit E: a separate owner-only, pre-admission operation. The real
+    // provider is composed only after the enablement, profile, and credential gates are all Ready.
     private lateinit var externalTranscriptionOwnerInvocationCoordinator: ExternalTranscriptionOwnerInvocationCoordinator
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
@@ -1374,13 +1376,26 @@ class ParkerRuntime(
             audit = documentIngestionAudit,
             contentStorage = derivativeContentStorage,
         )
-        // Unit J durable admission is composed while the provider mechanism remains deliberately
-        // disabled. A successful future external invocation can only return after v2 publication.
+        val externalTranscriptionMechanism: ExternalTranscriptionMechanism =
+            when (openAiExternalTranscriptionBackendReadiness) {
+                OpenAiExternalTranscriptionBackendReadiness.Ready ->
+                    OpenAiResponsesExternalTranscriptionAdapter(
+                        readiness = openAiExternalTranscriptionReadiness as OpenAiExternalTranscriptionReadiness.Ready,
+                        credential = requireNotNull(config.openAiApiCredential),
+                        transport = JdkOpenAiResponsesTransport(),
+                    )
+                OpenAiExternalTranscriptionBackendReadiness.Disabled,
+                OpenAiExternalTranscriptionBackendReadiness.MissingCredential,
+                is OpenAiExternalTranscriptionBackendReadiness.ProfileNotReady,
+                -> DisabledExternalTranscriptionMechanism
+            }
+        // Unit J durable admission remains downstream of the explicitly owner-invoked mechanism;
+        // constructing either mechanism performs no provider request.
         externalTranscriptionOwnerInvocationCoordinator = ExternalTranscriptionOwnerInvocationCoordinator(
             ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
             permissionEngine = permissionEngine,
             evidenceCustodian = defaultEvidenceCustodian,
-            externalMechanism = DisabledExternalTranscriptionMechanism,
+            externalMechanism = externalTranscriptionMechanism,
             validator = OcrStructuredResultValidator(),
             durableAdmission = tierBDerivativeGenerationCoordinator,
         )
@@ -1968,7 +1983,7 @@ class ParkerRuntime(
         return externalTranscriptionOwnerInvocationCoordinator.invoke(evidenceArtifactId)
     }
 
-    /** Owner-safe Unit F/G readiness, additionally constrained by Unit K's uncomposed provider mechanism. */
+    /** Owner-safe executable readiness, matching the same fail-closed gates used for composition. */
     fun ownerEnhancedTranscriptionReadiness(): parker.ui.EnhancedTranscriptionReadiness =
         when (val readiness = openAiExternalTranscriptionBackendReadiness) {
             OpenAiExternalTranscriptionBackendReadiness.Disabled -> parker.ui.EnhancedTranscriptionReadiness.Disabled
@@ -1980,10 +1995,7 @@ class ParkerRuntime(
                         else -> "The enhanced transcription provider profile is not ready."
                     },
                 )
-            OpenAiExternalTranscriptionBackendReadiness.Ready ->
-                // Unit H remains deliberately uncomposed in production; configuration readiness
-                // alone is not executable readiness and must never enable a working-looking action.
-                parker.ui.EnhancedTranscriptionReadiness.Disabled
+            OpenAiExternalTranscriptionBackendReadiness.Ready -> parker.ui.EnhancedTranscriptionReadiness.Ready
         }
 
     /**

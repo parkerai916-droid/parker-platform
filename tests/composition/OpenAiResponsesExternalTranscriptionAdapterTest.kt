@@ -56,6 +56,13 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     }
 
     @Test
+    fun `adapter construction is network silent until explicit transcription`() {
+        val transport = FakeTransport { error("provider transport must not run during construction") }
+        OpenAiResponsesExternalTranscriptionAdapter(ready(), credential, transport)
+        assertEquals(0, transport.calls)
+    }
+
+    @Test
     fun `image request uses an inline data URL and unsupported media is rejected before transport`() = runTest {
         val transport = FakeTransport { OpenAiResponsesTransportResponse(200, successEnvelope().toByteArray()) }
         adapter(transport).transcribe(request("image/png", byteArrayOf(1, 2, 3)))
@@ -207,13 +214,13 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     }
 
     @Test
-    fun `adapter dependencies remain isolated and production composition remains disabled`() {
+    fun `adapter dependencies remain isolated and production composition stays readiness gated`() {
         val types = OpenAiResponsesExternalTranscriptionAdapter::class.java.declaredFields.map { it.type.name }
         listOf("EvidenceCustodian", "PermissionEngine", "Memory", "Knowledge", "Analysis", "OwnerUi", "Derivative", "Docling", "Registry")
             .forEach { forbidden -> types.forEach { assertTrue(!it.contains(forbidden), "$it contains $forbidden") } }
         val runtimeSource = java.io.File("src/composition/ParkerRuntime.kt").readText()
         assertTrue(runtimeSource.contains("DisabledExternalTranscriptionMechanism"))
-        assertTrue(!runtimeSource.contains("OpenAiResponsesExternalTranscriptionAdapter"))
+        assertTrue(runtimeSource.contains("OpenAiResponsesExternalTranscriptionAdapter("))
     }
 
     private suspend fun assertFailureFromThrow(error: Exception, expected: String) {

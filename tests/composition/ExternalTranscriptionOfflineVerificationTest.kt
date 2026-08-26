@@ -97,10 +97,11 @@ class ExternalTranscriptionOfflineVerificationTest {
     }
 
     @Test
-    fun `production composition remains externally disabled and sentinel values are absent from production`() {
+    fun `production composition is fail closed and sentinel values are absent from production`() {
         val runtime = File("src/composition/ParkerRuntime.kt").readText()
         assertTrue(runtime.contains("DisabledExternalTranscriptionMechanism"))
-        assertFalse(runtime.contains("OpenAiResponsesExternalTranscriptionAdapter("))
+        assertTrue(runtime.contains("OpenAiResponsesExternalTranscriptionAdapter("))
+        assertTrue(runtime.contains("OpenAiExternalTranscriptionBackendReadiness.Ready"))
 
         val sentinels = listOf("SOURCE_SECRET_SENTINEL", "TRANSCRIPT_SECRET_SENTINEL", "API_KEY_SENTINEL")
         File("src").walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { file ->
