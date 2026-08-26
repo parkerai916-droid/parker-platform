@@ -47,7 +47,11 @@ internal class JdkOpenAiResponsesTransport(
         .build(),
 ) : OpenAiResponsesTransport {
     override suspend fun execute(request: OpenAiResponsesTransportRequest): OpenAiResponsesTransportResponse {
-        val httpRequest = buildHttpRequest(request)
+        val httpRequest = try {
+            buildHttpRequest(request)
+        } catch (e: IllegalArgumentException) {
+            throw OpenAiRequestConstructionException(e)
+        }
         return suspendCancellableCoroutine { continuation ->
             val future = client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
             future.whenComplete { response, error ->
@@ -81,6 +85,8 @@ internal class JdkOpenAiResponsesTransport(
 }
 
 internal class OpenAiResponseTooLargeException : IOException("OpenAI response exceeded the configured bound")
+internal class OpenAiRequestConstructionException(cause: IllegalArgumentException) :
+    RuntimeException(null, cause, false, false)
 
 /** Concrete, non-composed OpenAI Responses API adapter behind Unit E's provider-neutral seam. */
 class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
@@ -206,19 +212,23 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
 internal data class OpenAiTransportFailureFingerprint(
     val topLevelThrowable: String,
     val firstNonWrapperCause: String,
+    val stage: String,
     val category: String,
 ) {
-    fun render(): String = "TRANSPORT_THROWABLE=$topLevelThrowable ROOT_CAUSE=$firstNonWrapperCause CATEGORY=$category"
+    fun render(): String =
+        "TRANSPORT_THROWABLE=$topLevelThrowable ROOT_CAUSE=$firstNonWrapperCause TRANSPORT_STAGE=$stage CATEGORY=$category"
 }
 
 internal fun fingerprintOpenAiTransportFailure(error: Throwable): OpenAiTransportFailureFingerprint {
     val causes = boundedCauseChain(error)
     val firstNonWrapper = causes.firstOrNull {
-        it !is CompletionException && it !is ExecutionException && it !is UncheckedIOException
+        it !is CompletionException && it !is ExecutionException && it !is UncheckedIOException &&
+            it !is OpenAiRequestConstructionException
     } ?: causes.last()
     return OpenAiTransportFailureFingerprint(
         topLevelThrowable = safeThrowableClassName(error),
         firstNonWrapperCause = safeThrowableClassName(firstNonWrapper),
+        stage = if (causes.any { it is OpenAiRequestConstructionException }) "REQUEST_BUILD" else "CLIENT_SEND_OR_RESPONSE_READ",
         category = classifyOpenAiTransportFailure(causes),
     )
 }
@@ -238,6 +248,7 @@ private fun boundedCauseChain(error: Throwable): List<Throwable> {
 }
 
 private fun classifyOpenAiTransportFailure(causes: List<Throwable>): String = when {
+        causes.any { it is OpenAiRequestConstructionException } -> "PROVIDER_REQUEST_CONFIGURATION_FAILURE"
         causes.any { it is HttpConnectTimeoutException } -> "PROVIDER_CONNECT_TIMEOUT"
         causes.any { it is HttpTimeoutException } -> "PROVIDER_REQUEST_TIMEOUT"
         causes.any { it is SSLException } -> "PROVIDER_TLS_FAILURE"

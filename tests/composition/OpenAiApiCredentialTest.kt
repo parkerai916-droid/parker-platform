@@ -29,6 +29,24 @@ class OpenAiApiCredentialTest {
     }
 
     @Test
+    fun `credential rejects header-unsafe deployment values without normalization or disclosure`() {
+        val malformed = listOf(
+            "unit-g${0x1b.toChar()}sentinel",
+            "unit-g\nsentinel",
+            " unit-g-sentinel",
+            "unit-g-sentinel ",
+            "unit-g-\u200b-sentinel",
+            "Bearer unit-g-sentinel",
+        )
+
+        malformed.forEach { value ->
+            assertEquals(null, OpenAiApiCredential.fromEnvironment(value))
+            assertTrue(!OpenAiApiCredential.isStructurallyValidBearerCredential(value))
+        }
+        assertTrue(OpenAiApiCredential.isStructurallyValidBearerCredential(sentinel))
+    }
+
+    @Test
     fun `backend readiness keeps profile and credential readiness distinct`() {
         val profileReady = OpenAiExternalTranscriptionReadiness.Ready(profile(), effectiveLimits())
 

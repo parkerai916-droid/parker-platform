@@ -77,6 +77,25 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     }
 
     @Test
+    fun `request construction failure is staged and classified without network or secret leakage`() = runTest {
+        val messageSentinel = "API_KEY_SENTINEL/SOURCE_SECRET_SENTINEL"
+        val transport = JdkOpenAiResponsesTransport()
+        val invalid = OpenAiResponsesTransportRequest(
+            URI("https://api.openai.com/v1/responses"), 0, messageSentinel, 1000, credential,
+        )
+
+        val thrown = assertFailsWith<OpenAiRequestConstructionException> { transport.execute(invalid) }
+        val fingerprint = fingerprintOpenAiTransportFailure(thrown)
+        assertEquals("OpenAiRequestConstructionException", fingerprint.topLevelThrowable)
+        assertEquals("IllegalArgumentException", fingerprint.firstNonWrapperCause)
+        assertEquals("REQUEST_BUILD", fingerprint.stage)
+        assertEquals("PROVIDER_REQUEST_CONFIGURATION_FAILURE", fingerprint.category)
+        assertTrue(messageSentinel !in fingerprint.toString())
+        assertTrue(messageSentinel !in fingerprint.render())
+        assertTrue(sentinel !in fingerprint.render())
+    }
+
+    @Test
     fun `success captures response ID exact model and NotExposed snapshot without secret`() = runTest {
         val transport = FakeTransport { OpenAiResponsesTransportResponse(200, successEnvelope().toByteArray()) }
         val candidate = assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(
@@ -140,9 +159,10 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
 
         assertEquals("CompletionException", fingerprint.topLevelThrowable)
         assertEquals("IllegalArgumentException", fingerprint.firstNonWrapperCause)
+        assertEquals("CLIENT_SEND_OR_RESPONSE_READ", fingerprint.stage)
         assertEquals("PROVIDER_TRANSPORT_FAILURE", fingerprint.category)
         assertEquals(
-            "TRANSPORT_THROWABLE=CompletionException ROOT_CAUSE=IllegalArgumentException CATEGORY=PROVIDER_TRANSPORT_FAILURE",
+            "TRANSPORT_THROWABLE=CompletionException ROOT_CAUSE=IllegalArgumentException TRANSPORT_STAGE=CLIENT_SEND_OR_RESPONSE_READ CATEGORY=PROVIDER_TRANSPORT_FAILURE",
             fingerprint.render(),
         )
         assertTrue(messageSentinel !in fingerprint.toString())

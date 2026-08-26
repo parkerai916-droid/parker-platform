@@ -12,7 +12,15 @@ class OpenAiApiCredential private constructor(private val characters: CharArray)
 
     companion object {
         internal fun fromEnvironment(value: String?): OpenAiApiCredential? =
-            value?.takeIf { it.isNotBlank() }?.let { OpenAiApiCredential(it.toCharArray()) }
+            value?.takeIf(::isStructurallyValidBearerCredential)?.let { OpenAiApiCredential(it.toCharArray()) }
+
+        /**
+         * JDK HttpRequest rejects control/non-ASCII characters in an Authorization header value.
+         * Treat deployment corruption as a missing credential instead of rewriting an opaque secret
+         * or allowing request construction to fail after the one-call acceptance guard is entered.
+         */
+        internal fun isStructurallyValidBearerCredential(value: String): Boolean =
+            value.isNotEmpty() && value.all { it in '!'..'~' } && !value.startsWith("Bearer ", ignoreCase = true)
     }
 }
 
