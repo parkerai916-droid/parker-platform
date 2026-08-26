@@ -6,11 +6,14 @@ import parker.core.interfaces.CorrelationId
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.EvidenceArtifactId
+import parker.core.runtime.ExternalTranscriptionOwnerInvocationCoordinator
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.reflect.KParameter
 
 /**
  * Sprint 10, Unit 4 acceptance test: [ParkerRuntime]'s own lifecycle
@@ -169,6 +172,28 @@ class ParkerRuntimeStartupAndShutdownTest {
         runtime.start()
 
         assertEquals(RuntimeLifecycleState.RUNNING, runtime.state)
+    }
+
+    @Test
+    fun `external transcription backend entry is owner-only and composed with a disabled mechanism`() = runTest {
+        val method = ParkerRuntime::class.members.single { it.name == "invokeExternalTranscriptionAsOwner" }
+        val valueParameters = method.parameters.filter { it.kind == KParameter.Kind.VALUE }
+        assertEquals(listOf(EvidenceArtifactId::class), valueParameters.map { it.type.classifier })
+
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val coordinatorField = ParkerRuntime::class.java.declaredFields.single {
+            it.name == "externalTranscriptionOwnerInvocationCoordinator"
+        }.apply { isAccessible = true }
+        val coordinator = coordinatorField.get(runtime) as ExternalTranscriptionOwnerInvocationCoordinator
+        val mechanismField = ExternalTranscriptionOwnerInvocationCoordinator::class.java.declaredFields.single {
+            it.name == "externalMechanism"
+        }.apply { isAccessible = true }
+        val mechanismType = mechanismField.get(coordinator)::class.java.name
+
+        assertTrue(mechanismType.contains("DisabledExternalTranscriptionMechanism"))
+        assertTrue(!mechanismType.contains("Http") && !mechanismType.contains("OpenAI"))
+        runtime.shutdown()
     }
 
     private fun sampleMessage(channelId: String) = InboundOwnerMessage(

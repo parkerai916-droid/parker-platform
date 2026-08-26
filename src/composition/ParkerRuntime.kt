@@ -25,6 +25,10 @@ import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceDeletionResult
 import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.ExternalTranscriptionMechanism
+import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
+import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
+import parker.core.interfaces.ExternalTranscriptionRequest
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeSubmission
@@ -98,6 +102,7 @@ import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
 import parker.core.runtime.ExternalTranscriptionInvocationGate
+import parker.core.runtime.ExternalTranscriptionOwnerInvocationCoordinator
 import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
@@ -135,6 +140,7 @@ import parker.core.runtime.LocalTextChannelDeliverTool
 import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.ModelReasoningProvider
 import parker.core.runtime.OcrExecutionSequencer
+import parker.core.runtime.OcrStructuredResultValidator
 import parker.core.runtime.OwnerLocalFileIngressCoordinator
 import parker.core.runtime.ProcessBuilderDoclingSubprocessInvoker
 import parker.core.runtime.PermissionPolicyRule
@@ -243,6 +249,11 @@ enum class RuntimeLifecycleState {
  * already-implemented, unmodified conservative default (`PermissionPolicy.md`
  * §7).
  */
+private object DisabledExternalTranscriptionMechanism : ExternalTranscriptionMechanism {
+    override suspend fun transcribe(request: ExternalTranscriptionRequest): ExternalTranscriptionMechanismOutcome =
+        ExternalTranscriptionMechanismOutcome.Failure("External transcription mechanism is not configured")
+}
+
 class ParkerRuntime(
     private val config: ParkerRuntimeConfig,
     private val logger: ParkerLogger,
@@ -298,6 +309,10 @@ class ParkerRuntime(
     // tierAContentRetrievalCoordinator (never modified or repurposed, Tier B scope lock §28),
     // mirroring its own isolation.
     private lateinit var tierBOcrContentRetrievalCoordinator: TierBOcrContentRetrievalCoordinator
+
+    // External transcription Unit E: a separate owner-only, pre-admission operation. Production
+    // deliberately supplies a disabled provider-neutral mechanism until later enablement units.
+    private lateinit var externalTranscriptionOwnerInvocationCoordinator: ExternalTranscriptionOwnerInvocationCoordinator
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
     // narrow class, mirroring tierBOcrContentRetrievalCoordinator's own isolation -- no other
@@ -963,6 +978,13 @@ class ParkerRuntime(
         )
         evidenceCustodian = defaultEvidenceCustodian
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
+        externalTranscriptionOwnerInvocationCoordinator = ExternalTranscriptionOwnerInvocationCoordinator(
+            ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+            permissionEngine = permissionEngine,
+            evidenceCustodian = defaultEvidenceCustodian,
+            externalMechanism = DisabledExternalTranscriptionMechanism,
+            validator = OcrStructuredResultValidator(),
+        )
 
         // Document Ingestion, Derivative-to-Memory-Core Registration. Depends on memoryCore and
         // permissionEngine only -- never evidenceCustodian, never DerivativeGenerationStorage,
@@ -1914,6 +1936,17 @@ class ParkerRuntime(
             evidenceArtifactId,
             UUID.randomUUID().toString(),
         )
+    }
+
+    /**
+     * Explicit owner-only external transcription backend boundary. No caller principal, provider
+     * selection, fallback, durable publication, analysis, or UI exposure exists in this unit.
+     */
+    suspend fun invokeExternalTranscriptionAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+    ): ExternalTranscriptionOwnerInvocationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return externalTranscriptionOwnerInvocationCoordinator.invoke(evidenceArtifactId)
     }
 
     /**
