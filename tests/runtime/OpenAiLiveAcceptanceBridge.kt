@@ -54,6 +54,7 @@ object OpenAiLiveAcceptanceBridge {
         var approvedEndpoint: Boolean = false,
         var failureFingerprint: String? = null,
         var providerRejectionFingerprint: String? = null,
+        var responseFailureFingerprint: String? = null,
     )
     data class Handle(val mechanism: ExternalTranscriptionMechanism, val state: State)
 
@@ -82,6 +83,7 @@ object OpenAiLiveAcceptanceBridge {
                 readiness, credential, transport,
                 transportFailureObserver = { state.failureFingerprint = it.render() },
                 providerRejectionObserver = { state.providerRejectionFingerprint = it.render() },
+                responseFailureObserver = { state.responseFailureFingerprint = it.render() },
             ),
             state,
         )

@@ -163,6 +163,66 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     }
 
     @Test
+    fun `documented completed raw Responses envelope parses assistant output text`() = runTest {
+        val raw = """{"id":"resp_unit_h_1","object":"response","created_at":1750000000,"status":"completed","error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"model":"returned-model-snapshot-name","output":[{"id":"msg_unit_h_1","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"${escape(structuredResult())}"}],"role":"assistant"}],"parallel_tool_calls":true,"previous_response_id":null,"store":false,"temperature":1.0,"text":{"format":{"type":"json_schema"}},"tool_choice":"auto","tools":[],"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"user":null,"metadata":{}}"""
+        val outcome = adapter(FakeTransport { OpenAiResponsesTransportResponse(200, raw.toByteArray()) }).transcribe(request())
+
+        assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome)
+    }
+
+    @Test
+    fun `response failures expose bounded shape and stage without sentinel content`() = runTest {
+        val contentSentinel = "SOURCE_SECRET_SENTINEL_API_KEY_SENTINEL_TRANSCRIPT_SECRET_SENTINEL"
+        val structured = structuredResult().replace("literal text", contentSentinel)
+        val cases = listOf(
+            "not-json" to "ENVELOPE_JSON",
+            """{"status":"completed","model":"returned-model-snapshot-name","output":[]}""" to "RESPONSE_ID",
+            """{"id":"resp_unit_h_1","status":"completed","output":[]}""" to "MODEL",
+            """{"id":"resp_unit_h_1","model":"returned-model-snapshot-name","status":"completed","output":[]}""" to "OUTPUT_TEXT",
+            successEnvelope(structured = "not-json-$contentSentinel") to "STRUCTURED_PAYLOAD",
+            successEnvelope(structured = structured.replace("\"requested_pages\":[1]", "\"requested_pages\":[1.5]")) to "PAGE_ACCOUNTING",
+            successEnvelope(structured = structured.replace("\"outcome\":\"TRANSCRIBED\"", "\"outcome\":\"UNKNOWN\"")) to "PAGES",
+        )
+        cases.forEach { (raw, expectedStage) ->
+            var observed: OpenAiResponseFailureFingerprint? = null
+            val outcome = OpenAiResponsesExternalTranscriptionAdapter(
+                ready(), credential, FakeTransport { OpenAiResponsesTransportResponse(200, raw.toByteArray()) },
+                responseFailureObserver = { observed = it },
+            ).transcribe(request())
+            assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+            val rendered = requireNotNull(observed).render()
+            assertEquals(expectedStage, observed?.parkerParseStage)
+            assertFalse(rendered.contains(contentSentinel))
+            assertFalse(rendered.contains(raw))
+            assertFalse(outcome.toString().contains(contentSentinel))
+        }
+    }
+
+    @Test
+    fun `response shape distinguishes refusal incomplete wrong content and empty output safely`() = runTest {
+        val sentinel = "PROVIDER_MESSAGE_SECRET_SENTINEL"
+        val cases = listOf(
+            """{"id":"resp_refusal","model":"returned-model","status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"$sentinel"}]}]}""" to Triple(true, false, "OUTPUT_TEXT"),
+            """{"id":"resp_incomplete","model":"returned-model","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}""" to Triple(false, true, "OUTPUT_TEXT"),
+            """{"id":"resp_wrong","model":"returned-model","status":"completed","output":[{"type":"function_call","arguments":"$sentinel"}]}""" to Triple(false, false, "OUTPUT_TEXT"),
+            """{"id":"resp_empty","model":"returned-model","status":"completed","output":[]}""" to Triple(false, false, "OUTPUT_TEXT"),
+        )
+        cases.forEach { (raw, expected) ->
+            var observed: OpenAiResponseFailureFingerprint? = null
+            OpenAiResponsesExternalTranscriptionAdapter(
+                ready(), credential, FakeTransport { OpenAiResponsesTransportResponse(200, raw.toByteArray()) },
+                responseFailureObserver = { observed = it },
+            ).transcribe(request())
+            val fingerprint = requireNotNull(observed)
+            assertEquals(expected.first, fingerprint.refusalPresent)
+            assertEquals(expected.second, fingerprint.incompleteReasonPresent)
+            assertEquals(expected.third, fingerprint.parkerParseStage)
+            assertFalse(fingerprint.render().contains(sentinel))
+            assertFalse(fingerprint.toString().contains(sentinel))
+        }
+    }
+
+    @Test
     fun `status redirects oversized timeout and network failures map safely with no retry`() = runTest {
         mapOf(
             301 to "PROVIDER_REDIRECT_REJECTED", 401 to "PROVIDER_AUTHENTICATION_FAILURE",

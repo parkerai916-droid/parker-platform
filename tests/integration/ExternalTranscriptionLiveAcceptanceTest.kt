@@ -68,7 +68,8 @@ class ExternalTranscriptionLiveAcceptanceTest {
             ?: error(
                 "live invocation did not admit: ${safeOutcome(outcome)}" +
                     (adapterHandle.state.failureFingerprint?.let { " $it" } ?: "") +
-                    (adapterHandle.state.providerRejectionFingerprint?.let { " $it" } ?: ""),
+                    (adapterHandle.state.providerRejectionFingerprint?.let { " $it" } ?: "") +
+                    (adapterHandle.state.responseFailureFingerprint?.let { " $it" } ?: ""),
             )
 
         assertEquals(listOf("authorize", "source", "manifest", "egress"), events)
