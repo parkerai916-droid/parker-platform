@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.AuthorizationPurposeRegistrationOutcome
 import parker.core.interfaces.ExecutionRequest
+import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PermissionLevel
@@ -15,17 +16,21 @@ import parker.core.interfaces.RequestId
 import parker.core.interfaces.RequestOrigin
 import parker.core.interfaces.RequestPriority
 import parker.core.runtime.AuthorizationPurposeRegistry
+import parker.core.runtime.ActionMapper
 import parker.core.runtime.DefaultEvidenceCustodian
 import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
 import parker.core.runtime.DefaultPermissionEngine
 import parker.core.runtime.DefaultPermissionPolicy
 import parker.core.runtime.DefaultReasoningKnowledgeSource
 import parker.core.runtime.EvidenceIntelligenceInputResolver
+import parker.core.runtime.EvidenceIntelligenceInvocationGate
+import parker.core.runtime.ExternalTranscriptionInvocationGate
 import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
 import parker.core.runtime.MemoryAdmissionCoordinator
 import parker.core.runtime.PermissionPolicyRule
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -136,7 +141,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
     // ================= Unit 2 vocabulary registration without consumer adoption =================
 
     @Test
-    fun `exactly the three accepted Memory retrieval Authorization Purpose values are registered, all active`() = runTest {
+    fun `exactly the accepted production Authorization Purpose values are registered and active`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -145,20 +150,22 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         val candidateEvaluationPurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
         val evidenceIntelligencePurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution")
         val reasoningContextPurpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
+        val externalTranscriptionPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE
 
         assertEquals(
-            setOf(candidateEvaluationPurpose, evidenceIntelligencePurpose, reasoningContextPurpose),
+            setOf(candidateEvaluationPurpose, evidenceIntelligencePurpose, reasoningContextPurpose, externalTranscriptionPurpose),
             entries.keys,
         )
         assertTrue(registry.isActive(candidateEvaluationPurpose))
         assertTrue(registry.isActive(evidenceIntelligencePurpose))
         assertTrue(registry.isActive(reasoningContextPurpose))
+        assertTrue(registry.isActive(externalTranscriptionPurpose))
 
         runtime.shutdown()
     }
 
     @Test
-    fun `exactly the four candidate-evaluation and reasoning-context retrieval rules name an authorizationPurpose, partitioned correctly by Purpose`() = runTest {
+    fun `purpose-aware production rules include the bounded external transcription approval`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
@@ -167,7 +174,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         val evidenceIntelligencePurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution")
         val reasoningContextPurpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
 
-        assertEquals(4, rules.count { it.authorizationPurpose != null })
+        assertEquals(5, rules.count { it.authorizationPurpose != null })
 
         val candidateEvaluationRules = rules.filter { it.authorizationPurpose == candidateEvaluationPurpose }
         assertEquals(2, candidateEvaluationRules.size)
@@ -189,7 +196,11 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
             )
         }
 
-        assertTrue(rules.none { it.authorizationPurpose == evidenceIntelligencePurpose }, "Evidence Intelligence must remain with zero Purpose-bound rules")
+        assertTrue(rules.none { it.authorizationPurpose == evidenceIntelligencePurpose }, "Input resolution must remain without a direct Purpose-bound policy rule")
+        val externalRules = rules.filter { it.authorizationPurpose == ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE }
+        assertEquals(1, externalRules.size)
+        assertEquals(ExternalTranscriptionInvocationGate.ACTION_NAME, externalRules.single().proposedAction)
+        assertEquals(PermissionDecisionOutcome.APPROVED, externalRules.single().outcome)
 
         runtime.shutdown()
     }
@@ -429,5 +440,91 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         assertEquals(PermissionLevel.AUTOMATIC, withCandidatePurpose.level)
 
         runtime.shutdown()
+    }
+
+    @Test
+    fun `external transcription request is fresh bounded and retains exactly one selected evidence identity`() {
+        val evidenceId = EvidenceArtifactId("evidence-selected-1")
+        val first = ExternalTranscriptionInvocationGate.buildExecutionRequest(PrincipalId(ownerPrincipalId), evidenceId)
+        val second = ExternalTranscriptionInvocationGate.buildExecutionRequest(PrincipalId(ownerPrincipalId), evidenceId)
+
+        assertEquals(listOf(EvidenceIntelligenceInvocationGate.EVIDENCE_INTELLIGENCE_INVOCATION_RESOURCE_ID), first.targetResources)
+        assertEquals(listOf(ExternalTranscriptionInvocationGate.ACTION_NAME), first.proposedActions)
+        assertEquals(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE, first.authorizationPurpose)
+        assertEquals(mapOf(ExternalTranscriptionInvocationGate.EVIDENCE_ARTIFACT_ID_METADATA_KEY to evidenceId.value), first.metadata)
+        assertNotEquals(first.requestId, second.requestId)
+        assertNotEquals(first.correlationId, second.correlationId)
+        assertNotEquals(first.requestId.value, first.correlationId)
+    }
+
+    @Test
+    fun `production policy approves only external verb coupled to exact active purpose and blocks coarse fallthrough`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val policy = composedPolicy(runtime)
+        val valid = ExternalTranscriptionInvocationGate.buildExecutionRequest(
+            PrincipalId(ownerPrincipalId),
+            EvidenceArtifactId("evidence-selected-policy-test"),
+        )
+
+        assertEquals(PermissionDecisionOutcome.APPROVED, policy.evaluate(valid).decision)
+        assertEquals(PermissionDecisionOutcome.DENIED, policy.evaluate(valid.copy(authorizationPurpose = null)).decision)
+        assertEquals(
+            PermissionDecisionOutcome.DENIED,
+            policy.evaluate(valid.copy(authorizationPurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution"))).decision,
+        )
+        assertEquals(
+            PermissionDecisionOutcome.DENIED,
+            policy.evaluate(valid.copy(authorizationPurpose = AuthorizationPurposeId("test.unregistered-external-transcription"))).decision,
+        )
+
+        val rules = policy.privateField<List<PermissionPolicyRule>>("rules")
+        val actionMapper = policy.privateField<ActionMapper>("actionMapper")
+        val vocabulary = actionMapper.privateField<Any>("vocabulary")
+        val vocabularyEntries = vocabulary.privateField<Map<String, *>>("entries")
+        assertEquals(1, vocabularyEntries.keys.count { it == ExternalTranscriptionInvocationGate.ACTION_NAME })
+        val externalPair = rules.filter {
+            it.action == parker.core.interfaces.PermissionAction.EXECUTE &&
+                it.resourceType == parker.core.interfaces.ResourceType.DOCUMENT &&
+                it.proposedAction == ExternalTranscriptionInvocationGate.ACTION_NAME
+        }
+        assertEquals(2, externalPair.size)
+        assertTrue(externalPair.any { it.authorizationPurpose == null && it.outcome == PermissionDecisionOutcome.DENIED })
+        assertTrue(externalPair.any {
+            it.authorizationPurpose == ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE &&
+                it.outcome == PermissionDecisionOutcome.APPROVED
+        })
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `retired external transcription purpose denies while unrelated analysis authorization remains unchanged`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+        val policy = composedPolicy(runtime)
+        val registry = policy.privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
+        val external = ExternalTranscriptionInvocationGate.buildExecutionRequest(
+            PrincipalId(ownerPrincipalId),
+            EvidenceArtifactId("evidence-retired-purpose-test"),
+        )
+        registry.retire(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE)
+
+        assertEquals(PermissionDecisionOutcome.DENIED, policy.evaluate(external).decision)
+        assertEquals(
+            PermissionDecisionOutcome.APPROVED,
+            policy.evaluate(EvidenceIntelligenceInvocationGate.buildExecutionRequest(PrincipalId(ownerPrincipalId))).decision,
+        )
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `external authorization builder is structurally isolated from custody provider network storage and analysis`() {
+        val typeNames = ExternalTranscriptionInvocationGate::class.java.declaredFields.map { it.type.name } +
+            ExternalTranscriptionInvocationGate::class.java.declaredMethods.flatMap { method ->
+                method.parameterTypes.map(Class<*>::getName) + method.returnType.name
+            }
+        val forbidden = listOf("EvidenceCustodian", "OcrProvider", "OpenAI", "Http", "Storage", "Memory", "Knowledge", "Analysis")
+        typeNames.forEach { type -> forbidden.forEach { token -> assertTrue(!type.contains(token), "$type contains forbidden $token") } }
     }
 }

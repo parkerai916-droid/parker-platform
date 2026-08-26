@@ -97,6 +97,7 @@ import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
+import parker.core.runtime.ExternalTranscriptionInvocationGate
 import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
 import parker.core.runtime.EvidenceRegistrationOutcome
@@ -465,6 +466,7 @@ class ParkerRuntime(
             authorizationPurposeRegistry.register(KNOWLEDGE_CANDIDATE_EVALUATION_PURPOSE)
             authorizationPurposeRegistry.register(EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE)
             authorizationPurposeRegistry.register(REASONING_CONTEXT_RETRIEVAL_PURPOSE)
+            authorizationPurposeRegistry.register(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE)
         }
         val toolRegistry = InMemoryToolRegistry(resourceRegistry)
         val moduleRegistry = InMemoryModuleRegistry(toolRegistry, resourceRegistry)
@@ -830,6 +832,25 @@ class ParkerRuntime(
                     resourceType = ResourceType.DOCUMENT,
                     outcome = PermissionDecisionOutcome.APPROVED,
                     level = PermissionLevel.AUTOMATIC,
+                ),
+                // External transcription is a distinct disclosure act. The verb-only guard
+                // outranks the coarse EXECUTE/DOCUMENT approval for every absent, unknown,
+                // retired, or mismatched Purpose. Only the exact active Purpose-plus-verb rule
+                // below has greater specificity; list order is irrelevant by policy design.
+                PermissionPolicyRule(
+                    action = PermissionAction.EXECUTE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = ExternalTranscriptionInvocationGate.ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.EXECUTE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE,
+                    proposedAction = ExternalTranscriptionInvocationGate.ACTION_NAME,
                 ),
                 // Knowledge Discoverability and Governed Retrieval into Reasoning Context,
                 // Implementation Unit 3 (Contract Design Section 7; Scope Lock Section 4). Fail-closed
@@ -1411,6 +1432,12 @@ class ParkerRuntime(
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = EvidenceIntelligenceInvocationGate.ANALYSE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.EXECUTE, ResourceType.DOCUMENT)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = ExternalTranscriptionInvocationGate.ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.EXECUTE, ResourceType.DOCUMENT)),
                 ),
             )

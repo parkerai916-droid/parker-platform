@@ -34,6 +34,7 @@ import parker.core.runtime.DefaultKnowledgeCandidateEvaluator
 import parker.core.runtime.DefaultPermissionPolicy
 import parker.core.runtime.DurableMemoryCore
 import parker.core.runtime.EvidenceIntelligenceInputResolver
+import parker.core.runtime.ExternalTranscriptionInvocationGate
 import parker.core.runtime.InMemoryActionVocabulary
 import parker.core.runtime.InMemoryAuthorizationPurposeRegistry
 import parker.core.runtime.PermissionPolicyRule
@@ -122,17 +123,21 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
     }
 
     @Test
-    fun `production registry contains exactly all three accepted active real purposes`() = runTest {
+    fun `production registry contains all accepted active real purposes`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val registry = policy(runtime).privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
         val entries = registry.privateField<Map<*, *>>("entries")
 
-        assertEquals(setOf(candidatePurpose, evidencePurpose, reasoningContextPurpose), entries.keys)
+        assertEquals(
+            setOf(candidatePurpose, evidencePurpose, reasoningContextPurpose, ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE),
+            entries.keys,
+        )
         assertTrue(registry.isActive(candidatePurpose))
         assertTrue(registry.isActive(evidencePurpose))
         assertTrue(registry.isActive(reasoningContextPurpose))
+        assertTrue(registry.isActive(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE))
 
         runtime.shutdown()
     }
