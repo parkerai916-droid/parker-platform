@@ -255,6 +255,40 @@ tasks.register<Test>("ocrMechanismUnit12CompositionLiveAcceptance") {
     shouldRunAfter(tasks.test)
 }
 
+// OpenAI External Transcription Implementation Plan, Unit M — the single auditable,
+// credential-free and network-independent offline gate. It deliberately uses only the ordinary
+// test source set; tests/integration (liveModelEvaluation) is structurally absent. Every included
+// provider test injects a fake transport, while the production-composition proofs assert that the
+// real adapter remains uncomposed and disabled.
+tasks.register<Test>("externalTranscriptionOfflineVerification") {
+    description = "Runs the governed external-transcription offline verification matrix (Units A-M)"
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.composition.ExternalTranscriptionOfflineVerificationTest")
+        includeTestsMatching("parker.composition.OpenAi*")
+        includeTestsMatching("parker.composition.OwnerEvidenceHttpServerTest")
+        includeTestsMatching("parker.composition.OwnerUiEvidenceRuntimeAdapterTest")
+        includeTestsMatching("parker.composition.ParkerRuntimeOcrCompositionTest")
+        includeTestsMatching("parker.composition.ParkerRuntimeTierBOcrDurableGenerationTest")
+        includeTestsMatching("parker.composition.DerivativeContentPersistenceRestartAcceptanceTest")
+        includeTestsMatching("parker.core.interfaces.Ocr*")
+        includeTestsMatching("parker.core.runtime.AuthorizationPurpose*")
+        includeTestsMatching("parker.core.runtime.ExternalTranscription*")
+        includeTestsMatching("parker.core.runtime.OpenAi*")
+        includeTestsMatching("parker.core.runtime.OcrProcessingRepresentationFactoryTest")
+        includeTestsMatching("parker.core.runtime.OcrStructuredResultValidatorTest")
+        includeTestsMatching("parker.core.runtime.DerivativeContentCodecTest")
+        includeTestsMatching("parker.core.runtime.TierBOcr*")
+        includeTestsMatching("parker.core.runtime.DocumentAnalysis*")
+        includeTestsMatching("parker.core.runtime.SavedAnalysisCoordinatorTest")
+        includeTestsMatching("parker.core.runtime.DoclingOcrProviderAdapterTest")
+    }
+    shouldRunAfter(tasks.test)
+}
+
 // Document Ingestion Programme, Tier B Owner Routing -- this Unit's own opt-in live acceptance
 // instrument, mirroring ocrMechanismUnit12CompositionLiveAcceptance's own identical shape, but
 // through the real, complete, explicit owner workflow (importEvidenceFileAsOwner ->

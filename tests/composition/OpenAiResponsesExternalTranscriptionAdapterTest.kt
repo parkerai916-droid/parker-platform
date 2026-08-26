@@ -13,7 +13,7 @@ import parker.composition.*
 import parker.core.interfaces.*
 
 class OpenAiResponsesExternalTranscriptionAdapterTest {
-    private val sentinel = "unit-h-fake-secret-sentinel"
+    private val sentinel = "API_KEY_SENTINEL"
     private val credential = OpenAiApiCredential.fromEnvironment(sentinel)!!
     private val evidenceId = EvidenceArtifactId("evidence-unit-h")
     private val digest = sha256("source".toByteArray())

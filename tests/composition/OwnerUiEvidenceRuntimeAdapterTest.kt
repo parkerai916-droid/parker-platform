@@ -94,7 +94,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
         runtime.start()
         val id = EvidenceArtifactId("external-failure-evidence")
-        val sentinel = "unit-k-secret-sentinel"
+        val sentinels = listOf("SOURCE_SECRET_SENTINEL", "TRANSCRIPT_SECRET_SENTINEL", "API_KEY_SENTINEL")
         val failures = listOf<ExternalTranscriptionOwnerInvocationOutcome>(
             ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised,
             ExternalTranscriptionOwnerInvocationOutcome.SourceNotFound(id),
@@ -106,14 +106,15 @@ class OwnerUiEvidenceRuntimeAdapterTest {
             ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_TIMEOUT"),
             ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_NETWORK_FAILURE"),
             ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("MALFORMED_PROVIDER_RESPONSE"),
-            ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(sentinel),
-            ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(sentinel),
+            ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(sentinels.joinToString("/")),
+            ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(sentinels.joinToString("/")),
         )
         failures.forEach { failure ->
             val mapped = assertIs<EnhancedTranscriptionOutcome.Failed>(
                 adapterFor(runtime, EnhancedTranscriptionReadiness.Ready) { failure }.transcribeExternal(id),
             )
-            assertTrue(mapped.safeMessage.isNotBlank()); assertTrue(!mapped.safeMessage.contains(sentinel))
+            assertTrue(mapped.safeMessage.isNotBlank())
+            sentinels.forEach { assertTrue(!mapped.safeMessage.contains(it)) }
         }
         runtime.shutdown()
     }
