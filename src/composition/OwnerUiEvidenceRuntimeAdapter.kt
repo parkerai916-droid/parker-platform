@@ -23,6 +23,8 @@ import parker.core.interfaces.TierADocumentRoutingResult
 import parker.core.interfaces.TierAOwnerInvocationOutcome
 import parker.core.interfaces.TierBOcrContentRetrievalOutcome
 import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
+import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
+import parker.core.interfaces.OcrModelSnapshot
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerDocumentAnalysisInvocationOutcome
@@ -47,6 +49,9 @@ import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBDurableProcessingOutcome
 import parker.ui.TierBOcrContentRetrievalResult
 import parker.ui.TierBProcessingOutcome
+import parker.ui.EnhancedTranscriptionOutcome
+import parker.ui.EnhancedTranscriptionReadiness
+import parker.ui.OwnerOcrPageOutcomeSummary
 
 /** OCR Mechanism Unit 12's own, unmodified, already-governed analysisKind convention. */
 private const val OCR_ANALYSIS_KIND = "ocr-transcription"
@@ -84,7 +89,46 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val saveAnalysisAsOwner: suspend (PendingAnalysisId) -> SaveAnalysisOutcome,
     private val retrieveSavedAnalysisAsOwner: suspend (SavedAnalysisId) -> RetrieveSavedAnalysisOutcome,
     private val listSavedAnalysesAsOwner: suspend () -> List<SavedAnalysisSummary>,
+    private val externalReadiness: () -> EnhancedTranscriptionReadiness = { EnhancedTranscriptionReadiness.Disabled },
+    private val invokeExternalTranscriptionAsOwner: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = {
+        ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("Enhanced transcription is not enabled in this runtime")
+    },
 ) : OwnerEvidenceOperations {
+
+    override fun enhancedTranscriptionReadiness(): EnhancedTranscriptionReadiness = externalReadiness()
+
+    override suspend fun transcribeExternal(evidenceArtifactId: EvidenceArtifactId): EnhancedTranscriptionOutcome {
+        val readiness = externalReadiness()
+        if (readiness !is EnhancedTranscriptionReadiness.Ready) return EnhancedTranscriptionOutcome.NotReady(readiness)
+        return when (val outcome = invokeExternalTranscriptionAsOwner(evidenceArtifactId)) {
+            is ExternalTranscriptionOwnerInvocationOutcome.Admitted ->
+                EnhancedTranscriptionOutcome.Admitted(toOwnerOcrContent(outcome.extracted), outcome.record.derivativeGenerationId)
+            is ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired ->
+                EnhancedTranscriptionOutcome.ReconciliationRequired(toOwnerOcrContent(outcome.extracted), outcome.record.derivativeGenerationId, "The transcription was admitted, but its final audit entry requires reconciliation.")
+            ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised -> EnhancedTranscriptionOutcome.Failed("Enhanced transcription was not authorised.")
+            is ExternalTranscriptionOwnerInvocationOutcome.SourceNotFound -> EnhancedTranscriptionOutcome.Failed("The evidence source was not found.")
+            is ExternalTranscriptionOwnerInvocationOutcome.SourceRetrievalRejected -> EnhancedTranscriptionOutcome.Failed("The evidence source could not be retrieved.")
+            is ExternalTranscriptionOwnerInvocationOutcome.ManifestNotFound -> EnhancedTranscriptionOutcome.Failed("No evidence manifest was found.")
+            is ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected -> EnhancedTranscriptionOutcome.Failed("The evidence manifest could not be verified.")
+            is ExternalTranscriptionOwnerInvocationOutcome.ByteLengthMismatch,
+            is ExternalTranscriptionOwnerInvocationOutcome.DigestMismatch -> EnhancedTranscriptionOutcome.Failed("Evidence integrity verification failed.")
+            is ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds -> EnhancedTranscriptionOutcome.Failed("This evidence type or size is not supported for enhanced transcription.")
+            is ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure -> EnhancedTranscriptionOutcome.Failed(safeExternalFailure(outcome.reason))
+            is ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected -> EnhancedTranscriptionOutcome.Failed("The transcription result did not pass Parker validation.")
+            is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed -> EnhancedTranscriptionOutcome.Failed("The validated transcription could not be durably admitted.")
+        }
+    }
+
+    private fun safeExternalFailure(reason: String): String = when (reason) {
+        "PROVIDER_AUTHENTICATION_FAILURE" -> "The transcription provider rejected authentication."
+        "PROVIDER_RATE_LIMITED" -> "The transcription provider is temporarily rate limited."
+        "PROVIDER_UNAVAILABLE" -> "The transcription provider is temporarily unavailable."
+        "PROVIDER_TIMEOUT" -> "Enhanced transcription timed out."
+        "PROVIDER_NETWORK_FAILURE" -> "Enhanced transcription could not reach the provider."
+        "MALFORMED_PROVIDER_RESPONSE" -> "The transcription provider returned an invalid result."
+        "INPUT_TOO_LARGE", "ENCODED_INPUT_TOO_LARGE" -> "This evidence exceeds the enhanced transcription size limit."
+        else -> "Enhanced transcription failed safely."
+    }
 
     override suspend fun importFile(absolutePath: String, declaredMediaType: String?): EvidenceImportOutcome =
         when (val outcome = importEvidenceFileAsOwner(absolutePath, declaredMediaType)) {
@@ -324,6 +368,24 @@ class OwnerUiEvidenceRuntimeAdapter(
         segments = extracted.segments.map { OwnerOcrSegmentSummary(it.text, it.fidelity.name, it.pageNumber) },
         producer = extracted.producerIdentity.toSummary(),
         completenessState = extracted.completenessState.name,
+        sourceEvidenceArtifactId = extracted.processingProvenance?.sourceEvidenceArtifactId?.value,
+        providerIdentity = extracted.providerProvenance?.providerIdentity,
+        returnedModelIdentifier = extracted.providerProvenance?.providerReportedModelIdentifier,
+        modelSnapshot = when (val snapshot = extracted.providerProvenance?.modelSnapshot) {
+            is OcrModelSnapshot.Present -> snapshot.value
+            OcrModelSnapshot.NotExposed -> "Not separately exposed"
+            null -> null
+        },
+        requestedPages = extracted.pageAccounting?.requestedScope?.pageNumbers,
+        submittedPages = extracted.pageAccounting?.submittedScope?.pageNumbers,
+        returnedPages = extracted.pageAccounting?.returnedScope?.pageNumbers,
+        pageOutcomes = extracted.pageAccounting?.pageOutcomes?.map { page ->
+            OwnerOcrPageOutcomeSummary(page.pageNumber, page.outcome.name, page.reason?.classification, page.warnings)
+        }.orEmpty(),
+        containsUncertaintyOrIllegibility = extracted.pageAccounting?.pageOutcomes?.any { page ->
+            page.uncertaintySpans.isNotEmpty() || page.outcome.name.contains("ILLEGIBLE")
+        } == true,
+        externalTranscription = extracted.providerProvenance != null,
     )
 
     override suspend fun analyseDocuments(

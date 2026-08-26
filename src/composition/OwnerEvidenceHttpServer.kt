@@ -38,6 +38,8 @@ import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBDurableProcessingOutcome
 import parker.ui.TierBOcrContentRetrievalResult
 import parker.ui.TierBProcessingOutcome
+import parker.ui.EnhancedTranscriptionOutcome
+import parker.ui.EnhancedTranscriptionReadiness
 
 /**
  * Owner LAN Evidence Upload. Pure HTTP transport for the exact same
@@ -189,6 +191,10 @@ class OwnerEvidenceHttpServer(
                         handleOcr(exchange, segments[0])
                     segments.size == 2 && segments[1] == "ocr-durable" && method == "POST" ->
                         handleOcrDurable(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "transcribe-external" && method == "POST" ->
+                        handleExternalTranscription(exchange, segments[0])
+                    segments.size == 1 && segments[0] == "transcription-readiness" && method == "GET" ->
+                        handleExternalReadiness(exchange)
                     segments.size == 3 && segments[1] == "content" && method == "GET" ->
                         handleRetrieveContent(exchange, segments[0], segments[2])
                     segments.size == 3 && segments[1] == "ocr-content" && method == "GET" ->
@@ -400,6 +406,40 @@ class OwnerEvidenceHttpServer(
                 is TierBDurableProcessingOutcome.OcrNotAdmissible -> jsonObject("status" to "FAILED", "message" to outcome.reason)
                 is TierBDurableProcessingOutcome.IntegrityFailure -> jsonObject("status" to "FAILED", "message" to "Integrity check failed: ${outcome.reason}")
                 is TierBDurableProcessingOutcome.Failed -> jsonObject("status" to "FAILED", "message" to "Failed (${outcome.stage}): ${outcome.safeMessage}")
+            }
+            writeJson(exchange, 200, body)
+        }
+
+        private fun handleExternalReadiness(exchange: HttpExchange) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            writeJson(exchange, 200, readinessJson(operations.enhancedTranscriptionReadiness()))
+        }
+
+        private fun handleExternalTranscription(exchange: HttpExchange, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            if (!SAFE_ROUTE_ID.matches(rawId)) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val id = try { EvidenceArtifactId(rawId) } catch (_: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id")); return
+            }
+            val readiness = operations.enhancedTranscriptionReadiness()
+            if (readiness !is EnhancedTranscriptionReadiness.Ready) {
+                writeJson(exchange, 409, readinessJson(readiness)); return
+            }
+            val body = when (val outcome = runBlocking { operations.transcribeExternal(id) }) {
+                is EnhancedTranscriptionOutcome.Admitted -> jsonObject(
+                    "status" to "TIER_B_DURABLE_COMPLETE", "evidenceArtifactId" to id.value,
+                    "derivativeGenerationId" to outcome.derivativeGenerationId.value, "content" to ocrContentJson(outcome.content),
+                )
+                is EnhancedTranscriptionOutcome.ReconciliationRequired -> jsonObject(
+                    "status" to "RECONCILIATION_REQUIRED", "evidenceArtifactId" to id.value,
+                    "derivativeGenerationId" to outcome.derivativeGenerationId.value, "content" to ocrContentJson(outcome.content),
+                    "message" to outcome.safeMessage,
+                )
+                is EnhancedTranscriptionOutcome.NotReady -> readinessJson(outcome.readiness)
+                is EnhancedTranscriptionOutcome.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
             }
             writeJson(exchange, 200, body)
         }
@@ -728,7 +768,24 @@ class OwnerEvidenceHttpServer(
         ),
         "producer" to producerJson(content.producer),
         "completenessState" to content.completenessState,
+        "sourceEvidenceArtifactId" to content.sourceEvidenceArtifactId,
+        "providerIdentity" to content.providerIdentity,
+        "returnedModelIdentifier" to content.returnedModelIdentifier,
+        "modelSnapshot" to content.modelSnapshot,
+        "requestedPages" to content.requestedPages?.let(::jsonArray),
+        "submittedPages" to content.submittedPages?.let(::jsonArray),
+        "returnedPages" to content.returnedPages?.let(::jsonArray),
+        "pageOutcomes" to jsonArray(content.pageOutcomes.map { jsonObject("pageNumber" to it.pageNumber, "outcome" to it.outcome, "reason" to it.reason, "warnings" to jsonArray(it.warnings)) }),
+        "containsUncertaintyOrIllegibility" to content.containsUncertaintyOrIllegibility,
+        "externalTranscription" to content.externalTranscription,
     )
+
+    private fun readinessJson(readiness: EnhancedTranscriptionReadiness): JsonObject = when (readiness) {
+        EnhancedTranscriptionReadiness.Disabled -> jsonObject("status" to "DISABLED", "message" to "Enhanced transcription is not enabled in this runtime.")
+        is EnhancedTranscriptionReadiness.ProfileNotReady -> jsonObject("status" to "PROFILE_NOT_READY", "message" to readiness.safeReason)
+        EnhancedTranscriptionReadiness.MissingCredential -> jsonObject("status" to "MISSING_CREDENTIAL", "message" to "Enhanced transcription credential is not configured.")
+        EnhancedTranscriptionReadiness.Ready -> jsonObject("status" to "READY", "message" to "Enhanced transcription is available.")
+    }
 
     // ---- Owner Tier A Extracted Content Presentation: safe owner-facing content -> JSON ----------
     // Every value below is either a server-controlled literal or threaded through jsonString's own
@@ -870,6 +927,7 @@ class OwnerEvidenceHttpServer(
     }
 
     companion object {
+        private val SAFE_ROUTE_ID = Regex("^[A-Za-z0-9._-]{1,1024}$")
         /** Mirrors `OwnerLocalFileIngressCoordinator.MAX_SOURCE_BYTES` -- the same 64 MiB ingress bound, enforced here during streaming so an oversized upload never even reaches a temp file in full. */
         const val MAX_PART_BYTES: Long = 64L * 1024L * 1024L
 
@@ -1373,6 +1431,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   <label><input type="checkbox" id="rememberToken"> Remember token on this device</label>
 </p>
 <p class="note">Use only on a trusted device. Anyone with access to this browser profile could read a remembered token.</p>
+<p><button id="checkEnhancedReadinessButton">Check enhanced transcription readiness</button> <span id="enhancedReadinessStatus" class="note"></span></p>
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
 <p id="status"></p>
 <table>
@@ -1395,6 +1454,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <script>
 let rows = [];
 let expandedIndex = null;
+let enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription readiness has not been loaded.' };
 
 // Remember Owner Token On This Device -- a browser convenience only. Never sent to or read back
 // from the server: this key exists solely in this browser origin's own localStorage. The token
@@ -1441,6 +1501,7 @@ document.getElementById('rememberToken').onchange = onRememberToggled;
 document.getElementById('token').addEventListener('input', onTokenFieldInput);
 
 function render() {
+  document.getElementById('enhancedReadinessStatus').textContent = enhancedReadiness.message;
   const tbody = document.getElementById('rows');
   tbody.innerHTML = '';
   rows.forEach((row, index) => {
@@ -1454,7 +1515,7 @@ function render() {
       actions.appendChild(b);
     } else if (row.status === 'REQUIRES_OCR') {
       const b = document.createElement('button');
-      b.textContent = 'Run OCR';
+      b.textContent = 'Run local OCR';
       b.onclick = () => ocrRow(index);
       actions.appendChild(b);
     }
@@ -1464,9 +1525,17 @@ function render() {
     // existing TIER_B_DURABLE_COMPLETE + real ocrDerivativeGenerationId path changes that.
     if (row.status === 'REQUIRES_OCR' || row.status === 'COMPLETE') {
       const bd = document.createElement('button');
-      bd.textContent = 'Run OCR (Durable)';
+      bd.textContent = 'Run local OCR (Durable)';
       bd.onclick = () => ocrDurableRow(index);
       actions.appendChild(bd);
+    }
+    if (row.evidenceArtifactId && !row.externalResultRow) {
+      const external = document.createElement('button');
+      external.textContent = row.externalProcessing ? 'Enhanced transcription processing…' : 'Run enhanced transcription';
+      external.disabled = row.externalProcessing || enhancedReadiness.status !== 'READY';
+      external.title = enhancedReadiness.status === 'READY' ? 'Explicitly submit this evidence for enhanced transcription' : enhancedReadiness.message;
+      external.onclick = () => transcribeExternalRow(index);
+      actions.appendChild(external);
     }
     if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
       const b = document.createElement('button');
@@ -1665,6 +1734,17 @@ function buildOcrContentPanel(content) {
   if (content.degradationReason) appendField(container, 'Degradation reason', content.degradationReason);
   appendField(container, 'Fidelity', content.fidelity);
   appendField(container, 'Completeness', content.completenessState);
+  if (content.sourceEvidenceArtifactId) appendField(container, 'Source Evidence ID', content.sourceEvidenceArtifactId);
+  if (content.providerIdentity) appendField(container, 'Provider', content.providerIdentity + ' (provenance only — not verification)');
+  if (content.returnedModelIdentifier) appendField(container, 'Returned model', content.returnedModelIdentifier);
+  if (content.modelSnapshot) appendField(container, 'Model snapshot', content.modelSnapshot);
+  if (content.requestedPages) appendField(container, 'Requested pages', content.requestedPages.join(', ') || 'None');
+  if (content.submittedPages) appendField(container, 'Submitted pages', content.submittedPages.join(', ') || 'None');
+  if (content.returnedPages) appendField(container, 'Returned pages', content.returnedPages.join(', ') || 'None');
+  if (content.containsUncertaintyOrIllegibility) appendField(container, 'Qualification', 'Transcription contains uncertain or illegible text');
+  if (content.pageOutcomes && content.pageOutcomes.length) {
+    appendField(container, 'Page outcomes', content.pageOutcomes.map(p => 'Page ' + p.pageNumber + ': ' + p.outcome + (p.reason ? ' (' + p.reason + ')' : '')).join('; '));
+  }
   appendWarnings(container, content.warnings);
   appendProducer(container, content.producer);
   appendExtractedText(container, 'Recognised text:', content.recognisedText);
@@ -1778,6 +1858,45 @@ async function ocrDurableRow(index) {
   row.message = result.message;
   row.ocrDerivativeGenerationId = result.derivativeGenerationId || null;
   render();
+}
+
+async function loadEnhancedReadiness() {
+  try {
+    const resp = await fetch('/owner/evidence/transcription-readiness', { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) return;
+    enhancedReadiness = await resp.json();
+    render();
+  } catch (e) {
+    enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription readiness could not be checked.' };
+    render();
+  }
+}
+document.getElementById('checkEnhancedReadinessButton').onclick = loadEnhancedReadiness;
+
+async function transcribeExternalRow(index) {
+  const source = rows[index];
+  if (source.externalProcessing || enhancedReadiness.status !== 'READY') return;
+  source.externalProcessing = true;
+  render();
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{source.evidenceArtifactId}/transcribe-external`, { method: 'POST', headers: authHeaders() });
+    const result = await resp.json();
+    if (result.status === 'TIER_B_DURABLE_COMPLETE') {
+      rows.push({
+        originalFileName: source.originalFileName + ' — Enhanced transcription', byteLength: source.byteLength,
+        evidenceArtifactId: source.evidenceArtifactId, status: result.status, message: 'Enhanced transcription durably admitted',
+        ocrDerivativeGenerationId: result.derivativeGenerationId, ocrContent: result.content,
+        externalResultRow: true, selectedForAnalysis: false,
+      });
+    } else {
+      source.message = result.message || 'Enhanced transcription failed safely.';
+    }
+  } catch (e) {
+    source.message = 'Enhanced transcription request failed safely.';
+  } finally {
+    source.externalProcessing = false;
+    render();
+  }
 }
 
 async function viewOcrContent(index) {

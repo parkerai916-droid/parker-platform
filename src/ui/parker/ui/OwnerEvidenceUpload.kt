@@ -22,6 +22,13 @@ import parker.core.interfaces.SavedAnalysisId
  * bulk evidence authority is created by this unit).
  */
 interface OwnerEvidenceOperations {
+    /** Read-only executable readiness projection; never invokes a provider. */
+    fun enhancedTranscriptionReadiness(): EnhancedTranscriptionReadiness = EnhancedTranscriptionReadiness.Disabled
+
+    /** One explicit owner action for one route-bound evidence identity. */
+    suspend fun transcribeExternal(evidenceArtifactId: EvidenceArtifactId): EnhancedTranscriptionOutcome =
+        EnhancedTranscriptionOutcome.NotReady(EnhancedTranscriptionReadiness.Disabled)
+
     /**
      * Imports one already-local file (an absolute path the owner's own
      * client resolved -- a native file-picker dialog result, never a string
@@ -309,9 +316,34 @@ data class OwnerTierBOcrContent(
     val segments: List<OwnerOcrSegmentSummary>,
     val producer: OwnerDerivativeProducerSummary,
     val completenessState: String,
+    val sourceEvidenceArtifactId: String? = null,
+    val providerIdentity: String? = null,
+    val returnedModelIdentifier: String? = null,
+    val modelSnapshot: String? = null,
+    val requestedPages: List<Int>? = null,
+    val submittedPages: List<Int>? = null,
+    val returnedPages: List<Int>? = null,
+    val pageOutcomes: List<OwnerOcrPageOutcomeSummary> = emptyList(),
+    val containsUncertaintyOrIllegibility: Boolean = false,
+    val externalTranscription: Boolean = false,
 )
 
 data class OwnerOcrSegmentSummary(val text: String, val fidelity: String, val pageNumber: Int?)
+data class OwnerOcrPageOutcomeSummary(val pageNumber: Int, val outcome: String, val reason: String?, val warnings: List<String>)
+
+sealed interface EnhancedTranscriptionReadiness {
+    data object Disabled : EnhancedTranscriptionReadiness
+    data class ProfileNotReady(val safeReason: String) : EnhancedTranscriptionReadiness
+    data object MissingCredential : EnhancedTranscriptionReadiness
+    data object Ready : EnhancedTranscriptionReadiness
+}
+
+sealed interface EnhancedTranscriptionOutcome {
+    data class Admitted(val content: OwnerTierBOcrContent, val derivativeGenerationId: DerivativeGenerationId) : EnhancedTranscriptionOutcome
+    data class NotReady(val readiness: EnhancedTranscriptionReadiness) : EnhancedTranscriptionOutcome
+    data class Failed(val safeMessage: String) : EnhancedTranscriptionOutcome
+    data class ReconciliationRequired(val content: OwnerTierBOcrContent, val derivativeGenerationId: DerivativeGenerationId, val safeMessage: String) : EnhancedTranscriptionOutcome
+}
 
 /**
  * The truthful result of one [OwnerEvidenceOperations.processTierBDurable]

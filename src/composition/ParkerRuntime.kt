@@ -1968,6 +1968,24 @@ class ParkerRuntime(
         return externalTranscriptionOwnerInvocationCoordinator.invoke(evidenceArtifactId)
     }
 
+    /** Owner-safe Unit F/G readiness, additionally constrained by Unit K's uncomposed provider mechanism. */
+    fun ownerEnhancedTranscriptionReadiness(): parker.ui.EnhancedTranscriptionReadiness =
+        when (val readiness = openAiExternalTranscriptionBackendReadiness) {
+            OpenAiExternalTranscriptionBackendReadiness.Disabled -> parker.ui.EnhancedTranscriptionReadiness.Disabled
+            OpenAiExternalTranscriptionBackendReadiness.MissingCredential -> parker.ui.EnhancedTranscriptionReadiness.MissingCredential
+            is OpenAiExternalTranscriptionBackendReadiness.ProfileNotReady ->
+                parker.ui.EnhancedTranscriptionReadiness.ProfileNotReady(
+                    when (readiness.profileReadiness) {
+                        is OpenAiExternalTranscriptionReadiness.StaleProfile -> "The enhanced transcription provider profile requires review."
+                        else -> "The enhanced transcription provider profile is not ready."
+                    },
+                )
+            OpenAiExternalTranscriptionBackendReadiness.Ready ->
+                // Unit H remains deliberately uncomposed in production; configuration readiness
+                // alone is not executable readiness and must never enable a working-looking action.
+                parker.ui.EnhancedTranscriptionReadiness.Disabled
+        }
+
     /**
      * Document Ingestion — Tier B Durable OCR Derivative Content. The one production entry point
      * through which an already-persisted Tier B OCR durable content may be retrieved by known

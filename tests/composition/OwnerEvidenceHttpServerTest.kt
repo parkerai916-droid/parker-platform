@@ -18,6 +18,9 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
 import parker.core.runtime.DocumentAnalysisCoordinator
+import parker.core.interfaces.*
+import parker.ui.EnhancedTranscriptionReadiness
+import java.time.Instant
 
 /**
  * Owner LAN Evidence Upload. Decisive proof for [OwnerEvidenceHttpServer]
@@ -78,7 +81,13 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
-    private fun startHarness(doclingBridgeScriptPath: String, tokenOverride: String = token, modelEndpointUrl: String = "http://127.0.0.1:1/api/generate"): Harness {
+    private fun startHarness(
+        doclingBridgeScriptPath: String,
+        tokenOverride: String = token,
+        modelEndpointUrl: String = "http://127.0.0.1:1/api/generate",
+        externalReadiness: () -> EnhancedTranscriptionReadiness = { EnhancedTranscriptionReadiness.Disabled },
+        invokeExternal: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = { ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("disabled") },
+    ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
         val runtimeLogger = RecordingParkerLogger()
@@ -97,6 +106,8 @@ class OwnerEvidenceHttpServerTest {
             saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
             retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
             listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
+            externalReadiness = externalReadiness,
+            invokeExternalTranscriptionAsOwner = invokeExternal,
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
@@ -141,6 +152,89 @@ class OwnerEvidenceHttpServerTest {
 
     private fun send(request: HttpRequest): HttpResponse<String> =
         client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+
+    @Test
+    fun `enhanced transcription is readiness gated explicit exact-id and safely presented`() {
+        var calls = 0
+        var invokedId: EvidenceArtifactId? = null
+        val sentinel = "unit-k-secret-sentinel"
+        val harness = startHarness(
+            "",
+            externalReadiness = { EnhancedTranscriptionReadiness.Ready },
+            invokeExternal = { id -> calls++; invokedId = id; externalAdmitted(id) },
+        )
+        try {
+            val root = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            assertTrue(root.body().contains("Run local OCR")); assertTrue(root.body().contains("Run enhanced transcription"))
+            assertTrue(root.body().contains("selectedForAnalysis: false")); assertEquals(0, calls)
+
+            val readiness = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/transcription-readiness")).header("Authorization", "Bearer $token").GET().build())
+            assertTrue(readiness.body().contains("READY")); assertEquals(0, calls)
+
+            val evidenceId = EvidenceArtifactId("evidence-route-exact")
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/${evidenceId.value}/transcribe-external?evidenceArtifactId=replacement"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.ofString("{\"evidenceArtifactId\":\"replacement\",\"secret\":\"$sentinel\"}")).build())
+            assertEquals(200, response.statusCode()); assertEquals(1, calls); assertEquals(evidenceId, invokedId)
+            assertTrue(response.body().contains("generation-external-unit-k")); assertTrue(response.body().contains("Machine transcription — unverified"))
+            assertTrue(response.body().contains("Not separately exposed")); assertTrue(response.body().contains("KNOWN_INCOMPLETE"))
+            assertFalse(response.body().contains(sentinel))
+
+            val malformed = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/bad%20id/transcribe-external"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build())
+            assertEquals(400, malformed.statusCode()); assertEquals(1, calls)
+            val get = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/${evidenceId.value}/transcribe-external"))
+                .header("Authorization", "Bearer $token").GET().build())
+            assertEquals(404, get.statusCode()); assertEquals(1, calls)
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `disabled enhanced transcription never invokes external operation`() {
+        var calls = 0
+        val harness = startHarness("", externalReadiness = { EnhancedTranscriptionReadiness.Disabled }, invokeExternal = { calls++; error("must not run") })
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/evidence-one/transcribe-external"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build())
+            assertEquals(409, response.statusCode()); assertTrue(response.body().contains("DISABLED")); assertEquals(0, calls)
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `profile-not-ready and missing-credential readiness are transparent and non-executable`() {
+        listOf(
+            EnhancedTranscriptionReadiness.ProfileNotReady("Provider profile is invalid or stale.") to "PROFILE_NOT_READY",
+            EnhancedTranscriptionReadiness.MissingCredential to "MISSING_CREDENTIAL",
+        ).forEach { (readiness, expected) ->
+            var calls = 0
+            val harness = startHarness("", externalReadiness = { readiness }, invokeExternal = { calls++; error("must not run") })
+            try {
+                val status = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/transcription-readiness"))
+                    .header("Authorization", "Bearer $token").GET().build())
+                assertTrue(status.body().contains(expected))
+                val action = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/evidence-one/transcribe-external"))
+                    .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build())
+                assertEquals(409, action.statusCode()); assertEquals(0, calls)
+            } finally { harness.shutdown() }
+        }
+    }
+
+    private fun externalAdmitted(id: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {
+        val scope = OcrPageScope(listOf(1, 2))
+        val accounting = OcrPageAccounting(scope, scope, OcrPageScope(listOf(1)), listOf(
+            OcrPageOutcome(1, OcrPageOutcomeKind.TRANSCRIBED_WITH_QUALIFICATIONS, OcrPageOutcomeReason("UNCERTAIN_TEXT"), listOf("qualified"), listOf(OcrUncertaintySpan(1, 0, 1, OcrUncertaintyKind.UNCERTAIN, "uncertain"))),
+            OcrPageOutcome(2, OcrPageOutcomeKind.NOT_RETURNED, OcrPageOutcomeReason("VALIDATOR_NOT_RETURNED")),
+        ))
+        val processing = OcrProcessingProvenance(id, OcrSha256Digest("a".repeat(64)), "application/pdf", 10, scope, scope, "application/pdf", 10, OcrSha256Digest("a".repeat(64)), true, "direct-v1", Instant.EPOCH)
+        val provider = OcrProviderProvenance("OpenAI", "adapter", "1.0.0", "profile", "returned-model", OcrModelSnapshot.NotExposed, "response-id")
+        val producer = DerivativeProducerIdentity("external", "1.0.0", "profile", "adapter", "1.0.0", "returned-model", null)
+        val extracted = OcrDerivativeExtractedResult("literal", TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED,
+            "page 2 not returned", listOf("qualified"), listOf(OcrRecognitionSegment("literal", TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, 1)), producer,
+            listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE), DerivativeCompletenessState.KNOWN_INCOMPLETE, accounting, processing, provider, Instant.EPOCH)
+        val record = DerivativeGenerationRecord(DerivativeGenerationId("generation-external-unit-k"), id, listOf(DerivativeParentReference.RootEvidenceArtifact(id)),
+            "External transcription recognised text", producer, extracted.transformationHistory, Instant.EPOCH, DerivativeContentIdentity.NoCanonicalSerialization,
+            extracted.completenessState, DerivativeOperationalOutcome.USABLE)
+        return ExternalTranscriptionOwnerInvocationOutcome.Admitted(id, record, extracted)
+    }
 
     private fun extractField(json: String, field: String): String? =
         Regex(""""$field"\s*:\s*"([^"]*)"""").find(json)?.groupValues?.get(1)
@@ -974,7 +1068,7 @@ class OwnerEvidenceHttpServerTest {
         try {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
             assertTrue(body.contains(durableOcrRenderCondition))
-            assertTrue(body.contains("bd.textContent = 'Run OCR (Durable)'"))
+            assertTrue(body.contains("bd.textContent = 'Run local OCR (Durable)'"))
         } finally {
             harness.shutdown()
         }

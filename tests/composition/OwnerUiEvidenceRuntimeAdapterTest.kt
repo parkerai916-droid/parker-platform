@@ -7,6 +7,9 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.*
+import parker.ui.EnhancedTranscriptionReadiness
+import parker.ui.EnhancedTranscriptionOutcome
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerTierAContent
 import parker.ui.TierAProcessingOutcome
@@ -65,7 +68,11 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         return scriptPath
     }
 
-    private fun adapterFor(runtime: ParkerRuntime) = OwnerUiEvidenceRuntimeAdapter(
+    private fun adapterFor(
+        runtime: ParkerRuntime,
+        readiness: EnhancedTranscriptionReadiness = EnhancedTranscriptionReadiness.Disabled,
+        external: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = { ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("disabled") },
+    ) = OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(ownerPrincipalId),
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
         invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
@@ -77,7 +84,39 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
         retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
         listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
+        externalReadiness = { readiness },
+        invokeExternalTranscriptionAsOwner = external,
     )
+
+    @Test
+    fun `bounded external failures map to safe owner text without raw reason leakage`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("external-failure-evidence")
+        val sentinel = "unit-k-secret-sentinel"
+        val failures = listOf<ExternalTranscriptionOwnerInvocationOutcome>(
+            ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised,
+            ExternalTranscriptionOwnerInvocationOutcome.SourceNotFound(id),
+            ExternalTranscriptionOwnerInvocationOutcome.ManifestNotFound(id),
+            ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(id),
+            ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_AUTHENTICATION_FAILURE"),
+            ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_RATE_LIMITED"),
+            ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_UNAVAILABLE"),
+            ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_TIMEOUT"),
+            ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_NETWORK_FAILURE"),
+            ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("MALFORMED_PROVIDER_RESPONSE"),
+            ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(sentinel),
+            ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(sentinel),
+        )
+        failures.forEach { failure ->
+            val mapped = assertIs<EnhancedTranscriptionOutcome.Failed>(
+                adapterFor(runtime, EnhancedTranscriptionReadiness.Ready) { failure }.transcribeExternal(id),
+            )
+            assertTrue(mapped.safeMessage.isNotBlank()); assertTrue(!mapped.safeMessage.contains(sentinel))
+        }
+        runtime.shutdown()
+    }
 
     // ================= Import =================
 

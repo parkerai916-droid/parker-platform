@@ -121,6 +121,8 @@ fun main(args: Array<String>) = runBlocking {
             saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
             retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
             listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
+            externalReadiness = runtime::ownerEnhancedTranscriptionReadiness,
+            invokeExternalTranscriptionAsOwner = runtime::invokeExternalTranscriptionAsOwner,
         )
         OwnerEvidenceHttpServer(
             bindAddress = config.ownerHttpBindAddress,

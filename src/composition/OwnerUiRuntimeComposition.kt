@@ -84,6 +84,8 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
         retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
         listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
+        externalReadiness = runtime::ownerEnhancedTranscriptionReadiness,
+        invokeExternalTranscriptionAsOwner = runtime::invokeExternalTranscriptionAsOwner,
     )
     return OwnerUiRuntimeSession(
         startRuntime = runtime::start,
