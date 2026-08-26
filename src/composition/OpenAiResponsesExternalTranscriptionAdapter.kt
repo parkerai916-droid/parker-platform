@@ -174,11 +174,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             requested, requested, returned, pages, TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
             OcrRecognitionIdentity("openai-responses", TRANSCRIPTION_PROFILE_ID, ADAPTER_VERSION),
             OcrProviderProvenance("OpenAI", "openai-responses-adapter", ADAPTER_VERSION, TRANSCRIPTION_PROFILE_ID, model, OcrModelSnapshot.NotExposed, responseId),
-            OcrProcessingProvenance(
-                request.sourceEvidenceArtifactId, request.sourceManifestSha256, request.mediaType, request.content.size.toLong(),
-                requested, requested, request.mediaType, request.content.size.toLong(), request.sourceManifestSha256,
-                true, "byte-exact-inline-v1", Instant.now(),
-            ), Instant.now(), result.requiredStringArray("warnings"),
+            request.processingProvenance, Instant.now(), result.requiredStringArray("warnings"),
         )
     }
 

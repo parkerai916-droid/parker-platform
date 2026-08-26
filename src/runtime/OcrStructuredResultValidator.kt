@@ -25,10 +25,14 @@ class OcrStructuredResultValidator {
         val submitted = candidate.submittedPageScope.pageNumbers.toSet()
         if (requested.isEmpty()) return rejected("Requested page scope is empty and cannot be reconciled")
         if (!requested.containsAll(submitted)) return rejected("Submitted page scope contains a page outside requested scope")
-        if (candidate.processingProvenance.requestedPageScope != candidate.requestedPageScope) {
+        if (candidate.processingProvenance.requestedPageScope != null &&
+            candidate.processingProvenance.requestedPageScope != candidate.requestedPageScope
+        ) {
             return rejected("Processing provenance requested page scope contradicts the candidate")
         }
-        if (candidate.processingProvenance.submittedPageScope != candidate.submittedPageScope) {
+        if (candidate.processingProvenance.submittedPageScope != null &&
+            candidate.processingProvenance.submittedPageScope != candidate.submittedPageScope
+        ) {
             return rejected("Processing provenance submitted page scope contradicts the candidate")
         }
 

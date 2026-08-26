@@ -2,17 +2,18 @@ package parker.core.interfaces
 
 /** Byte-exact, provider-neutral full-source request prepared after authorization and custody verification. */
 class ExternalTranscriptionRequest(
-    val sourceEvidenceArtifactId: EvidenceArtifactId,
-    content: ByteArray,
-    val mediaType: String,
-    val sourceManifestSha256: OcrSha256Digest,
+    val processingRepresentation: OcrProcessingRepresentation,
     val maximumPageCount: Int,
 ) {
-    val content: ByteArray = content.copyOf()
+    val sourceEvidenceArtifactId get() = processingRepresentation.processingProvenance.sourceEvidenceArtifactId
+    val mediaType get() = processingRepresentation.processingProvenance.representationMediaType
+    val sourceManifestSha256 get() = processingRepresentation.processingProvenance.sourceManifestSha256
+    val processingProvenance get() = processingRepresentation.processingProvenance
+    val content: ByteArray get() = processingRepresentation.bytes()
 
     init {
-        require(content.isNotEmpty()) { "ExternalTranscriptionRequest.content must not be empty" }
-        require(content.size.toLong() <= MAX_SOURCE_BYTES) { "External transcription source exceeds $MAX_SOURCE_BYTES bytes" }
+        require(processingRepresentation.byteLength >= 1) { "ExternalTranscriptionRequest.content must not be empty" }
+        require(processingRepresentation.byteLength <= MAX_SOURCE_BYTES) { "External transcription source exceeds $MAX_SOURCE_BYTES bytes" }
         require(mediaType == "application/pdf" || mediaType.startsWith("image/", ignoreCase = true)) {
             "ExternalTranscriptionRequest.mediaType must be PDF or image"
         }

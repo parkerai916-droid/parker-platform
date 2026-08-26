@@ -3,6 +3,8 @@ package parker.core.runtime
 import java.io.IOException
 import java.net.URI
 import java.net.http.HttpTimeoutException
+import java.security.MessageDigest
+import java.time.Instant
 import java.time.LocalDate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
@@ -14,7 +16,7 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     private val sentinel = "unit-h-fake-secret-sentinel"
     private val credential = OpenAiApiCredential.fromEnvironment(sentinel)!!
     private val evidenceId = EvidenceArtifactId("evidence-unit-h")
-    private val digest = OcrSha256Digest("a".repeat(64))
+    private val digest = sha256("source".toByteArray())
 
     private class FakeTransport(private val action: (OpenAiResponsesTransportRequest) -> OpenAiResponsesTransportResponse) : OpenAiResponsesTransport {
         var calls = 0
@@ -162,8 +164,22 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     private fun adapter(transport: OpenAiResponsesTransport, outputLimit: Long = 4096) =
         OpenAiResponsesExternalTranscriptionAdapter(ready(outputLimit = outputLimit), credential, transport)
 
-    private fun request(media: String = "application/pdf", bytes: ByteArray = "source".toByteArray()) =
-        ExternalTranscriptionRequest(evidenceId, bytes, media, digest, 200)
+    private fun request(media: String = "application/pdf", bytes: ByteArray = "source".toByteArray()): ExternalTranscriptionRequest {
+        val sourceDigest = sha256(bytes)
+        val representation = OcrProcessingRepresentation(
+            bytes,
+            OcrProcessingProvenance(
+                evidenceId, sourceDigest, media, bytes.size.toLong(), null, null,
+                media, bytes.size.toLong(), sourceDigest, true,
+                OcrProcessingRepresentationFactory.PROCESSING_PROFILE_IDENTITY, Instant.EPOCH,
+            ),
+        )
+        return ExternalTranscriptionRequest(representation, 200)
+    }
+
+    private fun sha256(bytes: ByteArray) = OcrSha256Digest(
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) },
+    )
 
     private fun ready(pdfLimit: Long = 1024 * 1024, outputLimit: Long = 4096) = OpenAiExternalTranscriptionReadiness.Ready(
         OpenAiExternalTranscriptionProviderProfile(

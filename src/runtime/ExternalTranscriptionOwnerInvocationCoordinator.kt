@@ -10,6 +10,7 @@ import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionRequest
 import parker.core.interfaces.OcrSha256Digest
+import parker.core.interfaces.OcrProcessingRepresentationOutcome
 import parker.core.interfaces.OcrStructuredValidationOutcome
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
@@ -22,6 +23,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
     private val evidenceCustodian: EvidenceCustodian,
     private val externalMechanism: ExternalTranscriptionMechanism,
     private val validator: OcrStructuredResultValidator,
+    private val representationFactory: OcrProcessingRepresentationFactory = OcrProcessingRepresentationFactory(),
 ) {
     suspend fun invoke(evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {
         val decision = permissionEngine.evaluate(
@@ -54,11 +56,18 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             mediaType == null || (mediaType != "application/pdf" && !mediaType.startsWith("image/", ignoreCase = true))
         ) return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
 
-        val request = ExternalTranscriptionRequest(
+        val representation = when (val outcome = representationFactory.create(
             sourceEvidenceArtifactId = evidenceArtifactId,
-            content = content,
-            mediaType = mediaType,
-            sourceManifestSha256 = OcrSha256Digest(manifest.sha256),
+            verifiedSourceBytes = content,
+            authoritativeManifestSha256 = OcrSha256Digest(manifest.sha256),
+            authoritativeSourceMediaType = mediaType,
+            authoritativeSourceByteLength = manifest.byteLength,
+        )) {
+            is OcrProcessingRepresentationOutcome.Created -> outcome.representation
+            else -> return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
+        }
+        val request = ExternalTranscriptionRequest(
+            processingRepresentation = representation,
             maximumPageCount = ExternalTranscriptionRequest.MAX_PAGE_COUNT,
         )
         val candidate = when (val mechanismOutcome = externalMechanism.transcribe(request)) {
