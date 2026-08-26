@@ -189,18 +189,20 @@ class OcrProgrammeVerificationTest {
     }
 
     @Test
-    fun `regression -- the OCR production surface is exactly the original three files plus the authorized Unit B contract`() {
+    fun `regression -- the OCR production surface is exactly the original files plus authorized Unit B and C contracts`() {
         val expectedFiles = setOf(
             "src/interfaces/OcrMechanism.kt",
             "src/interfaces/OcrTranscriptionProvenance.kt",
+            "src/interfaces/OcrStructuredTranscription.kt",
             "src/interfaces/OcrProviderAdapter.kt",
             "src/runtime/OcrExecutionSequencer.kt",
+            "src/runtime/OcrStructuredResultValidator.kt",
         )
         val actualFiles = listOf(java.io.File("src/interfaces"), java.io.File("src/runtime"))
             .flatMap { dir -> dir.walkTopDown().filter { it.isFile && it.extension == "kt" && it.name.startsWith("Ocr") } }
             .map { it.path.replace('\\', '/') }
             .toSet()
 
-        assertEquals(expectedFiles, actualFiles, "the OCR mechanism's production surface must remain exactly the original three files plus Unit B's provider-neutral contract -- no runtime-composition or concrete provider file may appear")
+        assertEquals(expectedFiles, actualFiles, "the OCR production surface must remain exactly the original files plus the authorized provider-neutral Unit B/C contracts and pure validator -- no composition or concrete provider file may appear")
     }
 }
