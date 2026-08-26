@@ -79,7 +79,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
 
         val outcome = coordinator(permission, custodian, mechanism).invoke(evidenceId)
 
-        assertIs<ExternalTranscriptionOwnerInvocationOutcome.Validated>(outcome)
+        assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(outcome)
         assertEquals(listOf("authorize", "source", "manifest", "mechanism"), events)
         assertEquals(listOf(evidenceId, evidenceId), custodian.ids)
         assertEquals(1, mechanism.calls)
@@ -143,12 +143,18 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
 
     @Test
     fun `missing page is made explicit and partial output does not retry`() = runTest {
-        val partial = candidate().copy(pages = emptyList(), declaredReturnedPageScope = OcrPageScope(emptyList()))
+        val scope = OcrPageScope(listOf(1, 2))
+        val partial = candidate().copy(
+            requestedPageScope = scope,
+            submittedPageScope = scope,
+            declaredReturnedPageScope = OcrPageScope(listOf(1)),
+            processingProvenance = candidate().processingProvenance.copy(requestedPageScope = scope, submittedPageScope = scope),
+        )
         val mechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(partial) }
-        val outcome = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Validated>(
+        val outcome = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(
             coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), mechanism).invoke(evidenceId),
         )
-        assertEquals(OcrPageOutcomeKind.NOT_RETURNED, outcome.validation.pageAccounting.pageOutcomes.single().outcome)
+        assertEquals(OcrPageOutcomeKind.NOT_RETURNED, outcome.extracted.pageAccounting!!.pageOutcomes.last().outcome)
         assertEquals(1, mechanism.calls)
     }
 
@@ -161,7 +167,28 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
     }
 
     private fun coordinator(permission: PermissionEngine, custodian: EvidenceCustodian, mechanism: ExternalTranscriptionMechanism) =
-        ExternalTranscriptionOwnerInvocationCoordinator(owner, permission, custodian, mechanism, OcrStructuredResultValidator())
+        ExternalTranscriptionOwnerInvocationCoordinator(owner, permission, custodian, mechanism, OcrStructuredResultValidator(), admission(), correlationFactory = { "correlation-unit-j" })
+
+    private fun admission() = ValidatedExternalTranscriptionAdmission { id, validation, _, _ ->
+        val triple = when (val outcome = validation.outcome) {
+            is OcrRecognitionOutcome.Recognised -> Triple(outcome.result, OcrDerivativeOutcomeKind.RECOGNISED, null as String?)
+            is OcrRecognitionOutcome.PartialOrDegradedOutput -> Triple(outcome.partialResult, OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED, outcome.reason)
+            else -> error("test validation was not admissible")
+        }
+        val (result, kind, reason) = triple
+        val producer = DerivativeProducerIdentity("external", "1.0.0", "literal-v1", "adapter", "1.0.0", "model", "model")
+        val extracted = OcrDerivativeExtractedResult(
+            result.recognisedText, result.fidelity, kind, reason, result.warnings, result.segments, producer,
+            listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE), validation.completenessState,
+            validation.pageAccounting, result.processingProvenance, result.providerProvenance, result.recognisedAt,
+        )
+        val record = DerivativeGenerationRecord(
+            DerivativeGenerationId("generation-unit-j"), id, listOf(DerivativeParentReference.RootEvidenceArtifact(id)),
+            "External transcription recognised text", producer, extracted.transformationHistory, result.recognisedAt,
+            DerivativeContentIdentity.NoCanonicalSerialization, validation.completenessState, DerivativeOperationalOutcome.USABLE,
+        )
+        OcrDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+    }
 
     private fun manifest(sha: String = digest, byteLength: Long = bytes.size.toLong(), media: String? = "application/pdf") =
         EvidenceSourceManifest(evidenceId, sha, byteLength, media)

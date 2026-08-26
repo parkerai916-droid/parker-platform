@@ -1,5 +1,9 @@
 package parker.core.runtime
 
+import parker.core.interfaces.OcrStructuredValidationOutcome
+import parker.core.interfaces.OcrRecognitionOutcome
+import parker.core.interfaces.OcrModelSnapshot
+
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
@@ -148,6 +152,15 @@ sealed class OcrDerivativeGenerationCoordinationOutcome {
     data class AdmittedAuditFailed(val record: DerivativeGenerationRecord, val extracted: OcrDerivativeExtractedResult, val reason: String) : OcrDerivativeGenerationCoordinationOutcome()
 }
 
+fun interface ValidatedExternalTranscriptionAdmission {
+    suspend fun admit(
+        evidenceArtifactId: EvidenceArtifactId,
+        validation: OcrStructuredValidationOutcome.Validated,
+        requestingPrincipalId: PrincipalId,
+        correlationValue: String,
+    ): OcrDerivativeGenerationCoordinationOutcome
+}
+
 class DerivativeGenerationCoordinator(
     private val csvExtractor: CsvStructuralExtractor,
     private val storage: DerivativeGenerationStorage,
@@ -165,7 +178,7 @@ class DerivativeGenerationCoordinator(
     // persistence in view keeps compiling unchanged; the real production composition always
     // supplies a real instance (TierADocumentIngestionComposition.create).
     private val contentStorage: DerivativeContentStorage? = null,
-) {
+) : ValidatedExternalTranscriptionAdmission {
     /**
      * Publishes [payload]'s own durable content representation for [id],
      * strictly before [id]'s [DerivativeGenerationRecord] is ever prepared
@@ -466,6 +479,81 @@ class DerivativeGenerationCoordinator(
         } catch (e: DocumentIngestionAuditException) {
             return OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty())
         }
+        return OcrDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+    }
+
+    /** Admits only a Unit C validated external result carrying complete Unit B/I provenance. */
+    override suspend fun admit(
+        evidenceArtifactId: EvidenceArtifactId,
+        validation: OcrStructuredValidationOutcome.Validated,
+        requestingPrincipalId: PrincipalId,
+        correlationValue: String,
+    ): OcrDerivativeGenerationCoordinationOutcome {
+        require(correlationValue.isNotBlank())
+        val resultAndKind = when (val outcome = validation.outcome) {
+            is OcrRecognitionOutcome.Recognised -> Triple(outcome.result, OcrDerivativeOutcomeKind.RECOGNISED, null as String?)
+            is OcrRecognitionOutcome.PartialOrDegradedOutput -> Triple(outcome.partialResult, OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED, outcome.reason)
+            else -> return OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable("Validated external result is not durably admissible")
+        }
+        val (result, outcomeKind, degradationReason) = resultAndKind
+        val processing = result.processingProvenance
+            ?: return OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable("Processing provenance is mandatory")
+        val provider = result.providerProvenance
+            ?: return OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable("Provider provenance is mandatory")
+        val accounting = result.pageAccounting
+            ?: return OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable("Page accounting is mandatory")
+        val requested = accounting.requestedScope.pageNumbers.toSet()
+        val submitted = accounting.submittedScope.pageNumbers.toSet()
+        val returned = accounting.returnedScope.pageNumbers.toSet()
+        val outcomePages = accounting.pageOutcomes.map { it.pageNumber }
+        if (processing.sourceEvidenceArtifactId != evidenceArtifactId || accounting != validation.pageAccounting ||
+            requested.isEmpty() || !requested.containsAll(submitted) || !submitted.containsAll(returned) ||
+            outcomePages.size != outcomePages.toSet().size || outcomePages.toSet() != requested ||
+            accounting.pageOutcomes.any { page -> page.uncertaintySpans.any { it.pageNumber != page.pageNumber } } ||
+            processing.requestedPageScope?.let { it != accounting.requestedScope } == true ||
+            processing.submittedPageScope?.let { it != accounting.submittedScope } == true ||
+            processing.byteExactCopy && (processing.materialTransformation != null ||
+                processing.sourceManifestSha256 != processing.representationSha256 ||
+                processing.sourceByteLength != processing.representationByteLength ||
+                processing.sourceMediaType != processing.representationMediaType) ||
+            provider.providerReportedModelIdentifier.isBlank() || provider.providerCorrelationIdentifier.isBlank()
+        ) return OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable("Validated external provenance contradicts mandatory admission facts")
+
+        val producer = DerivativeProducerIdentity(
+            pluginIdentity = result.identity.mechanismIdentity,
+            pluginVersion = requireNotNull(result.identity.mechanismVersion),
+            configurationIdentity = result.identity.configurationProfile,
+            adapterIdentity = provider.adapterIdentity,
+            adapterVersion = provider.adapterVersion,
+            modelIdentity = provider.providerReportedModelIdentifier,
+            modelVersion = (provider.modelSnapshot as? OcrModelSnapshot.Present)?.value,
+        )
+        val transformations = listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE)
+        val extracted = OcrDerivativeExtractedResult(
+            result.recognisedText, result.fidelity, outcomeKind, degradationReason, result.warnings, result.segments,
+            producer, transformations, validation.completenessState, accounting, processing, provider, result.recognisedAt,
+        )
+        val id = idFactory()
+        val recordWarnings = if (degradationReason == null) result.warnings else result.warnings + degradationReason
+        val record = DerivativeGenerationRecord(
+            id, evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(evidenceArtifactId)),
+            "External transcription recognised text", producer, transformations, result.recognisedAt,
+            DerivativeContentIdentity.NoCanonicalSerialization, validation.completenessState,
+            DerivativeOperationalOutcome.USABLE, recordWarnings,
+        )
+        publishContentFirst(id, evidenceArtifactId, TierADerivativePayload.Ocr(extracted))?.let {
+            return OcrDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
+        }
+        try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) {
+            return OcrDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try { audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED)) }
+        catch (e: DocumentIngestionAuditException) { return OcrDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { storage.publishPrepared(id) } catch (e: DerivativeGenerationStorageException) {
+            return OcrDerivativeGenerationCoordinationOutcome.PublicationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try { audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
+        catch (e: DocumentIngestionAuditException) { return OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
         return OcrDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
     }
 

@@ -15,6 +15,7 @@ import parker.core.interfaces.OcrStructuredValidationOutcome
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
+import java.util.UUID
 
 /** Owner-bound authorization, custody verification, one external invocation, and pure validation. */
 class ExternalTranscriptionOwnerInvocationCoordinator(
@@ -23,7 +24,9 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
     private val evidenceCustodian: EvidenceCustodian,
     private val externalMechanism: ExternalTranscriptionMechanism,
     private val validator: OcrStructuredResultValidator,
+    private val durableAdmission: ValidatedExternalTranscriptionAdmission,
     private val representationFactory: OcrProcessingRepresentationFactory = OcrProcessingRepresentationFactory(),
+    private val correlationFactory: () -> String = { UUID.randomUUID().toString() },
 ) {
     suspend fun invoke(evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {
         val decision = permissionEngine.evaluate(
@@ -86,8 +89,16 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         ) return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Candidate provenance contradicts the verified source representation")
 
         return when (val validated = validator.validate(candidate)) {
-            is OcrStructuredValidationOutcome.Validated ->
-                ExternalTranscriptionOwnerInvocationOutcome.Validated(evidenceArtifactId, validated)
+            is OcrStructuredValidationOutcome.Validated -> when (val admission = durableAdmission.admit(
+                evidenceArtifactId, validated, ownerPrincipalId, correlationFactory(),
+            )) {
+                is OcrDerivativeGenerationCoordinationOutcome.Admitted -> ExternalTranscriptionOwnerInvocationOutcome.Admitted(evidenceArtifactId, admission.record, admission.extracted)
+                is OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed -> ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired(evidenceArtifactId, admission.record, admission.extracted, admission.reason)
+                is OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+                is OcrDerivativeGenerationCoordinationOutcome.PreparationFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+                is OcrDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+                is OcrDerivativeGenerationCoordinationOutcome.PublicationFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+            }
             is OcrStructuredValidationOutcome.Rejected ->
                 ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(validated.outcome.reason)
         }

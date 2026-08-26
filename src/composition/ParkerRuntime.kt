@@ -995,14 +995,6 @@ class ParkerRuntime(
         )
         evidenceCustodian = defaultEvidenceCustodian
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
-        externalTranscriptionOwnerInvocationCoordinator = ExternalTranscriptionOwnerInvocationCoordinator(
-            ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
-            permissionEngine = permissionEngine,
-            evidenceCustodian = defaultEvidenceCustodian,
-            externalMechanism = DisabledExternalTranscriptionMechanism,
-            validator = OcrStructuredResultValidator(),
-        )
-
         // Document Ingestion, Derivative-to-Memory-Core Registration. Depends on memoryCore and
         // permissionEngine only -- never evidenceCustodian, never DerivativeGenerationStorage,
         // never either existing Document Ingestion owner-invocation coordinator (Scope Lock
@@ -1381,6 +1373,16 @@ class ParkerRuntime(
             storage = derivativeGenerationStorage,
             audit = documentIngestionAudit,
             contentStorage = derivativeContentStorage,
+        )
+        // Unit J durable admission is composed while the provider mechanism remains deliberately
+        // disabled. A successful future external invocation can only return after v2 publication.
+        externalTranscriptionOwnerInvocationCoordinator = ExternalTranscriptionOwnerInvocationCoordinator(
+            ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+            permissionEngine = permissionEngine,
+            evidenceCustodian = defaultEvidenceCustodian,
+            externalMechanism = DisabledExternalTranscriptionMechanism,
+            validator = OcrStructuredResultValidator(),
+            durableAdmission = tierBDerivativeGenerationCoordinator,
         )
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,

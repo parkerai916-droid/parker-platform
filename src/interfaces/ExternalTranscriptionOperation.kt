@@ -38,9 +38,10 @@ sealed interface ExternalTranscriptionMechanismOutcome {
 }
 
 sealed interface ExternalTranscriptionOwnerInvocationOutcome {
-    data class Validated(
+    data class Admitted(
         val evidenceArtifactId: EvidenceArtifactId,
-        val validation: OcrStructuredValidationOutcome.Validated,
+        val record: DerivativeGenerationRecord,
+        val extracted: OcrDerivativeExtractedResult,
     ) : ExternalTranscriptionOwnerInvocationOutcome
     data object NotAuthorised : ExternalTranscriptionOwnerInvocationOutcome
     data class SourceNotFound(val evidenceArtifactId: EvidenceArtifactId) : ExternalTranscriptionOwnerInvocationOutcome
@@ -52,4 +53,11 @@ sealed interface ExternalTranscriptionOwnerInvocationOutcome {
     data class UnsupportedOrOutOfBounds(val evidenceArtifactId: EvidenceArtifactId) : ExternalTranscriptionOwnerInvocationOutcome
     data class MechanismFailure(val reason: String) : ExternalTranscriptionOwnerInvocationOutcome
     data class ValidationRejected(val reason: String) : ExternalTranscriptionOwnerInvocationOutcome
+    data class AdmissionFailed(val reason: String) : ExternalTranscriptionOwnerInvocationOutcome
+    data class ReconciliationRequired(
+        val evidenceArtifactId: EvidenceArtifactId,
+        val record: DerivativeGenerationRecord,
+        val extracted: OcrDerivativeExtractedResult,
+        val reason: String,
+    ) : ExternalTranscriptionOwnerInvocationOutcome
 }

@@ -58,6 +58,9 @@ class TierBOcrContentRetrievalCoordinator(
             return TierBOcrContentRetrievalOutcome.UnsupportedRepresentationVersion(derivativeGenerationId, e.version)
         }
         entry ?: return TierBOcrContentRetrievalOutcome.ContentMissing(derivativeGenerationId)
+        if (entry.rootSourceEvidenceArtifactId != evidenceArtifactId) {
+            return TierBOcrContentRetrievalOutcome.SourceMismatch(evidenceArtifactId, derivativeGenerationId)
+        }
 
         val extracted: OcrDerivativeExtractedResult = when (val payload = entry.payload) {
             is TierADerivativePayload.Ocr -> payload.value

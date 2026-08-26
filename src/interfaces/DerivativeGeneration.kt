@@ -37,8 +37,8 @@ data class DerivativeProducerIdentity(
         require(adapterVersion == null || adapterVersion.isNotBlank()) {
             "DerivativeProducerIdentity.adapterVersion must not be blank when present"
         }
-        require((modelIdentity == null) == (modelVersion == null)) {
-            "DerivativeProducerIdentity model identity and version must either both be present or both be absent"
+        require(modelVersion == null || modelIdentity != null) {
+            "DerivativeProducerIdentity model version requires a model identity"
         }
         require(modelIdentity == null || modelIdentity.isNotBlank()) {
             "DerivativeProducerIdentity.modelIdentity must not be blank when present"
