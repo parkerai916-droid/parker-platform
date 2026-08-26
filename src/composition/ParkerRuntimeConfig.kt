@@ -282,6 +282,7 @@ data class ParkerRuntimeConfig(
     val ownerHttpToken: String? = null,
     val openAiExternalTranscriptionEnabled: Boolean = false,
     val openAiExternalTranscriptionProviderProfilePath: String? = null,
+    val openAiApiCredential: OpenAiApiCredential? = null,
 )
 
 /**
@@ -332,6 +333,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OWNER_HTTP_TOKEN = "PARKER_OWNER_HTTP_TOKEN"
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED"
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH"
+    const val KEY_OPENAI_API_KEY = "PARKER_OPENAI_API_KEY"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -486,6 +488,7 @@ object ParkerRuntimeConfigLoader {
             openAiExternalTranscriptionEnabled = externalTranscriptionEnabled,
             openAiExternalTranscriptionProviderProfilePath =
                 environment[KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH]?.takeIf { it.isNotBlank() },
+            openAiApiCredential = OpenAiApiCredential.fromEnvironment(environment[KEY_OPENAI_API_KEY]),
         )
     }
 

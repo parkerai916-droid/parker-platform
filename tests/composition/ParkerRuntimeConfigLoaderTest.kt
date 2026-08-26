@@ -550,4 +550,27 @@ class ParkerRuntimeConfigLoaderTest {
         }
         assertEquals(ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED, thrown.key)
     }
+
+    @Test
+    fun `OpenAI credential is missing for absent empty or whitespace environment values`() {
+        listOf<String?>(null, "", "   ").forEach { value ->
+            val config = ParkerRuntimeConfigLoader.load(
+                fullEnvironment(mapOf(ParkerRuntimeConfigLoader.KEY_OPENAI_API_KEY to value)),
+            )
+            assertEquals(null, config.openAiApiCredential)
+        }
+    }
+
+    @Test
+    fun `fake OpenAI credential loads only into the non-printing wrapper`() {
+        val sentinel = "unit-g-fake-secret-sentinel"
+        val config = ParkerRuntimeConfigLoader.load(
+            fullEnvironment(mapOf(ParkerRuntimeConfigLoader.KEY_OPENAI_API_KEY to sentinel)),
+        )
+
+        assertTrue(config.openAiApiCredential != null)
+        assertTrue(!config.toString().contains(sentinel))
+        assertTrue(!config.openAiApiCredential.toString().contains(sentinel))
+        assertEquals(sentinel, config.openAiApiCredential?.useValue { it })
+    }
 }

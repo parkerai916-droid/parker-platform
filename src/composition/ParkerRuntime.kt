@@ -267,6 +267,9 @@ class ParkerRuntime(
     var openAiExternalTranscriptionReadiness: OpenAiExternalTranscriptionReadiness =
         OpenAiExternalTranscriptionReadiness.Disabled
         private set
+    var openAiExternalTranscriptionBackendReadiness: OpenAiExternalTranscriptionBackendReadiness =
+        OpenAiExternalTranscriptionBackendReadiness.Disabled
+        private set
 
     private lateinit var reasoningContextAssembler: ReasoningContextAssembler
     private lateinit var conversationEngine: ConversationEngine
@@ -475,6 +478,10 @@ class ParkerRuntime(
                     config.openAiExternalTranscriptionProviderProfilePath,
                 )
         }
+        openAiExternalTranscriptionBackendReadiness = externalTranscriptionBackendReadiness(
+            openAiExternalTranscriptionReadiness,
+            config.openAiApiCredential,
+        )
         val resourceRegistry = InMemoryResourceRegistry()
         val vocabulary = InMemoryActionVocabulary()
         val actionMapper = ActionMapper(vocabulary)

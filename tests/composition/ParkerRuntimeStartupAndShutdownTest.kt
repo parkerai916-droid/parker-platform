@@ -29,7 +29,10 @@ class ParkerRuntimeStartupAndShutdownTest {
     // This file exercises lifecycle state only -- it never calls submitEvidence/retrieveEvidence/
     // deleteEvidenceAsOwner, so these two paths are real, writable, unused locations, not exercised
     // by any test below.
-    private fun config(localTextChannelModuleId: String = "channel.local-text-lifecycle-test") = ParkerRuntimeConfig(
+    private fun config(
+        localTextChannelModuleId: String = "channel.local-text-lifecycle-test",
+        openAiApiCredential: OpenAiApiCredential? = null,
+    ) = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by these tests
         modelName = "test-model",
         ownerPrincipalId = "user.owner-lifecycle-test",
@@ -44,6 +47,7 @@ class ParkerRuntimeStartupAndShutdownTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("unused-memory-core").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
+        openAiApiCredential = openAiApiCredential,
     )
 
     @Test
@@ -195,6 +199,22 @@ class ParkerRuntimeStartupAndShutdownTest {
 
         assertTrue(mechanismType.contains("DisabledExternalTranscriptionMechanism"))
         assertTrue(!mechanismType.contains("Http") && !mechanismType.contains("OpenAI"))
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `disabled startup never logs a supplied fake OpenAI credential`() = runTest {
+        val sentinel = "unit-g-fake-secret-sentinel"
+        val logger = RecordingParkerLogger()
+        val runtime = ParkerRuntime(config(openAiApiCredential = OpenAiApiCredential.fromEnvironment(sentinel)), logger)
+
+        runtime.start()
+
+        assertIs<OpenAiExternalTranscriptionBackendReadiness.Disabled>(runtime.openAiExternalTranscriptionBackendReadiness)
+        assertTrue(logger.messages(LogLevel.DEBUG).none { it.contains(sentinel) })
+        assertTrue(logger.messages(LogLevel.INFO).none { it.contains(sentinel) })
+        assertTrue(logger.messages(LogLevel.WARN).none { it.contains(sentinel) })
+        assertTrue(logger.messages(LogLevel.ERROR).none { it.contains(sentinel) })
         runtime.shutdown()
     }
 
