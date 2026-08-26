@@ -104,7 +104,7 @@ sourceSets {
 // repository verification remains offline and deterministic.
 val liveModelEvaluation by sourceSets.creating {
     kotlin.srcDir("tests/integration")
-    compileClasspath += sourceSets.main.get().output
+    compileClasspath += sourceSets.main.get().output + sourceSets.test.get().output
     runtimeClasspath += output + compileClasspath
 }
 
@@ -121,6 +121,23 @@ tasks.register<Test>("reasoningProtocolLiveModelEvaluation") {
     testClassesDirs = liveModelEvaluation.output.classesDirs
     classpath = liveModelEvaluation.runtimeClasspath
     useJUnitPlatform()
+    shouldRunAfter(tasks.test)
+}
+
+// Unit N — explicitly opt-in, one-request synthetic OpenAI acceptance. This remains in the
+// detached liveModelEvaluation source set and is never attached to test/check/build or the Unit M
+// offline gate. The test itself requires a second explicit system-property gate and fails before
+// transport construction when profile, credential, or result-path prerequisites are absent.
+tasks.register<Test>("externalTranscriptionLiveAcceptance") {
+    description = "Runs the one-request synthetic external-transcription live acceptance instrument"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.core.runtime.ExternalTranscriptionLiveAcceptanceTest")
+    }
+    systemProperty("parker.externalTranscription.live.enabled", "true")
     shouldRunAfter(tasks.test)
 }
 
