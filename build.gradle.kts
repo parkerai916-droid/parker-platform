@@ -141,6 +141,22 @@ tasks.register<Test>("externalTranscriptionLiveAcceptance") {
     shouldRunAfter(tasks.test)
 }
 
+// Unit O.2 — detached, offline, synthetic-only acceptance-method verification. This task is not
+// attached to test/check/build and carries no live opt-in, credential, network transport, or real
+// Parker storage configuration. It freezes the Unit O worksheet and decision semantics before
+// owner document selection.
+tasks.register<Test>("unitOOfflineAcceptanceVerification") {
+    description = "Runs the detached synthetic Unit O acceptance-method verification"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.core.runtime.UnitOOfflineAcceptanceInstrumentTest")
+    }
+    shouldRunAfter(tasks.test)
+}
+
 tasks.register<Test>("reasoningProtocolBaselineCharacterisation") {
     description = "Runs the explicit opt-in Reasoning Protocol Unit 2 baseline characterisation instrument"
     group = "verification"
