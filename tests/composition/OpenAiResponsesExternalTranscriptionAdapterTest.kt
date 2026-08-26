@@ -133,6 +133,34 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     }
 
     @Test
+    fun `safe fingerprint exposes class names and category only, never sentinel-bearing messages`() = runTest {
+        val messageSentinel = "SOURCE_SECRET_SENTINEL/API_KEY_SENTINEL/TRANSCRIPT_SECRET_SENTINEL"
+        val wrapped = CompletionException(IllegalArgumentException(messageSentinel))
+        val fingerprint = fingerprintOpenAiTransportFailure(wrapped)
+
+        assertEquals("CompletionException", fingerprint.topLevelThrowable)
+        assertEquals("IllegalArgumentException", fingerprint.firstNonWrapperCause)
+        assertEquals("PROVIDER_TRANSPORT_FAILURE", fingerprint.category)
+        assertEquals(
+            "TRANSPORT_THROWABLE=CompletionException ROOT_CAUSE=IllegalArgumentException CATEGORY=PROVIDER_TRANSPORT_FAILURE",
+            fingerprint.render(),
+        )
+        assertTrue(messageSentinel !in fingerprint.toString())
+        assertTrue(messageSentinel !in fingerprint.render())
+
+        var observed: OpenAiTransportFailureFingerprint? = null
+        val transport = FakeTransport { throw wrapped }
+        val outcome = OpenAiResponsesExternalTranscriptionAdapter(
+            ready(), credential, transport,
+            transportFailureObserver = { observed = it },
+        ).transcribe(request())
+        assertEquals("PROVIDER_TRANSPORT_FAILURE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals(fingerprint, observed)
+        assertEquals(1, transport.calls)
+        assertTrue(messageSentinel !in outcome.toString())
+    }
+
+    @Test
     fun `cancellation propagates and never retries`() = runTest {
         val transport = object : OpenAiResponsesTransport {
             var calls = 0

@@ -1,6 +1,7 @@
 package parker.core.runtime
 
 import java.io.IOException
+import java.io.UncheckedIOException
 import java.net.URI
 import java.net.ConnectException
 import java.net.UnknownHostException
@@ -13,6 +14,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.CompletionException
+import java.util.concurrent.ExecutionException
 import javax.net.ssl.SSLException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import parker.composition.OpenAiApiCredential
@@ -86,6 +88,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     private val credential: OpenAiApiCredential,
     private val transport: OpenAiResponsesTransport,
     private val maximumEncodedRequestBytes: Long = MAXIMUM_ENCODED_REQUEST_BYTES,
+    private val transportFailureObserver: (OpenAiTransportFailureFingerprint) -> Unit = {},
 ) : ExternalTranscriptionMechanism {
     private val profile = readiness.profile
     private val limits = readiness.effectiveLimits
@@ -110,7 +113,9 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         } catch (_: kotlinx.coroutines.CancellationException) {
             throw kotlinx.coroutines.CancellationException("OpenAI transcription cancelled")
         } catch (e: Exception) {
-            return failure(classifyOpenAiTransportFailure(e))
+            val fingerprint = fingerprintOpenAiTransportFailure(e)
+            runCatching { transportFailureObserver(fingerprint) }
+            return failure(fingerprint.category)
         }
         if (response.body.size.toLong() > limits.maximumOutputBytes) return failure("RESPONSE_TOO_LARGE")
         when (response.statusCode) {
@@ -198,7 +203,30 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
  * bounded cause chain is inspected because JDK HttpClient commonly wraps the useful network cause
  * in CompletionException/IOException layers.
  */
-internal fun classifyOpenAiTransportFailure(error: Throwable): String {
+internal data class OpenAiTransportFailureFingerprint(
+    val topLevelThrowable: String,
+    val firstNonWrapperCause: String,
+    val category: String,
+) {
+    fun render(): String = "TRANSPORT_THROWABLE=$topLevelThrowable ROOT_CAUSE=$firstNonWrapperCause CATEGORY=$category"
+}
+
+internal fun fingerprintOpenAiTransportFailure(error: Throwable): OpenAiTransportFailureFingerprint {
+    val causes = boundedCauseChain(error)
+    val firstNonWrapper = causes.firstOrNull {
+        it !is CompletionException && it !is ExecutionException && it !is UncheckedIOException
+    } ?: causes.last()
+    return OpenAiTransportFailureFingerprint(
+        topLevelThrowable = safeThrowableClassName(error),
+        firstNonWrapperCause = safeThrowableClassName(firstNonWrapper),
+        category = classifyOpenAiTransportFailure(causes),
+    )
+}
+
+internal fun classifyOpenAiTransportFailure(error: Throwable): String =
+    classifyOpenAiTransportFailure(boundedCauseChain(error))
+
+private fun boundedCauseChain(error: Throwable): List<Throwable> {
     val causes = mutableListOf<Throwable>()
     val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
     var current: Throwable? = error
@@ -206,7 +234,10 @@ internal fun classifyOpenAiTransportFailure(error: Throwable): String {
         causes += current
         current = current.cause
     }
-    return when {
+    return causes
+}
+
+private fun classifyOpenAiTransportFailure(causes: List<Throwable>): String = when {
         causes.any { it is HttpConnectTimeoutException } -> "PROVIDER_CONNECT_TIMEOUT"
         causes.any { it is HttpTimeoutException } -> "PROVIDER_REQUEST_TIMEOUT"
         causes.any { it is SSLException } -> "PROVIDER_TLS_FAILURE"
@@ -215,8 +246,11 @@ internal fun classifyOpenAiTransportFailure(error: Throwable): String {
         causes.any { it is InterruptedException } -> "PROVIDER_INTERRUPTED"
         causes.any { it is IOException } -> "PROVIDER_IO_FAILURE"
         else -> "PROVIDER_TRANSPORT_FAILURE"
-    }
 }
+
+private fun safeThrowableClassName(error: Throwable): String =
+    error::class.simpleName.orEmpty().takeIf { it.length in 1..128 && it.all { c -> c.isLetterOrDigit() || c == '_' || c == '$' } }
+        ?: "UnknownThrowable"
 
 private fun jsonEscape(value: String): String = buildString(value.length) {
     value.forEach { c -> when (c) { '\\' -> append("\\\\"); '"' -> append("\\\""); '\n' -> append("\\n"); '\r' -> append("\\r"); '\t' -> append("\\t"); else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c) } }

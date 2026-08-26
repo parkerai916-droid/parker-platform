@@ -6,7 +6,12 @@ import parker.core.interfaces.ExternalTranscriptionMechanism
 
 /** Test-only friend bridge: keeps every Unit H transport/credential type internal to main. */
 object OpenAiLiveAcceptanceBridge {
-    data class State(var calls: Int = 0, var storeFalse: Boolean = false, var approvedEndpoint: Boolean = false)
+    data class State(
+        var calls: Int = 0,
+        var storeFalse: Boolean = false,
+        var approvedEndpoint: Boolean = false,
+        var failureFingerprint: String? = null,
+    )
     data class Handle(val mechanism: ExternalTranscriptionMechanism, val state: State)
 
     fun create(
@@ -29,6 +34,12 @@ object OpenAiLiveAcceptanceBridge {
                 .forEach { check(!request.body.contains(it, ignoreCase = true)) { "forbidden request capability" } }
             delegate.execute(request)
         }
-        return Handle(OpenAiResponsesExternalTranscriptionAdapter(readiness, credential, transport), state)
+        return Handle(
+            OpenAiResponsesExternalTranscriptionAdapter(
+                readiness, credential, transport,
+                transportFailureObserver = { state.failureFingerprint = it.render() },
+            ),
+            state,
+        )
     }
 }
