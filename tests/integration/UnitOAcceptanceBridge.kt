@@ -32,6 +32,60 @@ data class UnitOBoundedMetadata(
     val eligible: Boolean,
 )
 
+enum class UnitOMetadataEligibility {
+    ELIGIBLE, NOT_SELECTED, MANIFEST_MISSING, IDENTITY_MISMATCH, MEDIA_TYPE_NOT_PDF,
+    ZERO_LENGTH, INVALID_SHA256, OVER_PARKER_LIMIT, OVER_PROVIDER_LIMIT,
+}
+
+data class UnitOAuthoritativeManifestFacts(
+    val evidenceArtifactId: EvidenceArtifactId,
+    val sha256: String,
+    val byteLength: Long,
+    val declaredMediaType: String?,
+)
+
+/** Acceptance-only, exact-ID reader. It has no listing, byte, write, or delete capability. */
+fun interface UnitOManifestMetadataReader {
+    suspend fun read(evidenceArtifactId: EvidenceArtifactId): UnitOAuthoritativeManifestFacts?
+}
+
+data class UnitOMetadataPreflight(
+    val requestedEvidenceArtifactId: EvidenceArtifactId,
+    val metadata: UnitOAuthoritativeManifestFacts?,
+    val eligibility: UnitOMetadataEligibility,
+) {
+    val eligible: Boolean get() = eligibility == UnitOMetadataEligibility.ELIGIBLE
+    fun safeDiagnostic(): String = "EVIDENCE_ID=${requestedEvidenceArtifactId.value} ELIGIBILITY=$eligibility"
+}
+
+class UnitOAuthoritativeMetadataBridge(
+    selectedEvidenceArtifactIds: Set<EvidenceArtifactId>,
+    private val reader: UnitOManifestMetadataReader,
+    private val parkerMaximumBytes: Long = 64L * 1024L * 1024L,
+    private val providerMaximumPdfBytes: Long,
+) {
+    private val selected = selectedEvidenceArtifactIds.toSet()
+    init {
+        require(selected.isNotEmpty())
+        require(parkerMaximumBytes > 0 && providerMaximumPdfBytes > 0)
+    }
+    suspend fun preflight(id: EvidenceArtifactId): UnitOMetadataPreflight {
+        if (id !in selected) return UnitOMetadataPreflight(id, null, UnitOMetadataEligibility.NOT_SELECTED)
+        val manifest = reader.read(id)
+            ?: return UnitOMetadataPreflight(id, null, UnitOMetadataEligibility.MANIFEST_MISSING)
+        val eligibility = when {
+            manifest.evidenceArtifactId != id -> UnitOMetadataEligibility.IDENTITY_MISMATCH
+            manifest.declaredMediaType != "application/pdf" -> UnitOMetadataEligibility.MEDIA_TYPE_NOT_PDF
+            manifest.byteLength == 0L -> UnitOMetadataEligibility.ZERO_LENGTH
+            !manifest.sha256.matches(Regex("^[0-9a-f]{64}$")) -> UnitOMetadataEligibility.INVALID_SHA256
+            manifest.byteLength > parkerMaximumBytes -> UnitOMetadataEligibility.OVER_PARKER_LIMIT
+            manifest.byteLength > providerMaximumPdfBytes -> UnitOMetadataEligibility.OVER_PROVIDER_LIMIT
+            else -> UnitOMetadataEligibility.ELIGIBLE
+        }
+        return UnitOMetadataPreflight(id, manifest, eligibility)
+    }
+}
+
 /** Acceptance-only metadata bridge. It deliberately has no method capable of returning bytes. */
 class UnitOAcceptanceBridge(
     fixtures: List<UnitOSyntheticEvidence>,

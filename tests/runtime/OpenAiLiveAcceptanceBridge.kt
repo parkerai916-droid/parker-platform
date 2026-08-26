@@ -9,6 +9,10 @@ import parker.core.interfaces.ExternalTranscriptionMechanism
 
 /** Test-only friend bridge: keeps every Unit H transport/credential type internal to main. */
 object OpenAiLiveAcceptanceBridge {
+    /** Bounded test-only credential predicate; the supplied value is never retained or rendered. */
+    fun credentialStructurallyReady(value: String?): Boolean =
+        OpenAiApiCredential.fromEnvironment(value) != null
+
     fun preflightProblems(
         environment: Map<String, String>,
         liveEnabled: Boolean,

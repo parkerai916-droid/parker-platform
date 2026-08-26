@@ -153,7 +153,21 @@ tasks.register<Test>("unitOOfflineAcceptanceVerification") {
     useJUnitPlatform()
     filter {
         includeTestsMatching("parker.core.runtime.UnitOOfflineAcceptanceInstrumentTest")
+        includeTestsMatching("parker.core.runtime.UnitOMetadataPreflightTest")
     }
+    shouldRunAfter(tasks.test)
+}
+
+// Unit O.3 — explicitly detached, metadata-only, exact-ID deployed preflight. It constructs no
+// provider transport and has no source-byte, OCR, derivative, or analysis dependency.
+tasks.register<Test>("unitOMetadataPreflight") {
+    description = "Runs the exact-ID Unit O.3 authoritative manifest metadata-only preflight"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching("parker.core.runtime.UnitOMetadataPreflightAcceptanceTest") }
+    systemProperty("parker.unitO.metadataPreflight.enabled", "true")
     shouldRunAfter(tasks.test)
 }
 
