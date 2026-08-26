@@ -171,6 +171,19 @@ tasks.register<Test>("unitOMetadataPreflight") {
     shouldRunAfter(tasks.test)
 }
 
+// Packages only already-compiled detached/test classes and their offline runtime dependencies for
+// the one-shot UID/GID 999 acceptance container. No production image or long-running service changes.
+tasks.register<Sync>("prepareUnitOMetadataPreflightLauncher") {
+    description = "Prepares the detached Unit O.3 metadata-only one-shot launcher"
+    group = "verification"
+    dependsOn(tasks.named("compileLiveModelEvaluationKotlin"))
+    into(layout.buildDirectory.dir("unit-o3-launcher"))
+    from(sourceSets.main.get().output.classesDirs) { into("classes") }
+    from(sourceSets.test.get().output.classesDirs) { into("classes") }
+    from(liveModelEvaluation.output.classesDirs) { into("classes") }
+    from(configurations[liveModelEvaluation.runtimeClasspathConfigurationName]) { into("lib") }
+}
+
 tasks.register<Test>("reasoningProtocolBaselineCharacterisation") {
     description = "Runs the explicit opt-in Reasoning Protocol Unit 2 baseline characterisation instrument"
     group = "verification"

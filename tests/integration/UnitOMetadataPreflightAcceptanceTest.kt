@@ -31,9 +31,10 @@ class UnitOMetadataPreflightAcceptanceTest {
 
         val clean = EvidenceArtifactId("evidence-5590e407-badf-4337-9b5b-cb2ce0e80546")
         val handwritten = EvidenceArtifactId("evidence-1f019d05-26a1-452f-8a6f-f0ed3768ee0a")
-        val storage = FileSystemEvidenceSourceManifestStorage(manifestRoot)
         val reader = UnitOManifestMetadataReader { id ->
-            storage.read(id)?.let { UnitOAuthoritativeManifestFacts(it.evidenceArtifactId, it.sha256, it.byteLength, it.receivedMediaType) }
+            UnitOReadOnlyManifestAcceptanceBridge.read(manifestRoot, id)?.let {
+                UnitOAuthoritativeManifestFacts(it.evidenceArtifactId, it.sha256, it.byteLength, it.mediaType)
+            }
         }
         val bridge = UnitOAuthoritativeMetadataBridge(setOf(clean, handwritten), reader,
             providerMaximumPdfBytes = ready.effectiveLimits.maximumPdfBytes)

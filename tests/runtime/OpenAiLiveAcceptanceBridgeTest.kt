@@ -5,7 +5,10 @@ import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertNull
 import parker.composition.OpenAiExternalTranscriptionProviderReadinessEvaluator
+import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.EvidenceSourceManifest
 
 class OpenAiLiveAcceptanceBridgeTest {
     private val evaluator = OpenAiExternalTranscriptionProviderReadinessEvaluator { LocalDate.parse("2026-08-26") }
@@ -82,5 +85,22 @@ nextReviewDate=2026-09-01
 verificationReferences=provider-review
 reverificationTriggers=provider terms change
 """)
+    }
+
+    @Test
+    fun `Unit O read-only adapter retrieves exact ID and exposes no mutation or enumeration surface`() {
+        val root = Files.createTempDirectory("unit-o-manifests")
+        val clean = EvidenceArtifactId("evidence-clean")
+        val difficult = EvidenceArtifactId("evidence-difficult")
+        listOf(clean, difficult).forEach { id ->
+            val manifest = EvidenceSourceManifest(id, "a".repeat(64), 123, "application/pdf")
+            Files.write(root.resolve("${id.value}.manifest"), EvidenceSourceManifestCodec.encode(manifest))
+        }
+
+        assertEquals(clean, UnitOReadOnlyManifestAcceptanceBridge.read(root, clean)?.evidenceArtifactId)
+        assertEquals(difficult, UnitOReadOnlyManifestAcceptanceBridge.read(root, difficult)?.evidenceArtifactId)
+        assertNull(UnitOReadOnlyManifestAcceptanceBridge.read(root, EvidenceArtifactId("arbitrary-third")))
+        val methods = UnitOReadOnlyManifestAcceptanceBridge::class.java.methods.map { it.name }
+        assertTrue(methods.none { it.contains("write", true) || it.contains("delete", true) || it.contains("list", true) })
     }
 }

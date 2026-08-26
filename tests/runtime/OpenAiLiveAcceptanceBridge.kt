@@ -6,6 +6,8 @@ import parker.composition.OpenAiApiCredential
 import parker.composition.OpenAiExternalTranscriptionProviderReadinessEvaluator
 import parker.composition.OpenAiExternalTranscriptionReadiness
 import parker.core.interfaces.ExternalTranscriptionMechanism
+import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.EvidenceArtifactIdentifierSafety
 
 /** Test-only friend bridge: keeps every Unit H transport/credential type internal to main. */
 object OpenAiLiveAcceptanceBridge {
@@ -92,4 +94,29 @@ object OpenAiLiveAcceptanceBridge {
             state,
         )
     }
+}
+
+data class UnitOReadOnlyManifestMetadata(
+    val evidenceArtifactId: EvidenceArtifactId,
+    val sha256: String,
+    val byteLength: Long,
+    val mediaType: String?,
+)
+
+/** Test-only exact-ID manifest reader for a read-only mounted custody directory. */
+object UnitOReadOnlyManifestAcceptanceBridge {
+    fun read(storageRoot: Path, evidenceArtifactId: EvidenceArtifactId): UnitOReadOnlyManifestMetadata? {
+        EvidenceArtifactIdentifierSafety.requireSafe(evidenceArtifactId)
+        val root = storageRoot.toAbsolutePath().normalize()
+        val target = root.resolve("${evidenceArtifactId.value}.manifest").normalize()
+        require(target.parent == root) { "manifest target escaped storage root" }
+        if (!Files.exists(target)) return null
+        require(Files.size(target) <= MAX_RECORD_BYTES) { "manifest record exceeds bounded codec input" }
+        val manifest = EvidenceSourceManifestCodec.decode(Files.readAllBytes(target))
+        require(manifest.evidenceArtifactId == evidenceArtifactId) { "stored identity does not match requested identity" }
+        return UnitOReadOnlyManifestMetadata(
+            manifest.evidenceArtifactId, manifest.sha256, manifest.byteLength, manifest.receivedMediaType,
+        )
+    }
+    private const val MAX_RECORD_BYTES = 1L * 1024L * 1024L
 }
