@@ -1,11 +1,17 @@
 package parker.core.runtime
 
 import java.io.IOException
+import java.net.ConnectException
 import java.net.URI
+import java.net.UnknownHostException
+import java.net.http.HttpConnectTimeoutException
 import java.net.http.HttpTimeoutException
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
+import java.util.concurrent.CompletionException
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.*
@@ -110,8 +116,18 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
             val result = assertIs<ExternalTranscriptionMechanismOutcome.Failure>(adapter(transport).transcribe(request()))
             assertEquals(expected, result.reason); assertEquals(1, transport.calls); assertTrue(!result.toString().contains("provider secret body"))
         }
-        assertFailureFromThrow(HttpTimeoutException("timeout with $sentinel"), "PROVIDER_TIMEOUT")
-        assertFailureFromThrow(IOException("dns with $sentinel"), "PROVIDER_NETWORK_FAILURE")
+        mapOf<Exception, String>(
+            HttpConnectTimeoutException("connect timeout with $sentinel") to "PROVIDER_CONNECT_TIMEOUT",
+            HttpTimeoutException("request timeout with $sentinel") to "PROVIDER_REQUEST_TIMEOUT",
+            SSLHandshakeException("handshake with $sentinel") to "PROVIDER_TLS_FAILURE",
+            SSLException("TLS with $sentinel") to "PROVIDER_TLS_FAILURE",
+            UnknownHostException("DNS with $sentinel") to "PROVIDER_DNS_FAILURE",
+            ConnectException("connect with $sentinel") to "PROVIDER_CONNECT_FAILURE",
+            InterruptedException("interrupted with $sentinel") to "PROVIDER_INTERRUPTED",
+            IOException("I/O with $sentinel") to "PROVIDER_IO_FAILURE",
+            IllegalStateException("publisher with $sentinel") to "PROVIDER_TRANSPORT_FAILURE",
+            CompletionException(SSLHandshakeException("wrapped handshake with $sentinel")) to "PROVIDER_TLS_FAILURE",
+        ).forEach { (error, expected) -> assertFailureFromThrow(error, expected) }
         val oversized = FakeTransport { OpenAiResponsesTransportResponse(200, ByteArray(1025)) }
         assertEquals("RESPONSE_TOO_LARGE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(adapter(oversized, outputLimit = 1024).transcribe(request())).reason)
     }

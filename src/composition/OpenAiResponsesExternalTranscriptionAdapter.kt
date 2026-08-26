@@ -2,13 +2,18 @@ package parker.core.runtime
 
 import java.io.IOException
 import java.net.URI
+import java.net.ConnectException
+import java.net.UnknownHostException
 import java.net.http.HttpClient
+import java.net.http.HttpConnectTimeoutException
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.net.http.HttpTimeoutException
 import java.time.Duration
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.CompletionException
+import javax.net.ssl.SSLException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import parker.composition.OpenAiApiCredential
 import parker.composition.OpenAiExternalTranscriptionReadiness
@@ -104,12 +109,8 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             return failure("RESPONSE_TOO_LARGE")
         } catch (_: kotlinx.coroutines.CancellationException) {
             throw kotlinx.coroutines.CancellationException("OpenAI transcription cancelled")
-        } catch (_: java.net.http.HttpTimeoutException) {
-            return failure("PROVIDER_TIMEOUT")
-        } catch (_: IOException) {
-            return failure("PROVIDER_NETWORK_FAILURE")
-        } catch (_: Exception) {
-            return failure("PROVIDER_NETWORK_FAILURE")
+        } catch (e: Exception) {
+            return failure(classifyOpenAiTransportFailure(e))
         }
         if (response.body.size.toLong() > limits.maximumOutputBytes) return failure("RESPONSE_TOO_LARGE")
         when (response.statusCode) {
@@ -188,6 +189,32 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         val ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,1024}$")
         const val TRANSCRIPTION_INSTRUCTION = "Faithfully transcribe readable source text with page association. Mark uncertainty and illegible content; do not guess. Do not summarize, interpret, translate, perform legal analysis, correct substantive wording, resolve factual conflicts, browse, retrieve external information, or use tools. Return only the strict structured schema."
         val STRUCTURED_SCHEMA = """{"type":"object","additionalProperties":false,"required":["requested_pages","returned_pages","pages","warnings"],"properties":{"requested_pages":{"type":"array","items":{"type":"integer","minimum":1}},"returned_pages":{"type":"array","items":{"type":"integer","minimum":1}},"warnings":{"type":"array","items":{"type":"string"}},"pages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_number","text","outcome","reason_classification","reason_detail","warnings","uncertainty_spans"],"properties":{"page_number":{"type":"integer","minimum":1},"text":{"type":["string","null"]},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}},"uncertainty_spans":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start","end","kind","disclosure"],"properties":{"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["UNCERTAIN","ILLEGIBLE"]},"disclosure":{"type":"string"}}}}}}}}}"""
+    }
+}
+
+/**
+ * Content-safe transport diagnostics. Only a frozen category crosses the adapter boundary: never
+ * an exception message, URI, header, request/response body, credential, or stack trace. The full
+ * bounded cause chain is inspected because JDK HttpClient commonly wraps the useful network cause
+ * in CompletionException/IOException layers.
+ */
+internal fun classifyOpenAiTransportFailure(error: Throwable): String {
+    val causes = mutableListOf<Throwable>()
+    val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+    var current: Throwable? = error
+    while (current != null && causes.size < 16 && seen.add(current)) {
+        causes += current
+        current = current.cause
+    }
+    return when {
+        causes.any { it is HttpConnectTimeoutException } -> "PROVIDER_CONNECT_TIMEOUT"
+        causes.any { it is HttpTimeoutException } -> "PROVIDER_REQUEST_TIMEOUT"
+        causes.any { it is SSLException } -> "PROVIDER_TLS_FAILURE"
+        causes.any { it is UnknownHostException } -> "PROVIDER_DNS_FAILURE"
+        causes.any { it is ConnectException } -> "PROVIDER_CONNECT_FAILURE"
+        causes.any { it is InterruptedException } -> "PROVIDER_INTERRUPTED"
+        causes.any { it is IOException } -> "PROVIDER_IO_FAILURE"
+        else -> "PROVIDER_TRANSPORT_FAILURE"
     }
 }
 
