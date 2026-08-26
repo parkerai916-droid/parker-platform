@@ -28,18 +28,17 @@ class ExternalTranscriptionLiveAcceptanceTest {
 
     @Test
     fun `one governed synthetic request validates admits and survives restart`() = runTest {
-        require(System.getProperty("parker.externalTranscription.live.enabled") == "true") { "live acceptance is not explicitly enabled" }
-        val profilePath = System.getenv("PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH")
-            ?: error("provider profile path is absent")
+        val environment = System.getenv()
+        val problems = OpenAiLiveAcceptanceBridge.preflightProblems(
+            environment,
+            System.getProperty("parker.externalTranscription.live.enabled") == "true",
+            Path.of(""),
+        )
+        require(problems.isEmpty()) { "live preflight failed: ${problems.joinToString(",")}" }
+        val profilePath = requireNotNull(environment["PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH"])
         val readiness = OpenAiExternalTranscriptionProviderReadinessEvaluator().evaluate(true, profilePath)
-        val ready = readiness as? OpenAiExternalTranscriptionReadiness.Ready
-            ?: error("provider profile is not Ready: ${readiness::class.simpleName}")
-        require(ready.profile.modelSelectionRule == "gpt-4.1-mini") { "profile model changed; no silent switch is permitted" }
-        val resultPath = System.getenv("PARKER_EXTERNAL_TRANSCRIPTION_LIVE_RESULT_PATH")?.let(Path::of)
-            ?: error("bounded live result path is absent")
-        require(!resultPath.toAbsolutePath().normalize().startsWith(Path.of("").toAbsolutePath().normalize())) {
-            "live result must remain outside the repository"
-        }
+        val ready = readiness as OpenAiExternalTranscriptionReadiness.Ready
+        val resultPath = Path.of(requireNotNull(environment["PARKER_EXTERNAL_TRANSCRIPTION_LIVE_RESULT_PATH"]))
 
         val source = syntheticPdf()
         val sourceBefore = source.copyOf()
