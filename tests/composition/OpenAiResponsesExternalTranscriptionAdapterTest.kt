@@ -46,6 +46,8 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
         assertTrue(body.contains("\"model\":\"synthetic-reviewed-model\""))
         assertTrue(body.contains("\"type\":\"input_file\""))
         assertTrue(body.contains("\"filename\":\"source.pdf\""))
+        assertTrue(body.contains("\"file_data\":\"data:application/pdf;base64,cGRmIGJ5dGVz\""))
+        assertFalse(body.contains("\"file_data\":\"cGRmIGJ5dGVz\""))
         assertTrue(body.contains("\"type\":\"json_schema\""))
         assertTrue(body.contains("\"strict\":true"))
         assertTrue(body.contains("do not guess", ignoreCase = true))
@@ -53,6 +55,35 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
         listOf("\"tools\"", "web_search", "file_search", "mcp", "code_interpreter", "previous_response_id", "conversation").forEach {
             assertTrue(!body.contains(it, ignoreCase = true), "request unexpectedly contains $it")
         }
+    }
+
+    @Test
+    fun `provider rejection fingerprint exposes bounded fields only and never message or body`() = runTest {
+        val secretMessage = "SOURCE_SECRET_SENTINEL API_KEY_SENTINEL TRANSCRIPT_SECRET_SENTINEL"
+        val raw = """{"error":{"message":"$secretMessage","type":"invalid_request_error","param":"input[0].content[1].file_data","code":"invalid_value"}}"""
+        var observed: OpenAiProviderErrorFingerprint? = null
+        val transport = FakeTransport { OpenAiResponsesTransportResponse(400, raw.toByteArray()) }
+        val outcome = OpenAiResponsesExternalTranscriptionAdapter(
+            ready(), credential, transport,
+            providerRejectionObserver = { observed = it },
+        ).transcribe(request())
+
+        assertEquals("PROVIDER_REJECTED_REQUEST", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        val fingerprint = requireNotNull(observed)
+        assertEquals(400, fingerprint.httpStatus)
+        assertEquals("invalid_request_error", fingerprint.providerErrorType)
+        assertEquals("invalid_value", fingerprint.providerErrorCode)
+        assertEquals("input[0].content[1].file_data", fingerprint.providerErrorParam)
+        assertEquals("PROVIDER_REJECTED_REQUEST", fingerprint.category)
+        assertEquals(
+            "HTTP_STATUS=400 PROVIDER_ERROR_TYPE=invalid_request_error PROVIDER_ERROR_CODE=invalid_value " +
+                "PROVIDER_ERROR_PARAM=input[0].content[1].file_data CATEGORY=PROVIDER_REJECTED_REQUEST",
+            fingerprint.render(),
+        )
+        assertFalse(fingerprint.toString().contains(secretMessage))
+        assertFalse(fingerprint.render().contains(secretMessage))
+        assertFalse(outcome.toString().contains(secretMessage))
+        assertEquals(1, transport.calls)
     }
 
     @Test

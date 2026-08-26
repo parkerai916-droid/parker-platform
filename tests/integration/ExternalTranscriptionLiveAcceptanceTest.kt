@@ -68,7 +68,8 @@ class ExternalTranscriptionLiveAcceptanceTest {
         val admitted = outcome as? ExternalTranscriptionOwnerInvocationOutcome.Admitted
             ?: error(
                 "live invocation did not admit: ${safeOutcome(outcome)}" +
-                    (adapterHandle.state.failureFingerprint?.let { " $it" } ?: ""),
+                    (adapterHandle.state.failureFingerprint?.let { " $it" } ?: "") +
+                    (adapterHandle.state.providerRejectionFingerprint?.let { " $it" } ?: ""),
             )
 
         assertEquals(listOf("authorize", "source", "manifest", "egress"), events)

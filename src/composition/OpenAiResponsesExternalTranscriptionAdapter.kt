@@ -95,6 +95,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     private val transport: OpenAiResponsesTransport,
     private val maximumEncodedRequestBytes: Long = MAXIMUM_ENCODED_REQUEST_BYTES,
     private val transportFailureObserver: (OpenAiTransportFailureFingerprint) -> Unit = {},
+    private val providerRejectionObserver: (OpenAiProviderErrorFingerprint) -> Unit = {},
 ) : ExternalTranscriptionMechanism {
     private val profile = readiness.profile
     private val limits = readiness.effectiveLimits
@@ -124,12 +125,17 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             return failure(fingerprint.category)
         }
         if (response.body.size.toLong() > limits.maximumOutputBytes) return failure("RESPONSE_TOO_LARGE")
-        when (response.statusCode) {
-            in 300..399 -> return failure("PROVIDER_REDIRECT_REJECTED")
-            401, 403 -> return failure("PROVIDER_AUTHENTICATION_FAILURE")
-            429 -> return failure("PROVIDER_RATE_LIMITED")
-            in 500..599 -> return failure("PROVIDER_UNAVAILABLE")
-            !in 200..299 -> return failure("PROVIDER_REJECTED_REQUEST")
+        val rejectionCategory = when (response.statusCode) {
+            in 200..299 -> null
+            in 300..399 -> "PROVIDER_REDIRECT_REJECTED"
+            401, 403 -> "PROVIDER_AUTHENTICATION_FAILURE"
+            429 -> "PROVIDER_RATE_LIMITED"
+            in 500..599 -> "PROVIDER_UNAVAILABLE"
+            else -> "PROVIDER_REJECTED_REQUEST"
+        }
+        if (rejectionCategory != null) {
+            runCatching { providerRejectionObserver(fingerprintOpenAiProviderRejection(response, rejectionCategory)) }
+            return failure(rejectionCategory)
         }
         return try {
             ExternalTranscriptionMechanismOutcome.Candidate(parseResponse(request, response.body.toString(Charsets.UTF_8)))
@@ -141,7 +147,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     private fun buildRequestBody(request: ExternalTranscriptionRequest): String {
         val base64 = Base64.getEncoder().encodeToString(request.content)
         val mediaPart = if (request.mediaType == "application/pdf") {
-            "{\"type\":\"input_file\",\"filename\":\"source.pdf\",\"file_data\":\"$base64\"}"
+            "{\"type\":\"input_file\",\"filename\":\"source.pdf\",\"file_data\":\"data:application/pdf;base64,$base64\"}"
         } else {
             "{\"type\":\"input_image\",\"detail\":\"high\",\"image_url\":\"data:${jsonEscape(request.mediaType)};base64,$base64\"}"
         }
@@ -201,6 +207,31 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         const val TRANSCRIPTION_INSTRUCTION = "Faithfully transcribe readable source text with page association. Mark uncertainty and illegible content; do not guess. Do not summarize, interpret, translate, perform legal analysis, correct substantive wording, resolve factual conflicts, browse, retrieve external information, or use tools. Return only the strict structured schema."
         val STRUCTURED_SCHEMA = """{"type":"object","additionalProperties":false,"required":["requested_pages","returned_pages","pages","warnings"],"properties":{"requested_pages":{"type":"array","items":{"type":"integer","minimum":1}},"returned_pages":{"type":"array","items":{"type":"integer","minimum":1}},"warnings":{"type":"array","items":{"type":"string"}},"pages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_number","text","outcome","reason_classification","reason_detail","warnings","uncertainty_spans"],"properties":{"page_number":{"type":"integer","minimum":1},"text":{"type":["string","null"]},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}},"uncertainty_spans":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start","end","kind","disclosure"],"properties":{"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["UNCERTAIN","ILLEGIBLE"]},"disclosure":{"type":"string"}}}}}}}}}"""
     }
+}
+
+/** Acceptance-only safe projection of an HTTP error envelope; raw provider text never escapes. */
+internal data class OpenAiProviderErrorFingerprint(
+    val httpStatus: Int,
+    val providerErrorType: String,
+    val providerErrorCode: String,
+    val providerErrorParam: String,
+    val category: String,
+) {
+    fun render(): String =
+        "HTTP_STATUS=$httpStatus PROVIDER_ERROR_TYPE=$providerErrorType PROVIDER_ERROR_CODE=$providerErrorCode " +
+            "PROVIDER_ERROR_PARAM=$providerErrorParam CATEGORY=$category"
+}
+
+internal fun fingerprintOpenAiProviderRejection(
+    response: OpenAiResponsesTransportResponse,
+    category: String,
+): OpenAiProviderErrorFingerprint {
+    val error = runCatching { (Json.parse(response.body.toString(Charsets.UTF_8)) as? Json.Obj)?.fields?.get("error") as? Json.Obj }
+        .getOrNull()
+    fun field(name: String): String = ((error?.fields?.get(name) as? Json.Str)?.value)
+        ?.takeIf { value -> value.length in 1..128 && value.all { it.isLetterOrDigit() || it in "_-.[]" } }
+        ?: "NOT_EXPOSED"
+    return OpenAiProviderErrorFingerprint(response.statusCode, field("type"), field("code"), field("param"), category)
 }
 
 /**
