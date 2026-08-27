@@ -154,7 +154,22 @@ tasks.register<Test>("unitOOfflineAcceptanceVerification") {
     filter {
         includeTestsMatching("parker.core.runtime.UnitOOfflineAcceptanceInstrumentTest")
         includeTestsMatching("parker.core.runtime.UnitOMetadataPreflightTest")
+        includeTestsMatching("parker.core.runtime.UnitOLiteralV2CleanAcceptanceBoundaryTest")
     }
+    shouldRunAfter(tasks.test)
+}
+
+// Unit O.4R — detached, exact-document, one-request literal-v2 CLEAN acceptance. It is absent
+// from every lifecycle/offline task and requires both this explicit task and the exact bounded
+// acceptance record verified by the instrument before custody access or transport egress.
+tasks.register<Test>("unitOLiteralV2CleanAcceptance") {
+    description = "Runs the separately authorised one-request Unit O.4R literal-v2 CLEAN acceptance"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching("parker.core.runtime.UnitOLiteralV2CleanAcceptanceLiveTest") }
+    systemProperty("parker.unitO4r.literalV2.acceptance.enabled", "true")
     shouldRunAfter(tasks.test)
 }
 
