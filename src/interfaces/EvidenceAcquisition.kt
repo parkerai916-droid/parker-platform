@@ -151,6 +151,16 @@ class EvidenceAcquisitionCapability(
             }
         }
     }
+
+    override fun equals(other: Any?): Boolean = other is EvidenceAcquisitionCapability &&
+        capabilityId == other.capabilityId && mechanism == other.mechanism &&
+        supportedMediaTypes == other.supportedMediaTypes && supportedSourceForms == other.supportedSourceForms &&
+        fidelity == other.fidelity && supportedRepresentations == other.supportedRepresentations &&
+        egress == other.egress && providerConfiguration == other.providerConfiguration &&
+        availability == other.availability && limits == other.limits
+
+    override fun hashCode(): Int = listOf(capabilityId, mechanism, supportedMediaTypes, supportedSourceForms,
+        fidelity, supportedRepresentations, egress, providerConfiguration, availability, limits).hashCode()
 }
 
 enum class ExternalEgressAuthorisation { AUTHORISED, NOT_AUTHORISED, NOT_REQUIRED }
@@ -244,6 +254,14 @@ object EvidenceAcquisitionEligibilityEvaluator {
 }
 
 enum class AcquisitionSelectionReason {
+    NATIVE_TEXT_DIRECTLY_AVAILABLE,
+    SOURCE_REQUIRES_OCR_OR_TRANSCRIPTION,
+    REQUIRED_HANDWRITING_SUPPORT,
+    REQUIRED_LAYOUT_SUPPORT,
+    REQUIRED_TABLE_SUPPORT,
+    STRONGER_SOURCE_RELEVANT_CAPABILITY,
+    AVOIDED_UNNECESSARY_TRANSFORMATION,
+    AVOIDED_UNNECESSARY_EXTERNAL_EGRESS,
     SOURCE_CHARACTERISTICS_SUPPORTED,
     GOVERNED_CONFIGURATION_ELIGIBLE,
     EXTERNAL_EGRESS_AUTHORISED,
@@ -261,5 +279,45 @@ class EvidenceAcquisitionRoutingDecision(
     init {
         require(selectedRepresentation in capability.supportedRepresentations)
         require(selectionReasons.isNotEmpty())
+    }
+
+    override fun equals(other: Any?): Boolean = other is EvidenceAcquisitionRoutingDecision &&
+        source == other.source && capability == other.capability &&
+        selectedRepresentation == other.selectedRepresentation && selectionReasons == other.selectionReasons
+
+    override fun hashCode(): Int = listOf(source, capability, selectedRepresentation, selectionReasons).hashCode()
+}
+
+enum class AcquisitionNoSelectionReason {
+    NO_ELIGIBLE_CAPABILITY,
+    UNKNOWN_REQUIRED_CHARACTERISTIC,
+    EQUIVALENT_CAPABILITIES_AMBIGUOUS,
+    CAPABILITY_DISABLED_OR_NOT_READY,
+    EXTERNAL_EGRESS_NOT_AUTHORISED,
+    UNSUPPORTED_SOURCE_OR_MEDIA,
+    OPERATIONAL_LIMIT_EXCEEDED,
+}
+
+sealed class EvidenceAcquisitionRoutingOutcome {
+    data class Selected(val decision: EvidenceAcquisitionRoutingDecision) : EvidenceAcquisitionRoutingOutcome()
+    class NoEligibleCapability(reasons: Set<AcquisitionNoSelectionReason>) : EvidenceAcquisitionRoutingOutcome() {
+        val reasons = reasons.toSet()
+        override fun equals(other: Any?): Boolean = other is NoEligibleCapability && reasons == other.reasons
+        override fun hashCode(): Int = reasons.hashCode()
+    }
+    class Indeterminate(reasons: Set<AcquisitionNoSelectionReason>) : EvidenceAcquisitionRoutingOutcome() {
+        val reasons = reasons.toSet()
+        override fun equals(other: Any?): Boolean = other is Indeterminate && reasons == other.reasons
+        override fun hashCode(): Int = reasons.hashCode()
+    }
+    class Ambiguous(
+        capabilityIds: Set<String>,
+        reasons: Set<AcquisitionNoSelectionReason>,
+    ) : EvidenceAcquisitionRoutingOutcome() {
+        val capabilityIds = capabilityIds.toSet()
+        val reasons = reasons.toSet()
+        override fun equals(other: Any?): Boolean = other is Ambiguous &&
+            capabilityIds == other.capabilityIds && reasons == other.reasons
+        override fun hashCode(): Int = 31 * capabilityIds.hashCode() + reasons.hashCode()
     }
 }
