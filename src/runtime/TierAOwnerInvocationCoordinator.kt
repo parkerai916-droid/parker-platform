@@ -1,10 +1,7 @@
 package parker.core.runtime
 
-import java.security.MessageDigest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
-import parker.core.interfaces.EvidenceManifestRetrievalResult
-import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.TierADocumentIngestionRouter
 import parker.core.interfaces.TierADocumentSourceContext
@@ -61,55 +58,42 @@ import parker.core.interfaces.TierAOwnerInvocationOutcome
  * discipline.
  */
 class TierAOwnerInvocationCoordinator(
-    private val evidenceCustodian: EvidenceCustodian,
+    evidenceCustodian: EvidenceCustodian,
     private val tierADocumentIngestionRouter: TierADocumentIngestionRouter,
 ) {
+    private val sourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
+
     suspend fun invoke(
         ownerPrincipalId: PrincipalId,
         evidenceArtifactId: EvidenceArtifactId,
         correlationValue: String,
     ): TierAOwnerInvocationOutcome {
-        val manifest = when (val manifestResult = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
-            is EvidenceManifestRetrievalResult.Found -> manifestResult.manifest
-            is EvidenceManifestRetrievalResult.NotFound ->
-                return TierAOwnerInvocationOutcome.ManifestNotFound(evidenceArtifactId)
-            is EvidenceManifestRetrievalResult.Rejected ->
-                return TierAOwnerInvocationOutcome.ManifestRetrievalRejected(evidenceArtifactId, manifestResult.reason)
-        }
-
-        val content = when (val retrievalResult = evidenceCustodian.retrieve(ownerPrincipalId, evidenceArtifactId)) {
-            is EvidenceRetrievalResult.Found -> retrievalResult.content
-            is EvidenceRetrievalResult.NotFound ->
-                return TierAOwnerInvocationOutcome.SourceNotFound(evidenceArtifactId)
-            is EvidenceRetrievalResult.Rejected ->
-                return TierAOwnerInvocationOutcome.SourceRetrievalRejected(evidenceArtifactId, retrievalResult.reason)
-        }
-
-        val actualByteLength = content.size.toLong()
-        if (actualByteLength != manifest.byteLength) {
-            return TierAOwnerInvocationOutcome.ByteLengthMismatch(evidenceArtifactId, manifest.byteLength, actualByteLength)
-        }
-
-        val actualSha256 = sha256Hex(content)
-        if (actualSha256 != manifest.sha256) {
-            return TierAOwnerInvocationOutcome.DigestMismatch(evidenceArtifactId, manifest.sha256, actualSha256)
+        val trusted = when (val resolution = sourceResolver.resolve(ownerPrincipalId, evidenceArtifactId)) {
+            is AuthoritativeAcquisitionResolution.Verified -> resolution.input
+            AuthoritativeAcquisitionResolution.ManifestNotFound -> return TierAOwnerInvocationOutcome.ManifestNotFound(evidenceArtifactId)
+            is AuthoritativeAcquisitionResolution.ManifestRejected ->
+                return TierAOwnerInvocationOutcome.ManifestRetrievalRejected(evidenceArtifactId, resolution.reason)
+            AuthoritativeAcquisitionResolution.ManifestIdentityMismatch ->
+                return TierAOwnerInvocationOutcome.ManifestRetrievalRejected(evidenceArtifactId, "Authoritative manifest identity mismatch")
+            AuthoritativeAcquisitionResolution.SourceNotFound -> return TierAOwnerInvocationOutcome.SourceNotFound(evidenceArtifactId)
+            is AuthoritativeAcquisitionResolution.SourceRejected ->
+                return TierAOwnerInvocationOutcome.SourceRetrievalRejected(evidenceArtifactId, resolution.reason)
+            is AuthoritativeAcquisitionResolution.ByteLengthMismatch ->
+                return TierAOwnerInvocationOutcome.ByteLengthMismatch(evidenceArtifactId, resolution.expected, resolution.actual)
+            is AuthoritativeAcquisitionResolution.DigestMismatch ->
+                return TierAOwnerInvocationOutcome.DigestMismatch(evidenceArtifactId, resolution.expected, resolution.actual)
         }
 
         val context = TierADocumentSourceContext(
             evidenceArtifactId = evidenceArtifactId,
-            content = content,
-            expectedSha256 = manifest.sha256,
-            receivedMediaType = manifest.receivedMediaType,
-            originalFileName = manifest.originalFileName,
+            content = trusted.bytes(),
+            expectedSha256 = trusted.sha256,
+            receivedMediaType = trusted.mediaType,
+            originalFileName = trusted.originalFileName,
             requestingPrincipalId = ownerPrincipalId,
             correlationValue = correlationValue,
         )
 
         return TierAOwnerInvocationOutcome.Routed(tierADocumentIngestionRouter.ingest(context))
-    }
-
-    private fun sha256Hex(bytes: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 }

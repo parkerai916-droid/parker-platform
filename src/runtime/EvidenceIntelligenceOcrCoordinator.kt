@@ -1,9 +1,7 @@
 package parker.core.runtime
 
-import java.security.MessageDigest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
-import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.OcrMechanism
 import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.OcrRecognitionRequest
@@ -83,9 +81,10 @@ import parker.core.interfaces.PrincipalId
  * coordinator this Programme has already accepted.
  */
 internal class EvidenceIntelligenceOcrCoordinator(
-    private val evidenceCustodian: EvidenceCustodian,
+    evidenceCustodian: EvidenceCustodian,
     private val ocrMechanism: OcrMechanism,
 ) {
+    private val sourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
 
     /**
      * Performs the four-step manifest-verified integrity sequence above,
@@ -113,30 +112,21 @@ internal class EvidenceIntelligenceOcrCoordinator(
         evidenceArtifactId: EvidenceArtifactId,
         content: ByteArray,
     ): OcrCoordinatorOutcome {
-        val manifestResult = evidenceCustodian.retrieveManifest(requestingPrincipalId, evidenceArtifactId)
-        val manifest = when (manifestResult) {
-            is EvidenceManifestRetrievalResult.Found -> manifestResult.manifest
-            is EvidenceManifestRetrievalResult.NotFound ->
-                return OcrCoordinatorOutcome.ManifestNotFound(evidenceArtifactId)
-            is EvidenceManifestRetrievalResult.Rejected ->
-                return OcrCoordinatorOutcome.ManifestRejected(evidenceArtifactId, manifestResult.reason)
+        val trusted = when (val resolution = sourceResolver.verifyAlreadyRetrieved(
+            requestingPrincipalId, evidenceArtifactId, content,
+        )) {
+            is AuthoritativeAcquisitionResolution.Verified -> resolution.input
+            AuthoritativeAcquisitionResolution.ManifestNotFound -> return OcrCoordinatorOutcome.ManifestNotFound(evidenceArtifactId)
+            is AuthoritativeAcquisitionResolution.ManifestRejected -> return OcrCoordinatorOutcome.ManifestRejected(evidenceArtifactId, resolution.reason)
+            AuthoritativeAcquisitionResolution.ManifestIdentityMismatch -> return OcrCoordinatorOutcome.ManifestRejected(evidenceArtifactId, "Authoritative manifest identity mismatch")
+            is AuthoritativeAcquisitionResolution.ByteLengthMismatch -> return OcrCoordinatorOutcome.ByteLengthMismatch(evidenceArtifactId, resolution.expected, resolution.actual)
+            is AuthoritativeAcquisitionResolution.DigestMismatch -> return OcrCoordinatorOutcome.DigestMismatch(evidenceArtifactId)
+            AuthoritativeAcquisitionResolution.SourceNotFound,
+            is AuthoritativeAcquisitionResolution.SourceRejected,
+            -> error("verifyAlreadyRetrieved does not perform source retrieval")
         }
 
-        if (manifest.byteLength != content.size.toLong()) {
-            return OcrCoordinatorOutcome.ByteLengthMismatch(
-                evidenceArtifactId = evidenceArtifactId,
-                expectedByteLength = manifest.byteLength,
-                actualByteLength = content.size.toLong(),
-            )
-        }
-
-        // The expected digest is always manifest.sha256 -- the custody-established value -- never
-        // a digest recomputed from content and compared to itself (no digest tautology).
-        if (sha256Hex(content) != manifest.sha256) {
-            return OcrCoordinatorOutcome.DigestMismatch(evidenceArtifactId)
-        }
-
-        val mediaType = manifest.receivedMediaType
+        val mediaType = trusted.mediaType
         if (mediaType == null || !isOcrEligibleMediaType(mediaType)) {
             return OcrCoordinatorOutcome.NotOcrEligible(evidenceArtifactId, mediaType)
         }
@@ -144,7 +134,7 @@ internal class EvidenceIntelligenceOcrCoordinator(
         val outcome = ocrMechanism.recognise(
             OcrRecognitionRequest(
                 sourceEvidenceId = evidenceArtifactId,
-                content = content,
+                content = trusted.bytes(),
                 mediaType = mediaType,
                 pageCount = null,
             ),
@@ -160,9 +150,6 @@ internal class EvidenceIntelligenceOcrCoordinator(
      */
     private fun isOcrEligibleMediaType(mediaType: String): Boolean =
         mediaType == "application/pdf" || mediaType.startsWith("image/", ignoreCase = true)
-
-    private fun sha256Hex(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }
 
 /**

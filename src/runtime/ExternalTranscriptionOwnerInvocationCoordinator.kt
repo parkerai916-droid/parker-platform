@@ -1,15 +1,11 @@
 package parker.core.runtime
 
-import java.security.MessageDigest
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
-import parker.core.interfaces.EvidenceManifestRetrievalResult
-import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.ExternalTranscriptionMechanism
 import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionRequest
-import parker.core.interfaces.OcrSha256Digest
 import parker.core.interfaces.OcrProcessingRepresentationOutcome
 import parker.core.interfaces.OcrStructuredValidationOutcome
 import parker.core.interfaces.PermissionDecisionOutcome
@@ -37,6 +33,8 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
     private val correlationFactory: () -> String = { UUID.randomUUID().toString() },
     private val invocationObserver: ExternalTranscriptionInvocationObserver = ExternalTranscriptionInvocationObserver.NONE,
 ) {
+    private val sourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
+
     suspend fun invoke(evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {
         val decision = permissionEngine.evaluate(
             ExternalTranscriptionInvocationGate.buildExecutionRequest(ownerPrincipalId, evidenceArtifactId),
@@ -45,36 +43,25 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
         ) return ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised
 
-        val content = when (val retrieval = evidenceCustodian.retrieve(ownerPrincipalId, evidenceArtifactId)) {
-            is EvidenceRetrievalResult.Found -> retrieval.content
-            is EvidenceRetrievalResult.NotFound -> return ExternalTranscriptionOwnerInvocationOutcome.SourceNotFound(evidenceArtifactId)
-            is EvidenceRetrievalResult.Rejected -> return ExternalTranscriptionOwnerInvocationOutcome.SourceRetrievalRejected(evidenceArtifactId)
+        val trusted = when (val resolution = sourceResolver.resolveSourceThenManifest(ownerPrincipalId, evidenceArtifactId)) {
+            is AuthoritativeAcquisitionResolution.Verified -> resolution.input
+            AuthoritativeAcquisitionResolution.ManifestNotFound -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestNotFound(evidenceArtifactId)
+            is AuthoritativeAcquisitionResolution.ManifestRejected,
+            AuthoritativeAcquisitionResolution.ManifestIdentityMismatch,
+            -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected(evidenceArtifactId)
+            AuthoritativeAcquisitionResolution.SourceNotFound -> return ExternalTranscriptionOwnerInvocationOutcome.SourceNotFound(evidenceArtifactId)
+            is AuthoritativeAcquisitionResolution.SourceRejected -> return ExternalTranscriptionOwnerInvocationOutcome.SourceRetrievalRejected(evidenceArtifactId)
+            is AuthoritativeAcquisitionResolution.ByteLengthMismatch -> return ExternalTranscriptionOwnerInvocationOutcome.ByteLengthMismatch(evidenceArtifactId)
+            is AuthoritativeAcquisitionResolution.DigestMismatch -> return ExternalTranscriptionOwnerInvocationOutcome.DigestMismatch(evidenceArtifactId)
         }
-        val manifest = when (val retrieval = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
-            is EvidenceManifestRetrievalResult.Found -> retrieval.manifest
-            is EvidenceManifestRetrievalResult.NotFound -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestNotFound(evidenceArtifactId)
-            is EvidenceManifestRetrievalResult.Rejected -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected(evidenceArtifactId)
-        }
-        if (manifest.evidenceArtifactId != evidenceArtifactId) {
-            return ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected(evidenceArtifactId)
-        }
-        if (manifest.byteLength != content.size.toLong()) {
-            return ExternalTranscriptionOwnerInvocationOutcome.ByteLengthMismatch(evidenceArtifactId)
-        }
-        val digest = sha256(content)
-        if (manifest.sha256 != digest) return ExternalTranscriptionOwnerInvocationOutcome.DigestMismatch(evidenceArtifactId)
-        val mediaType = manifest.receivedMediaType
-        if (content.isEmpty() || content.size.toLong() > ExternalTranscriptionRequest.MAX_SOURCE_BYTES ||
+        val mediaType = trusted.mediaType
+        if (trusted.byteLength <= 0 || trusted.byteLength > ExternalTranscriptionRequest.MAX_SOURCE_BYTES ||
             mediaType == null || (mediaType != "application/pdf" && !mediaType.startsWith("image/", ignoreCase = true))
         ) return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
         invocationObserver.sourceRetrieved()
 
         val representation = when (val outcome = representationFactory.create(
-            sourceEvidenceArtifactId = evidenceArtifactId,
-            verifiedSourceBytes = content,
-            authoritativeManifestSha256 = OcrSha256Digest(manifest.sha256),
-            authoritativeSourceMediaType = mediaType,
-            authoritativeSourceByteLength = manifest.byteLength,
+            authoritativeSource = trusted,
         )) {
             is OcrProcessingRepresentationOutcome.Created -> outcome.representation
             else -> return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
@@ -92,12 +79,12 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         }
         val provenance = candidate.processingProvenance
         if (provenance.sourceEvidenceArtifactId != evidenceArtifactId ||
-            provenance.sourceManifestSha256.value != manifest.sha256 ||
+            provenance.sourceManifestSha256.value != trusted.sha256 ||
             provenance.sourceMediaType != mediaType ||
-            provenance.sourceByteLength != content.size.toLong() ||
+            provenance.sourceByteLength != trusted.byteLength ||
             !provenance.byteExactCopy || provenance.representationMediaType != mediaType ||
-            provenance.representationByteLength != content.size.toLong() ||
-            provenance.representationSha256.value != manifest.sha256
+            provenance.representationByteLength != trusted.byteLength ||
+            provenance.representationSha256.value != trusted.sha256
         ) return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Candidate provenance contradicts the verified source representation")
 
         return when (val validated = validator.validate(candidate)) {
@@ -118,7 +105,4 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
                 ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(validated.outcome.reason)
         }
     }
-
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes).joinToString("") { "%02x".format(it) }
 }

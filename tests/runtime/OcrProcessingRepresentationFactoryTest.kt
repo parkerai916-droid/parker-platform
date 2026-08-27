@@ -3,6 +3,7 @@ package parker.core.runtime
 import java.security.MessageDigest
 import java.time.Instant
 import kotlin.test.*
+import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.*
 
 class OcrProcessingRepresentationFactoryTest {
@@ -10,10 +11,10 @@ class OcrProcessingRepresentationFactoryTest {
     private val createdAt = Instant.parse("2026-08-26T01:02:03Z")
 
     @Test
-    fun `PDF is copied byte-exactly with governed provenance and identity`() {
+    fun `PDF is copied byte-exactly with governed provenance and identity`() = runTest {
         val source = byteArrayOf(1, 2, 3, 4)
         val scope = OcrPageScope(listOf(2, 4))
-        val representation = created(factory().create(evidenceId, source, digest(source), "application/pdf", 4, scope, scope))
+        val representation = created(factory().create(trusted(source, "application/pdf"), scope, scope))
 
         assertContentEquals(source, representation.bytes())
         assertEquals(evidenceId, representation.processingProvenance.sourceEvidenceArtifactId)
@@ -34,10 +35,10 @@ class OcrProcessingRepresentationFactoryTest {
     }
 
     @Test
-    fun `supported images remain byte exact and unavailable page scope is not fabricated`() {
+    fun `supported images remain byte exact and unavailable page scope is not fabricated`() = runTest {
         listOf("image/jpeg", "image/png", "image/webp").forEach { media ->
             val source = media.toByteArray()
-            val provenance = created(factory().create(evidenceId, source, digest(source), media, source.size.toLong())).processingProvenance
+            val provenance = created(factory().create(trusted(source, media))).processingProvenance
             assertEquals(media, provenance.representationMediaType)
             assertNull(provenance.requestedPageScope)
             assertNull(provenance.submittedPageScope)
@@ -46,10 +47,11 @@ class OcrProcessingRepresentationFactoryTest {
     }
 
     @Test
-    fun `both source and representation ownership boundaries are defensive`() {
+    fun `both source and representation ownership boundaries are defensive`() = runTest {
         val source = byteArrayOf(7, 8, 9)
         val expectedDigest = digest(source)
-        val representation = created(factory().create(evidenceId, source, expectedDigest, "image/png", 3))
+        val trusted = trusted(source, "image/png")
+        val representation = created(factory().create(trusted))
         source[0] = 99
         val accessed = representation.bytes()
         accessed[1] = 88
@@ -61,21 +63,21 @@ class OcrProcessingRepresentationFactoryTest {
     }
 
     @Test
-    fun `unsupported media and invalid source facts fail closed`() {
+    fun `unsupported media and invalid source facts fail closed`() = runTest {
         val source = byteArrayOf(1)
-        assertIs<OcrProcessingRepresentationOutcome.UnsupportedMedia>(factory().create(evidenceId, source, digest(source), "image/gif", 1))
-        assertIs<OcrProcessingRepresentationOutcome.InvalidSourceFacts>(factory().create(evidenceId, byteArrayOf(), digest(source), "application/pdf", 0))
-        assertIs<OcrProcessingRepresentationOutcome.SourceLengthMismatch>(factory().create(evidenceId, source, digest(source), "application/pdf", 2))
-        assertIs<OcrProcessingRepresentationOutcome.DigestMismatch>(factory().create(evidenceId, source, OcrSha256Digest("0".repeat(64)), "application/pdf", 1))
+        assertIs<OcrProcessingRepresentationOutcome.UnsupportedMedia>(factory().create(trusted(source, "image/gif")))
+        assertIs<OcrProcessingRepresentationOutcome.InvalidSourceFacts>(factory().create(trusted(byteArrayOf(), "application/pdf")))
+        assertIs<AuthoritativeAcquisitionResolution.ByteLengthMismatch>(resolution(source, "application/pdf", declaredLength = 2))
+        assertIs<AuthoritativeAcquisitionResolution.DigestMismatch>(resolution(source, "application/pdf", declaredDigest = "0".repeat(64)))
     }
 
     @Test
-    fun `effective raw limit accepts exactly the limit and rejects over it`() {
+    fun `effective raw limit accepts exactly the limit and rejects over it`() = runTest {
         val bounded = factory(pdfLimit = 3, imageLimit = 2)
         val pdf = byteArrayOf(1, 2, 3)
         val image = byteArrayOf(1, 2, 3)
-        assertIs<OcrProcessingRepresentationOutcome.Created>(bounded.create(evidenceId, pdf, digest(pdf), "application/pdf", 3))
-        assertIs<OcrProcessingRepresentationOutcome.BoundsExceeded>(bounded.create(evidenceId, image, digest(image), "image/png", 3))
+        assertIs<OcrProcessingRepresentationOutcome.Created>(bounded.create(trusted(pdf, "application/pdf")))
+        assertIs<OcrProcessingRepresentationOutcome.BoundsExceeded>(bounded.create(trusted(image, "image/png")))
     }
 
     @Test
@@ -94,6 +96,26 @@ class OcrProcessingRepresentationFactoryTest {
 
     private fun created(outcome: OcrProcessingRepresentationOutcome) =
         assertIs<OcrProcessingRepresentationOutcome.Created>(outcome).representation
+
+    private suspend fun trusted(bytes: ByteArray, mediaType: String): AuthoritativeAcquisitionInput =
+        assertIs<AuthoritativeAcquisitionResolution.Verified>(resolution(bytes, mediaType)).input
+
+    private suspend fun resolution(
+        bytes: ByteArray,
+        mediaType: String,
+        declaredLength: Long = bytes.size.toLong(),
+        declaredDigest: String = digest(bytes).value,
+    ): AuthoritativeAcquisitionResolution {
+        val custodian = object : EvidenceCustodian {
+            override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact) =
+                EvidenceAcceptanceResult.Rejected("not used")
+            override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
+                EvidenceRetrievalResult.Found(evidenceArtifactId, bytes)
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
+                EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(evidenceId, declaredDigest, declaredLength, mediaType))
+        }
+        return AuthoritativeAcquisitionSourceResolver(custodian).resolve(PrincipalId("owner"), evidenceId)
+    }
 
     private fun digest(bytes: ByteArray) = OcrSha256Digest(
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) },

@@ -21,15 +21,16 @@ class OcrProcessingRepresentationFactory(
     ),
     private val now: () -> Instant = Instant::now,
 ) {
-    fun create(
-        sourceEvidenceArtifactId: EvidenceArtifactId,
-        verifiedSourceBytes: ByteArray,
-        authoritativeManifestSha256: OcrSha256Digest,
-        authoritativeSourceMediaType: String,
-        authoritativeSourceByteLength: Long,
+    internal fun create(
+        authoritativeSource: AuthoritativeAcquisitionInput,
         requestedPageScope: OcrPageScope? = null,
         submittedPageScope: OcrPageScope? = requestedPageScope,
     ): OcrProcessingRepresentationOutcome {
+        val authoritativeSourceMediaType = authoritativeSource.mediaType
+            ?: return OcrProcessingRepresentationOutcome.UnsupportedMedia
+        val authoritativeSourceByteLength = authoritativeSource.byteLength
+        val authoritativeManifestSha256 = OcrSha256Digest(authoritativeSource.sha256)
+        val verifiedSourceBytes = authoritativeSource.bytes()
         if (verifiedSourceBytes.isEmpty() || authoritativeSourceByteLength <= 0) return OcrProcessingRepresentationOutcome.InvalidSourceFacts
         if (authoritativeSourceByteLength != verifiedSourceBytes.size.toLong()) return OcrProcessingRepresentationOutcome.SourceLengthMismatch
         val limit = when (authoritativeSourceMediaType) {
@@ -45,7 +46,7 @@ class OcrProcessingRepresentationFactory(
             val digest = sha256(representationBytes)
             if (digest != authoritativeManifestSha256) return OcrProcessingRepresentationOutcome.DigestMismatch
             val provenance = OcrProcessingProvenance(
-                sourceEvidenceArtifactId = sourceEvidenceArtifactId,
+                sourceEvidenceArtifactId = authoritativeSource.evidenceArtifactId,
                 sourceManifestSha256 = authoritativeManifestSha256,
                 sourceMediaType = authoritativeSourceMediaType,
                 sourceByteLength = authoritativeSourceByteLength,
