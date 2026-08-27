@@ -179,6 +179,20 @@ class OcrTranscriptionProvenanceTest {
     }
 
     @Test
+    fun `digested configuration is exact and historical profiles never fabricate it`() {
+        val configuration = OcrTranscriptionConfiguration.DigestedConfiguration(
+            "openai-literal-page-transcription-v2", OcrSha256Digest("a".repeat(64)), OcrSha256Digest("b".repeat(64)),
+        )
+        val provider = OcrProviderProvenance(
+            "provider", "adapter", "1.1.0", configuration.profileId, "model", OcrModelSnapshot.NotExposed,
+            "response", configuration,
+        )
+        assertEquals(configuration, provider.transcriptionConfiguration)
+        assertIs<OcrTranscriptionConfiguration.HistoricalProfileOnly>(providerProvenance(OcrModelSnapshot.NotExposed).transcriptionConfiguration)
+        assertFailsWith<IllegalArgumentException> { provider.copy(transcriptionConfigurationProfile = "different-profile") }
+    }
+
+    @Test
     fun `request result and durable OCR payload have optional provider-neutral homes without changing legacy construction`() {
         val processing = byteExactProvenance()
         val provider = providerProvenance(OcrModelSnapshot.NotExposed)

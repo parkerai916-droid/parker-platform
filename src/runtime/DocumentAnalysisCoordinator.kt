@@ -146,6 +146,17 @@ class DocumentAnalysisCoordinator(
         val tierB = tierBOcrContentRetrievalCoordinator.retrieve(selection.evidenceArtifactId, selection.derivativeGenerationId)
         when (tierB) {
             is TierBOcrContentRetrievalOutcome.Retrieved -> {
+                if (tierB.extracted.providerProvenance != null &&
+                    tierB.extracted.fidelity == parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION &&
+                    !selection.acknowledgesUnverifiedExternalTranscription
+                ) {
+                    return Failed(
+                        DocumentAnalysisOutcome.UnverifiedExternalAcknowledgementRequired(
+                            selection.evidenceArtifactId,
+                            selection.derivativeGenerationId,
+                        ),
+                    )
+                }
                 val record = tierB.record
                 return Resolved(
                     AnalysisEvidenceItem(

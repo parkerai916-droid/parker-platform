@@ -319,6 +319,8 @@ data class OwnerTierBOcrContent(
     val sourceEvidenceArtifactId: String? = null,
     val providerIdentity: String? = null,
     val returnedModelIdentifier: String? = null,
+    val transcriptionProfileIdentity: String? = null,
+    val humanReviewStates: List<String> = emptyList(),
     val modelSnapshot: String? = null,
     val requestedPages: List<Int>? = null,
     val submittedPages: List<Int>? = null,
@@ -425,6 +427,10 @@ sealed interface OwnerDocumentAnalysisOutcome {
     data class ContentMissing(val derivativeGenerationId: DerivativeGenerationId) : OwnerDocumentAnalysisOutcome
     data class ContentCorrupt(val derivativeGenerationId: DerivativeGenerationId, val safeMessage: String) : OwnerDocumentAnalysisOutcome
     data class UnsupportedRepresentationVersion(val derivativeGenerationId: DerivativeGenerationId, val version: Int) : OwnerDocumentAnalysisOutcome
+    data class UnverifiedExternalAcknowledgementRequired(
+        val evidenceArtifactId: EvidenceArtifactId,
+        val derivativeGenerationId: DerivativeGenerationId,
+    ) : OwnerDocumentAnalysisOutcome
     data class UnsupportedDerivativeKind(val derivativeGenerationId: DerivativeGenerationId, val derivativeKind: String) : OwnerDocumentAnalysisOutcome
     data class ContentTooLarge(val actualCharacters: Int, val max: Int) : OwnerDocumentAnalysisOutcome
     data class ResponseTooLarge(val actualCharacters: Int, val max: Int) : OwnerDocumentAnalysisOutcome

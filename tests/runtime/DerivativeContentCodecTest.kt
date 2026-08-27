@@ -10,6 +10,8 @@ import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.TierADerivativePayload
 import parker.core.interfaces.TierADerivativePayloadFixtures
+import parker.core.interfaces.*
+import java.time.Instant
 
 /**
  * Document Ingestion — Derivative Content Persistence and Retrieval.
@@ -200,6 +202,30 @@ class DerivativeContentCodecTest {
     }
 
     @Test
+    fun `OCR v2 historical configuration remains v2 and v3 digested configuration round trips`() {
+        val historical = durableOcr(
+            OcrTranscriptionConfiguration.HistoricalProfileOnly("openai-faithful-page-transcription-v1"),
+        )
+        val historicalEntry = DerivativeContentEntry(DerivativeGenerationId("ocr-v2"), EvidenceArtifactId("source-v2"), TierADerivativePayload.Ocr(historical))
+        val historicalBytes = DerivativeContentCodec.encode(historicalEntry)
+        assertEquals(2, representationVersion(historicalBytes, historicalEntry))
+        assertEquals(historicalEntry, DerivativeContentCodec.decode(historicalBytes))
+
+        val digested = durableOcr(
+            OcrTranscriptionConfiguration.DigestedConfiguration(
+                "openai-literal-page-transcription-v2", OcrSha256Digest("a".repeat(64)), OcrSha256Digest("b".repeat(64)),
+            ),
+        )
+        val v3Entry = DerivativeContentEntry(DerivativeGenerationId("ocr-v3"), EvidenceArtifactId("source-v3"), TierADerivativePayload.Ocr(digested))
+        val v3Bytes = DerivativeContentCodec.encode(v3Entry)
+        assertEquals(3, representationVersion(v3Bytes, v3Entry))
+        assertEquals(v3Entry, DerivativeContentCodec.decode(v3Bytes))
+
+        val corrupt = v3Bytes.copyOf().also { it[it.size - 33] = 'g'.code.toByte() }
+        assertFailsWith<IllegalArgumentException> { DerivativeContentCodec.decode(reSign(corrupt)) }
+    }
+
+    @Test
     fun `historical version one VERBATIM OCR payload decodes and re-encodes without migration`() {
         val historical = TierADerivativePayloadFixtures.ocr(
             fidelity = parker.core.interfaces.TranscriptionFidelity.VERBATIM,
@@ -309,4 +335,22 @@ class DerivativeContentCodecTest {
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(body)
         return body + digest
     }
+
+    private fun representationVersion(bytes: ByteArray, entry: DerivativeContentEntry): Int = ByteBuffer.wrap(bytes).getInt(
+        4 + 4 + 4 + entry.derivativeGenerationId.value.toByteArray().size + 4 + entry.rootSourceEvidenceArtifactId.value.toByteArray().size + 1,
+    )
+
+    private fun durableOcr(configuration: OcrTranscriptionConfiguration) = TierADerivativePayloadFixtures.ocr().copy(
+        pageAccounting = OcrPageAccounting(OcrPageScope(listOf(1)), OcrPageScope(listOf(1)), OcrPageScope(listOf(1)), listOf(OcrPageOutcome(1, OcrPageOutcomeKind.TRANSCRIBED))),
+        processingProvenance = OcrProcessingProvenance(
+            EvidenceArtifactId("source-provenance"), OcrSha256Digest("c".repeat(64)), "application/pdf", 10,
+            OcrPageScope(listOf(1)), OcrPageScope(listOf(1)), "application/pdf", 10, OcrSha256Digest("c".repeat(64)),
+            true, "external-transcription.direct-byte-exact-v1", Instant.parse("2026-08-27T00:00:00Z"),
+        ),
+        providerProvenance = OcrProviderProvenance(
+            "OpenAI", "openai-responses-adapter", "1.1.0", configuration.profileId, "model", OcrModelSnapshot.NotExposed,
+            "response-id", configuration,
+        ),
+        recognisedAt = Instant.parse("2026-08-27T00:00:01Z"),
+    )
 }

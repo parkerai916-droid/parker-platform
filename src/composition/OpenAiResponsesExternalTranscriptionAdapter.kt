@@ -11,6 +11,8 @@ import java.net.http.HttpConnectTimeoutException
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.net.http.HttpTimeoutException
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.util.Base64
@@ -20,9 +22,17 @@ import javax.net.ssl.SSLException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import parker.composition.OpenAiApiCredential
 import parker.composition.OpenAiExternalTranscriptionReadiness
+import parker.composition.BYTE_EXACT_PROCESSING_PROFILE_ID
 import parker.core.interfaces.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+internal const val LITERAL_V2_PROFILE_ID = "openai-literal-page-transcription-v2"
+internal const val LITERAL_V2_INSTRUCTION = "Perform literal transcription only. Reproduce only text visibly present in the submitted source. Preserve source spelling, punctuation, capitalization, page association, and visible reading order exactly as seen. Do not paraphrase, summarize, rewrite for clarity, correct grammar, normalize wording, infer missing text, or complete fragments. Do not insert likely names, dates, amounts, facts, legal propositions, or contextual completions. Do not use general knowledge, perform legal interpretation or analysis, or resolve factual conflicts. Where handwritten text is visibly distinct, preserve it as a separate line or block in visible reading order; do not merge it into or rewrite printed text. If any text is unreadable or uncertain, disclose that using the structured uncertainty, illegibility, qualification, or page-outcome fields and qualify or omit the text instead of completing it. Omission or qualification is preferable to invention. If page orientation is awkward, read the visible page as supplied and do not invent text to compensate. Output must correspond only to the submitted source. Return only the strict structured schema."
+internal const val LITERAL_V2_INSTRUCTION_SHA256 = "c721e63b29e56f9242ee24dd8f13ddcab5d4468d3d17e9e3b9b1d66a68cb2000"
+internal val LITERAL_V2_SCHEMA_SOURCE = """{"type":"object","additionalProperties":false,"required":["requested_pages","returned_pages","pages","warnings"],"properties":{"requested_pages":{"type":"array","items":{"type":"integer","minimum":1}},"returned_pages":{"type":"array","items":{"type":"integer","minimum":1}},"warnings":{"type":"array","items":{"type":"string"}},"pages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_number","text","outcome","reason_classification","reason_detail","warnings","uncertainty_spans"],"properties":{"page_number":{"type":"integer","minimum":1},"text":{"type":["string","null"]},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}},"uncertainty_spans":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start","end","kind","disclosure"],"properties":{"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["UNCERTAIN","ILLEGIBLE"]},"disclosure":{"type":"string"}}}}}}}}}"""
+internal val LITERAL_V2_SCHEMA_CANONICAL = canonicalizeStructuredSchema(LITERAL_V2_SCHEMA_SOURCE)
+internal val LITERAL_V2_SCHEMA_SHA256 = sha256Hex(LITERAL_V2_SCHEMA_CANONICAL.toByteArray(StandardCharsets.UTF_8))
 
 internal data class OpenAiResponsesTransportRequest(
     val endpoint: URI,
@@ -106,6 +116,10 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     init {
         require(endpoint == URI.create("https://api.openai.com/v1/responses")) { "OpenAI Responses endpoint is not approved" }
         require(!profile.store) { "OpenAI adapter requires store=false" }
+        require(profile.transcriptionProfileId == TRANSCRIPTION_PROFILE_ID) { "OpenAI adapter requires literal-v2 profile" }
+        require(profile.instructionSha256 == TRANSCRIPTION_INSTRUCTION_SHA256) { "OpenAI instruction digest does not match literal-v2" }
+        require(profile.structuredSchemaSha256 == STRUCTURED_SCHEMA_SHA256) { "OpenAI schema digest does not match literal-v2" }
+        require(profile.processingProfileIdentity == BYTE_EXACT_PROCESSING_PROFILE_ID) { "OpenAI adapter requires byte-exact processing" }
     }
 
     override suspend fun transcribe(request: ExternalTranscriptionRequest): ExternalTranscriptionMechanismOutcome {
@@ -163,7 +177,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             "\"input\":[{\"role\":\"user\",\"content\":[" +
             "{\"type\":\"input_text\",\"text\":\"Transcribe this source under the developer instruction. Maximum page count: ${request.maximumPageCount}.\"}," +
             mediaPart + "]}]," +
-            "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"parker_page_transcription\",\"strict\":true,\"schema\":" + STRUCTURED_SCHEMA + "}}}"
+            "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"parker_page_transcription\",\"strict\":true,\"schema\":" + STRUCTURED_SCHEMA_CANONICAL + "}}}"
     }
 
     private fun parseResponse(request: ExternalTranscriptionRequest, raw: String): OcrStructuredTranscriptionCandidate {
@@ -206,7 +220,15 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         return responseParseStage("CANDIDATE") { OcrStructuredTranscriptionCandidate(
             requested, requested, returned, pages, TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
             OcrRecognitionIdentity("openai-responses", TRANSCRIPTION_PROFILE_ID, ADAPTER_VERSION),
-            OcrProviderProvenance("OpenAI", "openai-responses-adapter", ADAPTER_VERSION, TRANSCRIPTION_PROFILE_ID, model, OcrModelSnapshot.NotExposed, responseId),
+            OcrProviderProvenance(
+                "OpenAI", "openai-responses-adapter", ADAPTER_VERSION, TRANSCRIPTION_PROFILE_ID,
+                model, OcrModelSnapshot.NotExposed, responseId,
+                OcrTranscriptionConfiguration.DigestedConfiguration(
+                    TRANSCRIPTION_PROFILE_ID,
+                    OcrSha256Digest(TRANSCRIPTION_INSTRUCTION_SHA256),
+                    OcrSha256Digest(STRUCTURED_SCHEMA_SHA256),
+                ),
+            ),
             request.processingProvenance, Instant.now(), result.requiredStringArray("warnings"),
         ) }
     }
@@ -214,13 +236,15 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     private fun failure(code: String) = ExternalTranscriptionMechanismOutcome.Failure(code)
 
     private companion object {
-        const val ADAPTER_VERSION = "1.0.0"
-        const val TRANSCRIPTION_PROFILE_ID = "openai-faithful-page-transcription-v1"
+        const val ADAPTER_VERSION = "1.1.0"
+        const val TRANSCRIPTION_PROFILE_ID = LITERAL_V2_PROFILE_ID
         const val REQUEST_OVERHEAD_ALLOWANCE = 64L * 1024L
         const val MAXIMUM_ENCODED_REQUEST_BYTES = 96L * 1024L * 1024L
         val ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,1024}$")
-        const val TRANSCRIPTION_INSTRUCTION = "Faithfully transcribe readable source text with page association. Mark uncertainty and illegible content; do not guess. Do not summarize, interpret, translate, perform legal analysis, correct substantive wording, resolve factual conflicts, browse, retrieve external information, or use tools. Return only the strict structured schema."
-        val STRUCTURED_SCHEMA = """{"type":"object","additionalProperties":false,"required":["requested_pages","returned_pages","pages","warnings"],"properties":{"requested_pages":{"type":"array","items":{"type":"integer","minimum":1}},"returned_pages":{"type":"array","items":{"type":"integer","minimum":1}},"warnings":{"type":"array","items":{"type":"string"}},"pages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_number","text","outcome","reason_classification","reason_detail","warnings","uncertainty_spans"],"properties":{"page_number":{"type":"integer","minimum":1},"text":{"type":["string","null"]},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}},"uncertainty_spans":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start","end","kind","disclosure"],"properties":{"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["UNCERTAIN","ILLEGIBLE"]},"disclosure":{"type":"string"}}}}}}}}}"""
+        const val TRANSCRIPTION_INSTRUCTION = LITERAL_V2_INSTRUCTION
+        const val TRANSCRIPTION_INSTRUCTION_SHA256 = LITERAL_V2_INSTRUCTION_SHA256
+        val STRUCTURED_SCHEMA_CANONICAL = LITERAL_V2_SCHEMA_CANONICAL
+        val STRUCTURED_SCHEMA_SHA256 = LITERAL_V2_SCHEMA_SHA256
     }
 }
 
@@ -415,6 +439,39 @@ private fun safeThrowableClassName(error: Throwable): String =
 
 private fun jsonEscape(value: String): String = buildString(value.length) {
     value.forEach { c -> when (c) { '\\' -> append("\\\\"); '"' -> append("\\\""); '\n' -> append("\\n"); '\r' -> append("\\r"); '\t' -> append("\\t"); else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c) } }
+}
+
+internal fun sha256Hex(bytes: ByteArray): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+/** RFC 8785 canonical form for Parker's governed schema subset (objects, arrays, strings, booleans, null, and integers). */
+internal fun canonicalizeStructuredSchema(source: String): String = canonicalJson(Json.parse(source))
+
+private fun canonicalJson(value: Json): String = when (value) {
+    is Json.Obj -> value.fields.keys.sorted().joinToString(prefix = "{", postfix = "}") { key ->
+        "\"${canonicalJsonEscape(key)}\":" + canonicalJson(value.fields.getValue(key))
+    }
+    is Json.Arr -> value.values.joinToString(prefix = "[", postfix = "]") { canonicalJson(it) }
+    is Json.Str -> "\"${canonicalJsonEscape(value.value)}\""
+    is Json.Num -> value.value.stripTrailingZeros().let {
+        require(it.scale() <= 0) { "governed transcription schema numbers must be integers" }
+        if (it.signum() == 0) "0" else it.toPlainString()
+    }
+    Json.Null -> "null"
+    is Json.Bool -> value.value.toString()
+}
+
+private fun canonicalJsonEscape(value: String): String = buildString(value.length) {
+    value.forEach { c -> when (c) {
+        '\b' -> append("\\b")
+        '\t' -> append("\\t")
+        '\n' -> append("\\n")
+        '\u000C' -> append("\\f")
+        '\r' -> append("\\r")
+        '"' -> append("\\\"")
+        '\\' -> append("\\\\")
+        else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
+    } }
 }
 
 private sealed interface Json {

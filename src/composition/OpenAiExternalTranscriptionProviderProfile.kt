@@ -32,7 +32,20 @@ data class OpenAiExternalTranscriptionProviderProfile(
     val nextReviewDate: LocalDate,
     val verificationReferences: List<String>,
     val reverificationTriggers: List<String>,
+    val transcriptionProfileId: String = HISTORICAL_TRANSCRIPTION_PROFILE_ID,
+    val instructionSha256: String? = null,
+    val structuredSchemaSha256: String? = null,
+    val processingProfileIdentity: String = BYTE_EXACT_PROCESSING_PROFILE_ID,
+    val acceptanceState: ExternalTranscriptionAcceptanceState = ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING,
 )
+
+enum class ExternalTranscriptionAcceptanceState {
+    DISABLED,
+    CONFIGURATION_READY,
+    ACCEPTANCE_PENDING,
+    ACCEPTED,
+    SUSPENDED,
+}
 
 data class OpenAiExternalTranscriptionEffectiveLimits(
     val maximumPdfBytes: Long,
@@ -110,6 +123,13 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
         nextReviewDate = p.date("nextReviewDate"),
         verificationReferences = p.list("verificationReferences"),
         reverificationTriggers = p.list("reverificationTriggers"),
+        transcriptionProfileId = if (p.required("schemaVersion") == "1") HISTORICAL_TRANSCRIPTION_PROFILE_ID else p.required("transcriptionProfileId"),
+        instructionSha256 = if (p.required("schemaVersion") == "1") null else p.required("instructionSha256"),
+        structuredSchemaSha256 = if (p.required("schemaVersion") == "1") null else p.required("structuredSchemaSha256"),
+        processingProfileIdentity = if (p.required("schemaVersion") == "1") BYTE_EXACT_PROCESSING_PROFILE_ID else p.required("processingProfileIdentity"),
+        acceptanceState = if (p.required("schemaVersion") == "1") ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING
+        else try { enumValueOf<ExternalTranscriptionAcceptanceState>(p.required("acceptanceState")) }
+        catch (_: IllegalArgumentException) { invalidValue("acceptanceState is invalid") },
     )
 
     private fun validate(p: OpenAiExternalTranscriptionProviderProfile): String? {
@@ -121,7 +141,7 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
             p.regionalStorageConsiderations, p.approvingOwnerReference,
         ) + p.verificationReferences + p.reverificationTriggers
         if (bounded.any { it.length !in 1..MAX_FIELD_CHARACTERS }) return "Profile fields must be bounded"
-        if (p.schemaVersion != "1") return "Unsupported provider profile schemaVersion"
+        if (p.schemaVersion !in setOf("1", "2")) return "Unsupported provider profile schemaVersion"
         if (p.providerIdentity != "OpenAI") return "Provider identity must be OpenAI"
         if (p.apiProductPath != "/v1/responses") return "API product path must be /v1/responses"
         if (p.store) return "Provider profile must require store=false"
@@ -132,6 +152,19 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
         if (p.nextReviewDate.isBefore(p.verifiedOn)) return "nextReviewDate must not precede verifiedOn"
         if (p.verificationReferences.isEmpty()) return "Verification references must be present"
         if (p.reverificationTriggers.isEmpty()) return "Re-verification triggers must be present"
+        if (p.transcriptionProfileId.isBlank() || p.processingProfileIdentity.isBlank()) return "Transcription configuration identities must be present"
+        if (p.schemaVersion == "1") {
+            if (p.transcriptionProfileId != HISTORICAL_TRANSCRIPTION_PROFILE_ID || p.instructionSha256 != null ||
+                p.structuredSchemaSha256 != null || p.processingProfileIdentity != BYTE_EXACT_PROCESSING_PROFILE_ID ||
+                p.acceptanceState != ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING
+            ) return "Historical profile state is inconsistent"
+        } else {
+            if (p.transcriptionProfileId != LITERAL_V2_TRANSCRIPTION_PROFILE_ID) return "Profile schema v2 requires literal-v2 identity"
+            if (!SHA256.matches(p.instructionSha256.orEmpty()) || !SHA256.matches(p.structuredSchemaSha256.orEmpty())) {
+                return "Profile schema v2 requires valid configuration SHA-256 digests"
+            }
+            if (p.processingProfileIdentity != BYTE_EXACT_PROCESSING_PROFILE_ID) return "Profile schema v2 requires byte-exact processing"
+        }
         val destination = try { URI(p.allowedNetworkDestination) } catch (_: Exception) { return "Network destination is invalid" }
         if (destination.scheme != "https" || destination.host != "api.openai.com" ||
             destination.userInfo != null || destination.port != -1 ||
@@ -161,6 +194,12 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
             "zdrMamStatus", "projectAccountStatus", "projectAccountControls", "authenticationMechanism",
             "requestLoggingConsiderations", "regionalStorageConsiderations", "verifiedOn",
             "approvingOwnerReference", "nextReviewDate", "verificationReferences", "reverificationTriggers",
+            "transcriptionProfileId", "instructionSha256", "structuredSchemaSha256", "processingProfileIdentity", "acceptanceState",
         )
+        val SHA256 = Regex("^[0-9a-f]{64}$")
     }
 }
+
+const val HISTORICAL_TRANSCRIPTION_PROFILE_ID = "openai-faithful-page-transcription-v1"
+const val LITERAL_V2_TRANSCRIPTION_PROFILE_ID = "openai-literal-page-transcription-v2"
+const val BYTE_EXACT_PROCESSING_PROFILE_ID = "external-transcription.direct-byte-exact-v1"

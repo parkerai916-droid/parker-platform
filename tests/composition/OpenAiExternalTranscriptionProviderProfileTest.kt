@@ -102,6 +102,33 @@ class OpenAiExternalTranscriptionProviderProfileTest {
         assertIs<OpenAiExternalTranscriptionReadiness.Ready>(evaluator.evaluate(true, profileFile().toString()))
     }
 
+    @Test
+    fun `historical v1 and literal v2 acceptance identities are explicit`() {
+        val historical = assertIs<OpenAiExternalTranscriptionReadiness.Ready>(evaluator.evaluate(true, profileFile().toString())).profile
+        assertEquals(HISTORICAL_TRANSCRIPTION_PROFILE_ID, historical.transcriptionProfileId)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING, historical.acceptanceState)
+        assertEquals(null, historical.instructionSha256)
+
+        ExternalTranscriptionAcceptanceState.entries.forEach { state ->
+            val v2 = assertIs<OpenAiExternalTranscriptionReadiness.Ready>(
+                evaluator.evaluate(true, profileFile(literalV2Overrides(state)).toString()),
+            ).profile
+            assertEquals(state, v2.acceptanceState)
+            assertEquals(LITERAL_V2_TRANSCRIPTION_PROFILE_ID, v2.transcriptionProfileId)
+        }
+        assertInvalid(literalV2Overrides(ExternalTranscriptionAcceptanceState.CONFIGURATION_READY) + ("acceptanceState" to "NOT_A_STATE"))
+        assertInvalid(literalV2Overrides(ExternalTranscriptionAcceptanceState.CONFIGURATION_READY) + ("instructionSha256" to "bad"))
+    }
+
+    private fun literalV2Overrides(state: ExternalTranscriptionAcceptanceState): Map<String, String?> = mapOf(
+        "schemaVersion" to "2",
+        "transcriptionProfileId" to LITERAL_V2_TRANSCRIPTION_PROFILE_ID,
+        "instructionSha256" to "a".repeat(64),
+        "structuredSchemaSha256" to "b".repeat(64),
+        "processingProfileIdentity" to BYTE_EXACT_PROCESSING_PROFILE_ID,
+        "acceptanceState" to state.name,
+    )
+
     private fun assertInvalid(overrides: Map<String, String?>) {
         assertIs<OpenAiExternalTranscriptionReadiness.InvalidProfile>(evaluator.evaluate(true, profileFile(overrides).toString()))
     }

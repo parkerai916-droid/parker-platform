@@ -175,6 +175,22 @@ sealed interface OcrModelSnapshot {
     data object NotExposed : OcrModelSnapshot
 }
 
+sealed interface OcrTranscriptionConfiguration {
+    val profileId: String
+
+    data class HistoricalProfileOnly(override val profileId: String) : OcrTranscriptionConfiguration {
+        init { requireBoundedIdentity(profileId, "OcrTranscriptionConfiguration.HistoricalProfileOnly.profileId") }
+    }
+
+    data class DigestedConfiguration(
+        override val profileId: String,
+        val instructionSha256: OcrSha256Digest,
+        val structuredSchemaSha256: OcrSha256Digest,
+    ) : OcrTranscriptionConfiguration {
+        init { requireBoundedIdentity(profileId, "OcrTranscriptionConfiguration.DigestedConfiguration.profileId") }
+    }
+}
+
 /** Provider-neutral provenance for a completed provider request; carries no endpoint or authentication material. */
 data class OcrProviderProvenance(
     val providerIdentity: String,
@@ -184,6 +200,8 @@ data class OcrProviderProvenance(
     val providerReportedModelIdentifier: String,
     val modelSnapshot: OcrModelSnapshot,
     val providerCorrelationIdentifier: String,
+    val transcriptionConfiguration: OcrTranscriptionConfiguration =
+        OcrTranscriptionConfiguration.HistoricalProfileOnly(transcriptionConfigurationProfile),
 ) {
     init {
         requireBoundedIdentity(providerIdentity, "OcrProviderProvenance.providerIdentity")
@@ -197,6 +215,9 @@ data class OcrProviderProvenance(
         requireBoundedIdentity(providerCorrelationIdentifier, "OcrProviderProvenance.providerCorrelationIdentifier")
         require(!providerCorrelationIdentifier.equals("unknown", ignoreCase = true)) {
             "OcrProviderProvenance.providerCorrelationIdentifier must never fabricate 'unknown'"
+        }
+        require(transcriptionConfiguration.profileId == transcriptionConfigurationProfile) {
+            "OcrProviderProvenance configuration profile identities must match"
         }
     }
 }

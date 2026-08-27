@@ -176,6 +176,8 @@ class OwnerEvidenceHttpServerTest {
                 .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.ofString("{\"evidenceArtifactId\":\"replacement\",\"secret\":\"$sentinel\"}")).build())
             assertEquals(200, response.statusCode()); assertEquals(1, calls); assertEquals(evidenceId, invokedId)
             assertTrue(response.body().contains("generation-external-unit-k")); assertTrue(response.body().contains("Machine transcription — unverified"))
+            assertTrue(root.body().contains("Fluent machine transcription may contain plausible text that is inconsistent with the source."))
+            assertTrue(response.body().contains("profile")); assertTrue(response.body().contains("UNREVIEWED"))
             assertTrue(response.body().contains("Not separately exposed")); assertTrue(response.body().contains("KNOWN_INCOMPLETE"))
             assertFalse(response.body().contains(sentinel))
 
@@ -186,6 +188,18 @@ class OwnerEvidenceHttpServerTest {
                 .header("Authorization", "Bearer $token").GET().build())
             assertEquals(404, get.statusCode()); assertEquals(1, calls)
         } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `analysis request carries exact unverified acknowledgement and UI never preselects it`() {
+        val page = startHarness("")
+        try {
+            val root = send(HttpRequest.newBuilder(URI.create(page.baseUri() + "/")).GET().build()).body()
+            assertTrue(root.contains("acknowledgesUnverifiedExternalTranscription"))
+            assertTrue(root.contains("I acknowledge this exact unverified machine transcription"))
+            assertTrue(root.contains("selectedForAnalysis: false"))
+            assertFalse(root.contains("externalResultRow: true, selectedForAnalysis: true"))
+        } finally { page.shutdown() }
     }
 
     @Test
@@ -1093,7 +1107,8 @@ class OwnerEvidenceHttpServerTest {
         try {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
             assertTrue(body.contains(tierBAnalysisEligibility))
-            assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.ocrDerivativeGenerationId })"))
+            assertTrue(body.contains("derivativeGenerationId: row.ocrDerivativeGenerationId"))
+            assertTrue(body.contains("acknowledgesUnverifiedExternalTranscription: !!row.acknowledgesUnverifiedExternalTranscription"))
         } finally {
             harness.shutdown()
         }
@@ -1119,9 +1134,9 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("rows.forEach(row => {"))
             assertTrue(body.contains("if (!row.selectedForAnalysis) return;"))
             assertTrue(body.contains("rows.push({"), "a later durable generation must remain a separate visible row")
-            assertTrue(body.contains("cb.onchange = () => { row.selectedForAnalysis = cb.checked; };"), "each checkbox must update only its own row")
+            assertTrue(body.contains("row.selectedForAnalysis = cb.checked;"), "each checkbox must update only its own row")
             assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.derivativeGenerationId })"))
-            assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.ocrDerivativeGenerationId })"))
+            assertTrue(body.contains("derivativeGenerationId: row.ocrDerivativeGenerationId"))
             assertFalse(body.contains("latestForEvidence"))
             assertFalse(body.contains("preferredGeneration"))
             assertFalse(body.contains("newestOcr"))

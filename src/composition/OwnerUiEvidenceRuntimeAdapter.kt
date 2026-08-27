@@ -25,6 +25,7 @@ import parker.core.interfaces.TierBOcrContentRetrievalOutcome
 import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.OcrModelSnapshot
+import parker.core.interfaces.HumanVerificationRecord
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerDocumentAnalysisInvocationOutcome
@@ -93,6 +94,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val invokeExternalTranscriptionAsOwner: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = {
         ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("Enhanced transcription is not enabled in this runtime")
     },
+    private val listHumanVerificationRecordsAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> List<HumanVerificationRecord> = { _, _ -> emptyList() },
 ) : OwnerEvidenceOperations {
 
     override fun enhancedTranscriptionReadiness(): EnhancedTranscriptionReadiness = externalReadiness()
@@ -343,7 +345,10 @@ class OwnerUiEvidenceRuntimeAdapter(
         derivativeGenerationId: DerivativeGenerationId,
     ): TierBOcrContentRetrievalResult =
         when (val outcome = retrieveTierBOcrContentAsOwner(evidenceArtifactId, derivativeGenerationId)) {
-            is TierBOcrContentRetrievalOutcome.Retrieved -> TierBOcrContentRetrievalResult.Retrieved(toOwnerOcrContent(outcome.extracted))
+            is TierBOcrContentRetrievalOutcome.Retrieved -> {
+                val reviews = listHumanVerificationRecordsAsOwner(evidenceArtifactId, derivativeGenerationId)
+                TierBOcrContentRetrievalResult.Retrieved(toOwnerOcrContent(outcome.extracted, reviews.map { it.outcome.name }))
+            }
             is TierBOcrContentRetrievalOutcome.UnknownGeneration -> TierBOcrContentRetrievalResult.UnknownGeneration
             is TierBOcrContentRetrievalOutcome.SourceMismatch -> TierBOcrContentRetrievalResult.SourceMismatch
             is TierBOcrContentRetrievalOutcome.WrongDerivativeKind -> TierBOcrContentRetrievalResult.WrongDerivativeKind
@@ -359,7 +364,7 @@ class OwnerUiEvidenceRuntimeAdapter(
      * [OcrDerivativeExtractedResult] into the safe, owner-facing
      * [OwnerTierBOcrContent] shape -- never a re-recognition.
      */
-    private fun toOwnerOcrContent(extracted: OcrDerivativeExtractedResult): OwnerTierBOcrContent = OwnerTierBOcrContent(
+    private fun toOwnerOcrContent(extracted: OcrDerivativeExtractedResult, humanReviewStates: List<String> = emptyList()): OwnerTierBOcrContent = OwnerTierBOcrContent(
         recognisedText = extracted.recognisedText,
         fidelity = transcriptionFidelityLabel(extracted.fidelity),
         outcomeKind = extracted.outcomeKind.name,
@@ -371,6 +376,8 @@ class OwnerUiEvidenceRuntimeAdapter(
         sourceEvidenceArtifactId = extracted.processingProvenance?.sourceEvidenceArtifactId?.value,
         providerIdentity = extracted.providerProvenance?.providerIdentity,
         returnedModelIdentifier = extracted.providerProvenance?.providerReportedModelIdentifier,
+        transcriptionProfileIdentity = extracted.providerProvenance?.transcriptionConfigurationProfile,
+        humanReviewStates = humanReviewStates,
         modelSnapshot = when (val snapshot = extracted.providerProvenance?.modelSnapshot) {
             is OcrModelSnapshot.Present -> snapshot.value
             OcrModelSnapshot.NotExposed -> "Not separately exposed"
@@ -423,6 +430,11 @@ class OwnerUiEvidenceRuntimeAdapter(
                 OwnerDocumentAnalysisOutcome.ContentCorrupt(outcome.derivativeGenerationId, outcome.reason)
             is DocumentAnalysisOutcome.UnsupportedRepresentationVersion ->
                 OwnerDocumentAnalysisOutcome.UnsupportedRepresentationVersion(outcome.derivativeGenerationId, outcome.version)
+            is DocumentAnalysisOutcome.UnverifiedExternalAcknowledgementRequired ->
+                OwnerDocumentAnalysisOutcome.UnverifiedExternalAcknowledgementRequired(
+                    outcome.evidenceArtifactId,
+                    outcome.derivativeGenerationId,
+                )
             is DocumentAnalysisOutcome.UnsupportedDerivativeKind ->
                 OwnerDocumentAnalysisOutcome.UnsupportedDerivativeKind(outcome.derivativeGenerationId, outcome.derivativeKind)
             is DocumentAnalysisOutcome.ContentTooLarge -> OwnerDocumentAnalysisOutcome.ContentTooLarge(outcome.actualCharacters, outcome.max)

@@ -22,6 +22,12 @@ import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.OwnerDocumentAnalysisRequest
 import parker.core.interfaces.OcrModelSnapshot
 import parker.core.interfaces.OcrProviderProvenance
+import parker.core.interfaces.OcrPageAccounting
+import parker.core.interfaces.OcrPageOutcome
+import parker.core.interfaces.OcrPageOutcomeKind
+import parker.core.interfaces.OcrPageScope
+import parker.core.interfaces.OcrProcessingProvenance
+import parker.core.interfaces.OcrSha256Digest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
 import parker.core.interfaces.PermissionDecisionOutcome
@@ -89,9 +95,28 @@ class DocumentAnalysisCoordinatorTest {
     ): DerivativeGenerationRecord {
         val extracted = TierADerivativePayloadFixtures.ocr().copy(
             recognisedText = recognisedText,
+            fidelity = if (providerIdentity == null) TierADerivativePayloadFixtures.ocr().fidelity else parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            segments = if (providerIdentity == null) TierADerivativePayloadFixtures.ocr().segments else listOf(
+                parker.core.interfaces.OcrRecognitionSegment(
+                    recognisedText,
+                    parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+                    1,
+                ),
+            ),
             providerProvenance = providerIdentity?.let {
                 OcrProviderProvenance(it, "adapter", "1.0.0", "literal-v1", "model", OcrModelSnapshot.NotExposed, "correlation-$it")
             },
+            pageAccounting = providerIdentity?.let {
+                OcrPageAccounting(OcrPageScope(listOf(1)), OcrPageScope(listOf(1)), OcrPageScope(listOf(1)), listOf(OcrPageOutcome(1, OcrPageOutcomeKind.TRANSCRIBED)))
+            },
+            processingProvenance = providerIdentity?.let {
+                OcrProcessingProvenance(
+                    evidenceArtifactId, OcrSha256Digest("a".repeat(64)), "application/pdf", 10,
+                    OcrPageScope(listOf(1)), OcrPageScope(listOf(1)), "application/pdf", 10,
+                    OcrSha256Digest("a".repeat(64)), true, "external-transcription.direct-byte-exact-v1", Instant.EPOCH,
+                )
+            },
+            recognisedAt = providerIdentity?.let { Instant.EPOCH },
         )
         val record = DerivativeGenerationTest.record(id.value).copy(
             rootSourceEvidenceArtifactId = evidenceArtifactId,
@@ -185,7 +210,7 @@ class DocumentAnalysisCoordinatorTest {
             val outcome = coordinator(generationStorage, contentStorage, modelInferenceClient = model).analyse(
                 owner,
                 OwnerDocumentAnalysisRequest(
-                    listOf(EvidenceGenerationSelection(evidence, selectedGeneration)),
+                    listOf(EvidenceGenerationSelection(evidence, selectedGeneration, selectedGeneration != generationA)),
                     "Analyse the selected generation",
                 ),
             )
@@ -199,6 +224,29 @@ class DocumentAnalysisCoordinatorTest {
             assertEquals(evidence, completed.result.evidenceItems.single().evidenceArtifactId)
             assertEquals(selectedGeneration, completed.result.evidenceItems.single().derivativeGenerationId)
         }
+    }
+
+    @Test
+    fun `unverified external analysis requires acknowledgement bound to exact pair`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-ack")
+        val generation = DerivativeGenerationId("generation-ack")
+        admitTierBOcr(generationStorage, contentStorage, generation, evidence, "EXTERNAL_TEXT", "OpenAI")
+        val model = FakeModelInferenceClient()
+        val coord = coordinator(generationStorage, contentStorage, modelInferenceClient = model)
+
+        assertEquals(
+            DocumentAnalysisOutcome.UnverifiedExternalAcknowledgementRequired(evidence, generation),
+            coord.analyse(owner, OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, generation)), "Analyse")),
+        )
+        assertEquals(0, model.invocationCount)
+
+        val completed = coord.analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, generation, true)), "Analyse"),
+        )
+        assertIs<DocumentAnalysisOutcome.Completed>(completed)
+        assertEquals(1, model.invocationCount)
     }
 
     @Test

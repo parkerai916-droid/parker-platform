@@ -745,6 +745,13 @@ class OwnerEvidenceHttpServer(
             jsonObject("status" to "FAILED", "message" to "Unsupported derivative representation version (${outcome.version}).")
         is OwnerDocumentAnalysisOutcome.UnsupportedDerivativeKind ->
             jsonObject("status" to "FAILED", "message" to "Unsupported derivative kind (${outcome.derivativeKind}).")
+        is OwnerDocumentAnalysisOutcome.UnverifiedExternalAcknowledgementRequired ->
+            jsonObject(
+                "status" to "ACKNOWLEDGEMENT_REQUIRED",
+                "message" to "Explicit acknowledgement is required for the selected unverified machine transcription.",
+                "evidenceArtifactId" to outcome.evidenceArtifactId.value,
+                "derivativeGenerationId" to outcome.derivativeGenerationId.value,
+            )
         is OwnerDocumentAnalysisOutcome.ContentTooLarge ->
             jsonObject(
                 "status" to "FAILED",
@@ -771,6 +778,8 @@ class OwnerEvidenceHttpServer(
         "sourceEvidenceArtifactId" to content.sourceEvidenceArtifactId,
         "providerIdentity" to content.providerIdentity,
         "returnedModelIdentifier" to content.returnedModelIdentifier,
+        "transcriptionProfileIdentity" to content.transcriptionProfileIdentity,
+        "humanReviewStates" to jsonArray(content.humanReviewStates.ifEmpty { listOf("UNREVIEWED") }),
         "modelSnapshot" to content.modelSnapshot,
         "requestedPages" to content.requestedPages?.let(::jsonArray),
         "submittedPages" to content.submittedPages?.let(::jsonArray),
@@ -1008,7 +1017,12 @@ private fun parseAnalyseRequestBody(bodyBytes: ByteArray): Pair<List<EvidenceGen
             ?: throw JsonParseException("expected an 'evidenceArtifactId' string")
         val derivativeGenerationIdRaw = itemObj["derivativeGenerationId"] as? String
             ?: throw JsonParseException("expected a 'derivativeGenerationId' string")
-        EvidenceGenerationSelection(EvidenceArtifactId(evidenceArtifactIdRaw), DerivativeGenerationId(derivativeGenerationIdRaw))
+        val acknowledgement = itemObj["acknowledgesUnverifiedExternalTranscription"] as? Boolean ?: false
+        EvidenceGenerationSelection(
+            EvidenceArtifactId(evidenceArtifactIdRaw),
+            DerivativeGenerationId(derivativeGenerationIdRaw),
+            acknowledgement,
+        )
     }
 
     val instruction = obj["instruction"] as? String ?: throw JsonParseException("expected an 'instruction' string")
@@ -1560,8 +1574,23 @@ function render() {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = !!row.selectedForAnalysis;
-      cb.onchange = () => { row.selectedForAnalysis = cb.checked; };
+      cb.onchange = () => {
+        row.selectedForAnalysis = cb.checked;
+        if (!cb.checked) row.acknowledgesUnverifiedExternalTranscription = false;
+        render();
+      };
       analyseTd.appendChild(cb);
+      if (row.externalResultRow) {
+        const acknowledgement = document.createElement('label');
+        const acknowledgementCheckbox = document.createElement('input');
+        acknowledgementCheckbox.type = 'checkbox';
+        acknowledgementCheckbox.checked = !!row.acknowledgesUnverifiedExternalTranscription;
+        acknowledgementCheckbox.onchange = () => { row.acknowledgesUnverifiedExternalTranscription = acknowledgementCheckbox.checked; };
+        acknowledgement.appendChild(acknowledgementCheckbox);
+        acknowledgement.appendChild(document.createTextNode(' I acknowledge this exact unverified machine transcription'));
+        analyseTd.appendChild(document.createElement('br'));
+        analyseTd.appendChild(acknowledgement);
+      }
     }
     tr.appendChild(analyseTd);
     tr.appendChild(actions);
@@ -1587,7 +1616,7 @@ function render() {
       const detailTd = document.createElement('td');
       detailTd.colSpan = 7;
       if (row.ocrContent) {
-        detailTd.appendChild(buildOcrContentPanel(row.ocrContent));
+        detailTd.appendChild(buildOcrContentPanel(row.ocrContent, row.ocrDerivativeGenerationId));
       } else {
         const p = document.createElement('p');
         p.className = 'note';
@@ -1727,16 +1756,23 @@ function buildContentPanel(content) {
 // discipline exactly: every field inserted via appendField/appendExtractedText (textContent, never
 // innerHTML), so OCR-recognised text can never be interpreted as HTML or script (Tier B scope lock
 // §27), no matter what characters the source document contained.
-function buildOcrContentPanel(content) {
+function buildOcrContentPanel(content, derivativeGenerationId) {
   const container = document.createElement('div');
   container.className = 'content-panel';
   appendField(container, 'Outcome', content.outcomeKind);
   if (content.degradationReason) appendField(container, 'Degradation reason', content.degradationReason);
   appendField(container, 'Fidelity', content.fidelity);
   appendField(container, 'Completeness', content.completenessState);
+  if (derivativeGenerationId) appendField(container, 'Derivative Generation ID', derivativeGenerationId);
   if (content.sourceEvidenceArtifactId) appendField(container, 'Source Evidence ID', content.sourceEvidenceArtifactId);
   if (content.providerIdentity) appendField(container, 'Provider', content.providerIdentity + ' (provenance only — not verification)');
   if (content.returnedModelIdentifier) appendField(container, 'Returned model', content.returnedModelIdentifier);
+  if (content.transcriptionProfileIdentity) appendField(container, 'Transcription profile', content.transcriptionProfileIdentity);
+  if (content.externalTranscription) {
+    appendField(container, 'Machine transcription — unverified', 'Machine transcription — unverified');
+    appendField(container, 'Safety warning', 'Fluent machine transcription may contain plausible text that is inconsistent with the source.');
+    appendField(container, 'Human review state', (content.humanReviewStates || ['UNREVIEWED']).join(', '));
+  }
   if (content.modelSnapshot) appendField(container, 'Model snapshot', content.modelSnapshot);
   if (content.requestedPages) appendField(container, 'Requested pages', content.requestedPages.join(', ') || 'None');
   if (content.submittedPages) appendField(container, 'Submitted pages', content.submittedPages.join(', ') || 'None');
@@ -1886,7 +1922,7 @@ async function transcribeExternalRow(index) {
         originalFileName: source.originalFileName + ' — Enhanced transcription', byteLength: source.byteLength,
         evidenceArtifactId: source.evidenceArtifactId, status: result.status, message: 'Enhanced transcription durably admitted',
         ocrDerivativeGenerationId: result.derivativeGenerationId, ocrContent: result.content,
-        externalResultRow: true, selectedForAnalysis: false,
+        externalResultRow: true, selectedForAnalysis: false, acknowledgesUnverifiedExternalTranscription: false,
       });
     } else {
       source.message = result.message || 'Enhanced transcription failed safely.';
@@ -1934,7 +1970,11 @@ function collectAnalysisSelections() {
     if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
       selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.derivativeGenerationId });
     } else if (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId) {
-      selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.ocrDerivativeGenerationId });
+      selections.push({
+        evidenceArtifactId: row.evidenceArtifactId,
+        derivativeGenerationId: row.ocrDerivativeGenerationId,
+        acknowledgesUnverifiedExternalTranscription: !!row.acknowledgesUnverifiedExternalTranscription,
+      });
     }
   });
   return selections;

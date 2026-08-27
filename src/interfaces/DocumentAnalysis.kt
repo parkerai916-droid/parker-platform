@@ -22,6 +22,7 @@ import java.time.Instant
 data class EvidenceGenerationSelection(
     val evidenceArtifactId: EvidenceArtifactId,
     val derivativeGenerationId: DerivativeGenerationId,
+    val acknowledgesUnverifiedExternalTranscription: Boolean = false,
 )
 
 /**
@@ -118,6 +119,10 @@ sealed class DocumentAnalysisOutcome {
     data class ContentMissing(val derivativeGenerationId: DerivativeGenerationId) : DocumentAnalysisOutcome()
     data class ContentCorrupt(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : DocumentAnalysisOutcome()
     data class UnsupportedRepresentationVersion(val derivativeGenerationId: DerivativeGenerationId, val version: Int) : DocumentAnalysisOutcome()
+    data class UnverifiedExternalAcknowledgementRequired(
+        val evidenceArtifactId: EvidenceArtifactId,
+        val derivativeGenerationId: DerivativeGenerationId,
+    ) : DocumentAnalysisOutcome()
 
     /** The resolved generation's own payload shape has no supported text-extraction mapping (defensive; every currently governed Tier A/Tier B kind is supported). */
     data class UnsupportedDerivativeKind(val derivativeGenerationId: DerivativeGenerationId, val derivativeKind: String) : DocumentAnalysisOutcome()

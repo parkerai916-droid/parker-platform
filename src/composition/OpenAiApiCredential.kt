@@ -29,6 +29,8 @@ sealed interface OpenAiExternalTranscriptionBackendReadiness {
     data class ProfileNotReady(val profileReadiness: OpenAiExternalTranscriptionReadiness) :
         OpenAiExternalTranscriptionBackendReadiness
     data object MissingCredential : OpenAiExternalTranscriptionBackendReadiness
+    data class ConfigurationNotAccepted(val state: ExternalTranscriptionAcceptanceState) :
+        OpenAiExternalTranscriptionBackendReadiness
     data object Ready : OpenAiExternalTranscriptionBackendReadiness
 }
 
@@ -40,9 +42,10 @@ internal fun externalTranscriptionBackendReadiness(
     is OpenAiExternalTranscriptionReadiness.InvalidProfile,
     is OpenAiExternalTranscriptionReadiness.StaleProfile,
     -> OpenAiExternalTranscriptionBackendReadiness.ProfileNotReady(profileReadiness)
-    is OpenAiExternalTranscriptionReadiness.Ready -> if (credential == null) {
-        OpenAiExternalTranscriptionBackendReadiness.MissingCredential
-    } else {
-        OpenAiExternalTranscriptionBackendReadiness.Ready
+    is OpenAiExternalTranscriptionReadiness.Ready -> when {
+        profileReadiness.profile.acceptanceState != ExternalTranscriptionAcceptanceState.ACCEPTED ->
+            OpenAiExternalTranscriptionBackendReadiness.ConfigurationNotAccepted(profileReadiness.profile.acceptanceState)
+        credential == null -> OpenAiExternalTranscriptionBackendReadiness.MissingCredential
+        else -> OpenAiExternalTranscriptionBackendReadiness.Ready
     }
 }

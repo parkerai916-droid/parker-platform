@@ -29,6 +29,8 @@ import parker.core.interfaces.ExternalTranscriptionMechanism
 import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionRequest
+import parker.core.interfaces.HumanVerificationRecord
+import parker.core.interfaces.HumanVerificationStorage
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeSubmission
@@ -94,6 +96,7 @@ import parker.core.runtime.DerivativeMemoryRegistrationCoordinator
 import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.DocumentAnalysisCoordinator
 import parker.core.runtime.FileSystemSavedAnalysisStorage
+import parker.core.runtime.FileSystemHumanVerificationStorage
 import parker.core.runtime.PendingAnalysisCache
 import parker.core.runtime.SavedAnalysisCoordinator
 import parker.core.runtime.DurableMemoryCore
@@ -333,6 +336,7 @@ class ParkerRuntime(
     // two readers, mirroring this class's own established narrow-isolation discipline.
     private lateinit var pendingAnalysisCache: PendingAnalysisCache
     private lateinit var savedAnalysisCoordinator: SavedAnalysisCoordinator
+    private lateinit var humanVerificationStorage: HumanVerificationStorage
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -1386,6 +1390,7 @@ class ParkerRuntime(
                     )
                 OpenAiExternalTranscriptionBackendReadiness.Disabled,
                 OpenAiExternalTranscriptionBackendReadiness.MissingCredential,
+                is OpenAiExternalTranscriptionBackendReadiness.ConfigurationNotAccepted,
                 is OpenAiExternalTranscriptionBackendReadiness.ProfileNotReady,
                 -> DisabledExternalTranscriptionMechanism
             }
@@ -1434,6 +1439,9 @@ class ParkerRuntime(
             pendingAnalysisCache = pendingAnalysisCache,
             storage = savedAnalysisStorage,
         )
+        humanVerificationStorage = stage("Human verification storage construction") {
+            FileSystemHumanVerificationStorage(Path.of(config.savedAnalysisStorageRootPath).resolve("human-verification"))
+        }
 
         // The existing raw memoryCore, not a PermissionGatedMemoryCore wrapper: this coordinator
         // already gates its own CandidateRecordProduced dispatch internally (its own
@@ -1995,6 +2003,10 @@ class ParkerRuntime(
                         else -> "The enhanced transcription provider profile is not ready."
                     },
                 )
+            is OpenAiExternalTranscriptionBackendReadiness.ConfigurationNotAccepted ->
+                parker.ui.EnhancedTranscriptionReadiness.ProfileNotReady(
+                    "The enhanced transcription configuration is ${readiness.state.name.lowercase().replace('_', ' ')}.",
+                )
             OpenAiExternalTranscriptionBackendReadiness.Ready -> parker.ui.EnhancedTranscriptionReadiness.Ready
         }
 
@@ -2025,6 +2037,15 @@ class ParkerRuntime(
                 "(evidenceArtifactId=${evidenceArtifactId.value}, derivativeGenerationId=${derivativeGenerationId.value})",
         )
         return tierBOcrContentRetrievalCoordinator.retrieve(evidenceArtifactId, derivativeGenerationId)
+    }
+
+    /** Exact-pair, metadata-only human-review records; ordering conveys no precedence. */
+    suspend fun listHumanVerificationRecordsAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): List<HumanVerificationRecord> {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return humanVerificationStorage.listForExactGeneration(evidenceArtifactId, derivativeGenerationId)
     }
 
     /**

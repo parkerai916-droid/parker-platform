@@ -48,7 +48,10 @@ class OpenAiApiCredentialTest {
 
     @Test
     fun `backend readiness keeps profile and credential readiness distinct`() {
-        val profileReady = OpenAiExternalTranscriptionReadiness.Ready(profile(), effectiveLimits())
+        val profileReady = OpenAiExternalTranscriptionReadiness.Ready(
+            profile().copy(acceptanceState = ExternalTranscriptionAcceptanceState.ACCEPTED),
+            effectiveLimits(),
+        )
 
         assertIs<OpenAiExternalTranscriptionBackendReadiness.MissingCredential>(
             externalTranscriptionBackendReadiness(profileReady, null),
@@ -59,6 +62,18 @@ class OpenAiApiCredentialTest {
         assertIs<OpenAiExternalTranscriptionBackendReadiness.Disabled>(
             externalTranscriptionBackendReadiness(OpenAiExternalTranscriptionReadiness.Disabled, null),
         )
+        listOf(
+            ExternalTranscriptionAcceptanceState.CONFIGURATION_READY,
+            ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING,
+            ExternalTranscriptionAcceptanceState.SUSPENDED,
+            ExternalTranscriptionAcceptanceState.DISABLED,
+        ).forEach { state ->
+            val outcome = externalTranscriptionBackendReadiness(
+                OpenAiExternalTranscriptionReadiness.Ready(profile().copy(acceptanceState = state), effectiveLimits()),
+                OpenAiApiCredential.fromEnvironment(sentinel),
+            )
+            assertEquals(state, assertIs<OpenAiExternalTranscriptionBackendReadiness.ConfigurationNotAccepted>(outcome).state)
+        }
     }
 
     @Test
@@ -69,7 +84,12 @@ class OpenAiApiCredentialTest {
         assertTrue(firstStart != null)
         assertEquals(null, nextStart)
         assertIs<OpenAiExternalTranscriptionBackendReadiness.MissingCredential>(
-            externalTranscriptionBackendReadiness(OpenAiExternalTranscriptionReadiness.Ready(profile(), effectiveLimits()), nextStart),
+            externalTranscriptionBackendReadiness(
+                OpenAiExternalTranscriptionReadiness.Ready(
+                    profile().copy(acceptanceState = ExternalTranscriptionAcceptanceState.ACCEPTED), effectiveLimits(),
+                ),
+                nextStart,
+            ),
         )
     }
 

@@ -50,11 +50,36 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
         assertFalse(body.contains("\"file_data\":\"cGRmIGJ5dGVz\""))
         assertTrue(body.contains("\"type\":\"json_schema\""))
         assertTrue(body.contains("\"strict\":true"))
-        assertTrue(body.contains("do not guess", ignoreCase = true))
-        assertTrue(body.contains("Do not summarize", ignoreCase = true))
+        assertTrue(body.contains("Do not paraphrase", ignoreCase = true))
+        assertTrue(body.contains("Omission or qualification is preferable to invention", ignoreCase = true))
         listOf("\"tools\"", "web_search", "file_search", "mcp", "code_interpreter", "previous_response_id", "conversation").forEach {
             assertTrue(!body.contains(it, ignoreCase = true), "request unexpectedly contains $it")
         }
+    }
+
+    @Test
+    fun `literal v2 instruction and schema have one canonical byte identity`() = runTest {
+        val instructionBytes = LITERAL_V2_INSTRUCTION.toByteArray(Charsets.UTF_8)
+        assertEquals(1146, instructionBytes.size)
+        assertFalse(instructionBytes.take(3) == listOf(0xef.toByte(), 0xbb.toByte(), 0xbf.toByte()))
+        assertFalse(LITERAL_V2_INSTRUCTION.endsWith("\n"))
+        assertEquals(LITERAL_V2_INSTRUCTION_SHA256, sha256Hex(instructionBytes))
+        assertEquals("c721e63b29e56f9242ee24dd8f13ddcab5d4468d3d17e9e3b9b1d66a68cb2000", LITERAL_V2_INSTRUCTION_SHA256)
+        listOf(
+            "Do not paraphrase", "summarize", "rewrite for clarity", "infer missing text",
+            "Do not insert likely names, dates, amounts, facts, legal propositions", "Omission or qualification is preferable to invention",
+        ).forEach { assertTrue(LITERAL_V2_INSTRUCTION.contains(it, ignoreCase = true), "missing frozen rule: $it") }
+
+        assertEquals(canonicalizeStructuredSchema("{\"b\":2,\"a\":1}"), canonicalizeStructuredSchema(" { \"a\" : 1, \"b\" : 2 } "))
+        assertNotEquals(canonicalizeStructuredSchema("{\"a\":[1,2]}"), canonicalizeStructuredSchema("{\"a\":[2,1]}"))
+        assertEquals("{\"a\":\"line\\nquote\\\"slash\\\\\"}", canonicalizeStructuredSchema("{\"a\":\"line\\nquote\\\"slash\\\\\"}"))
+        assertEquals(LITERAL_V2_SCHEMA_SHA256, sha256Hex(LITERAL_V2_SCHEMA_CANONICAL.toByteArray(Charsets.UTF_8)))
+        assertEquals("3fe8a26be40a06f047b493094d06c52e1df056162583b8e0b81564f55de265b2", LITERAL_V2_SCHEMA_SHA256)
+
+        val transport = FakeTransport { OpenAiResponsesTransportResponse(200, successEnvelope().toByteArray()) }
+        adapter(transport).transcribe(request())
+        assertTrue(transport.request.body.contains("\"instructions\":\"${escape(LITERAL_V2_INSTRUCTION)}\""))
+        assertTrue(transport.request.body.contains("\"schema\":$LITERAL_V2_SCHEMA_CANONICAL"))
     }
 
     @Test
@@ -345,10 +370,15 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
 
     private fun ready(pdfLimit: Long = 1024 * 1024, outputLimit: Long = 4096) = OpenAiExternalTranscriptionReadiness.Ready(
         OpenAiExternalTranscriptionProviderProfile(
-            "1", "OpenAI", "/v1/responses", false, "synthetic-reviewed-model", "RECORD_PRESENT_OR_NOT_EXPOSED",
+            "2", "OpenAI", "/v1/responses", false, "synthetic-reviewed-model", "RECORD_PRESENT_OR_NOT_EXPOSED",
             pdfLimit, 1024 * 1024, outputLimit, 30_000, "https://api.openai.com", "reviewed retention", "reviewed training",
             "not enabled", "reviewed account", "reviewed controls", "BEARER_API_CREDENTIAL", "reviewed logs", "reviewed region",
             LocalDate.parse("2026-08-01"), "owner-review", LocalDate.parse("2026-09-01"), listOf("reference"), listOf("terms change"),
+            transcriptionProfileId = LITERAL_V2_PROFILE_ID,
+            instructionSha256 = LITERAL_V2_INSTRUCTION_SHA256,
+            structuredSchemaSha256 = LITERAL_V2_SCHEMA_SHA256,
+            processingProfileIdentity = BYTE_EXACT_PROCESSING_PROFILE_ID,
+            acceptanceState = ExternalTranscriptionAcceptanceState.CONFIGURATION_READY,
         ), OpenAiExternalTranscriptionEffectiveLimits(pdfLimit, 1024 * 1024, outputLimit, 30_000),
     )
 
