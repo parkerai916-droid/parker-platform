@@ -17,6 +17,14 @@ import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PrincipalId
 import java.util.UUID
 
+interface ExternalTranscriptionInvocationObserver {
+    fun sourceRetrieved() = Unit
+    fun representationBuilt() = Unit
+    fun requestPrepared() = Unit
+    fun generationAdmitted() = Unit
+    companion object { val NONE = object : ExternalTranscriptionInvocationObserver {} }
+}
+
 /** Owner-bound authorization, custody verification, one external invocation, and pure validation. */
 class ExternalTranscriptionOwnerInvocationCoordinator(
     private val ownerPrincipalId: PrincipalId,
@@ -27,6 +35,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
     private val durableAdmission: ValidatedExternalTranscriptionAdmission,
     private val representationFactory: OcrProcessingRepresentationFactory = OcrProcessingRepresentationFactory(),
     private val correlationFactory: () -> String = { UUID.randomUUID().toString() },
+    private val invocationObserver: ExternalTranscriptionInvocationObserver = ExternalTranscriptionInvocationObserver.NONE,
 ) {
     suspend fun invoke(evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {
         val decision = permissionEngine.evaluate(
@@ -58,6 +67,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         if (content.isEmpty() || content.size.toLong() > ExternalTranscriptionRequest.MAX_SOURCE_BYTES ||
             mediaType == null || (mediaType != "application/pdf" && !mediaType.startsWith("image/", ignoreCase = true))
         ) return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
+        invocationObserver.sourceRetrieved()
 
         val representation = when (val outcome = representationFactory.create(
             sourceEvidenceArtifactId = evidenceArtifactId,
@@ -73,6 +83,8 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             processingRepresentation = representation,
             maximumPageCount = ExternalTranscriptionRequest.MAX_PAGE_COUNT,
         )
+        invocationObserver.representationBuilt()
+        invocationObserver.requestPrepared()
         val candidate = when (val mechanismOutcome = externalMechanism.transcribe(request)) {
             is ExternalTranscriptionMechanismOutcome.Candidate -> mechanismOutcome.candidate
             is ExternalTranscriptionMechanismOutcome.Failure ->
@@ -92,7 +104,10 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             is OcrStructuredValidationOutcome.Validated -> when (val admission = durableAdmission.admit(
                 evidenceArtifactId, validated, ownerPrincipalId, correlationFactory(),
             )) {
-                is OcrDerivativeGenerationCoordinationOutcome.Admitted -> ExternalTranscriptionOwnerInvocationOutcome.Admitted(evidenceArtifactId, admission.record, admission.extracted)
+                is OcrDerivativeGenerationCoordinationOutcome.Admitted -> {
+                    invocationObserver.generationAdmitted()
+                    ExternalTranscriptionOwnerInvocationOutcome.Admitted(evidenceArtifactId, admission.record, admission.extracted)
+                }
                 is OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed -> ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired(evidenceArtifactId, admission.record, admission.extracted, admission.reason)
                 is OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
                 is OcrDerivativeGenerationCoordinationOutcome.PreparationFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)

@@ -155,8 +155,25 @@ tasks.register<Test>("unitOOfflineAcceptanceVerification") {
         includeTestsMatching("parker.core.runtime.UnitOOfflineAcceptanceInstrumentTest")
         includeTestsMatching("parker.core.runtime.UnitOMetadataPreflightTest")
         includeTestsMatching("parker.core.runtime.UnitOLiteralV2CleanAcceptanceBoundaryTest")
+        includeTestsMatching("parker.core.runtime.UnitOAcceptanceAttemptLedgerTest")
     }
     shouldRunAfter(tasks.test)
+}
+
+tasks.register<Test>("unitOAttemptLedgerMountVerification") {
+    description = "Runs the offline UID/GID 999 mounted acceptance-ledger durability verification"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching("parker.core.runtime.UnitOAcceptanceAttemptLedgerMountTest") }
+    systemProperty("parker.unitO.ledger.mount.enabled", "true")
+    shouldRunAfter(tasks.test)
+}
+
+tasks.register("unitOAttemptLedgerMountClasspath") {
+    group = "verification"
+    doLast { println(liveModelEvaluation.runtimeClasspath.asPath) }
 }
 
 // Unit O.4R — detached, exact-document, one-request literal-v2 CLEAN acceptance. It is absent

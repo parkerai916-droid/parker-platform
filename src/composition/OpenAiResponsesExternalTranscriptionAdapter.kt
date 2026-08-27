@@ -40,11 +40,21 @@ internal data class OpenAiResponsesTransportRequest(
     val body: String,
     val maximumResponseBytes: Long,
     val credential: OpenAiApiCredential,
+    val lifecycleObserver: OpenAiTransportLifecycleObserver = OpenAiTransportLifecycleObserver.NONE,
 ) {
     override fun toString() = "OpenAiResponsesTransportRequest(endpoint=$endpoint, timeoutMillis=$timeoutMillis, body=<redacted>, maximumResponseBytes=$maximumResponseBytes, credential=$credential)"
 }
 
 internal data class OpenAiResponsesTransportResponse(val statusCode: Int, val body: ByteArray)
+
+interface OpenAiTransportLifecycleObserver {
+    fun providerAttemptStarting()
+    fun providerResponseReceived()
+    companion object { val NONE = object : OpenAiTransportLifecycleObserver {
+        override fun providerAttemptStarting() = Unit
+        override fun providerResponseReceived() = Unit
+    } }
+}
 
 internal fun interface OpenAiResponsesTransport {
     suspend fun execute(request: OpenAiResponsesTransportRequest): OpenAiResponsesTransportResponse
@@ -64,6 +74,7 @@ internal class JdkOpenAiResponsesTransport(
             throw OpenAiRequestConstructionException(e)
         }
         return suspendCancellableCoroutine { continuation ->
+            request.lifecycleObserver.providerAttemptStarting()
             val future = client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
             future.whenComplete { response, error ->
                 if (error != null) {
@@ -73,6 +84,7 @@ internal class JdkOpenAiResponsesTransport(
                         response.body().use { stream ->
                             val bytes = stream.readNBytes(Math.addExact(request.maximumResponseBytes, 1).toInt())
                             if (bytes.size.toLong() > request.maximumResponseBytes) throw OpenAiResponseTooLargeException()
+                            request.lifecycleObserver.providerResponseReceived()
                             continuation.resume(OpenAiResponsesTransportResponse(response.statusCode(), bytes))
                         }
                     } catch (e: Exception) {
@@ -108,6 +120,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     private val transportFailureObserver: (OpenAiTransportFailureFingerprint) -> Unit = {},
     private val providerRejectionObserver: (OpenAiProviderErrorFingerprint) -> Unit = {},
     private val responseFailureObserver: (OpenAiResponseFailureFingerprint) -> Unit = {},
+    private val transportLifecycleObserver: OpenAiTransportLifecycleObserver = OpenAiTransportLifecycleObserver.NONE,
 ) : ExternalTranscriptionMechanism {
     private val profile = readiness.profile
     private val limits = readiness.effectiveLimits
@@ -130,7 +143,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
 
         val body = buildRequestBody(request)
         val response = try {
-            transport.execute(OpenAiResponsesTransportRequest(endpoint, limits.timeoutMillis, body, limits.maximumOutputBytes, credential))
+            transport.execute(OpenAiResponsesTransportRequest(endpoint, limits.timeoutMillis, body, limits.maximumOutputBytes, credential, transportLifecycleObserver))
         } catch (_: OpenAiResponseTooLargeException) {
             return failure("RESPONSE_TOO_LARGE")
         } catch (_: kotlinx.coroutines.CancellationException) {

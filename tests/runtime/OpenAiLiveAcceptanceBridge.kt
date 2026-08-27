@@ -67,15 +67,18 @@ object OpenAiLiveAcceptanceBridge {
     fun create(
         readiness: OpenAiExternalTranscriptionReadiness.Ready,
         onEgress: () -> Unit,
+    ): Handle = createAcceptance(readiness, OpenAiTransportLifecycleObserver.NONE, onEgress)
+
+    fun createAcceptance(
+        readiness: OpenAiExternalTranscriptionReadiness.Ready,
+        lifecycleObserver: OpenAiTransportLifecycleObserver,
+        onEgress: () -> Unit,
     ): Handle {
         val credential = OpenAiApiCredential.fromEnvironment(System.getenv("PARKER_OPENAI_API_KEY"))
             ?: error("credential is absent")
         val state = State()
         val delegate = JdkOpenAiResponsesTransport()
         val transport = OpenAiResponsesTransport { request ->
-            check(state.calls == 0) { "Unit N forbids retry or a second request" }
-            state.calls += 1
-            onEgress()
             state.approvedEndpoint = request.endpoint.toString() == "https://api.openai.com/v1/responses"
             state.storeFalse = request.body.contains("\"store\":false") && !request.body.contains("\"store\":true")
             check(state.approvedEndpoint) { "unapproved endpoint" }
@@ -87,6 +90,17 @@ object OpenAiLiveAcceptanceBridge {
         return Handle(
             OpenAiResponsesExternalTranscriptionAdapter(
                 readiness, credential, transport,
+                transportLifecycleObserver = object : OpenAiTransportLifecycleObserver {
+                    override fun providerAttemptStarting() {
+                        lifecycleObserver.providerAttemptStarting()
+                        check(state.calls == 0) { "acceptance instrument forbids retry or a second request" }
+                        state.calls += 1
+                        onEgress()
+                    }
+                    override fun providerResponseReceived() {
+                        lifecycleObserver.providerResponseReceived()
+                    }
+                },
                 transportFailureObserver = { state.failureFingerprint = it.render() },
                 providerRejectionObserver = { state.providerRejectionFingerprint = it.render() },
                 responseFailureObserver = { state.responseFailureFingerprint = it.render() },

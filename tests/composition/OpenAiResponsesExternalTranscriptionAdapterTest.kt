@@ -339,6 +339,22 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
         assertTrue(runtimeSource.contains("OpenAiResponsesExternalTranscriptionAdapter("))
     }
 
+    @Test
+    fun `JDK transport does not call sendAsync when durable attempt observer fails`() = runTest {
+        var responseEvents = 0
+        val markerFailure = IllegalStateException("SECRET_MARKER_FAILURE")
+        val transportRequest = OpenAiResponsesTransportRequest(
+            java.net.URI.create("https://127.0.0.1:1/v1/responses"), 1_000, "{}", 1_024, credential,
+            object : OpenAiTransportLifecycleObserver {
+                override fun providerAttemptStarting() { throw markerFailure }
+                override fun providerResponseReceived() { responseEvents++ }
+            },
+        )
+        val thrown = assertFailsWith<IllegalStateException> { JdkOpenAiResponsesTransport().execute(transportRequest) }
+        assertSame(markerFailure, thrown)
+        assertEquals(0, responseEvents)
+    }
+
     private suspend fun assertFailureFromThrow(error: Exception, expected: String) {
         val transport = object : OpenAiResponsesTransport {
             var calls = 0
