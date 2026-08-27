@@ -78,6 +78,16 @@ import parker.core.runtime.CommunicationConversationCoordinator
 import parker.core.runtime.ConversationOutcome
 import parker.core.runtime.ConversationReplyCoordinator
 import parker.core.runtime.ConversationTurnReasoningCoordinator
+import parker.core.runtime.GovernedAcquisitionOwnerEvaluation
+import parker.core.runtime.GovernedAcquisitionOwnerExecution
+import parker.core.runtime.GovernedAcquisitionOwnerWorkflow
+import parker.core.runtime.GovernedAcquisitionExecutionCoordinator
+import parker.core.runtime.DeterministicEvidenceAcquisitionRouter
+import parker.core.runtime.ProductionAcquisitionCapabilityCatalogue
+import parker.core.runtime.TierANativeAcquisitionExecutor
+import parker.core.runtime.LocalOcrAcquisitionExecutor
+import parker.core.runtime.AcquisitionExecutorBinding
+import parker.core.interfaces.EvidenceAcquisitionMechanism
 import parker.core.runtime.DefaultEvidenceCustodian
 import parker.core.runtime.DefaultEvidenceIntelligence
 import parker.core.runtime.DefaultExecutionPipeline
@@ -324,6 +334,7 @@ class ParkerRuntime(
     // External transcription Unit E: a separate owner-only, pre-admission operation. The real
     // provider is composed only after the enablement, profile, and credential gates are all Ready.
     private lateinit var externalTranscriptionOwnerInvocationCoordinator: ExternalTranscriptionOwnerInvocationCoordinator
+    private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
     // narrow class, mirroring tierBOcrContentRetrievalCoordinator's own isolation -- no other
@@ -1407,6 +1418,35 @@ class ParkerRuntime(
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )
+        val acquisitionRegistry = ProductionAcquisitionCapabilityCatalogue.create()
+        val acquisitionRouter = DeterministicEvidenceAcquisitionRouter()
+        governedAcquisitionOwnerWorkflow = GovernedAcquisitionOwnerWorkflow(
+            ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+            evidenceCustodian = defaultEvidenceCustodian,
+            registry = acquisitionRegistry,
+            router = acquisitionRouter,
+            executionCoordinator = GovernedAcquisitionExecutionCoordinator(
+                acquisitionRegistry, acquisitionRouter, defaultEvidenceCustodian,
+                listOf(
+                    TierANativeAcquisitionExecutor(
+                        AcquisitionExecutorBinding(
+                            ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
+                            EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION,
+                            null,
+                        ),
+                        tierAOwnerInvocationCoordinator,
+                    ),
+                    LocalOcrAcquisitionExecutor(
+                        AcquisitionExecutorBinding(
+                            ProductionAcquisitionCapabilityCatalogue.LOCAL_OCR_CAPABILITY_ID,
+                            EvidenceAcquisitionMechanism.LOCAL_OCR,
+                            null,
+                        ),
+                        tierBOcrOwnerInvocationCoordinator,
+                    ),
+                ),
+            ),
+        )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
 
         // Minimum Production Document Pipeline — Local Reasoning Implementation. Reuses
@@ -1878,6 +1918,21 @@ class ParkerRuntime(
         }
         logger.info("Evidence deletion requested by owner (evidenceArtifactId=${evidenceArtifactId.value})")
         return ownerEvidenceDeletionAuthority.deleteAsOwner(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)
+    }
+
+    /** Read-only, manifest-only governed acquisition evaluation. It performs no extraction, OCR, or provider call. */
+    suspend fun evaluateGovernedAcquisitionAsOwner(evidenceArtifactId: EvidenceArtifactId): GovernedAcquisitionOwnerEvaluation {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return governedAcquisitionOwnerWorkflow.evaluate(evidenceArtifactId)
+    }
+
+    /** Explicit exact-decision acquisition. The expected capability is revalidated before execution. */
+    suspend fun executeGovernedAcquisitionAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        expectedCapabilityId: String,
+    ): GovernedAcquisitionOwnerExecution {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return governedAcquisitionOwnerWorkflow.execute(evidenceArtifactId, expectedCapabilityId)
     }
 
     /**

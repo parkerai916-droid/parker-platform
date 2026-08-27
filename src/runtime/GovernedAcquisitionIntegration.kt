@@ -94,7 +94,7 @@ class AcquisitionRoutingProvenance(
             "selectionReasons=$selectionReasons)"
 }
 
-internal sealed interface GovernedAcquisitionExecutionResult {
+sealed interface GovernedAcquisitionExecutionResult {
     data class Admitted(
         val routingProvenance: AcquisitionRoutingProvenance,
         val derivativeGenerationId: DerivativeGenerationId,
@@ -200,7 +200,9 @@ internal class TierANativeAcquisitionExecutor(
             request.principalId, request.authoritativeSource.evidenceArtifactId, correlationFactory(),
         )) {
             is TierAOwnerInvocationOutcome.Routed -> when (val routed = outcome.result) {
-                is TierADocumentRoutingResult.Admitted -> admitted(routed.record.derivativeGenerationId)
+                is TierADocumentRoutingResult.Admitted -> BoundAcquisitionExecutorOutcome.Admitted(
+                    routed.record.derivativeGenerationId, completeness = routed.payload.completenessState(),
+                )
                 is TierADocumentRoutingResult.AdmissionFailed,
                 is TierADocumentRoutingResult.ReconciliationRequired,
                 -> BoundAcquisitionExecutorOutcome.AdmissionFailed(AcquisitionExecutionFailureReason.DERIVATIVE_ADMISSION_FAILED)
@@ -219,7 +221,10 @@ internal class LocalOcrAcquisitionExecutor(
         when (val outcome = coordinator.invoke(
             request.principalId, request.authoritativeSource.evidenceArtifactId, correlationFactory(),
         )) {
-            is TierBOcrOwnerInvocationOutcome.Admitted -> admitted(outcome.record.derivativeGenerationId)
+            is TierBOcrOwnerInvocationOutcome.Admitted -> BoundAcquisitionExecutorOutcome.Admitted(
+                outcome.record.derivativeGenerationId, outcome.extracted.fidelity,
+                outcome.extracted.completenessState, outcome.extracted.processingProvenance,
+            )
             is TierBOcrOwnerInvocationOutcome.MandatoryProvenanceUnavailable,
             is TierBOcrOwnerInvocationOutcome.PreparationFailed,
             is TierBOcrOwnerInvocationOutcome.AuthorisationAuditFailed,
@@ -236,7 +241,10 @@ internal class ExternalTranscriptionAcquisitionExecutor(
 ) : BoundAcquisitionCapabilityExecutor {
     override suspend fun execute(request: GovernedAcquisitionExecutionRequest): BoundAcquisitionExecutorOutcome =
         when (val outcome = coordinator.invoke(request.authoritativeSource.evidenceArtifactId)) {
-            is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> admitted(outcome.record.derivativeGenerationId)
+            is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> BoundAcquisitionExecutorOutcome.Admitted(
+                outcome.record.derivativeGenerationId, outcome.extracted.fidelity,
+                outcome.extracted.completenessState, outcome.extracted.processingProvenance,
+            )
             is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed,
             is ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired,
             -> BoundAcquisitionExecutorOutcome.AdmissionFailed(AcquisitionExecutionFailureReason.DERIVATIVE_ADMISSION_FAILED)
@@ -245,6 +253,13 @@ internal class ExternalTranscriptionAcquisitionExecutor(
 }
 
 private fun admitted(id: DerivativeGenerationId) = BoundAcquisitionExecutorOutcome.Admitted(id)
+private fun TierADerivativePayload.completenessState(): DerivativeCompletenessState = when (this) {
+    is TierADerivativePayload.Csv -> value.completenessState
+    is TierADerivativePayload.Eml -> value.completenessState
+    is TierADerivativePayload.Docx -> value.completenessState
+    is TierADerivativePayload.Pdf -> value.completenessState
+    is TierADerivativePayload.Ocr -> value.completenessState
+}
 private fun failed() = BoundAcquisitionExecutorOutcome.ExecutionFailed(
     AcquisitionExecutionFailureReason.ACQUISITION_EXECUTION_FAILED,
 )

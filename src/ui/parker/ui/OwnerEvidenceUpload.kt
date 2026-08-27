@@ -22,6 +22,19 @@ import parker.core.interfaces.SavedAnalysisId
  * bulk evidence authority is created by this unit).
  */
 interface OwnerEvidenceOperations {
+    /** Read-only governed acquisition decision for one exact custodied source; never executes acquisition. */
+    suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView =
+        OwnerAcquisitionDecisionView.Indeterminate(
+            OwnerAcquisitionSourceFacts(evidenceArtifactId.value, null, null, null, "UNKNOWN", "UNKNOWN", null, "UNKNOWN", "UNKNOWN", "UNKNOWN"),
+            listOf("Required technical source characteristics are not established."),
+        )
+
+    /** Explicit owner action; the expected capability is revalidated server-side before exact execution. */
+    suspend fun executeGovernedAcquisition(
+        evidenceArtifactId: EvidenceArtifactId,
+        expectedCapabilityId: String,
+    ): OwnerAcquisitionExecutionView = OwnerAcquisitionExecutionView.Failed("SELECTED_CAPABILITY_UNAVAILABLE")
+
     /** Read-only executable readiness projection; never invokes a provider. */
     fun enhancedTranscriptionReadiness(): EnhancedTranscriptionReadiness = EnhancedTranscriptionReadiness.Disabled
 

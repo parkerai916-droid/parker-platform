@@ -40,6 +40,10 @@ import parker.ui.TierBOcrContentRetrievalResult
 import parker.ui.TierBProcessingOutcome
 import parker.ui.EnhancedTranscriptionOutcome
 import parker.ui.EnhancedTranscriptionReadiness
+import parker.ui.OwnerAcquisitionDecisionView
+import parker.ui.OwnerAcquisitionExecutionView
+import parker.ui.OwnerAcquisitionSourceFacts
+import parker.ui.OwnerAcquisitionCapabilityView
 
 /**
  * Owner LAN Evidence Upload. Pure HTTP transport for the exact same
@@ -191,6 +195,10 @@ class OwnerEvidenceHttpServer(
                         handleOcr(exchange, segments[0])
                     segments.size == 2 && segments[1] == "ocr-durable" && method == "POST" ->
                         handleOcrDurable(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "acquisition" && method == "GET" ->
+                        handleAcquisitionDecision(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "acquire" && method == "POST" ->
+                        handleGovernedAcquisition(exchange, segments[0])
                     segments.size == 2 && segments[1] == "transcribe-external" && method == "POST" ->
                         handleExternalTranscription(exchange, segments[0])
                     segments.size == 1 && segments[0] == "transcription-readiness" && method == "GET" ->
@@ -296,6 +304,41 @@ class OwnerEvidenceHttpServer(
                 )
             }
             writeJson(exchange, 200, body)
+        }
+
+        private fun handleAcquisitionDecision(exchange: HttpExchange, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val id = parseEvidenceId(exchange, rawId) ?: return
+            writeJson(exchange, 200, acquisitionDecisionJson(runBlocking { operations.governedAcquisitionDecision(id) }))
+        }
+
+        private fun handleGovernedAcquisition(exchange: HttpExchange, rawId: String) {
+            val id = parseEvidenceId(exchange, rawId) ?: return
+            val body = try { readBounded(exchange.requestBody, MAX_SAVE_REQUEST_BODY_BYTES) } catch (_: RequestBodyTooLargeException) {
+                writeJson(exchange, 413, jsonObject("error" to "request body too large")); return
+            }
+            val expected = try { parseExpectedCapabilityId(body) } catch (_: Exception) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid acquisition request")); return
+            }
+            when (val outcome = runBlocking { operations.executeGovernedAcquisition(id, expected) }) {
+                is OwnerAcquisitionExecutionView.Admitted -> writeJson(exchange, 200, acquisitionExecutionJson(outcome))
+                is OwnerAcquisitionExecutionView.StaleDecision -> writeJson(exchange, 409, jsonObject(
+                    "status" to "STALE_DECISION", "currentDecision" to acquisitionDecisionJson(outcome.currentDecision),
+                ))
+                is OwnerAcquisitionExecutionView.Failed -> writeJson(exchange, 409, jsonObject(
+                    "status" to "FAILED", "reason" to outcome.reason,
+                    "capability" to outcome.capability?.let(::acquisitionCapabilityJson),
+                ))
+            }
+        }
+
+        private fun parseEvidenceId(exchange: HttpExchange, rawId: String): EvidenceArtifactId? {
+            if (!SAFE_ROUTE_ID.matches(rawId)) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id")); return null
+            }
+            return try { EvidenceArtifactId(rawId) } catch (_: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id")); null
+            }
         }
 
         private fun handleOcr(exchange: HttpExchange, rawId: String) {
@@ -796,6 +839,51 @@ class OwnerEvidenceHttpServer(
         EnhancedTranscriptionReadiness.Ready -> jsonObject("status" to "READY", "message" to "Enhanced transcription is available.")
     }
 
+    private fun acquisitionDecisionJson(decision: OwnerAcquisitionDecisionView): JsonObject = when (decision) {
+        is OwnerAcquisitionDecisionView.Selected -> jsonObject(
+            "status" to "SELECTED", "source" to acquisitionSourceJson(decision.source),
+            "capability" to acquisitionCapabilityJson(decision.capability), "explanation" to decision.explanation,
+            "executeAvailable" to (decision.capability.availability == "READY"),
+        )
+        is OwnerAcquisitionDecisionView.NoEligible -> jsonObject(
+            "status" to "NO_ELIGIBLE_CAPABILITY", "source" to acquisitionSourceJson(decision.source),
+            "reasons" to jsonArray(decision.reasons), "executeAvailable" to false,
+        )
+        is OwnerAcquisitionDecisionView.Indeterminate -> jsonObject(
+            "status" to "INDETERMINATE", "source" to acquisitionSourceJson(decision.source),
+            "reasons" to jsonArray(decision.reasons), "executeAvailable" to false,
+        )
+        is OwnerAcquisitionDecisionView.Ambiguous -> jsonObject(
+            "status" to "AMBIGUOUS", "source" to acquisitionSourceJson(decision.source),
+            "capabilityIds" to jsonArray(decision.capabilityIds), "reasons" to jsonArray(decision.reasons),
+            "executeAvailable" to false,
+        )
+    }
+
+    private fun acquisitionSourceJson(source: OwnerAcquisitionSourceFacts) = jsonObject(
+        "evidenceArtifactId" to source.evidenceArtifactId, "mediaType" to source.mediaType,
+        "byteLength" to source.byteLength, "pageCount" to source.pageCount,
+        "nativeSearchableText" to source.nativeSearchableText, "imageOnlyOrScanned" to source.imageOnlyOrScanned,
+        "mixedTextAndImage" to source.mixedTextAndImage, "handwriting" to source.handwriting,
+        "complexLayout" to source.complexLayout, "tables" to source.tables,
+    )
+
+    private fun acquisitionCapabilityJson(capability: OwnerAcquisitionCapabilityView) = jsonObject(
+        "capabilityId" to capability.capabilityId, "mechanism" to capability.mechanismLabel,
+        "executionLocation" to capability.executionLocation, "externalEgressRequired" to capability.externalEgressRequired,
+        "provider" to capability.provider, "modelRule" to capability.modelRule, "profile" to capability.profile,
+        "representation" to capability.representationLabel, "availability" to capability.availability,
+        "selectionReasons" to jsonArray(capability.selectionReasons),
+    )
+
+    private fun acquisitionExecutionJson(outcome: OwnerAcquisitionExecutionView.Admitted) = jsonObject(
+        "status" to "COMPLETED", "evidenceArtifactId" to outcome.evidenceArtifactId,
+        "derivativeGenerationId" to outcome.derivativeGenerationId.value,
+        "capability" to acquisitionCapabilityJson(outcome.capability), "fidelity" to outcome.fidelity,
+        "completeness" to outcome.completeness, "humanReviewState" to outcome.humanReviewState,
+        "sourceLink" to "/owner/evidence/${outcome.evidenceArtifactId}",
+    )
+
     // ---- Owner Tier A Extracted Content Presentation: safe owner-facing content -> JSON ----------
     // Every value below is either a server-controlled literal or threaded through jsonString's own
     // escaping (writeJsonValue), so extracted text/metadata can never break out of its JSON string
@@ -1035,6 +1123,15 @@ private fun parseSaveRequestBody(bodyBytes: ByteArray): String {
     val root = SimpleJsonReader(text).parseRootValue()
     val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
     return obj["pendingAnalysisId"] as? String ?: throw JsonParseException("expected a 'pendingAnalysisId' string")
+}
+
+private fun parseExpectedCapabilityId(bodyBytes: ByteArray): String {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    val value = obj["expectedCapabilityId"] as? String
+        ?: throw JsonParseException("expected an 'expectedCapabilityId' string")
+    if (value.isBlank() || value.length > 256) throw JsonParseException("invalid expected capability identity")
+    return value
 }
 
 /** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */
@@ -1522,14 +1619,25 @@ function render() {
     const tr = document.createElement('tr');
     const actions = document.createElement('td');
     actions.className = 'row-actions';
+    if (row.evidenceArtifactId && !row.externalResultRow) {
+      const acquire = document.createElement('button');
+      acquire.textContent = 'Acquire machine-readable representation';
+      acquire.title = 'Show Parker’s governed acquisition selection; this does not process the document.';
+      acquire.onclick = () => loadAcquisitionDecision(index);
+      actions.appendChild(acquire);
+    }
     if (row.status === 'IMPORTED' || row.status === 'READY_TO_PROCESS') {
       const b = document.createElement('button');
       b.textContent = 'Process';
+      b.title = 'Legacy/manual compatibility control; ordinary acquisition uses the governed action.';
+      b.disabled = true;
       b.onclick = () => processRow(index);
       actions.appendChild(b);
     } else if (row.status === 'REQUIRES_OCR') {
       const b = document.createElement('button');
       b.textContent = 'Run local OCR';
+      b.title = 'Legacy/manual compatibility control; this is not a fallback from governed acquisition.';
+      b.disabled = true;
       b.onclick = () => ocrRow(index);
       actions.appendChild(b);
     }
@@ -1540,13 +1648,16 @@ function render() {
     if (row.status === 'REQUIRES_OCR' || row.status === 'COMPLETE') {
       const bd = document.createElement('button');
       bd.textContent = 'Run local OCR (Durable)';
+      bd.title = 'Legacy/manual specialist operation; this is not automatic fallback.';
+      bd.disabled = true;
       bd.onclick = () => ocrDurableRow(index);
       actions.appendChild(bd);
     }
     if (row.evidenceArtifactId && !row.externalResultRow) {
       const external = document.createElement('button');
       external.textContent = row.externalProcessing ? 'Enhanced transcription processing…' : 'Run enhanced transcription';
-      external.disabled = row.externalProcessing || enhancedReadiness.status !== 'READY';
+      external.dataset.classification = 'legacy-manual-compatibility';
+      external.disabled = true;
       external.title = enhancedReadiness.status === 'READY' ? 'Explicitly submit this evidence for enhanced transcription' : enhancedReadiness.message;
       external.onclick = () => transcribeExternalRow(index);
       actions.appendChild(external);
@@ -1595,6 +1706,15 @@ function render() {
     tr.appendChild(analyseTd);
     tr.appendChild(actions);
     tbody.appendChild(tr);
+
+    if (row.acquisitionDecision || row.acquisitionError || row.acquisitionResult) {
+      const decisionTr = document.createElement('tr');
+      const decisionTd = document.createElement('td');
+      decisionTd.colSpan = 7;
+      decisionTd.appendChild(buildAcquisitionPanel(row, index));
+      decisionTr.appendChild(decisionTd);
+      tbody.appendChild(decisionTr);
+    }
 
     if (expandedIndex === index && (row.content || row.contentError)) {
       const detailTr = document.createElement('tr');
@@ -1827,6 +1947,87 @@ document.getElementById('uploadButton').onclick = async () => {
     document.getElementById('status').textContent = 'Upload failed: ' + e;
   }
 };
+
+function buildAcquisitionPanel(row, index) {
+  const panel = document.createElement('div');
+  panel.className = 'content-panel';
+  const heading = document.createElement('h3');
+  heading.textContent = 'Governed acquisition decision';
+  panel.appendChild(heading);
+  if (row.acquisitionError) { appendField(panel, 'Status', row.acquisitionError); return panel; }
+  const d = row.acquisitionResult || row.acquisitionDecision;
+  appendField(panel, 'Status', d.status);
+  if (d.explanation) appendField(panel, 'Why Parker selected this mechanism', d.explanation);
+  if (d.source) {
+    appendField(panel, 'Source', 'Original Parker evidence artifact ' + d.source.evidenceArtifactId);
+    appendField(panel, 'Media type', d.source.mediaType || 'UNKNOWN');
+    appendField(panel, 'Native searchable text', d.source.nativeSearchableText);
+    appendField(panel, 'Image/scanned', d.source.imageOnlyOrScanned);
+    appendField(panel, 'Handwriting', d.source.handwriting);
+    appendField(panel, 'Complex layout', d.source.complexLayout);
+    appendField(panel, 'Tables', d.source.tables);
+  }
+  if (d.capability) {
+    appendField(panel, 'Selected mechanism', d.capability.mechanism);
+    appendField(panel, 'Capability', d.capability.capabilityId);
+    appendField(panel, 'Execution', d.capability.executionLocation);
+    appendField(panel, 'External processing required', d.capability.externalEgressRequired ? 'YES' : 'NO');
+    if (d.capability.provider) appendField(panel, 'Provider', d.capability.provider);
+    if (d.capability.modelRule) appendField(panel, 'Model rule', d.capability.modelRule);
+    if (d.capability.profile) appendField(panel, 'Profile', d.capability.profile);
+    appendField(panel, 'Processing representation', d.capability.representation);
+    appendField(panel, 'Availability', d.capability.availability);
+    appendField(panel, 'Routing reasons', (d.capability.selectionReasons || []).join(', '));
+  }
+  if (d.reasons) appendField(panel, 'Why execution is unavailable', d.reasons.join(', '));
+  if (d.capabilityIds) appendField(panel, 'Equally suitable capabilities', d.capabilityIds.join(', '));
+  if (d.derivativeGenerationId) {
+    appendField(panel, 'Derivative generation', d.derivativeGenerationId);
+    appendField(panel, 'Fidelity', d.fidelity);
+    appendField(panel, 'Completeness', d.completeness);
+    appendField(panel, 'Human review', d.humanReviewState);
+    appendField(panel, 'Authoritative source link', d.sourceLink);
+    if (d.capability && d.capability.executionLocation === 'EXTERNAL') {
+      appendField(panel, 'Machine transcription — unverified', 'Machine transcription — unverified');
+      appendField(panel, 'Safety warning', 'Fluent machine transcription may contain plausible text that is inconsistent with the source.');
+    }
+  } else if (d.status === 'SELECTED' && d.executeAvailable) {
+    const execute = document.createElement('button');
+    execute.textContent = 'Execute selected acquisition';
+    execute.onclick = () => executeAcquisition(index, d.capability.capabilityId);
+    panel.appendChild(execute);
+  }
+  return panel;
+}
+
+async function loadAcquisitionDecision(index) {
+  const row = rows[index];
+  row.acquisitionError = null; row.acquisitionResult = null;
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, { method: 'GET', headers: authHeaders() });
+    const result = await resp.json();
+    if (!resp.ok) row.acquisitionError = result.error || 'Acquisition decision unavailable.';
+    else row.acquisitionDecision = result;
+  } catch (e) { row.acquisitionError = 'Acquisition decision request failed safely.'; }
+  render();
+}
+
+async function executeAcquisition(index, expectedCapabilityId) {
+  const row = rows[index];
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquire`, {
+      method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ expectedCapabilityId }),
+    });
+    const result = await resp.json();
+    if (result.status === 'STALE_DECISION') {
+      row.acquisitionDecision = result.currentDecision;
+      row.acquisitionError = 'The acquisition decision changed. Review the current decision before executing.';
+    } else if (!resp.ok) row.acquisitionError = result.reason || result.error || 'Acquisition failed safely.';
+    else { row.acquisitionResult = result; row.acquisitionError = null; }
+  } catch (e) { row.acquisitionError = 'Acquisition request failed safely.'; }
+  render();
+}
 
 async function processRow(index) {
   const row = rows[index];

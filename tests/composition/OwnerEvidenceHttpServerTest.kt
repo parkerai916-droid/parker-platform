@@ -108,6 +108,8 @@ class OwnerEvidenceHttpServerTest {
             listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
             externalReadiness = externalReadiness,
             invokeExternalTranscriptionAsOwner = invokeExternal,
+            governedDecisionAsOwner = { projectGovernedDecision(runtime.evaluateGovernedAcquisitionAsOwner(it)) },
+            executeGovernedAsOwner = { id, expected -> projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected)) },
         )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
@@ -230,6 +232,45 @@ class OwnerEvidenceHttpServerTest {
                 assertEquals(409, action.statusCode()); assertEquals(0, calls)
             } finally { harness.shutdown() }
         }
+    }
+
+    @Test
+    fun `governed acquisition GET is authenticated zero-execution and POST is exact and stale protected`() = runTest {
+        val harness = startHarness("")
+        try {
+            val upload = send(uploadRequest(harness, listOf(UploadPart("files", "synthetic.csv", "text/csv", "name,value\na,1\n".toByteArray()))))
+            val id = requireNotNull(extractField(upload.body(), "evidenceArtifactId"))
+            val unauthorised = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition")).GET().build())
+            assertEquals(401, unauthorised.statusCode())
+            val decision = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition"))
+                .header("Authorization", "Bearer $token").GET().build())
+            assertEquals(200, decision.statusCode()); assertEquals("SELECTED", extractField(decision.body(), "status"))
+            assertTrue(decision.body().contains("Native text extraction")); assertTrue(decision.body().contains("externalEgressRequired\":false"))
+            val stale = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
+                .header("Authorization", "Bearer $token").header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"wrong-capability\"}")).build())
+            assertEquals(409, stale.statusCode()); assertEquals("STALE_DECISION", extractField(stale.body(), "status"))
+            val execute = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
+                .header("Authorization", "Bearer $token").header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"parker-tier-a-native-v1\"}")).build())
+            assertEquals(200, execute.statusCode()); assertEquals("COMPLETED", extractField(execute.body(), "status"))
+            assertTrue(execute.body().contains("derivativeGenerationId")); assertTrue(execute.body().contains("UNREVIEWED"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `owner page presents governed primary action warnings and labels compatibility controls`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("Acquire machine-readable representation"))
+            assertTrue(body.contains("Legacy/manual specialist operation"))
+            assertTrue(body.contains("bd.disabled = true"))
+            assertTrue(body.contains("external.disabled = true"))
+            assertTrue(body.contains("Machine transcription — unverified"))
+            assertTrue(body.contains("Fluent machine transcription may contain plausible text that is inconsistent with the source."))
+            listOf("best evidence", "preferred evidence", "high-quality evidence").forEach { assertFalse(body.contains(it, true)) }
+        } finally { harness.shutdown() }
     }
 
     private fun externalAdmitted(id: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {

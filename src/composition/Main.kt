@@ -124,6 +124,10 @@ fun main(args: Array<String>) = runBlocking {
             externalReadiness = runtime::ownerEnhancedTranscriptionReadiness,
             invokeExternalTranscriptionAsOwner = runtime::invokeExternalTranscriptionAsOwner,
             listHumanVerificationRecordsAsOwner = runtime::listHumanVerificationRecordsAsOwner,
+            governedDecisionAsOwner = { projectGovernedDecision(runtime.evaluateGovernedAcquisitionAsOwner(it)) },
+            executeGovernedAsOwner = { id, expected ->
+                projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
+            },
         )
         OwnerEvidenceHttpServer(
             bindAddress = config.ownerHttpBindAddress,

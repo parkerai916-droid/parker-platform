@@ -53,9 +53,86 @@ import parker.ui.TierBProcessingOutcome
 import parker.ui.EnhancedTranscriptionOutcome
 import parker.ui.EnhancedTranscriptionReadiness
 import parker.ui.OwnerOcrPageOutcomeSummary
+import parker.ui.OwnerAcquisitionDecisionView
+import parker.ui.OwnerAcquisitionExecutionView
+import parker.ui.OwnerAcquisitionSourceFacts
+import parker.ui.OwnerAcquisitionCapabilityView
+import parker.core.runtime.GovernedAcquisitionOwnerEvaluation
+import parker.core.runtime.GovernedAcquisitionOwnerExecution
+import parker.core.runtime.GovernedAcquisitionExecutionResult
+import parker.core.interfaces.*
 
 /** OCR Mechanism Unit 12's own, unmodified, already-governed analysisKind convention. */
 private const val OCR_ANALYSIS_KIND = "ocr-transcription"
+
+internal fun projectGovernedDecision(evaluation: GovernedAcquisitionOwnerEvaluation): OwnerAcquisitionDecisionView = when (evaluation) {
+    is GovernedAcquisitionOwnerEvaluation.SourceUnavailable -> OwnerAcquisitionDecisionView.NoEligible(
+        OwnerAcquisitionSourceFacts(evaluation.evidenceArtifactId.value, null, null, null, "UNKNOWN", "UNKNOWN", null, "UNKNOWN", "UNKNOWN", "UNKNOWN"),
+        listOf(evaluation.reason),
+    )
+    is GovernedAcquisitionOwnerEvaluation.Evaluated -> when (val routing = evaluation.routing) {
+        is EvidenceAcquisitionRoutingOutcome.Selected -> OwnerAcquisitionDecisionView.Selected(
+            sourceView(evaluation.source), capabilityView(routing.decision.capability, routing.decision),
+            "Parker selected ${mechanismLabel(routing.decision.capability.mechanism)} from established technical source characteristics.",
+        )
+        is EvidenceAcquisitionRoutingOutcome.NoEligibleCapability -> OwnerAcquisitionDecisionView.NoEligible(
+            sourceView(evaluation.source), routing.reasons.map { it.name }.sorted(),
+        )
+        is EvidenceAcquisitionRoutingOutcome.Indeterminate -> OwnerAcquisitionDecisionView.Indeterminate(
+            sourceView(evaluation.source), routing.reasons.map { it.name }.sorted(),
+        )
+        is EvidenceAcquisitionRoutingOutcome.Ambiguous -> OwnerAcquisitionDecisionView.Ambiguous(
+            sourceView(evaluation.source), routing.capabilityIds.sorted(), routing.reasons.map { it.name }.sorted(),
+        )
+    }
+}
+
+internal fun projectGovernedExecution(execution: GovernedAcquisitionOwnerExecution): OwnerAcquisitionExecutionView = when (execution) {
+    is GovernedAcquisitionOwnerExecution.StaleOrUnavailable ->
+        OwnerAcquisitionExecutionView.StaleDecision(projectGovernedDecision(execution.current))
+    is GovernedAcquisitionOwnerExecution.Executed -> when (val result = execution.result) {
+        is GovernedAcquisitionExecutionResult.Admitted -> OwnerAcquisitionExecutionView.Admitted(
+            result.derivativeGenerationId, execution.source.evidenceArtifactId.value,
+            capabilityView(execution.decision.capability, execution.decision),
+            result.fidelity?.name ?: "NOT_REPORTED",
+            result.completeness?.name ?: "NOT_REPORTED",
+        )
+        is GovernedAcquisitionExecutionResult.Failed -> OwnerAcquisitionExecutionView.Failed(
+            result.reason.name, capabilityView(execution.decision.capability, execution.decision),
+        )
+    }
+}
+
+private fun sourceView(source: AcquisitionSource) = OwnerAcquisitionSourceFacts(
+    source.evidenceArtifactId.value, source.mediaType, source.byteLength,
+    (source.pageCount as? AcquisitionPageCount.Known)?.value,
+    source.characteristics.nativeSearchableText.name, source.characteristics.imageOnlyOrScanned.name,
+    source.characteristics.mixedTextAndImage.name, source.characteristics.handwriting.name,
+    source.characteristics.complexLayout.name, source.characteristics.tables.name,
+)
+
+private fun capabilityView(capability: EvidenceAcquisitionCapability, decision: EvidenceAcquisitionRoutingDecision) =
+    OwnerAcquisitionCapabilityView(
+        capability.capabilityId, mechanismLabel(capability.mechanism),
+        if (capability.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED) "EXTERNAL" else "LOCAL",
+        capability.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+        capability.providerConfiguration?.providerIdentity, capability.providerConfiguration?.modelSelectionRule,
+        capability.providerConfiguration?.profileIdentity,
+        when (decision.selectedRepresentation) {
+            AcquisitionRepresentationClass.AUTHORITATIVE_SOURCE_OR_BYTE_EXACT_COPY -> "Authoritative source or byte-exact copy"
+            AcquisitionRepresentationClass.DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION -> "Directly derived processing representation"
+        },
+        if (capability.availability is AcquisitionAvailability.Available) "READY" else "BLOCKED",
+        decision.selectionReasons.map { it.name }.sorted(),
+    )
+
+private fun mechanismLabel(mechanism: EvidenceAcquisitionMechanism) = when (mechanism) {
+    EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION -> "Native text extraction"
+    EvidenceAcquisitionMechanism.LOCAL_OCR -> "Local OCR"
+    EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
+    EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION,
+    -> "External transcription"
+}
 
 /**
  * Owner Evidence Upload & Processing (first version). Narrow composition
@@ -95,7 +172,24 @@ class OwnerUiEvidenceRuntimeAdapter(
         ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("Enhanced transcription is not enabled in this runtime")
     },
     private val listHumanVerificationRecordsAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> List<HumanVerificationRecord> = { _, _ -> emptyList() },
+    private val governedDecisionAsOwner: suspend (EvidenceArtifactId) -> OwnerAcquisitionDecisionView = {
+        OwnerAcquisitionDecisionView.Indeterminate(
+            OwnerAcquisitionSourceFacts(it.value, null, null, null, "UNKNOWN", "UNKNOWN", null, "UNKNOWN", "UNKNOWN", "UNKNOWN"),
+            listOf("Required technical source characteristics are not established."),
+        )
+    },
+    private val executeGovernedAsOwner: suspend (EvidenceArtifactId, String) -> OwnerAcquisitionExecutionView = { _, _ ->
+        OwnerAcquisitionExecutionView.Failed("SELECTED_CAPABILITY_UNAVAILABLE")
+    },
 ) : OwnerEvidenceOperations {
+
+    override suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView =
+        governedDecisionAsOwner(evidenceArtifactId)
+
+    override suspend fun executeGovernedAcquisition(
+        evidenceArtifactId: EvidenceArtifactId,
+        expectedCapabilityId: String,
+    ): OwnerAcquisitionExecutionView = executeGovernedAsOwner(evidenceArtifactId, expectedCapabilityId)
 
     override fun enhancedTranscriptionReadiness(): EnhancedTranscriptionReadiness = externalReadiness()
 
