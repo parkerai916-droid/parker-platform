@@ -88,11 +88,64 @@ class UnitOLiteralV2CleanAcceptanceBoundaryTest {
         }
     }
 
+    @Test fun `authorization source substitutions fail aggregate preflight before invocation`() = runTest {
+        val variants = listOf(
+            authorization().copy(sourceSha256 = "0".repeat(64)) to "AUTHORIZATION_SOURCE_SHA256_MISMATCH",
+            authorization().copy(sourceSha256 = "not-a-digest") to "AUTHORIZATION_SOURCE_SHA256_MISMATCH",
+            authorization().copy(sourceSha256 = UnitOLiteralV2CleanLock.SOURCE_SHA256.uppercase()) to "AUTHORIZATION_SOURCE_SHA256_MISMATCH",
+            authorization().copy(sourceSha256 = " ${UnitOLiteralV2CleanLock.SOURCE_SHA256}") to "AUTHORIZATION_SOURCE_SHA256_MISMATCH",
+            authorization().copy(sourceByteLength = 0) to "AUTHORIZATION_SOURCE_LENGTH_MISMATCH",
+            authorization().copy(sourceByteLength = -1) to "AUTHORIZATION_SOURCE_LENGTH_MISMATCH",
+            authorization().copy(sourceByteLength = 810038) to "AUTHORIZATION_SOURCE_LENGTH_MISMATCH",
+            authorization().copy(sourceMediaType = "text/plain") to "AUTHORIZATION_SOURCE_MEDIA_TYPE_MISMATCH",
+            authorization().copy(sourceMediaType = "") to "AUTHORIZATION_SOURCE_MEDIA_TYPE_MISMATCH",
+            authorization().copy(sourceMediaType = " application/pdf") to "AUTHORIZATION_SOURCE_MEDIA_TYPE_MISMATCH",
+        )
+        variants.forEach { (authorization, expected) ->
+            var invocations = 0
+            val boundary = UnitOLiteralV2CleanAcceptanceBoundary(UnitOManifestMetadataReader { metadata() }) {
+                invocations++; ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised
+            }
+            assertTrue(expected in boundary.preflight(input().copy(authorization = authorization)).problems)
+            assertEquals(0, boundary.requestCount); assertEquals(0, invocations)
+        }
+    }
+
+    @Test fun `strict parser accepts complete record and rejects missing unknown duplicate and malformed source fields`() {
+        assertEquals(authorization(), parse(authorization().render()))
+        listOf("sourceSha256", "sourceByteLength", "sourceMediaType").forEach { missing ->
+            assertFails { parse(authorization().render().lineSequence().filterNot { it.startsWith("$missing=") }.joinToString("\n", postfix = "\n")) }
+        }
+        assertFails { parse(authorization().render() + "unknownField=value\n") }
+        assertFails { parse(authorization().render() + "sourceSha256=${UnitOLiteralV2CleanLock.SOURCE_SHA256}\n") }
+        assertFails { parse(authorization().render().replace("sourceByteLength=${UnitOLiteralV2CleanLock.SOURCE_BYTES}", "sourceByteLength=not-a-number")) }
+        assertFails { parse(authorization().render().replace("sourceByteLength=${UnitOLiteralV2CleanLock.SOURCE_BYTES}", "sourceByteLength=9223372036854775808")) }
+    }
+
+    @Test fun `exact authorization remains independently bound to authoritative manifest source tuple`() = runTest {
+        val variants = listOf(
+            metadata().copy(sha256 = "0".repeat(64)) to "SOURCE_SHA256_MISMATCH",
+            metadata().copy(byteLength = 810038) to "SOURCE_LENGTH_MISMATCH",
+            metadata().copy(declaredMediaType = "text/plain") to "SOURCE_MEDIA_TYPE_MISMATCH",
+        )
+        variants.forEach { (manifest, expected) ->
+            var invocations = 0
+            val boundary = UnitOLiteralV2CleanAcceptanceBoundary(UnitOManifestMetadataReader { manifest }) {
+                invocations++; ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised
+            }
+            assertTrue(expected in boundary.preflight(input()).problems)
+            assertEquals(0, boundary.requestCount); assertEquals(0, invocations)
+        }
+    }
+
     @Test fun `bounded authorization rendering cannot contain credential source transcript or provider error sentinels`() {
         val rendered = authorization().render()
         listOf("SECRET_SENTINEL", "SOURCE_SENTINEL", "TRANSCRIPT_SENTINEL", "PROVIDER_ERROR_SENTINEL", "Authorization", "Bearer")
             .forEach { assertFalse(rendered.contains(it)) }
         assertTrue(rendered.contains(UnitOLiteralV2CleanLock.ALLOCATION))
+        assertTrue(rendered.contains("sourceSha256=${UnitOLiteralV2CleanLock.SOURCE_SHA256}"))
+        assertTrue(rendered.contains("sourceByteLength=${UnitOLiteralV2CleanLock.SOURCE_BYTES}"))
+        assertTrue(rendered.contains("sourceMediaType=${UnitOLiteralV2CleanLock.MEDIA_TYPE}"))
     }
 
     @Test fun `provider failure consumes exactly one attempt with no retry fallback or model switch`() = runTest {
@@ -126,6 +179,7 @@ class UnitOLiteralV2CleanAcceptanceBoundaryTest {
     )
     private fun authorization() = UnitOLiteralV2AcceptanceAuthorization(
         UnitOLiteralV2CleanLock.STAGE, UnitOLiteralV2CleanLock.ALLOCATION, UnitOLiteralV2CleanLock.EVIDENCE_ID,
+        UnitOLiteralV2CleanLock.SOURCE_SHA256, UnitOLiteralV2CleanLock.SOURCE_BYTES, UnitOLiteralV2CleanLock.MEDIA_TYPE,
         UnitOLiteralV2CleanLock.PROVIDER, UnitOLiteralV2CleanLock.MODEL_RULE, UnitOLiteralV2CleanLock.PROFILE,
         UnitOLiteralV2CleanLock.INSTRUCTION_SHA256, UnitOLiteralV2CleanLock.SCHEMA_SHA256,
         UnitOLiteralV2CleanLock.PROCESSING_PROFILE, UnitOLiteralV2CleanLock.ENDPOINT, false,
@@ -133,6 +187,11 @@ class UnitOLiteralV2CleanAcceptanceBoundaryTest {
     )
     private fun metadata() = UnitOAuthoritativeManifestFacts(id, UnitOLiteralV2CleanLock.SOURCE_SHA256,
         UnitOLiteralV2CleanLock.SOURCE_BYTES, UnitOLiteralV2CleanLock.MEDIA_TYPE)
+    private fun parse(text: String): UnitOLiteralV2AcceptanceAuthorization {
+        val path = Files.createTempFile("unit-o4r-authorization", ".txt")
+        Files.writeString(path, text)
+        return readUnitOLiteralV2Authorization(path)
+    }
     private fun ready(state: ExternalTranscriptionAcceptanceState): OpenAiExternalTranscriptionReadiness.Ready =
         OpenAiExternalTranscriptionReadiness.Ready(
             OpenAiExternalTranscriptionProviderProfile(

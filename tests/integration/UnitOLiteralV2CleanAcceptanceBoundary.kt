@@ -29,6 +29,9 @@ internal data class UnitOLiteralV2AcceptanceAuthorization(
     val stage: String,
     val allocation: String,
     val evidenceArtifactId: String,
+    val sourceSha256: String,
+    val sourceByteLength: Long,
+    val sourceMediaType: String,
     val provider: String,
     val modelRule: String,
     val profileId: String,
@@ -77,6 +80,9 @@ internal class UnitOLiteralV2CleanAcceptanceBoundary(
             if (a.stage != UnitOLiteralV2CleanLock.STAGE) problems += "STAGE_MISMATCH"
             if (a.allocation != UnitOLiteralV2CleanLock.ALLOCATION) problems += "ALLOCATION_MISMATCH"
             if (a.evidenceArtifactId != UnitOLiteralV2CleanLock.EVIDENCE_ID) problems += "AUTHORIZATION_EVIDENCE_MISMATCH"
+            if (a.sourceSha256 != UnitOLiteralV2CleanLock.SOURCE_SHA256) problems += "AUTHORIZATION_SOURCE_SHA256_MISMATCH"
+            if (a.sourceByteLength != UnitOLiteralV2CleanLock.SOURCE_BYTES) problems += "AUTHORIZATION_SOURCE_LENGTH_MISMATCH"
+            if (a.sourceMediaType != UnitOLiteralV2CleanLock.MEDIA_TYPE) problems += "AUTHORIZATION_SOURCE_MEDIA_TYPE_MISMATCH"
             if (a.provider != UnitOLiteralV2CleanLock.PROVIDER || a.modelRule != UnitOLiteralV2CleanLock.MODEL_RULE ||
                 a.profileId != UnitOLiteralV2CleanLock.PROFILE || a.instructionSha256 != UnitOLiteralV2CleanLock.INSTRUCTION_SHA256 ||
                 a.schemaSha256 != UnitOLiteralV2CleanLock.SCHEMA_SHA256 || a.processingProfile != UnitOLiteralV2CleanLock.PROCESSING_PROFILE ||
@@ -123,7 +129,8 @@ internal class UnitOLiteralV2CleanAcceptanceBoundary(
 }
 
 internal fun UnitOLiteralV2AcceptanceAuthorization.render(): String = listOf(
-    "stage=$stage", "allocation=$allocation", "evidenceArtifactId=$evidenceArtifactId", "provider=$provider",
+    "stage=$stage", "allocation=$allocation", "evidenceArtifactId=$evidenceArtifactId",
+    "sourceSha256=$sourceSha256", "sourceByteLength=$sourceByteLength", "sourceMediaType=$sourceMediaType", "provider=$provider",
     "modelRule=$modelRule", "profileId=$profileId", "instructionSha256=$instructionSha256",
     "schemaSha256=$schemaSha256", "processingProfile=$processingProfile", "endpoint=$endpoint",
     "store=$store", "adapterVersion=$adapterVersion", "requestOrdinal=$requestOrdinal",
@@ -132,15 +139,19 @@ internal fun UnitOLiteralV2AcceptanceAuthorization.render(): String = listOf(
 
 internal fun readUnitOLiteralV2Authorization(path: Path): UnitOLiteralV2AcceptanceAuthorization {
     require(Files.isRegularFile(path) && Files.isReadable(path) && Files.size(path) <= 64L * 1024) { "authorization record is unavailable or unbounded" }
-    val fields = Files.readAllLines(path).filter { it.isNotBlank() }.associate { line ->
+    val pairs = Files.readAllLines(path).filter { it.isNotBlank() }.map { line ->
         val separator = line.indexOf('='); require(separator in 1 until line.lastIndex) { "authorization record is malformed" }
         line.substring(0, separator) to line.substring(separator + 1)
     }
-    val expected = setOf("stage", "allocation", "evidenceArtifactId", "provider", "modelRule", "profileId", "instructionSha256",
+    require(pairs.map { it.first }.distinct().size == pairs.size) { "authorization record contains duplicate fields" }
+    val fields = pairs.toMap()
+    val expected = setOf("stage", "allocation", "evidenceArtifactId", "sourceSha256", "sourceByteLength", "sourceMediaType",
+        "provider", "modelRule", "profileId", "instructionSha256",
         "schemaSha256", "processingProfile", "endpoint", "store", "adapterVersion", "requestOrdinal", "repositoryCommit", "issuedBy", "issuedAt")
     require(fields.keys == expected) { "authorization record fields are not exact" }
     fun value(name: String) = fields.getValue(name)
-    return UnitOLiteralV2AcceptanceAuthorization(value("stage"), value("allocation"), value("evidenceArtifactId"), value("provider"),
+    return UnitOLiteralV2AcceptanceAuthorization(value("stage"), value("allocation"), value("evidenceArtifactId"),
+        value("sourceSha256"), value("sourceByteLength").toLong(), value("sourceMediaType"), value("provider"),
         value("modelRule"), value("profileId"), value("instructionSha256"), value("schemaSha256"), value("processingProfile"),
         value("endpoint"), value("store").toBooleanStrict(), value("adapterVersion"), value("requestOrdinal").toInt(),
         value("repositoryCommit"), value("issuedBy"), value("issuedAt"))
