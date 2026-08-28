@@ -32,12 +32,10 @@ class DeterministicEvidenceAcquisitionRouter {
         }
 
         val nativeState = source.characteristics.nativeSearchableText
-        if (nativeState == AcquisitionCharacteristicState.PRESENT) {
+        if (source.mediaType != "application/pdf" && nativeState == AcquisitionCharacteristicState.PRESENT) {
             val native = eligible.filter { it.mechanism == EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION }
-            if (native.isNotEmpty()) {
-                return selectAmong(source, native, egressAuthorisation,
-                    setOf(AcquisitionSelectionReason.NATIVE_TEXT_DIRECTLY_AVAILABLE))
-            }
+            if (native.isNotEmpty()) return selectAmong(source, native, egressAuthorisation,
+                setOf(AcquisitionSelectionReason.NATIVE_TEXT_DIRECTLY_AVAILABLE))
         }
         if (nativeState == AcquisitionCharacteristicState.UNKNOWN &&
             (indeterminate.any { it.mechanism == EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION } ||
@@ -87,10 +85,15 @@ class DeterministicEvidenceAcquisitionRouter {
             )
         }
         val selected = survivors.single()
+        if (selected.mechanism == EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION &&
+            source.characteristics.nativeSearchableText == AcquisitionCharacteristicState.PRESENT) {
+            reasons += AcquisitionSelectionReason.NATIVE_TEXT_DIRECTLY_AVAILABLE
+        }
         if (candidates.any { it != selected && dominates(source, selected, it) }) {
             reasons += AcquisitionSelectionReason.STRONGER_SOURCE_RELEVANT_CAPABILITY
         }
         reasons += AcquisitionSelectionReason.SOURCE_CHARACTERISTICS_SUPPORTED
+        reasons += AcquisitionSelectionReason.FIDELITY_SUITABILITY_ACCEPTED
         reasons += AcquisitionSelectionReason.GOVERNED_CONFIGURATION_ELIGIBLE
         reasons += AcquisitionSelectionReason.WITHIN_OPERATIONAL_LIMITS
         if (selected.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED &&
@@ -178,6 +181,8 @@ class DeterministicEvidenceAcquisitionRouter {
                 AcquisitionEligibilityReason.CONFIGURATION_NOT_ACCEPTED,
                 AcquisitionEligibilityReason.CONFIGURATION_NOT_READY,
                 -> add(AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+                AcquisitionEligibilityReason.FIDELITY_NOT_ACCEPTED -> add(AcquisitionNoSelectionReason.NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY)
+                AcquisitionEligibilityReason.FIDELITY_UNDETERMINED -> add(AcquisitionNoSelectionReason.FIDELITY_SUITABILITY_UNDETERMINED)
                 AcquisitionEligibilityReason.EXTERNAL_EGRESS_NOT_AUTHORISED -> add(AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED)
                 AcquisitionEligibilityReason.SOURCE_TOO_LARGE,
                 AcquisitionEligibilityReason.PAGE_LIMIT_EXCEEDED,

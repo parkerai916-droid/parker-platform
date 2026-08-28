@@ -120,6 +120,28 @@ class OpenAiExternalTranscriptionProviderProfileTest {
         assertInvalid(literalV2Overrides(ExternalTranscriptionAcceptanceState.CONFIGURATION_READY) + ("instructionSha256" to "bad"))
     }
 
+    @Test
+    fun `fidelity-first v3 pins gpt-5-6-sol controls and carries explicit lifecycle`() {
+        val overrides = mapOf(
+            "schemaVersion" to "3", "modelSelectionRule" to "gpt-5.6-sol",
+            "transcriptionProfileId" to FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID,
+            "instructionSha256" to "a".repeat(64), "structuredSchemaSha256" to "b".repeat(64),
+            "processingProfileIdentity" to DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID,
+            "acceptanceState" to "ACCEPTANCE_PENDING", "reasoningEffort" to "none",
+            "pdfDetail" to "high", "imageDetail" to "original",
+        )
+        val profile = assertIs<OpenAiExternalTranscriptionReadiness.Ready>(
+            evaluator.evaluate(true, profileFile(overrides).toString()),
+        ).profile
+        assertEquals("gpt-5.6-sol", profile.modelSelectionRule)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING, profile.acceptanceState)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTED,
+            assertIs<OpenAiExternalTranscriptionReadiness.Ready>(evaluator.evaluate(true,
+                profileFile(overrides + ("acceptanceState" to "ACCEPTED")).toString())).profile.acceptanceState)
+        assertInvalid(overrides + ("reasoningEffort" to "low"))
+        assertInvalid(overrides + ("imageDetail" to "high"))
+    }
+
     private fun literalV2Overrides(state: ExternalTranscriptionAcceptanceState): Map<String, String?> = mapOf(
         "schemaVersion" to "2",
         "transcriptionProfileId" to LITERAL_V2_TRANSCRIPTION_PROFILE_ID,

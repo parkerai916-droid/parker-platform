@@ -902,6 +902,14 @@ class OwnerEvidenceHttpServer(
         "provider" to capability.provider, "modelRule" to capability.modelRule, "profile" to capability.profile,
         "representation" to capability.representationLabel, "availability" to capability.availability,
         "selectionReasons" to jsonArray(capability.selectionReasons),
+        "configurationIdentity" to capability.configurationIdentity,
+        "processingProfile" to capability.processingProfile,
+        "instructionSha256" to capability.instructionSha256,
+        "schemaSha256" to capability.schemaSha256,
+        "reasoningEffort" to capability.reasoningEffort,
+        "store" to capability.store,
+        "pdfDetail" to capability.pdfDetail,
+        "imageDetail" to capability.imageDetail,
     )
 
     private fun acquisitionExecutionJson(outcome: OwnerAcquisitionExecutionView.Admitted) = jsonObject(
@@ -2003,6 +2011,14 @@ function buildAcquisitionPanel(row, index) {
     if (d.capability.provider) appendField(panel, 'Provider', d.capability.provider);
     if (d.capability.modelRule) appendField(panel, 'Model rule', d.capability.modelRule);
     if (d.capability.profile) appendField(panel, 'Profile', d.capability.profile);
+    if (d.capability.configurationIdentity) appendField(panel, 'Configuration', d.capability.configurationIdentity);
+    if (d.capability.processingProfile) appendField(panel, 'Processing profile', d.capability.processingProfile);
+    if (d.capability.instructionSha256) appendField(panel, 'Instruction digest', d.capability.instructionSha256);
+    if (d.capability.schemaSha256) appendField(panel, 'Schema digest', d.capability.schemaSha256);
+    if (d.capability.reasoningEffort) appendField(panel, 'Reasoning effort', d.capability.reasoningEffort);
+    if (d.capability.store !== null && d.capability.store !== undefined) appendField(panel, 'Provider storage', d.capability.store ? 'ENABLED' : 'DISABLED');
+    if (d.capability.pdfDetail) appendField(panel, 'PDF detail', d.capability.pdfDetail);
+    if (d.capability.imageDetail) appendField(panel, 'Image detail', d.capability.imageDetail);
     appendField(panel, 'Processing representation', d.capability.representation);
     appendField(panel, 'Availability', d.capability.availability);
     appendField(panel, 'Routing reasons', (d.capability.selectionReasons || []).join(', '));

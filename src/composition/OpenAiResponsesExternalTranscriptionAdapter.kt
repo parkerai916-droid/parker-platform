@@ -23,6 +23,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import parker.composition.OpenAiApiCredential
 import parker.composition.OpenAiExternalTranscriptionReadiness
 import parker.composition.BYTE_EXACT_PROCESSING_PROFILE_ID
+import parker.composition.DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID
+import parker.composition.FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID
 import parker.core.interfaces.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -33,6 +35,12 @@ internal const val LITERAL_V2_INSTRUCTION_SHA256 = "c721e63b29e56f9242ee24dd8f13
 internal val LITERAL_V2_SCHEMA_SOURCE = """{"type":"object","additionalProperties":false,"required":["requested_pages","returned_pages","pages","warnings"],"properties":{"requested_pages":{"type":"array","items":{"type":"integer","minimum":1}},"returned_pages":{"type":"array","items":{"type":"integer","minimum":1}},"warnings":{"type":"array","items":{"type":"string"}},"pages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_number","text","outcome","reason_classification","reason_detail","warnings","uncertainty_spans"],"properties":{"page_number":{"type":"integer","minimum":1},"text":{"type":["string","null"]},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}},"uncertainty_spans":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["start","end","kind","disclosure"],"properties":{"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["UNCERTAIN","ILLEGIBLE"]},"disclosure":{"type":"string"}}}}}}}}}"""
 internal val LITERAL_V2_SCHEMA_CANONICAL = canonicalizeStructuredSchema(LITERAL_V2_SCHEMA_SOURCE)
 internal val LITERAL_V2_SCHEMA_SHA256 = sha256Hex(LITERAL_V2_SCHEMA_CANONICAL.toByteArray(StandardCharsets.UTF_8))
+
+internal const val FIDELITY_FIRST_INSTRUCTION = "Transcribe only content visibly present in the directly submitted authoritative source. Preserve exact spelling, punctuation, capitalization, page boundaries, block ordering, handwriting distinctions, tables, and layout-significant reading order. Never summarize, paraphrase, correct, normalize, infer, reconstruct, or complete uncertain content. Record every uncertainty in the structured uncertainty fields; omission with an explicit disclosure is preferable to invention. Return every represented page exactly once and every visible text block in deterministic reading order. Echo the supplied profile, request, and attempt identifiers exactly. Return only the strict structured schema."
+internal val FIDELITY_FIRST_SCHEMA_SOURCE = """{"type":"object","additionalProperties":false,"required":["profile_id","request_id","attempt_id","document_outcome","completeness_state","requested_pages","returned_pages","pages","warnings"],"properties":{"profile_id":{"type":"string"},"request_id":{"type":"string"},"attempt_id":{"type":"string"},"document_outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","FAILED"]},"completeness_state":{"type":"string","enum":["COMPLETE","INCOMPLETE","UNDETERMINED"]},"requested_pages":{"type":"array","items":{"type":"integer","minimum":1}},"returned_pages":{"type":"array","items":{"type":"integer","minimum":1}},"warnings":{"type":"array","items":{"type":"string"}},"pages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_number","outcome","reason_classification","reason_detail","blocks","warnings","uncertainties"],"properties":{"page_number":{"type":"integer","minimum":1},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"blocks":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["block_order","kind","text"],"properties":{"block_order":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["PRINTED_TEXT","HANDWRITING","TABLE","HEADER","FOOTER","OTHER"]},"text":{"type":"string"}}}},"warnings":{"type":"array","items":{"type":"string"}},"uncertainties":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["category","block_order","observed_text","disclosure"],"properties":{"category":{"type":"string","enum":["ILLEGIBLE_TEXT","UNCERTAIN_CHARACTER","UNCERTAIN_WORD","UNCERTAIN_PHRASE","UNCERTAIN_ORDERING_LAYOUT","PARTIAL_VISIBILITY","HANDWRITING"]},"block_order":{"type":["integer","null"],"minimum":1},"observed_text":{"type":["string","null"]},"disclosure":{"type":"string"}}}}}}}}}"""
+internal val FIDELITY_FIRST_SCHEMA_CANONICAL = canonicalizeStructuredSchema(FIDELITY_FIRST_SCHEMA_SOURCE)
+internal const val FIDELITY_FIRST_INSTRUCTION_SHA256 = "38e4b87e3a429dac8ed5de91e5e2c94ad3d10cd739db186d41d09ed940b11b88"
+internal const val FIDELITY_FIRST_SCHEMA_SHA256 = "7b46bdd6ce615592bb4e7cfee84f5ec5f6fde546d678e13bdad0555f829a3313"
 
 internal data class OpenAiResponsesTransportRequest(
     val endpoint: URI,
@@ -129,10 +137,14 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     init {
         require(endpoint == URI.create("https://api.openai.com/v1/responses")) { "OpenAI Responses endpoint is not approved" }
         require(!profile.store) { "OpenAI adapter requires store=false" }
-        require(profile.transcriptionProfileId == TRANSCRIPTION_PROFILE_ID) { "OpenAI adapter requires literal-v2 profile" }
-        require(profile.instructionSha256 == TRANSCRIPTION_INSTRUCTION_SHA256) { "OpenAI instruction digest does not match literal-v2" }
-        require(profile.structuredSchemaSha256 == STRUCTURED_SCHEMA_SHA256) { "OpenAI schema digest does not match literal-v2" }
-        require(profile.processingProfileIdentity == BYTE_EXACT_PROCESSING_PROFILE_ID) { "OpenAI adapter requires byte-exact processing" }
+        require(profile.transcriptionProfileId in setOf(LITERAL_V2_PROFILE_ID, FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID))
+        require(profile.instructionSha256 == instructionSha256) { "OpenAI instruction digest does not match the governed profile" }
+        require(profile.structuredSchemaSha256 == schemaSha256) { "OpenAI schema digest does not match the governed profile" }
+        require(profile.processingProfileIdentity == if (fidelityFirst) DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID else BYTE_EXACT_PROCESSING_PROFILE_ID)
+        if (fidelityFirst) {
+            require(profile.modelSelectionRule == "gpt-5.6-sol")
+            require(profile.reasoningEffort == "none" && profile.pdfDetail == "high" && profile.imageDetail == "original")
+        }
     }
 
     override suspend fun transcribe(request: ExternalTranscriptionRequest): ExternalTranscriptionMechanismOutcome {
@@ -178,19 +190,24 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
 
     private fun buildRequestBody(request: ExternalTranscriptionRequest): String {
         val base64 = Base64.getEncoder().encodeToString(request.content)
+        val binding = request.executionBinding
+        if (fidelityFirst) require(binding != null && binding.profileId == profile.transcriptionProfileId)
         val mediaPart = if (request.mediaType == "application/pdf") {
-            "{\"type\":\"input_file\",\"filename\":\"source.pdf\",\"file_data\":\"data:application/pdf;base64,$base64\"}"
+            "{\"type\":\"input_file\",\"filename\":\"source.pdf\",\"detail\":\"${jsonEscape(profile.pdfDetail)}\",\"file_data\":\"data:application/pdf;base64,$base64\"}"
         } else {
-            "{\"type\":\"input_image\",\"detail\":\"high\",\"image_url\":\"data:${jsonEscape(request.mediaType)};base64,$base64\"}"
+            "{\"type\":\"input_image\",\"detail\":\"${jsonEscape(profile.imageDetail)}\",\"image_url\":\"data:${jsonEscape(request.mediaType)};base64,$base64\"}"
         }
+        val identityText = if (binding == null) "Maximum page count: ${request.maximumPageCount}." else
+            "Profile ID: ${binding.profileId}. Request ID: ${binding.requestId}. Attempt ID: ${binding.attemptId}. Maximum page count: ${request.maximumPageCount}. Expected page count: ${request.expectedPageCount?.toString() ?: "not independently established"}."
         return "{" +
             "\"model\":\"${jsonEscape(profile.modelSelectionRule)}\"," +
             "\"store\":false,\"stream\":false," +
-            "\"instructions\":\"${jsonEscape(TRANSCRIPTION_INSTRUCTION)}\"," +
+            (if (fidelityFirst) "\"reasoning\":{\"effort\":\"none\"}," else "") +
+            "\"instructions\":\"${jsonEscape(instruction)}\"," +
             "\"input\":[{\"role\":\"user\",\"content\":[" +
-            "{\"type\":\"input_text\",\"text\":\"Transcribe this source under the developer instruction. Maximum page count: ${request.maximumPageCount}.\"}," +
+            "{\"type\":\"input_text\",\"text\":\"Transcribe this source under the developer instruction. ${jsonEscape(identityText)}\"}," +
             mediaPart + "]}]," +
-            "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"parker_page_transcription\",\"strict\":true,\"schema\":" + STRUCTURED_SCHEMA_CANONICAL + "}}}"
+            "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"parker_page_transcription\",\"strict\":true,\"schema\":" + schemaCanonical + "}}}"
     }
 
     private fun parseResponse(request: ExternalTranscriptionRequest, raw: String): OcrStructuredTranscriptionCandidate {
@@ -206,6 +223,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
                 .map { it.objectValue() }.single { it.requiredString("type") == "output_text" }.requiredString("text")
         }
         val result = responseParseStage("STRUCTURED_PAYLOAD") { Json.parse(outputText).objectValue() }
+        if (fidelityFirst) return parseFidelityFirst(request, responseId, model, result)
         val requested = responseParseStage("PAGE_ACCOUNTING") {
             OcrPageScope(result.requiredIntArray("requested_pages"))
         }
@@ -246,6 +264,77 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         ) }
     }
 
+    private fun parseFidelityFirst(
+        request: ExternalTranscriptionRequest,
+        responseId: String,
+        model: String,
+        result: Map<String, Json>,
+    ): OcrStructuredTranscriptionCandidate {
+        val binding = requireNotNull(request.executionBinding)
+        responseParseStage("EXECUTION_BINDING") {
+            require(result.requiredString("profile_id") == binding.profileId)
+            require(result.requiredString("request_id") == binding.requestId)
+            require(result.requiredString("attempt_id") == binding.attemptId)
+        }
+        responseParseStage("DOCUMENT_OUTCOME") {
+            require(result.requiredString("document_outcome") in setOf("TRANSCRIBED", "TRANSCRIBED_WITH_QUALIFICATIONS", "FAILED"))
+            require(result.requiredString("completeness_state") in setOf("COMPLETE", "INCOMPLETE", "UNDETERMINED"))
+        }
+        val requestedNumbers = result.requiredIntArray("requested_pages")
+        val returnedNumbers = result.requiredIntArray("returned_pages")
+        responseParseStage("PAGE_ACCOUNTING") {
+            require(requestedNumbers == requestedNumbers.sorted() && requestedNumbers.distinct() == requestedNumbers)
+            require(returnedNumbers == returnedNumbers.sorted() && returnedNumbers.distinct() == returnedNumbers)
+            require(requestedNumbers.size <= request.maximumPageCount)
+            request.expectedPageCount?.let { require(requestedNumbers == (1..it).toList()) }
+        }
+        val pages = responseParseStage("PAGES") { result.requiredArray("pages").map { value ->
+            val page = value.objectValue()
+            val pageNumber = page.requiredInt("page_number")
+            val blocks = page.requiredArray("blocks").map { it.objectValue() }
+            val orders = blocks.map { it.requiredInt("block_order") }
+            require(orders == (1..orders.size).toList())
+            val texts = blocks.map { it.requiredStringAllowEmpty("text") }
+            val starts = mutableListOf<Int>()
+            var offset = 0
+            texts.forEachIndexed { index, text -> starts += offset; offset += text.length + if (index < texts.lastIndex) 1 else 0 }
+            val joined = texts.joinToString("\n").takeIf { it.isNotBlank() }
+            val spans = page.requiredArray("uncertainties").map { uncertaintyValue ->
+                val uncertainty = uncertaintyValue.objectValue()
+                val category = uncertainty.requiredString("category")
+                val blockOrder = uncertainty.nullableInt("block_order")
+                val observed = uncertainty.nullableString("observed_text")
+                val start = blockOrder?.let { starts.getOrNull(it - 1) } ?: 0
+                val blockText = blockOrder?.let { texts.getOrNull(it - 1) }.orEmpty()
+                val relative = observed?.takeIf { it.isNotEmpty() }?.let { blockText.indexOf(it).takeIf { index -> index >= 0 } } ?: 0
+                val absoluteStart = (start + relative).coerceAtMost((joined?.length ?: 1) - 1)
+                val length = observed?.length?.takeIf { it > 0 } ?: blockText.length.takeIf { it > 0 } ?: 1
+                OcrUncertaintySpan(pageNumber, absoluteStart, (absoluteStart + length).coerceAtMost(joined?.length ?: 1).coerceAtLeast(absoluteStart + 1),
+                    if (category == "ILLEGIBLE_TEXT") OcrUncertaintyKind.ILLEGIBLE else OcrUncertaintyKind.UNCERTAIN,
+                    "$category: ${uncertainty.requiredString("disclosure")}")
+            }
+            val classification = page.nullableString("reason_classification")
+            OcrStructuredPageCandidate(pageNumber, joined, OcrPageOutcomeKind.valueOf(page.requiredString("outcome")),
+                classification?.let { OcrPageOutcomeReason(it, page.nullableString("reason_detail")) },
+                page.requiredStringArray("warnings"), spans)
+        } }
+        responseParseStage("PAGE_ACCOUNTING") {
+            val pageNumbers = pages.map { it.pageNumber }
+            require(pageNumbers == pageNumbers.sorted() && pageNumbers.distinct() == pageNumbers)
+            require(pageNumbers == returnedNumbers)
+        }
+        return responseParseStage("CANDIDATE") { OcrStructuredTranscriptionCandidate(
+            OcrPageScope(requestedNumbers), OcrPageScope(requestedNumbers), OcrPageScope(returnedNumbers), pages,
+            TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            OcrRecognitionIdentity("openai-responses", profile.transcriptionProfileId, adapterVersion),
+            OcrProviderProvenance("OpenAI", "openai-responses-adapter", adapterVersion, profile.transcriptionProfileId,
+                model, OcrModelSnapshot.NotExposed, responseId,
+                OcrTranscriptionConfiguration.DigestedConfiguration(profile.transcriptionProfileId,
+                    OcrSha256Digest(instructionSha256), OcrSha256Digest(schemaSha256))),
+            request.processingProvenance, Instant.now(), result.requiredStringArray("warnings"),
+        ) }
+    }
+
     private fun failure(code: String) = ExternalTranscriptionMechanismOutcome.Failure(code)
 
     private companion object {
@@ -259,6 +348,13 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         val STRUCTURED_SCHEMA_CANONICAL = LITERAL_V2_SCHEMA_CANONICAL
         val STRUCTURED_SCHEMA_SHA256 = LITERAL_V2_SCHEMA_SHA256
     }
+
+    private val fidelityFirst get() = profile.transcriptionProfileId == FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID
+    private val instruction get() = if (fidelityFirst) FIDELITY_FIRST_INSTRUCTION else TRANSCRIPTION_INSTRUCTION
+    private val instructionSha256 get() = if (fidelityFirst) FIDELITY_FIRST_INSTRUCTION_SHA256 else TRANSCRIPTION_INSTRUCTION_SHA256
+    private val schemaCanonical get() = if (fidelityFirst) FIDELITY_FIRST_SCHEMA_CANONICAL else STRUCTURED_SCHEMA_CANONICAL
+    private val schemaSha256 get() = if (fidelityFirst) FIDELITY_FIRST_SCHEMA_SHA256 else STRUCTURED_SCHEMA_SHA256
+    private val adapterVersion get() = if (fidelityFirst) "2.0.0" else ADAPTER_VERSION
 }
 
 internal class OpenAiResponseParseException(
@@ -539,7 +635,9 @@ private class Reader(private val source: String) {
 
 private fun Json.objectValue() = (this as Json.Obj).fields
 private fun Map<String, Json>.requiredString(name: String) = (getValue(name) as Json.Str).value.also { require(it.isNotBlank()) }
+private fun Map<String, Json>.requiredStringAllowEmpty(name: String) = (getValue(name) as Json.Str).value
 private fun Map<String, Json>.nullableString(name: String) = when (val value = getValue(name)) { Json.Null -> null; is Json.Str -> value.value; else -> error("not string") }
+private fun Map<String, Json>.nullableInt(name: String) = when (val value = getValue(name)) { Json.Null -> null; is Json.Num -> value.value.intValueExact(); else -> error("not integer") }
 private fun Map<String, Json>.requiredArray(name: String) = (getValue(name) as Json.Arr).values
 private fun Map<String, Json>.requiredInt(name: String) = (getValue(name) as Json.Num).value.intValueExact()
 private fun Map<String, Json>.requiredIntArray(name: String) = requiredArray(name).map { (it as Json.Num).value.intValueExact() }

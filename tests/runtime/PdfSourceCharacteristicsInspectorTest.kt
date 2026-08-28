@@ -23,7 +23,7 @@ class PdfSourceCharacteristicsInspectorTest {
     private val id = EvidenceArtifactId("pdf-characteristic-source")
     private val inspector = PdfSourceCharacteristicsInspector()
 
-    @Test fun `born digital PDF establishes native traits and selects native routing without extraction`() = runTest {
+    @Test fun `born digital PDF establishes native traits but does not select source-inaccurate native routing`() = runTest {
         val bytes = pdf(textPages = 1, imagePages = 0)
         val inspected = assertIs<PdfSourceCharacteristicsInspection.Established>(inspect(bytes))
         assertEquals(AcquisitionCharacteristicState.PRESENT, inspected.nativeSearchableText)
@@ -31,13 +31,13 @@ class PdfSourceCharacteristicsInspectorTest {
         assertEquals(AcquisitionCharacteristicState.ABSENT, inspected.mixedTextAndImage)
         assertEquals(AcquisitionPageCount.Known(1), inspected.pageCount)
         val source = source(bytes, inspected)
-        val routed = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(
+        val routed = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(
             DeterministicEvidenceAcquisitionRouter().route(
                 source, ProductionAcquisitionCapabilityCatalogue.create().capabilities(),
                 ExternalEgressAuthorisation.NOT_AUTHORISED,
             ),
         )
-        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, routed.decision.capability.capabilityId)
+        assertContains(routed.reasons, AcquisitionNoSelectionReason.NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY)
     }
 
     @Test fun `image only PDF establishes scan traits and never selects native`() = runTest {

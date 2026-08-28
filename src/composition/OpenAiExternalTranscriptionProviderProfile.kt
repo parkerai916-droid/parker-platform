@@ -37,6 +37,9 @@ data class OpenAiExternalTranscriptionProviderProfile(
     val structuredSchemaSha256: String? = null,
     val processingProfileIdentity: String = BYTE_EXACT_PROCESSING_PROFILE_ID,
     val acceptanceState: ExternalTranscriptionAcceptanceState = ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING,
+    val reasoningEffort: String = "NOT_CONFIGURED_HISTORICAL",
+    val pdfDetail: String = "NOT_CONFIGURED_HISTORICAL",
+    val imageDetail: String = "high",
 )
 
 enum class ExternalTranscriptionAcceptanceState {
@@ -130,6 +133,9 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
         acceptanceState = if (p.required("schemaVersion") == "1") ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING
         else try { enumValueOf<ExternalTranscriptionAcceptanceState>(p.required("acceptanceState")) }
         catch (_: IllegalArgumentException) { invalidValue("acceptanceState is invalid") },
+        reasoningEffort = if (p.required("schemaVersion") == "3") p.required("reasoningEffort") else "NOT_CONFIGURED_HISTORICAL",
+        pdfDetail = if (p.required("schemaVersion") == "3") p.required("pdfDetail") else "NOT_CONFIGURED_HISTORICAL",
+        imageDetail = if (p.required("schemaVersion") == "3") p.required("imageDetail") else "high",
     )
 
     private fun validate(p: OpenAiExternalTranscriptionProviderProfile): String? {
@@ -141,7 +147,7 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
             p.regionalStorageConsiderations, p.approvingOwnerReference,
         ) + p.verificationReferences + p.reverificationTriggers
         if (bounded.any { it.length !in 1..MAX_FIELD_CHARACTERS }) return "Profile fields must be bounded"
-        if (p.schemaVersion !in setOf("1", "2")) return "Unsupported provider profile schemaVersion"
+        if (p.schemaVersion !in setOf("1", "2", "3")) return "Unsupported provider profile schemaVersion"
         if (p.providerIdentity != "OpenAI") return "Provider identity must be OpenAI"
         if (p.apiProductPath != "/v1/responses") return "API product path must be /v1/responses"
         if (p.store) return "Provider profile must require store=false"
@@ -158,12 +164,22 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
                 p.structuredSchemaSha256 != null || p.processingProfileIdentity != BYTE_EXACT_PROCESSING_PROFILE_ID ||
                 p.acceptanceState != ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING
             ) return "Historical profile state is inconsistent"
-        } else {
+        } else if (p.schemaVersion == "2") {
             if (p.transcriptionProfileId != LITERAL_V2_TRANSCRIPTION_PROFILE_ID) return "Profile schema v2 requires literal-v2 identity"
             if (!SHA256.matches(p.instructionSha256.orEmpty()) || !SHA256.matches(p.structuredSchemaSha256.orEmpty())) {
                 return "Profile schema v2 requires valid configuration SHA-256 digests"
             }
             if (p.processingProfileIdentity != BYTE_EXACT_PROCESSING_PROFILE_ID) return "Profile schema v2 requires byte-exact processing"
+        } else {
+            if (p.transcriptionProfileId != FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID) return "Profile schema v3 requires fidelity-first identity"
+            if (!SHA256.matches(p.instructionSha256.orEmpty()) || !SHA256.matches(p.structuredSchemaSha256.orEmpty())) {
+                return "Profile schema v3 requires valid configuration SHA-256 digests"
+            }
+            if (p.processingProfileIdentity != DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID) return "Profile schema v3 requires direct-authoritative-byte processing"
+            if (p.modelSelectionRule != "gpt-5.6-sol") return "Profile schema v3 requires gpt-5.6-sol"
+            if (p.reasoningEffort != "none") return "Profile schema v3 requires reasoning effort none"
+            if (p.pdfDetail != "high") return "Profile schema v3 requires PDF detail high"
+            if (p.imageDetail != "original") return "Profile schema v3 requires image detail original"
         }
         val destination = try { URI(p.allowedNetworkDestination) } catch (_: Exception) { return "Network destination is invalid" }
         if (destination.scheme != "https" || destination.host != "api.openai.com" ||
@@ -195,6 +211,7 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
             "requestLoggingConsiderations", "regionalStorageConsiderations", "verifiedOn",
             "approvingOwnerReference", "nextReviewDate", "verificationReferences", "reverificationTriggers",
             "transcriptionProfileId", "instructionSha256", "structuredSchemaSha256", "processingProfileIdentity", "acceptanceState",
+            "reasoningEffort", "pdfDetail", "imageDetail",
         )
         val SHA256 = Regex("^[0-9a-f]{64}$")
     }
@@ -203,3 +220,5 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
 const val HISTORICAL_TRANSCRIPTION_PROFILE_ID = "openai-faithful-page-transcription-v1"
 const val LITERAL_V2_TRANSCRIPTION_PROFILE_ID = "openai-literal-page-transcription-v2"
 const val BYTE_EXACT_PROCESSING_PROFILE_ID = "external-transcription.direct-byte-exact-v1"
+const val FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID = "openai-fidelity-first-transcription-v1"
+const val DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID = "external-transcription.direct-authoritative-byte-v1"

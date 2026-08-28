@@ -76,10 +76,14 @@ data class AcquisitionProviderConfiguration(
     val adapterIdentity: String,
     val adapterVersion: String,
     val processingProfileIdentity: String,
+    val reasoningEffort: String = "NOT_CONFIGURED_HISTORICAL",
+    val store: Boolean = false,
+    val pdfDetail: String = "NOT_CONFIGURED_HISTORICAL",
+    val imageDetail: String = "high",
 ) {
     init {
         listOf(providerIdentity, modelSelectionRule, profileIdentity, configurationIdentity,
-            adapterIdentity, adapterVersion, processingProfileIdentity).forEach {
+            adapterIdentity, adapterVersion, processingProfileIdentity, reasoningEffort, pdfDetail, imageDetail).forEach {
             require(it.isNotBlank()) { "Provider configuration identities must not be blank" }
         }
         require(instructionSha256.matches(Regex("^[0-9a-f]{64}$")))
@@ -108,6 +112,9 @@ data class AcquisitionOperationalLimits(
     }
 }
 
+/** Empirical suitability for faithful transcription of a source media class. */
+enum class AcquisitionFidelitySuitability { ACCEPTED, NOT_ACCEPTED, UNDETERMINED }
+
 /**
  * Immutable capability facts only. This is neither a registry nor routing authority.
  * Availability projects an existing governed lifecycle/readiness determination; it does not
@@ -124,16 +131,22 @@ class EvidenceAcquisitionCapability(
     val providerConfiguration: AcquisitionProviderConfiguration?,
     val availability: AcquisitionAvailability,
     val limits: AcquisitionOperationalLimits,
+    fidelitySuitabilityByMediaType: Map<String, AcquisitionFidelitySuitability> =
+        supportedMediaTypes.associateWith { AcquisitionFidelitySuitability.ACCEPTED },
 ) {
     val supportedMediaTypes: Set<String> = supportedMediaTypes.toSet()
     val supportedSourceForms: Set<AcquisitionSourceForm> = supportedSourceForms.toSet()
     val supportedRepresentations: Set<AcquisitionRepresentationClass> = supportedRepresentations.toSet()
+    val fidelitySuitabilityByMediaType = fidelitySuitabilityByMediaType.toMap()
 
     init {
         require(capabilityId.isNotBlank())
         require(this.supportedMediaTypes.isNotEmpty() && this.supportedMediaTypes.none { it.isBlank() })
         require(this.supportedSourceForms.isNotEmpty())
         require(this.supportedRepresentations.isNotEmpty())
+        require(this.fidelitySuitabilityByMediaType.keys == this.supportedMediaTypes) {
+            "Fidelity suitability must be explicit for every and only supported media type"
+        }
         when (mechanism) {
             EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION -> {
                 require(fidelity.nativeTextExtraction)
@@ -157,10 +170,12 @@ class EvidenceAcquisitionCapability(
         supportedMediaTypes == other.supportedMediaTypes && supportedSourceForms == other.supportedSourceForms &&
         fidelity == other.fidelity && supportedRepresentations == other.supportedRepresentations &&
         egress == other.egress && providerConfiguration == other.providerConfiguration &&
-        availability == other.availability && limits == other.limits
+        availability == other.availability && limits == other.limits &&
+        fidelitySuitabilityByMediaType == other.fidelitySuitabilityByMediaType
 
     override fun hashCode(): Int = listOf(capabilityId, mechanism, supportedMediaTypes, supportedSourceForms,
-        fidelity, supportedRepresentations, egress, providerConfiguration, availability, limits).hashCode()
+        fidelity, supportedRepresentations, egress, providerConfiguration, availability, limits,
+        fidelitySuitabilityByMediaType).hashCode()
 }
 
 enum class ExternalEgressAuthorisation { AUTHORISED, NOT_AUTHORISED, NOT_REQUIRED }
@@ -181,6 +196,8 @@ enum class AcquisitionEligibilityReason {
     HANDWRITING_UNSUPPORTED,
     COMPLEX_LAYOUT_UNSUPPORTED,
     TABLES_UNSUPPORTED,
+    FIDELITY_NOT_ACCEPTED,
+    FIDELITY_UNDETERMINED,
 }
 
 sealed class AcquisitionEligibility {
@@ -220,6 +237,11 @@ object EvidenceAcquisitionEligibilityEvaluator {
             failures += AcquisitionEligibilityReason.EXTERNAL_EGRESS_NOT_AUTHORISED
         }
         if (source.mediaType !in capability.supportedMediaTypes) failures += AcquisitionEligibilityReason.UNSUPPORTED_MEDIA_TYPE
+        when (capability.fidelitySuitabilityByMediaType[source.mediaType]) {
+            AcquisitionFidelitySuitability.NOT_ACCEPTED -> failures += AcquisitionEligibilityReason.FIDELITY_NOT_ACCEPTED
+            AcquisitionFidelitySuitability.UNDETERMINED -> unknowns += AcquisitionEligibilityReason.FIDELITY_UNDETERMINED
+            AcquisitionFidelitySuitability.ACCEPTED, null -> Unit
+        }
         capability.limits.maximumSourceBytes?.let { if (source.byteLength > it) failures += AcquisitionEligibilityReason.SOURCE_TOO_LARGE }
         capability.limits.maximumPages?.let { limit ->
             when (val pages = source.pageCount) {
@@ -238,6 +260,10 @@ object EvidenceAcquisitionEligibilityEvaluator {
             AcquisitionSourceForm.IMAGE_ONLY_OR_SCANNED !in capability.supportedSourceForms) {
             failures += AcquisitionEligibilityReason.UNSUPPORTED_SOURCE_FORM
         }
+        if (source.characteristics.nativeSearchableText == AcquisitionCharacteristicState.PRESENT &&
+            AcquisitionSourceForm.NATIVE_SEARCHABLE !in capability.supportedSourceForms) {
+            failures += AcquisitionEligibilityReason.UNSUPPORTED_SOURCE_FORM
+        }
         if (source.characteristics.mixedTextAndImage == AcquisitionCharacteristicState.PRESENT &&
             AcquisitionSourceForm.MIXED_TEXT_AND_IMAGE !in capability.supportedSourceForms) {
             failures += AcquisitionEligibilityReason.UNSUPPORTED_SOURCE_FORM
@@ -254,6 +280,7 @@ object EvidenceAcquisitionEligibilityEvaluator {
 }
 
 enum class AcquisitionSelectionReason {
+    FIDELITY_SUITABILITY_ACCEPTED,
     NATIVE_TEXT_DIRECTLY_AVAILABLE,
     SOURCE_REQUIRES_OCR_OR_TRANSCRIPTION,
     REQUIRED_HANDWRITING_SUPPORT,
@@ -289,6 +316,8 @@ class EvidenceAcquisitionRoutingDecision(
 }
 
 enum class AcquisitionNoSelectionReason {
+    NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY,
+    FIDELITY_SUITABILITY_UNDETERMINED,
     NO_ELIGIBLE_CAPABILITY,
     UNKNOWN_REQUIRED_CHARACTERISTIC,
     EQUIVALENT_CAPABILITIES_AMBIGUOUS,

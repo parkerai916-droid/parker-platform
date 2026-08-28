@@ -26,6 +26,14 @@ data class OwnerAcquisitionCapabilityView(
     val representationLabel: String,
     val availability: String,
     val selectionReasons: List<String>,
+    val configurationIdentity: String? = null,
+    val processingProfile: String? = null,
+    val instructionSha256: String? = null,
+    val schemaSha256: String? = null,
+    val reasoningEffort: String? = null,
+    val store: Boolean? = null,
+    val pdfDetail: String? = null,
+    val imageDetail: String? = null,
 )
 
 sealed interface OwnerAcquisitionDecisionView {

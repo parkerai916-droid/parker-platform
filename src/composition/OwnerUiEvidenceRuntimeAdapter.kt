@@ -124,6 +124,14 @@ private fun capabilityView(capability: EvidenceAcquisitionCapability, decision: 
         },
         if (capability.availability is AcquisitionAvailability.Available) "READY" else "BLOCKED",
         decision.selectionReasons.map { it.name }.sorted(),
+        capability.providerConfiguration?.configurationIdentity,
+        capability.providerConfiguration?.processingProfileIdentity,
+        capability.providerConfiguration?.instructionSha256,
+        capability.providerConfiguration?.schemaSha256,
+        capability.providerConfiguration?.reasoningEffort,
+        capability.providerConfiguration?.store,
+        capability.providerConfiguration?.pdfDetail,
+        capability.providerConfiguration?.imageDetail,
     )
 
 private fun mechanismLabel(mechanism: EvidenceAcquisitionMechanism) = when (mechanism) {

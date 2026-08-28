@@ -1,9 +1,24 @@
 package parker.core.interfaces
 
 /** Byte-exact, provider-neutral full-source request prepared after authorization and custody verification. */
+data class ExternalTranscriptionExecutionBinding(
+    val requestId: String,
+    val attemptId: String,
+    val profileId: String,
+) {
+    init {
+        val bounded = Regex("^[A-Za-z0-9_-]{1,120}$")
+        require(bounded.matches(requestId)) { "requestId must be a bounded opaque identifier" }
+        require(bounded.matches(attemptId)) { "attemptId must be a bounded opaque identifier" }
+        require(profileId.isNotBlank() && profileId.length <= 1_024) { "profileId must be bounded" }
+    }
+}
+
 class ExternalTranscriptionRequest(
     val processingRepresentation: OcrProcessingRepresentation,
     val maximumPageCount: Int,
+    val expectedPageCount: Int? = null,
+    val executionBinding: ExternalTranscriptionExecutionBinding? = null,
 ) {
     val sourceEvidenceArtifactId get() = processingRepresentation.processingProvenance.sourceEvidenceArtifactId
     val mediaType get() = processingRepresentation.processingProvenance.representationMediaType
@@ -18,6 +33,9 @@ class ExternalTranscriptionRequest(
             "ExternalTranscriptionRequest.mediaType must be PDF or image"
         }
         require(maximumPageCount in 1..MAX_PAGE_COUNT) { "ExternalTranscriptionRequest.maximumPageCount must be in 1..$MAX_PAGE_COUNT" }
+        require(expectedPageCount == null || expectedPageCount in 1..maximumPageCount) {
+            "ExternalTranscriptionRequest.expectedPageCount must be absent or within the governed maximum"
+        }
     }
 
     companion object {

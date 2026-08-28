@@ -6,6 +6,7 @@ import parker.core.interfaces.ExternalTranscriptionMechanism
 import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionRequest
+import parker.core.interfaces.ExternalTranscriptionExecutionBinding
 import parker.core.interfaces.OcrProcessingRepresentationOutcome
 import parker.core.interfaces.OcrStructuredValidationOutcome
 import parker.core.interfaces.PermissionDecisionOutcome
@@ -32,6 +33,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
     private val representationFactory: OcrProcessingRepresentationFactory = OcrProcessingRepresentationFactory(),
     private val correlationFactory: () -> String = { UUID.randomUUID().toString() },
     private val invocationObserver: ExternalTranscriptionInvocationObserver = ExternalTranscriptionInvocationObserver.NONE,
+    private val executionBinding: ExternalTranscriptionExecutionBinding? = null,
 ) {
     private val sourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
 
@@ -69,6 +71,8 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         val request = ExternalTranscriptionRequest(
             processingRepresentation = representation,
             maximumPageCount = ExternalTranscriptionRequest.MAX_PAGE_COUNT,
+            expectedPageCount = if (mediaType.startsWith("image/", ignoreCase = true)) 1 else null,
+            executionBinding = executionBinding,
         )
         invocationObserver.representationBuilt()
         invocationObserver.requestPrepared()
