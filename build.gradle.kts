@@ -172,6 +172,34 @@ tasks.register<Test>("unitOLinuxDurabilityVerification") {
     shouldRunAfter(tasks.named("unitOOfflineAcceptanceVerification"))
 }
 
+// Programme FA.8 — one rerunnable, synthetic-only acceptance surface for the complete governed
+// acquisition-to-analysis chain. Every included class uses temporary stores, synthetic fixtures,
+// and fake/local adapters only. The task has no live-evaluation source set, credential, provider
+// opt-in, production storage path, or lifecycle-task attachment.
+tasks.register<Test>("fa8SyntheticEndToEndAcceptance") {
+    description = "Runs the offline synthetic FA.8 acquisition-to-analysis acceptance matrix"
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.core.runtime.DeterministicEvidenceAcquisitionRouterTest")
+        includeTestsMatching("parker.core.runtime.GovernedAcquisitionIntegrationTest")
+        includeTestsMatching("parker.core.runtime.AuthoritativeAcquisitionSourceResolverTest")
+        includeTestsMatching("parker.core.runtime.TierAOwnerInvocationCoordinatorTest")
+        includeTestsMatching("parker.core.runtime.TierBOcrOwnerInvocationCoordinatorTest")
+        includeTestsMatching("parker.core.runtime.DocumentAnalysisCoordinatorTest")
+        includeTestsMatching("parker.core.runtime.HumanVerificationStorageTest")
+        includeTestsMatching("parker.core.runtime.SavedAnalysisCoordinatorTest")
+        includeTestsMatching("parker.composition.GovernedAcquisitionOwnerPresentationTest")
+        includeTestsMatching("parker.composition.TierBOwnerRoutingTest")
+        includeTestsMatching("parker.composition.DerivativeContentPersistenceRestartAcceptanceTest")
+        includeTestsMatching("parker.composition.SavedAnalysisRestartAcceptanceTest")
+        includeTestsMatching("parker.composition.OwnerEvidenceHttpServerTest")
+    }
+    shouldRunAfter(tasks.test)
+}
+
 tasks.register<Test>("unitOAttemptLedgerMountVerification") {
     description = "Runs the offline UID/GID 999 mounted acceptance-ledger durability verification"
     group = "verification"
