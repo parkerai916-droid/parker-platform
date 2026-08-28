@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
 import parker.core.runtime.DocumentAnalysisCoordinator
+import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.interfaces.*
 import parker.ui.EnhancedTranscriptionReadiness
 import java.time.Instant
@@ -87,6 +88,7 @@ class OwnerEvidenceHttpServerTest {
         modelEndpointUrl: String = "http://127.0.0.1:1/api/generate",
         externalReadiness: () -> EnhancedTranscriptionReadiness = { EnhancedTranscriptionReadiness.Disabled },
         invokeExternal: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = { ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("disabled") },
+        invokeAcceptance: suspend (String) -> FidelityFirstAcceptanceOutcome = { FidelityFirstAcceptanceOutcome.Blocked("disabled") },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -117,6 +119,7 @@ class OwnerEvidenceHttpServerTest {
             token = tokenOverride,
             operations = adapter,
             logger = serverLogger,
+            invokeFidelityFirstAcceptance = invokeAcceptance,
         )
         server.start()
         return Harness(runtime, server, runtimeLogger, serverLogger)
@@ -154,6 +157,25 @@ class OwnerEvidenceHttpServerTest {
 
     private fun send(request: HttpRequest): HttpResponse<String> =
         client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+
+    @Test
+    fun `acceptance endpoint is owner authenticated exact-authority only and accepts no source overrides`() {
+        var calls = 0
+        var authority: String? = null
+        val harness = startHarness("", invokeAcceptance = {
+            calls++; authority = it
+            FidelityFirstAcceptanceOutcome.Blocked("SYNTHETIC_PREFLIGHT_BLOCK")
+        })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/evidence/acceptance-executions/authority-synthetic")
+            val unauthorised = send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.noBody()).build())
+            assertEquals(401, unauthorised.statusCode()); assertEquals(0, calls)
+            val authorised = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"evidenceArtifactId\":\"caller-override\",\"model\":\"caller-override\"}")).build())
+            assertEquals(409, authorised.statusCode()); assertEquals(1, calls); assertEquals("authority-synthetic", authority)
+            assertTrue(authorised.body().contains("SYNTHETIC_PREFLIGHT_BLOCK"))
+        } finally { harness.shutdown() }
+    }
 
     @Test
     fun `enhanced transcription is readiness gated explicit exact-id and safely presented`() {

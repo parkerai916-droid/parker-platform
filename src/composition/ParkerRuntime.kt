@@ -3,6 +3,7 @@ package parker.composition
 import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
+import java.util.jar.Manifest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -116,6 +117,12 @@ import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
 import parker.core.runtime.ExternalTranscriptionInvocationGate
 import parker.core.runtime.ExternalTranscriptionOwnerInvocationCoordinator
+import parker.core.runtime.FidelityFirstAcceptanceCoordinator
+import parker.core.runtime.FidelityFirstAcceptanceLifecycle
+import parker.core.runtime.FidelityFirstAcceptanceOutcome
+import parker.core.runtime.FidelityFirstEffectiveConfiguration
+import parker.core.runtime.FileSystemFidelityFirstAcceptanceAuthorityStorage
+import parker.core.runtime.FileSystemFidelityFirstAttemptLedger
 import parker.core.runtime.JdkOpenAiResponsesTransport
 import parker.core.runtime.OpenAiResponsesExternalTranscriptionAdapter
 import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
@@ -274,6 +281,11 @@ class ParkerRuntime(
     private val logger: ParkerLogger,
     private val ownerNotificationSink: OwnerNotificationSink = LoggingOwnerNotificationSink(logger),
     private val clock: () -> Instant = Instant::now,
+    private val buildIdentity: () -> String? = {
+        ParkerRuntime::class.java.classLoader.getResources("META-INF/MANIFEST.MF").toList()
+            .mapNotNull { resource -> runCatching { resource.openStream().use { Manifest(it).mainAttributes.getValue("Parker-Source-Commit") } }.getOrNull() }
+            .singleOrNull { Regex("^[0-9a-f]{40}$").matches(it) }
+    },
 ) {
 
     private val stateLock = Mutex()
@@ -334,6 +346,7 @@ class ParkerRuntime(
     // External transcription Unit E: a separate owner-only, pre-admission operation. The real
     // provider is composed only after the enablement, profile, and credential gates are all Ready.
     private lateinit var externalTranscriptionOwnerInvocationCoordinator: ExternalTranscriptionOwnerInvocationCoordinator
+    private var fidelityFirstAcceptanceCoordinator: FidelityFirstAcceptanceCoordinator? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
@@ -1415,6 +1428,55 @@ class ParkerRuntime(
             validator = OcrStructuredResultValidator(),
             durableAdmission = tierBDerivativeGenerationCoordinator,
         )
+        // A separately persisted authority is the only bridge from ACCEPTANCE_PENDING to the raw
+        // provider adapter. The ordinary coordinator above remains bound to the disabled mechanism
+        // until global ACCEPTED. Merely configuring these roots grants no execution authority.
+        val authorityRoot = config.fidelityFirstAcceptanceAuthorityStorageRootPath
+        val attemptRoot = config.fidelityFirstAttemptStorageRootPath
+        val buildCommit = config.productionCommit
+        val readyProfile = openAiExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready
+        val credential = config.openAiApiCredential
+        val embeddedCommit = buildIdentity()
+        fidelityFirstAcceptanceCoordinator = if (
+            authorityRoot != null && attemptRoot != null && buildCommit != null && buildCommit == embeddedCommit &&
+            readyProfile != null && credential != null
+        ) {
+            val profile = readyProfile.profile
+            FidelityFirstAcceptanceCoordinator(
+                authorities = FileSystemFidelityFirstAcceptanceAuthorityStorage(Path.of(authorityRoot)),
+                ledger = FileSystemFidelityFirstAttemptLedger(Path.of(attemptRoot)),
+                lifecycle = {
+                    when (profile.acceptanceState) {
+                        ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING -> FidelityFirstAcceptanceLifecycle.ACCEPTANCE_PENDING
+                        ExternalTranscriptionAcceptanceState.ACCEPTED -> FidelityFirstAcceptanceLifecycle.ACCEPTED
+                        ExternalTranscriptionAcceptanceState.DISABLED -> FidelityFirstAcceptanceLifecycle.DISABLED
+                        ExternalTranscriptionAcceptanceState.SUSPENDED -> FidelityFirstAcceptanceLifecycle.SUSPENDED
+                        ExternalTranscriptionAcceptanceState.CONFIGURATION_READY -> FidelityFirstAcceptanceLifecycle.INVALID
+                    }
+                },
+                effectiveConfiguration = {
+                    FidelityFirstEffectiveConfiguration(
+                        ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
+                        "openai-responses-adapter", "2.0.0", profile.modelSelectionRule,
+                        profile.transcriptionProfileId, profile.processingProfileIdentity, profile.reasoningEffort,
+                        profile.store, profile.pdfDetail, requireNotNull(profile.instructionSha256),
+                        requireNotNull(profile.structuredSchemaSha256),
+                    )
+                },
+                deployedCommit = { requireNotNull(embeddedCommit) },
+                ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+                evidenceCustodian = defaultEvidenceCustodian,
+                permissionEngine = permissionEngine,
+                mechanismFactory = { observer ->
+                    OpenAiResponsesExternalTranscriptionAdapter(
+                        readiness = readyProfile, credential = credential,
+                        transport = JdkOpenAiResponsesTransport(), transportLifecycleObserver = observer,
+                    )
+                },
+                validator = OcrStructuredResultValidator(),
+                durableAdmission = tierBDerivativeGenerationCoordinator,
+            )
+        } else null
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )
@@ -2050,6 +2112,16 @@ class ParkerRuntime(
     ): ExternalTranscriptionOwnerInvocationOutcome {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return externalTranscriptionOwnerInvocationCoordinator.invoke(evidenceArtifactId)
+    }
+
+    /** Exact-authority administrative acceptance command; never accepts source or configuration overrides. */
+    suspend fun invokeFidelityFirstAcceptanceAsOwner(authorityId: String): FidelityFirstAcceptanceOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        if (!Regex("^[A-Za-z0-9_.-]{1,120}$").matches(authorityId)) {
+            return FidelityFirstAcceptanceOutcome.Blocked("AUTHORITY_ID_INVALID")
+        }
+        return fidelityFirstAcceptanceCoordinator?.invoke(authorityId)
+            ?: FidelityFirstAcceptanceOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
     }
 
     /** Owner-safe executable readiness, matching the same fail-closed gates used for composition. */

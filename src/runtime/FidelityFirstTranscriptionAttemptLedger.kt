@@ -59,6 +59,7 @@ enum class FidelityFirstAttemptStage {
 data class FidelityFirstAttemptSnapshot(
     val identity: FidelityFirstExecutionIdentity,
     val stages: List<FidelityFirstAttemptStage>,
+    val admittedGenerationId: String? = null,
 ) {
     val providerAttemptStarted get() = FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED in stages
 }
@@ -79,13 +80,33 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
         require(it.stages.last() !in TERMINAL) { "fidelity-first execution is terminal" }
     }
 
-    fun transition(identity: FidelityFirstExecutionIdentity, next: FidelityFirstAttemptStage): FidelityFirstAttemptSnapshot =
+    fun transition(
+        identity: FidelityFirstExecutionIdentity,
+        next: FidelityFirstAttemptStage,
+        metadata: List<Pair<String, String>> = emptyList(),
+    ): FidelityFirstAttemptSnapshot =
         locked(identity.executionId) {
+            require(metadata.map { it.first }.distinct().size == metadata.size)
+            require(metadata.all { (key, value) -> key.matches(Regex("^[a-zA-Z][a-zA-Z0-9]*$")) && value.isNotBlank() && value.length <= 1_024 && value.none { it in "\r\n\t" } })
             val file = path(identity.executionId)
             if (!Files.exists(file)) create(file, identity)
             val current = decode(file).also { require(it.identity == identity) }
             require(current.stages.last() !in TERMINAL)
             require(next == FidelityFirstAttemptStage.TERMINAL_FAILURE || next.ordinal == current.stages.last().ordinal + 1)
+            replace(file, checked("STAGE", listOf("stage" to next.name, "timestamp" to now().toString()) + metadata))
+            decode(file)
+        }
+
+    /** Idempotent reconstruction support before consumption; never skips or repeats attempt start. */
+    fun advancePreAttempt(identity: FidelityFirstExecutionIdentity, next: FidelityFirstAttemptStage): FidelityFirstAttemptSnapshot =
+        locked(identity.executionId) {
+            require(next in PRE_ATTEMPT)
+            val file = path(identity.executionId)
+            if (!Files.exists(file)) create(file, identity)
+            val current = decode(file).also { require(it.identity == identity) }
+            require(!current.providerAttemptStarted && current.stages.last() !in TERMINAL)
+            if (current.stages.last().ordinal >= next.ordinal) return@locked current
+            require(next.ordinal == current.stages.last().ordinal + 1)
             replace(file, checked("STAGE", listOf("stage" to next.name, "timestamp" to now().toString())))
             decode(file)
         }
@@ -111,11 +132,13 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
         val text = Files.readString(file); require(text.endsWith('\n'))
         val lines = text.lineSequence().filter(String::isNotEmpty).toList(); require(lines.size >= 2)
         val identity = identity(parse(lines.first(), "IDENTITY"))
-        val stages = lines.drop(1).map { FidelityFirstAttemptStage.valueOf(parse(it, "STAGE").getValue("stage")) }
+        val stageFields = lines.drop(1).map { parse(it, "STAGE") }
+        val stages = stageFields.map { FidelityFirstAttemptStage.valueOf(it.getValue("stage")) }
         require(stages.first() == FidelityFirstAttemptStage.AUTHORISED)
         stages.zipWithNext().forEach { (a, b) -> require(b == FidelityFirstAttemptStage.TERMINAL_FAILURE || b.ordinal == a.ordinal + 1) }
         require(stages.count { it == FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED } <= 1)
-        return FidelityFirstAttemptSnapshot(identity, stages)
+        val generationId = stageFields.lastOrNull { it["stage"] == FidelityFirstAttemptStage.TERMINAL_SUCCESS.name }?.get("generationId")
+        return FidelityFirstAttemptSnapshot(identity, stages, generationId)
     }
     private fun identity(f: Map<String, String>) = FidelityFirstExecutionIdentity(
         f.getValue("executionId"), f.getValue("requestId"), f.getValue("attemptId"), f.getValue("evidenceArtifactId"),
@@ -147,7 +170,10 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
     }
     private fun write(channel: FileChannel, bytes: ByteArray) { val buffer = ByteBuffer.wrap(bytes); while (buffer.hasRemaining()) channel.write(buffer) }
     private fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)).joinToString("") { "%02x".format(it) }
-    private companion object { val TERMINAL = setOf(FidelityFirstAttemptStage.TERMINAL_SUCCESS, FidelityFirstAttemptStage.TERMINAL_FAILURE) }
+    private companion object {
+        val TERMINAL = setOf(FidelityFirstAttemptStage.TERMINAL_SUCCESS, FidelityFirstAttemptStage.TERMINAL_FAILURE)
+        val PRE_ATTEMPT = setOf(FidelityFirstAttemptStage.PREFLIGHT_PASSED, FidelityFirstAttemptStage.SOURCE_RETRIEVED, FidelityFirstAttemptStage.REQUEST_PREPARED)
+    }
 }
 
 class FidelityFirstAttemptTracker(
@@ -155,14 +181,17 @@ class FidelityFirstAttemptTracker(
     val identity: FidelityFirstExecutionIdentity,
 ) : ExternalTranscriptionInvocationObserver, OpenAiTransportLifecycleObserver {
     fun authorised() = ledger.requireAvailable(identity)
-    fun preflightPassed() = ledger.transition(identity, FidelityFirstAttemptStage.PREFLIGHT_PASSED)
-    override fun sourceRetrieved() { ledger.transition(identity, FidelityFirstAttemptStage.SOURCE_RETRIEVED) }
+    fun preflightPassed() = ledger.advancePreAttempt(identity, FidelityFirstAttemptStage.PREFLIGHT_PASSED)
+    override fun sourceRetrieved() { ledger.advancePreAttempt(identity, FidelityFirstAttemptStage.SOURCE_RETRIEVED) }
     override fun representationBuilt() = Unit
-    override fun requestPrepared() { ledger.transition(identity, FidelityFirstAttemptStage.REQUEST_PREPARED) }
+    override fun requestPrepared() { ledger.advancePreAttempt(identity, FidelityFirstAttemptStage.REQUEST_PREPARED) }
     override fun providerAttemptStarting() { ledger.transition(identity, FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED) }
     override fun providerResponseReceived() { ledger.transition(identity, FidelityFirstAttemptStage.PROVIDER_RESPONSE_RECEIVED) }
     override fun generationAdmitted() { ledger.transition(identity, FidelityFirstAttemptStage.GENERATION_ADMITTED) }
-    fun terminalSuccess() = ledger.transition(identity, FidelityFirstAttemptStage.TERMINAL_SUCCESS)
+    fun terminalSuccess(generationId: String? = null) = ledger.transition(
+        identity, FidelityFirstAttemptStage.TERMINAL_SUCCESS,
+        generationId?.let { listOf("generationId" to it) } ?: emptyList(),
+    )
     fun terminalFailure() = ledger.transition(identity, FidelityFirstAttemptStage.TERMINAL_FAILURE)
     fun snapshot() = ledger.open(identity)
 }

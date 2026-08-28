@@ -283,6 +283,9 @@ data class ParkerRuntimeConfig(
     val openAiExternalTranscriptionEnabled: Boolean = false,
     val openAiExternalTranscriptionProviderProfilePath: String? = null,
     val openAiApiCredential: OpenAiApiCredential? = null,
+    val fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
+    val fidelityFirstAttemptStorageRootPath: String? = null,
+    val productionCommit: String? = null,
 )
 
 /**
@@ -334,6 +337,9 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED"
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH"
     const val KEY_OPENAI_API_KEY = "PARKER_OPENAI_API_KEY"
+    const val KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT"
+    const val KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT"
+    const val KEY_PRODUCTION_COMMIT = "PARKER_PRODUCTION_COMMIT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -452,6 +458,19 @@ object ParkerRuntimeConfigLoader {
                 "must be true or false; was '$externalTranscriptionEnabledRaw'",
             )
 
+        val acceptanceAuthorityRoot = environment[KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
+        val acceptanceAttemptRoot = environment[KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
+        val productionCommit = environment[KEY_PRODUCTION_COMMIT]?.takeIf { it.isNotBlank() }
+        if (listOf(acceptanceAuthorityRoot, acceptanceAttemptRoot, productionCommit).count { it != null } !in setOf(0, 3)) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT,
+                "acceptance authority root, attempt root, and production commit must be configured together",
+            )
+        }
+        if (productionCommit != null && !Regex("^[0-9a-f]{40}$").matches(productionCommit)) {
+            throw ParkerRuntimeException.InvalidConfiguration(KEY_PRODUCTION_COMMIT, "must be an exact 40-character lowercase Git commit")
+        }
+
         return ParkerRuntimeConfig(
             modelEndpointUrl = requireKey(environment, KEY_MODEL_ENDPOINT_URL),
             modelName = requireKey(environment, KEY_MODEL_NAME),
@@ -489,6 +508,9 @@ object ParkerRuntimeConfigLoader {
             openAiExternalTranscriptionProviderProfilePath =
                 environment[KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH]?.takeIf { it.isNotBlank() },
             openAiApiCredential = OpenAiApiCredential.fromEnvironment(environment[KEY_OPENAI_API_KEY]),
+            fidelityFirstAcceptanceAuthorityStorageRootPath = acceptanceAuthorityRoot,
+            fidelityFirstAttemptStorageRootPath = acceptanceAttemptRoot,
+            productionCommit = productionCommit,
         )
     }
 

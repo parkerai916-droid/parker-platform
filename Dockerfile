@@ -11,6 +11,8 @@
 # reinstall, or bundle QMD or its embedding model.
 
 FROM eclipse-temurin:17-jdk-jammy AS build
+ARG PARKER_BUILD_COMMIT
+ENV PARKER_BUILD_COMMIT=${PARKER_BUILD_COMMIT}
 WORKDIR /workspace
 
 # Gradle wrapper and build config first, so dependency resolution is

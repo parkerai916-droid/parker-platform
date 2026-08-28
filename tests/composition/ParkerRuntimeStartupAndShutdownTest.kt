@@ -34,6 +34,9 @@ class ParkerRuntimeStartupAndShutdownTest {
         openAiExternalTranscriptionEnabled: Boolean = false,
         openAiExternalTranscriptionProviderProfilePath: String? = null,
         openAiApiCredential: OpenAiApiCredential? = null,
+        fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
+        fidelityFirstAttemptStorageRootPath: String? = null,
+        productionCommit: String? = null,
     ) = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by these tests
         modelName = "test-model",
@@ -52,6 +55,9 @@ class ParkerRuntimeStartupAndShutdownTest {
         openAiExternalTranscriptionEnabled = openAiExternalTranscriptionEnabled,
         openAiExternalTranscriptionProviderProfilePath = openAiExternalTranscriptionProviderProfilePath,
         openAiApiCredential = openAiApiCredential,
+        fidelityFirstAcceptanceAuthorityStorageRootPath = fidelityFirstAcceptanceAuthorityStorageRootPath,
+        fidelityFirstAttemptStorageRootPath = fidelityFirstAttemptStorageRootPath,
+        productionCommit = productionCommit,
     )
 
     @Test
@@ -240,6 +246,34 @@ class ParkerRuntimeStartupAndShutdownTest {
         assertEquals(null, unsafeCredential)
         assertComposition(config(openAiExternalTranscriptionEnabled = true, openAiExternalTranscriptionProviderProfilePath = validProfile.toString(), openAiApiCredential = unsafeCredential), OpenAiExternalTranscriptionBackendReadiness.ConfigurationNotAccepted::class, parker.ui.EnhancedTranscriptionReadiness.ProfileNotReady::class, false)
         assertComposition(config(openAiExternalTranscriptionEnabled = true, openAiExternalTranscriptionProviderProfilePath = validProfile.toString(), openAiApiCredential = validCredential), OpenAiExternalTranscriptionBackendReadiness.ConfigurationNotAccepted::class, parker.ui.EnhancedTranscriptionReadiness.ProfileNotReady::class, false)
+    }
+
+    @Test
+    fun `pending lifecycle composes acceptance lane while ordinary mechanism remains disabled`() = runTest {
+        val authorityRoot = Files.createTempDirectory("synthetic-acceptance-authorities")
+        val attemptRoot = Files.createTempDirectory("synthetic-acceptance-attempts")
+        val runtime = ParkerRuntime(
+            config(
+                openAiExternalTranscriptionEnabled = true,
+                openAiExternalTranscriptionProviderProfilePath = profileFile().toString(),
+                openAiApiCredential = OpenAiApiCredential.fromEnvironment("synthetic-composition-credential")!!,
+                fidelityFirstAcceptanceAuthorityStorageRootPath = authorityRoot.toString(),
+                fidelityFirstAttemptStorageRootPath = attemptRoot.toString(),
+                productionCommit = "a".repeat(40),
+            ), RecordingParkerLogger(), clock = { Instant.parse("2026-08-26T00:00:00Z") }, buildIdentity = { "a".repeat(40) },
+        )
+        runtime.start()
+        val ordinary = ParkerRuntime::class.java.getDeclaredField("externalTranscriptionOwnerInvocationCoordinator").apply { isAccessible = true }
+            .get(runtime) as ExternalTranscriptionOwnerInvocationCoordinator
+        val mechanism = ExternalTranscriptionOwnerInvocationCoordinator::class.java.getDeclaredField("externalMechanism").apply { isAccessible = true }.get(ordinary)
+        assertTrue(mechanism::class.java.name.contains("DisabledExternalTranscriptionMechanism"))
+        val acceptance = ParkerRuntime::class.java.getDeclaredField("fidelityFirstAcceptanceCoordinator").apply { isAccessible = true }.get(runtime)
+        assertTrue(acceptance != null)
+        assertEquals(
+            "AUTHORITY_MISSING",
+            (runtime.invokeFidelityFirstAcceptanceAsOwner("synthetic-missing-authority") as parker.core.runtime.FidelityFirstAcceptanceOutcome.Blocked).reason,
+        )
+        runtime.shutdown()
     }
 
     @Test

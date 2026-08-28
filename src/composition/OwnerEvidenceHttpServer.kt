@@ -44,6 +44,7 @@ import parker.ui.OwnerAcquisitionDecisionView
 import parker.ui.OwnerAcquisitionExecutionView
 import parker.ui.OwnerAcquisitionSourceFacts
 import parker.ui.OwnerAcquisitionCapabilityView
+import parker.core.runtime.FidelityFirstAcceptanceOutcome
 
 /**
  * Owner LAN Evidence Upload. Pure HTTP transport for the exact same
@@ -84,6 +85,9 @@ class OwnerEvidenceHttpServer(
     private val token: String,
     private val operations: OwnerEvidenceOperations,
     private val logger: ParkerLogger,
+    private val invokeFidelityFirstAcceptance: suspend (String) -> FidelityFirstAcceptanceOutcome = {
+        FidelityFirstAcceptanceOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
+    },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -203,6 +207,8 @@ class OwnerEvidenceHttpServer(
                         handleExternalTranscription(exchange, segments[0])
                     segments.size == 1 && segments[0] == "transcription-readiness" && method == "GET" ->
                         handleExternalReadiness(exchange)
+                    segments.size == 2 && segments[0] == "acceptance-executions" && method == "POST" ->
+                        handleAcceptanceExecution(exchange, segments[1])
                     segments.size == 3 && segments[1] == "content" && method == "GET" ->
                         handleRetrieveContent(exchange, segments[0], segments[2])
                     segments.size == 3 && segments[1] == "ocr-content" && method == "GET" ->
@@ -485,6 +491,26 @@ class OwnerEvidenceHttpServer(
                 is EnhancedTranscriptionOutcome.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
             }
             writeJson(exchange, 200, body)
+        }
+
+        private fun handleAcceptanceExecution(exchange: HttpExchange, authorityId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            if (!Regex("^[A-Za-z0-9_.-]{1,120}$").matches(authorityId)) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid acceptance authority id")); return
+            }
+            val outcome = runBlocking { invokeFidelityFirstAcceptance(authorityId) }
+            val (status, body) = when (outcome) {
+                is FidelityFirstAcceptanceOutcome.Admitted -> 200 to jsonObject(
+                    "status" to "ACCEPTANCE_GENERATION_ADMITTED", "authorityId" to outcome.authorityId,
+                    "attemptId" to outcome.attemptId, "derivativeGenerationId" to outcome.generationId.value,
+                    "humanReviewState" to "UNREVIEWED",
+                )
+                is FidelityFirstAcceptanceOutcome.Blocked -> 409 to jsonObject("status" to "BLOCKED", "reason" to outcome.reason)
+                is FidelityFirstAcceptanceOutcome.Failed -> 200 to jsonObject(
+                    "status" to "FAILED", "reason" to outcome.reason, "providerAttemptStarted" to outcome.attemptStarted,
+                )
+            }
+            writeJson(exchange, status, body)
         }
 
         /**

@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.gradle.jvm.tasks.Jar
 
 plugins {
     kotlin("jvm") version "1.9.24"
@@ -16,6 +17,11 @@ version = "0.8.0-runtime-complete"
 application {
     mainClass.set("parker.composition.MainKt")
     applicationName = "parker"
+}
+
+val parkerBuildCommit = providers.environmentVariable("PARKER_BUILD_COMMIT").orElse("UNSET")
+tasks.named<Jar>("jar") {
+    manifest { attributes["Parker-Source-Commit"] = parkerBuildCommit.get() }
 }
 
 repositories {
@@ -404,11 +410,13 @@ tasks.register<Test>("externalTranscriptionOfflineVerification") {
         includeTestsMatching("parker.composition.OwnerEvidenceHttpServerTest")
         includeTestsMatching("parker.composition.OwnerUiEvidenceRuntimeAdapterTest")
         includeTestsMatching("parker.composition.ParkerRuntimeOcrCompositionTest")
+        includeTestsMatching("parker.composition.ParkerRuntimeStartupAndShutdownTest")
         includeTestsMatching("parker.composition.ParkerRuntimeTierBOcrDurableGenerationTest")
         includeTestsMatching("parker.composition.DerivativeContentPersistenceRestartAcceptanceTest")
         includeTestsMatching("parker.core.interfaces.Ocr*")
         includeTestsMatching("parker.core.runtime.AuthorizationPurpose*")
         includeTestsMatching("parker.core.runtime.ExternalTranscription*")
+        includeTestsMatching("parker.core.runtime.FidelityFirst*")
         includeTestsMatching("parker.core.runtime.OpenAi*")
         includeTestsMatching("parker.core.runtime.OcrProcessingRepresentationFactoryTest")
         includeTestsMatching("parker.core.runtime.OcrStructuredResultValidatorTest")
@@ -419,6 +427,19 @@ tasks.register<Test>("externalTranscriptionOfflineVerification") {
         includeTestsMatching("parker.core.runtime.DoclingOcrProviderAdapterTest")
     }
     shouldRunAfter(tasks.test)
+}
+
+tasks.register<Test>("fidelityFirstPendingAcceptanceVerification") {
+    description = "Runs the offline pending-lifecycle authority, composition, ledger, crash, restart, concurrency, and endpoint proofs"
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.core.runtime.FidelityFirst*")
+        includeTestsMatching("parker.composition.ParkerRuntimeStartupAndShutdownTest")
+        includeTestsMatching("parker.composition.OwnerEvidenceHttpServerTest")
+    }
 }
 
 // Document Ingestion Programme, Tier B Owner Routing -- this Unit's own opt-in live acceptance

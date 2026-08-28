@@ -135,6 +135,7 @@ fun main(args: Array<String>) = runBlocking {
             token = config.ownerHttpToken,
             operations = adapter,
             logger = ConsoleParkerLogger("owner-http", minLevel = effectiveLogLevel),
+            invokeFidelityFirstAcceptance = runtime::invokeFidelityFirstAcceptanceAsOwner,
         ).also { it.start() }
     } else {
         null
