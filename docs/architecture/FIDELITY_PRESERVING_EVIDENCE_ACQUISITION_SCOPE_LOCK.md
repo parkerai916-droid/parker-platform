@@ -91,13 +91,29 @@ A processing representation is request-scoped subordinate material, not new auth
 
 Selection occurs before execution and is deterministic. Parker chooses the strongest suitable capability among those authorised and eligible for the established source characteristics and requested acquisition purpose.
 
-- Searchable born-digital PDF: prefer faithful native text/structure extraction; do not rasterise merely to force OCR.
+- Searchable born-digital PDF: native text/structure extraction is eligible only for a bounded source class for which it has been independently demonstrated sufficiently faithful; searchability or the presence of a text layer is not that demonstration.
 - Scanned/image-only PDF or image: select an eligible OCR or vision mechanism.
 - Handwriting: select a governed handwriting-capable mechanism where available.
 - Difficult layout or tables: select a governed layout- or table-capable mechanism where materially suitable.
 - DOCX, spreadsheets, EML, and future structured formats: prefer source-aware native structural acquisition where appropriate.
 
 Source classification and acquisition selection remain different decisions. `TIER_A_COMPLETE`, `REQUIRES_OCR`, and UI row status describe current processing state; they are not the permanent policy model.
+
+### 7.1 FA.9.2P fidelity-first priority correction
+
+Evidence selection and transcription fidelity are separate stages. Evidence presented for Parker ingestion has already been deliberately selected by the human owner before acquisition/transcription. Human review after acquisition is targeted according to assurance requirements; it is not the act of evidence selection.
+
+The acquisition/transcription layer therefore optimises for faithful reproduction of the authoritative source, subject to governance, privacy, and egress controls. Mechanism selection is **FIDELITY FIRST**. Native extractability, including a searchable PDF text layer, does not establish transcription fidelity and does not make native extraction preferred. Among mechanisms demonstrated sufficiently faithful and suitable for the source class, deterministic operation, transformation burden, privacy/egress, cost, latency, and resource use may be secondary considerations. Those considerations must not override a demonstrated material fidelity difference.
+
+A governed external transcription/OCR capability may be the primary selected mechanism, rather than an emergency fallback, when it is demonstrated more faithful for the source class and is otherwise authorised, accepted, eligible, and suitable. The original `EvidenceArtifact` remains immutable and authoritative regardless of transcription mechanism.
+
+Transcription/OCR remains non-reasoning: no summarisation, legal interpretation, evidential assessment, or unsupported inference is permitted. Source identity, direct-source lineage, provenance, page/region relationships where available, uncertainty, provider/configuration identity, and review state remain mandatory.
+
+FA.9.2 real-PDF acceptance is negative capability evidence for the tested native path: despite token completeness, it materially altered reading order/source relationships, corrupted meaningful punctuation, and lacked page-associated text. Native extraction is not universally invalid and may remain available for a bounded source class independently demonstrated faithful, but no further native-PDF remediation is currently a programme priority.
+
+The current FA.4 `DeterministicEvidenceAcquisitionRouter` requires a future bounded amendment before ordinary fidelity-first production acquisition. It selects an eligible direct/native capability immediately when native searchable text is present, before comparing it with other eligible mechanisms; its later tie-breakers also prefer a byte-exact representation and local execution. Those rules can make lower transformation burden or lower egress decisive without evidence that fidelity is equivalent. This instrument records the required correction but authorises no router or production-code change.
+
+The next active programme priority is governed external high-fidelity transcription assessment, including the OpenAI/ChatGPT path. Historical OpenAI `POST /v1/responses`, `store=false`, `gpt-4.1-mini`, `openai-literal-page-transcription-v2`, adapter `1.1.0`, `external-transcription.direct-byte-exact-v1`, instruction digest `c721e63b29e56f9242ee24dd8f13ddcab5d4468d3d17e9e3b9b1d66a68cb2000`, and schema digest `3fe8a26be40a06f047b493094d06c52e1df056162583b8e0b81564f55de265b2` facts remain background evidence only; they are not presumed current or optimal. FA.9.4P-F must establish current provider, model, and capability suitability and the minimum fidelity-first changes before any separately authorised real provider execution.
 
 ## 8. Local and external capabilities
 
