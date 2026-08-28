@@ -55,6 +55,26 @@ class FidelityFirstAcceptanceCoordinatorTest {
         assertFalse(FidelityFirstAcceptanceOutcome.Admitted::class.java.declaredFields.any { it.name.contains("review", true) })
     }
 
+    @Test fun `A1 shaped governed identifiers derive safe ledger identity and execute exactly once`() = runTest {
+        val fixture = fixture()
+        val dotted = authority().copy(
+            authorityId = "authority-fa-9.4p-a1-synthetic",
+            programmeUnit = "FA.9.4P-A1",
+            executionId = "execution-fa-9.4p-a1-synthetic",
+            requestId = "request-fa-9.4p-a1-synthetic",
+            attemptId = "attempt-fa-9.4p-a1-synthetic",
+        )
+        fixture.authorities.admit(dotted)
+        assertIs<FidelityFirstAcceptanceOutcome.Admitted>(fixture.coordinator().invoke(dotted.authorityId))
+        val snapshot = fixture.ledger.open(dotted.executionIdentity())
+        assertEquals(dotted.attemptId, snapshot.identity.attemptId)
+        assertTrue(snapshot.identity.safeAttemptId.matches(Regex("^[A-Za-z0-9_-]{1,120}$")))
+        assertEquals(FidelityFirstAttemptStage.TERMINAL_SUCCESS, snapshot.stages.last())
+        assertEquals(1, fixture.transmissions.get())
+        assertEquals("ATTEMPT_UNAVAILABLE", assertIs<FidelityFirstAcceptanceOutcome.Blocked>(fixture.coordinator().invoke(dotted.authorityId)).reason)
+        assertEquals(1, fixture.transmissions.get())
+    }
+
     @Test fun `missing corrupt and exact binding mismatches block before transmission`() = runTest {
         val fixture = fixture()
         assertEquals("AUTHORITY_MISSING", assertIs<FidelityFirstAcceptanceOutcome.Blocked>(fixture.coordinator().invoke("missing")).reason)

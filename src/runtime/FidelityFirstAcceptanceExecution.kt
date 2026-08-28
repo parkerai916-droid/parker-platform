@@ -183,7 +183,8 @@ class FidelityFirstAcceptanceCoordinator(
             trusted.mediaType != authority.sourceMediaType
         ) return blocked("AUTHORITY_SOURCE_MISMATCH")
 
-        val tracker = FidelityFirstAttemptTracker(ledger, authority.executionIdentity())
+        val executionIdentity = authority.executionIdentity()
+        val tracker = FidelityFirstAttemptTracker(ledger, executionIdentity)
         try {
             tracker.authorised()
             tracker.preflightPassed()
@@ -194,7 +195,11 @@ class FidelityFirstAcceptanceCoordinator(
         val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(
             ownerPrincipalId, permissionEngine, custodian, mechanismFactory(tracker), validator, durableAdmission,
             invocationObserver = tracker,
-            executionBinding = ExternalTranscriptionExecutionBinding(authority.requestId, authority.attemptId, authority.profileId),
+            executionBinding = ExternalTranscriptionExecutionBinding(
+                executionIdentity.safeRequestId,
+                executionIdentity.safeAttemptId,
+                authority.profileId,
+            ),
         )
         return try {
             when (val outcome = coordinator.invoke(evidenceId)) {

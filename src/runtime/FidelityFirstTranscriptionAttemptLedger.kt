@@ -28,6 +28,10 @@ data class FidelityFirstExecutionIdentity(
     val processingProfile: String,
     val adapterVersion: String,
 ) {
+    val safeExecutionId: String = FidelityFirstExecutionSafeIdentity.derive(executionId)
+    val safeRequestId: String = FidelityFirstExecutionSafeIdentity.derive(requestId)
+    val safeAttemptId: String = FidelityFirstExecutionSafeIdentity.derive(attemptId)
+
     internal fun fields() = listOf(
         "executionId" to executionId, "requestId" to requestId, "attemptId" to attemptId,
         "evidenceArtifactId" to evidenceArtifactId, "sourceSha256" to sourceSha256,
@@ -38,16 +42,47 @@ data class FidelityFirstExecutionIdentity(
         "adapterVersion" to adapterVersion,
     )
     init {
-        require(listOf(executionId, requestId, attemptId).all { OPAQUE.matches(it) })
+        require(listOf(executionId, requestId, attemptId).all { GOVERNED_OPAQUE.matches(it) })
         require(sourceByteLength > 0 && sourceSha256.matches(SHA256))
         require(repositoryCommit.matches(COMMIT) && instructionSha256.matches(SHA256) && schemaSha256.matches(SHA256))
         require(fields().all { (_, value) -> value.isNotBlank() && value.length <= 1_024 && value.none { it in "\r\n\t" } })
     }
     private companion object {
-        val OPAQUE = Regex("^[A-Za-z0-9_-]{1,120}$")
+        val GOVERNED_OPAQUE = Regex("^[A-Za-z0-9_.-]{1,120}$")
         val SHA256 = Regex("^[0-9a-f]{64}$")
         val COMMIT = Regex("^[0-9a-f]{40}$")
     }
+}
+
+/**
+ * Derives the restricted, filesystem-safe identity used by the attempt store while leaving
+ * the governed identity intact in the ledger payload and reporting surfaces.
+ */
+internal object FidelityFirstExecutionSafeIdentity {
+    private val SAFE = Regex("^[A-Za-z0-9_-]{1,120}$")
+    private const val MAX_LENGTH = 120
+    private const val DIGEST_LENGTH = 64
+    private const val SEPARATOR = "--"
+    private const val ENCODED_PREFIX = "parker-encoded-"
+
+    fun derive(governed: String): String {
+        require(governed.isNotBlank() && governed.length <= 4_096 && governed.none { it.isISOControl() })
+        if (SAFE.matches(governed) && !governed.startsWith(ENCODED_PREFIX)) return governed
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(governed.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        val prefixLimit = MAX_LENGTH - ENCODED_PREFIX.length - SEPARATOR.length - DIGEST_LENGTH
+        val prefix = governed.asSequence()
+            .map { if (it.isAsciiSafe()) it else '-' }
+            .joinToString("")
+            .replace(Regex("-+"), "-")
+            .trim('-', '_')
+            .take(prefixLimit)
+            .ifEmpty { "id" }
+        return "$ENCODED_PREFIX$prefix$SEPARATOR$digest".also { require(SAFE.matches(it)) }
+    }
+
+    private fun Char.isAsciiSafe() = this in 'A'..'Z' || this in 'a'..'z' || this in '0'..'9' || this == '_' || this == '-'
 }
 
 enum class FidelityFirstAttemptStage {
@@ -69,8 +104,8 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
     private val root = storageRoot.toAbsolutePath().normalize()
     init { require(Files.isDirectory(root) && Files.isWritable(root)) }
 
-    fun open(identity: FidelityFirstExecutionIdentity): FidelityFirstAttemptSnapshot = locked(identity.executionId) {
-        val file = path(identity.executionId)
+    fun open(identity: FidelityFirstExecutionIdentity): FidelityFirstAttemptSnapshot = locked(identity.safeExecutionId) {
+        val file = path(identity.safeExecutionId)
         if (!Files.exists(file)) create(file, identity)
         decode(file).also { require(it.identity == identity) { "fidelity-first attempt identity conflict" } }
     }
@@ -85,10 +120,10 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
         next: FidelityFirstAttemptStage,
         metadata: List<Pair<String, String>> = emptyList(),
     ): FidelityFirstAttemptSnapshot =
-        locked(identity.executionId) {
+        locked(identity.safeExecutionId) {
             require(metadata.map { it.first }.distinct().size == metadata.size)
             require(metadata.all { (key, value) -> key.matches(Regex("^[a-zA-Z][a-zA-Z0-9]*$")) && value.isNotBlank() && value.length <= 1_024 && value.none { it in "\r\n\t" } })
-            val file = path(identity.executionId)
+            val file = path(identity.safeExecutionId)
             if (!Files.exists(file)) create(file, identity)
             val current = decode(file).also { require(it.identity == identity) }
             require(current.stages.last() !in TERMINAL)
@@ -99,9 +134,9 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
 
     /** Idempotent reconstruction support before consumption; never skips or repeats attempt start. */
     fun advancePreAttempt(identity: FidelityFirstExecutionIdentity, next: FidelityFirstAttemptStage): FidelityFirstAttemptSnapshot =
-        locked(identity.executionId) {
+        locked(identity.safeExecutionId) {
             require(next in PRE_ATTEMPT)
-            val file = path(identity.executionId)
+            val file = path(identity.safeExecutionId)
             if (!Files.exists(file)) create(file, identity)
             val current = decode(file).also { require(it.identity == identity) }
             require(!current.providerAttemptStarted && current.stages.last() !in TERMINAL)
@@ -161,7 +196,7 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
     private fun <T> locked(id: String, action: () -> T): T = FileChannel.open(
         root.resolve(".$id.fidelity-attempt.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE,
     ).use { channel -> channel.lock().use { action() } }
-    private fun path(id: String) = root.resolve("$id.fidelity-attempt-ledger")
+    private fun path(id: String) = root.resolve("$id.fidelity-attempt-ledger").normalize().also { require(it.parent == root) }
     private fun forceDirectory() {
         // Windows does not expose directory handles through FileChannel; file force + atomic replace
         // is the strongest applicable primitive there. Unix filesystems additionally force the directory.
