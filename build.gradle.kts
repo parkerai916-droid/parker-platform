@@ -160,6 +160,18 @@ tasks.register<Test>("unitOOfflineAcceptanceVerification") {
     shouldRunAfter(tasks.test)
 }
 
+tasks.register<Test>("unitOLinuxDurabilityVerification") {
+    description = "Runs Linux/POSIX-specific Unit O containing-directory durability verification"
+    group = "verification"
+    testClassesDirs = liveModelEvaluation.output.classesDirs
+    classpath = liveModelEvaluation.runtimeClasspath
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("parker.core.runtime.UnitOAcceptanceAttemptLedgerLinuxDurabilityTest")
+    }
+    shouldRunAfter(tasks.named("unitOOfflineAcceptanceVerification"))
+}
+
 tasks.register<Test>("unitOAttemptLedgerMountVerification") {
     description = "Runs the offline UID/GID 999 mounted acceptance-ledger durability verification"
     group = "verification"

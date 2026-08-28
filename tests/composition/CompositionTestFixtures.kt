@@ -4,6 +4,14 @@ import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
 
+/** Linux shell used by synthetic bridge fixtures; Git for Windows supplies the equivalent. */
+internal fun syntheticBridgeShellExecutable(): String =
+    if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        "C:\\Program Files\\Git\\bin\\sh.exe"
+    } else {
+        "/bin/sh"
+    }
+
 /**
  * Sprint 10, Unit 4 test fixtures. No tests of their own -- mirrors this
  * repository's own established `Fake*`/`Recording*` fixture-file

@@ -25,6 +25,74 @@ data class EvidenceGenerationSelection(
     val acknowledgesUnverifiedExternalTranscription: Boolean = false,
 )
 
+enum class AnalysisAcquisitionMechanism {
+    DIRECT_NATIVE_EXTRACTION,
+    LOCAL_OCR,
+    EXTERNAL_TRANSCRIPTION,
+}
+
+enum class AnalysisHumanReviewState {
+    UNREVIEWED,
+    PARTIALLY_VERIFIED,
+    REVIEW_PASSED,
+    REVIEW_FAILED,
+}
+
+/** Persisted, server-projected assurance for the exact selected generation. */
+data class AnalysisAcquisitionAssurance(
+    val sourceSha256: String?,
+    val sourceByteLength: Long?,
+    val sourceMediaType: String?,
+    val mechanism: AnalysisAcquisitionMechanism,
+    val capabilityIdentity: String?,
+    val routingReasons: List<String>,
+    val providerIdentity: String?,
+    val adapterIdentity: String?,
+    val adapterVersion: String?,
+    val modelIdentity: String?,
+    val modelSnapshot: String?,
+    val configurationProfile: String?,
+    val processingProfile: String?,
+    val fidelity: TranscriptionFidelity?,
+    val completenessState: DerivativeCompletenessState,
+    val requestedPages: List<Int>?,
+    val submittedPages: List<Int>?,
+    val returnedPages: List<Int>?,
+    val pageOutcomes: List<String>,
+    val containsUncertaintyOrIllegibility: Boolean,
+    val humanReviewStates: Set<AnalysisHumanReviewState>,
+    val reviewedPages: Set<Int>,
+    val reviewedCharacterScopeCount: Int,
+) {
+    companion object {
+        fun historical(completenessState: DerivativeCompletenessState) = AnalysisAcquisitionAssurance(
+            sourceSha256 = null,
+            sourceByteLength = null,
+            sourceMediaType = null,
+            mechanism = AnalysisAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION,
+            capabilityIdentity = null,
+            routingReasons = emptyList(),
+            providerIdentity = null,
+            adapterIdentity = null,
+            adapterVersion = null,
+            modelIdentity = null,
+            modelSnapshot = null,
+            configurationProfile = null,
+            processingProfile = null,
+            fidelity = null,
+            completenessState = completenessState,
+            requestedPages = null,
+            submittedPages = null,
+            returnedPages = null,
+            pageOutcomes = emptyList(),
+            containsUncertaintyOrIllegibility = false,
+            humanReviewStates = setOf(AnalysisHumanReviewState.UNREVIEWED),
+            reviewedPages = emptySet(),
+            reviewedCharacterScopeCount = 0,
+        )
+    }
+}
+
 /**
  * One successfully retrieved item of the bounded evidence package actually
  * submitted for analysis. [derivativeKind]/[contentIdentity]/[producerIdentity]/
@@ -47,6 +115,7 @@ data class AnalysisEvidenceItem(
     val extractedText: String,
     val completenessState: DerivativeCompletenessState,
     val warnings: List<String>,
+    val assurance: AnalysisAcquisitionAssurance = AnalysisAcquisitionAssurance.historical(completenessState),
 )
 
 /**

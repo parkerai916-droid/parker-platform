@@ -55,7 +55,7 @@ class ParkerRuntimeTierBOcrDurableGenerationTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("tierb-durable-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("tierb-durable-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("tierb-durable-knowledge").resolve("items.log").toString(),
-        doclingPythonExecutablePath = "/bin/sh",
+        doclingPythonExecutablePath = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath = doclingBridgeScriptPath,
         doclingTimeoutMillis = 30_000L,
     )

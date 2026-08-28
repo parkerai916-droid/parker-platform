@@ -48,7 +48,7 @@ class DerivativeContentPersistenceRestartAcceptanceTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("restart-acceptance-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("restart-acceptance-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("restart-acceptance-knowledge").resolve("items.log").toString(),
-        doclingPythonExecutablePath = "/bin/sh",
+        doclingPythonExecutablePath = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath = Files.createTempFile("restart-acceptance-unused-bridge", ".sh").also {
             Files.writeString(it, "#!/bin/sh\nexit 0\n")
             it.toFile().setExecutable(true)

@@ -53,7 +53,7 @@ class OwnerEvidenceHttpServerTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-http-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("evidence-http-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("evidence-http-knowledge").resolve("items.log").toString(),
-        doclingPythonExecutablePath = "/bin/sh",
+        doclingPythonExecutablePath = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath = doclingBridgeScriptPath,
         doclingTimeoutMillis = 30_000L,
     )
@@ -533,7 +533,7 @@ class OwnerEvidenceHttpServerTest {
             assertEquals("REQUIRES_OCR", extractField(post("/owner/evidence/$id/process").body(), "status"))
             val ocrResponse = post("/owner/evidence/$id/ocr")
 
-            assertEquals(200, ocrResponse.statusCode())
+            assertEquals(200, ocrResponse.statusCode(), ocrResponse.body())
             assertEquals("COMPLETE", extractField(ocrResponse.body(), "status"))
         } finally {
             harness.shutdown()
@@ -1305,7 +1305,7 @@ class OwnerEvidenceHttpServerTest {
 
             val durableResponse = post(harness, "/owner/evidence/$id/ocr-durable")
             assertEquals(200, durableResponse.statusCode())
-            assertEquals("TIER_B_DURABLE_COMPLETE", extractField(durableResponse.body(), "status"))
+            assertEquals("TIER_B_DURABLE_COMPLETE", extractField(durableResponse.body(), "status"), durableResponse.body())
             val derivativeGenerationId = requireNotNull(extractField(durableResponse.body(), "derivativeGenerationId"))
             assertEquals("HTTP DURABLE OCR TEXT", extractJsonStringField(durableResponse.body(), "recognisedText"))
 
@@ -1573,7 +1573,7 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("id=\"analysisResults\""), "the page must offer a results area")
             assertTrue(body.contains("appendExtractedText(panel, 'Analysis:'"), "the model's own analysis text must be inserted via the existing textContent-only appendExtractedText helper")
             assertTrue(
-                body.contains("li.textContent = ref.evidenceArtifactId"),
+                body.contains("li.textContent = analysisEvidenceReferenceText(ref)"),
                 "evidence references must be inserted via textContent, never innerHTML",
             )
         } finally {
@@ -1684,7 +1684,7 @@ class OwnerEvidenceHttpServerTest {
     // ================= Correction pass §5: stricten the purpose-built JSON parser =================
 
     @Test
-    fun `A duplicate "instruction" key is rejected with a clean 400`() = runTest {
+    fun `A duplicate instruction key is rejected with a clean 400`() = runTest {
         val harness = startHarness("")
         try {
             val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"instruction":"first","instruction":"second"}"""
@@ -1695,7 +1695,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `B duplicate "selections" key is rejected with a clean 400`() = runTest {
+    fun `B duplicate selections key is rejected with a clean 400`() = runTest {
         val harness = startHarness("")
         try {
             val body = """{"selections":[{"evidenceArtifactId":"e","derivativeGenerationId":"g"}],"selections":[],"instruction":"x"}"""

@@ -37,6 +37,12 @@ import parker.core.interfaces.PermissionLevel
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.TierADerivativePayload
 import parker.core.interfaces.TierADerivativePayloadFixtures
+import parker.core.interfaces.HumanVerificationStorage
+import parker.core.interfaces.HumanVerificationRecord
+import parker.core.interfaces.HumanVerificationRecordId
+import parker.core.interfaces.HumanVerificationOutcome
+import parker.core.interfaces.HumanVerificationCharacterScope
+import parker.core.interfaces.AnalysisHumanReviewState
 
 /**
  * Minimum Production Document Pipeline — Local Reasoning Implementation.
@@ -174,6 +180,7 @@ class DocumentAnalysisCoordinatorTest {
         contentStorage: DerivativeContentStorage,
         permissionEngine: PermissionEngine = FakePermissionEngine(PermissionDecisionOutcome.APPROVED),
         modelInferenceClient: ModelInferenceClient = FakeModelInferenceClient(),
+        humanVerificationStorage: HumanVerificationStorage? = null,
     ) = DocumentAnalysisCoordinator(
         permissionEngine = permissionEngine,
         tierAContentRetrievalCoordinator = TierAContentRetrievalCoordinator(generationStorage, contentStorage),
@@ -181,9 +188,72 @@ class DocumentAnalysisCoordinatorTest {
         modelInferenceClient = modelInferenceClient,
         promptBuilder = DefaultDocumentAnalysisPromptBuilder(),
         modelTimeoutMs = 30_000L,
+        humanVerificationStorage = humanVerificationStorage,
     )
 
     private val owner = PrincipalId("owner-1")
+
+    private class ExactReviewStorage(private val records: List<HumanVerificationRecord>) : HumanVerificationStorage {
+        var listCallCount = 0
+        override suspend fun prepare(record: HumanVerificationRecord) = error("not used")
+        override suspend fun publishPrepared(humanVerificationRecordId: HumanVerificationRecordId) = error("not used")
+        override suspend fun retrieve(humanVerificationRecordId: HumanVerificationRecordId): HumanVerificationRecord? = null
+        override suspend fun listForExactGeneration(
+            evidenceArtifactId: EvidenceArtifactId,
+            derivativeGenerationId: DerivativeGenerationId,
+        ): List<HumanVerificationRecord> {
+            listCallCount += 1
+            return records.filter { it.evidenceArtifactId == evidenceArtifactId && it.derivativeGenerationId == derivativeGenerationId }
+        }
+    }
+
+    @Test
+    fun `FA7 projects exact persisted review and external assurance before inference without leaking sensitive notes`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-fa7-assurance")
+        val generation = DerivativeGenerationId("generation-fa7-assurance")
+        admitTierBOcr(generationStorage, contentStorage, generation, evidence, "EXACT_TEXT", "provider-fa7")
+        val review = HumanVerificationRecord(
+            HumanVerificationRecordId("review-fa7"), evidence, generation, OcrPageScope(listOf(1)),
+            listOf(HumanVerificationCharacterScope(1, 0, 5)), owner, Instant.EPOCH,
+            HumanVerificationOutcome.REVIEW_FAILED, OcrSha256Digest("b".repeat(64)), "SECRET REVIEW NOTE",
+        )
+        val model = FakeModelInferenceClient()
+        val outcome = coordinator(
+            generationStorage, contentStorage, modelInferenceClient = model,
+            humanVerificationStorage = ExactReviewStorage(listOf(review)),
+        ).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, generation, true)), "Analyse"),
+        )
+
+        val item = assertIs<DocumentAnalysisOutcome.Completed>(outcome).result.evidenceItems.single()
+        assertEquals("a".repeat(64), item.assurance.sourceSha256)
+        assertEquals("provider-fa7", item.assurance.providerIdentity)
+        assertEquals(setOf(AnalysisHumanReviewState.REVIEW_FAILED), item.assurance.humanReviewStates)
+        assertEquals(setOf(1), item.assurance.reviewedPages)
+        assertEquals(1, item.assurance.reviewedCharacterScopeCount)
+        assertTrue("REVIEW_FAILED" in model.receivedPrompts.single())
+        assertFalse("SECRET REVIEW NOTE" in model.receivedPrompts.single())
+    }
+
+    @Test
+    fun `FA7 projects exact review before validating acknowledgement and never invokes provider when acknowledgement is absent`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-fa7-order")
+        val generation = DerivativeGenerationId("generation-fa7-order")
+        admitTierBOcr(generationStorage, contentStorage, generation, evidence, "EXTERNAL", "provider-fa7")
+        val reviews = ExactReviewStorage(emptyList())
+        val model = FakeModelInferenceClient()
+
+        val outcome = coordinator(
+            generationStorage, contentStorage, modelInferenceClient = model, humanVerificationStorage = reviews,
+        ).analyse(owner, OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, generation)), "Analyse"))
+
+        assertIs<DocumentAnalysisOutcome.UnverifiedExternalAcknowledgementRequired>(outcome)
+        assertEquals(1, reviews.listCallCount)
+        assertEquals(0, model.invocationCount)
+    }
 
     @Test
     fun `Unit L exact selected OCR generation controls analysed content and provenance despite newer provider-coexisting generations`() = runTest {

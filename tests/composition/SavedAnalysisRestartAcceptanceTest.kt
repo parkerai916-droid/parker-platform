@@ -45,7 +45,7 @@ class SavedAnalysisRestartAcceptanceTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("saved-analysis-restart-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("saved-analysis-restart-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("saved-analysis-restart-knowledge").resolve("items.log").toString(),
-        doclingPythonExecutablePath = "/bin/sh",
+        doclingPythonExecutablePath = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath = Files.createTempFile("saved-analysis-restart-unused-bridge", ".sh").also {
             Files.writeString(it, "#!/bin/sh\nexit 0\n")
             it.toFile().setExecutable(true)

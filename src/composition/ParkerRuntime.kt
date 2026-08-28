@@ -1449,6 +1449,17 @@ class ParkerRuntime(
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
 
+        // Construct the parent saved-analysis store before its separately governed review
+        // sub-store; both validate their roots during construction.
+        pendingAnalysisCache = PendingAnalysisCache()
+        val savedAnalysisStorage = stage("Saved analysis storage construction") {
+            FileSystemSavedAnalysisStorage(Path.of(config.savedAnalysisStorageRootPath))
+        }
+
+        humanVerificationStorage = stage("Human verification storage construction") {
+            FileSystemHumanVerificationStorage(Path.of(config.savedAnalysisStorageRootPath).resolve("human-verification"))
+        }
+
         // Minimum Production Document Pipeline — Local Reasoning Implementation. Reuses
         // permissionEngine (the same, already-registered EvidenceIntelligenceInvocationGate
         // (EXECUTE, DOCUMENT) proposal class tierBOcrOwnerInvocationCoordinator, above, already
@@ -1463,6 +1474,8 @@ class ParkerRuntime(
             modelInferenceClient = modelInferenceClient,
             promptBuilder = DefaultDocumentAnalysisPromptBuilder(),
             modelTimeoutMs = config.modelTimeoutMs,
+            sourceManifestStorage = evidenceSourceManifestStorage,
+            humanVerificationStorage = humanVerificationStorage,
         )
 
         // Reviewed Analysis Result — Explicit Owner Save. pendingAnalysisCache is the entire
@@ -1471,17 +1484,10 @@ class ParkerRuntime(
         // from every other store this class already constructs -- never nested inside, never
         // sharing an identifier namespace with, Evidence/Derivative Generation/Derivative Content/
         // Memory/Knowledge.
-        pendingAnalysisCache = PendingAnalysisCache()
-        val savedAnalysisStorage = stage("Saved analysis storage construction") {
-            FileSystemSavedAnalysisStorage(Path.of(config.savedAnalysisStorageRootPath))
-        }
         savedAnalysisCoordinator = SavedAnalysisCoordinator(
             pendingAnalysisCache = pendingAnalysisCache,
             storage = savedAnalysisStorage,
         )
-        humanVerificationStorage = stage("Human verification storage construction") {
-            FileSystemHumanVerificationStorage(Path.of(config.savedAnalysisStorageRootPath).resolve("human-verification"))
-        }
 
         // The existing raw memoryCore, not a PermissionGatedMemoryCore wrapper: this coordinator
         // already gates its own CandidateRecordProduced dispatch internally (its own

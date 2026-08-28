@@ -740,6 +740,7 @@ class OwnerEvidenceHttpServer(
                     "evidenceArtifactId" to it.evidenceArtifactId.value,
                     "derivativeGenerationId" to it.derivativeGenerationId.value,
                     "derivativeKind" to it.derivativeKind,
+                    "assurance" to it.assurance?.let(::analysisAssuranceJson),
                 )
             },
         ),
@@ -759,6 +760,7 @@ class OwnerEvidenceHttpServer(
                             "evidenceArtifactId" to it.evidenceArtifactId.value,
                             "derivativeGenerationId" to it.derivativeGenerationId.value,
                             "derivativeKind" to it.derivativeKind,
+                            "assurance" to it.assurance?.let(::analysisAssuranceJson),
                         )
                     },
                 ),
@@ -806,6 +808,32 @@ class OwnerEvidenceHttpServer(
         is OwnerDocumentAnalysisOutcome.ModelInvocationFailed ->
             jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
     }
+
+    private fun analysisAssuranceJson(value: parker.core.interfaces.AnalysisAcquisitionAssurance): JsonObject = jsonObject(
+        "sourceSha256" to value.sourceSha256,
+        "sourceByteLength" to value.sourceByteLength,
+        "sourceMediaType" to value.sourceMediaType,
+        "mechanism" to value.mechanism.name,
+        "capabilityIdentity" to value.capabilityIdentity,
+        "routingReasons" to jsonArray(value.routingReasons),
+        "providerIdentity" to value.providerIdentity,
+        "adapterIdentity" to value.adapterIdentity,
+        "adapterVersion" to value.adapterVersion,
+        "modelIdentity" to value.modelIdentity,
+        "modelSnapshot" to value.modelSnapshot,
+        "configurationProfile" to value.configurationProfile,
+        "processingProfile" to value.processingProfile,
+        "fidelity" to value.fidelity?.name,
+        "completeness" to value.completenessState.name,
+        "requestedPages" to value.requestedPages?.let(::jsonArray),
+        "submittedPages" to value.submittedPages?.let(::jsonArray),
+        "returnedPages" to value.returnedPages?.let(::jsonArray),
+        "pageOutcomes" to jsonArray(value.pageOutcomes),
+        "containsUncertaintyOrIllegibility" to value.containsUncertaintyOrIllegibility,
+        "humanReviewStates" to jsonArray(value.humanReviewStates.map { it.name }.sorted()),
+        "reviewedPages" to jsonArray(value.reviewedPages.sorted()),
+        "reviewedCharacterScopeCount" to value.reviewedCharacterScopeCount,
+    )
 
     private fun ocrContentJson(content: OwnerTierBOcrContent): JsonObject = jsonObject(
         "recognisedText" to content.recognisedText,
@@ -2256,7 +2284,7 @@ function renderAnalysisResult(container, result) {
   const ul = document.createElement('ul');
   result.result.evidenceReferences.forEach(ref => {
     const li = document.createElement('li');
-    li.textContent = ref.evidenceArtifactId + ' / ' + ref.derivativeGenerationId + ' (' + ref.derivativeKind + ')';
+    li.textContent = analysisEvidenceReferenceText(ref);
     ul.appendChild(li);
   });
   panel.appendChild(ul);
@@ -2271,6 +2299,18 @@ function renderAnalysisResult(container, result) {
     panel.appendChild(saveStatus);
   }
   container.appendChild(panel);
+}
+
+function analysisEvidenceReferenceText(ref) {
+  let text = ref.evidenceArtifactId + ' / ' + ref.derivativeGenerationId + ' (' + ref.derivativeKind + ')';
+  const a = ref.assurance;
+  if (!a) return text + ' — historical assurance unavailable';
+  text += ' — ' + a.mechanism + ', completeness=' + a.completeness;
+  if (a.fidelity) text += ', fidelity=' + a.fidelity;
+  if (a.providerIdentity) text += ', provider=' + a.providerIdentity;
+  text += ', review=' + (a.humanReviewStates || ['UNREVIEWED']).join('/');
+  if (a.containsUncertaintyOrIllegibility) text += ', uncertainty/illegibility present';
+  return text;
 }
 
 // Reviewed Analysis Result -- Explicit Owner Save. Sends only the opaque pendingAnalysisId, never
@@ -2380,7 +2420,7 @@ async function viewSavedAnalysis(savedAnalysisId) {
     const ul = document.createElement('ul');
     result.result.evidenceReferences.forEach(ref => {
       const li = document.createElement('li');
-      li.textContent = ref.evidenceArtifactId + ' / ' + ref.derivativeGenerationId + ' (' + ref.derivativeKind + ')';
+      li.textContent = analysisEvidenceReferenceText(ref);
       ul.appendChild(li);
     });
     panel.appendChild(ul);

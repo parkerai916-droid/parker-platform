@@ -69,7 +69,7 @@ class SavedAnalysisCoordinator(
             instruction = result.instruction,
             analysisText = result.analysisText,
             evidenceReferences = result.evidenceItems.map {
-                SavedAnalysisEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind)
+                SavedAnalysisEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind, it.assurance)
             },
             mechanismIdentity = result.mechanismIdentity,
             mechanismVersion = result.mechanismVersion,

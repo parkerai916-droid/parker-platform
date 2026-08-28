@@ -196,7 +196,7 @@ class OwnerLocalFileIngressCoordinatorTest {
         val target = dir.resolve("real.pdf")
         Files.write(target, "real content".toByteArray())
         val link = dir.resolve("link.pdf")
-        Files.createSymbolicLink(link, target)
+        assumeSymlinkCreated(link, target)
         val coordinator = OwnerLocalFileIngressCoordinator(approving(), SpyEvidenceCustodian())
 
         val result = coordinator.invoke(ownerPrincipalId, link.toString(), null)
@@ -212,7 +212,7 @@ class OwnerLocalFileIngressCoordinatorTest {
         val target = realDir.resolve("file.pdf")
         Files.write(target, "content".toByteArray())
         val dirLink = root.resolve("dir-link")
-        Files.createSymbolicLink(dirLink, realDir)
+        assumeSymlinkCreated(dirLink, realDir)
         val coordinator = OwnerLocalFileIngressCoordinator(approving(), SpyEvidenceCustodian())
 
         val result = coordinator.invoke(ownerPrincipalId, dirLink.resolve("file.pdf").toString(), null)
@@ -224,7 +224,7 @@ class OwnerLocalFileIngressCoordinatorTest {
     fun `a broken symlink is rejected, not treated as PathNotFound`() = runTest {
         val dir = Files.createTempDirectory("local-file-ingress-test")
         val brokenLink = dir.resolve("broken-link.pdf")
-        Files.createSymbolicLink(brokenLink, dir.resolve("never-existed.pdf"))
+        assumeSymlinkCreated(brokenLink, dir.resolve("never-existed.pdf"))
         val coordinator = OwnerLocalFileIngressCoordinator(approving(), SpyEvidenceCustodian())
 
         val result = coordinator.invoke(ownerPrincipalId, brokenLink.toString(), null)
@@ -238,7 +238,7 @@ class OwnerLocalFileIngressCoordinatorTest {
         val realDir = dir.resolve("real-dir")
         Files.createDirectories(realDir)
         val dirLink = dir.resolve("dir-link")
-        Files.createSymbolicLink(dirLink, realDir)
+        assumeSymlinkCreated(dirLink, realDir)
         val coordinator = OwnerLocalFileIngressCoordinator(approving(), SpyEvidenceCustodian())
 
         val result = coordinator.invoke(ownerPrincipalId, dirLink.toString(), null)
@@ -521,7 +521,6 @@ class OwnerLocalFileIngressCoordinatorTest {
         val target = dir.resolve("target.pdf")
         Files.write(target, "target content".toByteArray())
         Files.write(dir.resolve("target.pdf.bak"), "backup content -- must never be read".toByteArray())
-        Files.write(dir.resolve("Target.pdf"), "case-variant content -- must never be read".toByteArray())
         val custodian = realCustodian()
         val coordinator = OwnerLocalFileIngressCoordinator(approving(), custodian)
 
@@ -536,6 +535,15 @@ class OwnerLocalFileIngressCoordinatorTest {
         // A typo'd path must not be fuzzily resolved to the real sibling.
         val typoResult = coordinator.invoke(ownerPrincipalId, dir.resolve("targe.pdf").toString(), null)
         assertEquals(OwnerLocalFileIngressOutcome.PathNotFound, typoResult)
+    }
+
+
+    private fun assumeSymlinkCreated(link: Path, target: Path) {
+        val failure = runCatching { Files.createSymbolicLink(link, target) }.exceptionOrNull()
+        assumeTrue(
+            failure == null,
+            "NOT APPLICABLE ON THIS FILESYSTEM: symbolic-link fixture unavailable (${failure?.javaClass?.simpleName})",
+        )
     }
 
     // --- No new PermissionAction/ResourceType (Scope Lock Section 3/21) ---

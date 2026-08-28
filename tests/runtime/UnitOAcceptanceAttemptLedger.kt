@@ -94,10 +94,16 @@ interface AcceptanceLedgerDurability {
     companion object { val SYSTEM = object : AcceptanceLedgerDurability {} }
 }
 
+enum class DirectoryDurabilityRequirement {
+    REQUIRED,
+    NOT_APPLICABLE_ON_THIS_FILESYSTEM,
+}
+
 class FileSystemAcceptanceAttemptLedger(
     storageRoot: Path,
     private val now: () -> Instant = Instant::now,
     private val durability: AcceptanceLedgerDurability = AcceptanceLedgerDurability.SYSTEM,
+    private val directoryDurability: DirectoryDurabilityRequirement = DirectoryDurabilityRequirement.REQUIRED,
 ) {
     private val root = storageRoot.toAbsolutePath().normalize()
     init { require(Files.isDirectory(root) && Files.isWritable(root)) { "attempt-ledger root must already exist and be writable" } }
@@ -132,7 +138,7 @@ class FileSystemAcceptanceAttemptLedger(
         FileChannel.open(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { channel ->
             writeFully(channel, bytes); durability.forceFile(channel)
         }
-        durability.forceDirectory(root)
+        forceContainingDirectory()
     }
     private fun append(path: Path, text: String) {
         val temporary = Files.createTempFile(root, ".attempt-ledger-", ".tmp")
@@ -143,10 +149,14 @@ class FileSystemAcceptanceAttemptLedger(
                 durability.forceFile(channel)
             }
             Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            durability.forceDirectory(root)
+            forceContainingDirectory()
         } finally {
             Files.deleteIfExists(temporary)
         }
+    }
+
+    private fun forceContainingDirectory() {
+        if (directoryDurability == DirectoryDurabilityRequirement.REQUIRED) durability.forceDirectory(root)
     }
     private fun decode(path: Path): AcceptanceAttemptSnapshot {
         require(Files.size(path) in 1..MAX_BYTES) { "attempt ledger is empty or oversized" }

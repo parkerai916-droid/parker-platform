@@ -87,7 +87,7 @@ class ParkerRuntimeOcrCompositionTest {
     private val ownerPrincipalId = "user.owner-ocr-composition-test"
 
     private fun config(
-        doclingPythonExecutablePath: String = "/bin/sh",
+        doclingPythonExecutablePath: String = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath: String,
         doclingTimeoutMillis: Long = 30_000L,
     ): ParkerRuntimeConfig = ParkerRuntimeConfig(

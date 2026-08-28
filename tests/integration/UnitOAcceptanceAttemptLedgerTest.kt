@@ -45,7 +45,14 @@ class UnitOAcceptanceAttemptLedgerTest {
                 channel.force(true)
             }
         }
-        val tracker = UnitOAcceptanceAttemptTracker(FileSystemAcceptanceAttemptLedger(root, durability = failing), identity())
+        val tracker = UnitOAcceptanceAttemptTracker(
+            FileSystemAcceptanceAttemptLedger(
+                root,
+                durability = failing,
+                directoryDurability = DirectoryDurabilityRequirement.NOT_APPLICABLE_ON_THIS_FILESYSTEM,
+            ),
+            identity(),
+        )
         tracker.authorized(); tracker.preflightPassed(); tracker.sourceRetrieved(); tracker.requestPrepared()
         var sends = 0
         assertFails { tracker.providerAttemptStarting(); sends++ }
@@ -142,13 +149,40 @@ class UnitOAcceptanceAttemptLedgerTest {
     }
 
     private fun tracker(id: String = "unit-o4r-test") = UnitOAcceptanceAttemptTracker(ledger(), identity(id))
-    private fun ledger() = FileSystemAcceptanceAttemptLedger(root, now = { Instant.parse("2026-08-27T00:00:00Z") })
+    private fun ledger() = FileSystemAcceptanceAttemptLedger(
+        root,
+        now = { Instant.parse("2026-08-27T00:00:00Z") },
+        directoryDurability = DirectoryDurabilityRequirement.NOT_APPLICABLE_ON_THIS_FILESYSTEM,
+    )
     private fun record(id: String = "unit-o4r-test") = root.resolve("$id.attempt-ledger")
     private fun identity(id: String = "unit-o4r-test") = AcceptanceExecutionIdentity(
         AcceptanceExecutionId(id), "UNIT_O4R", "CLEAN_LITERAL_V2", 2, "evidence-test",
         "a".repeat(64), 123, "application/pdf", "a".repeat(40), "OpenAI", "gpt-4.1-mini",
         "literal-v2", "b".repeat(64), "c".repeat(64), "byte-exact-v1", "1.1.0",
     )
+}
+
+class UnitOAcceptanceAttemptLedgerLinuxDurabilityTest {
+    @TempDir lateinit var root: Path
+
+    @Test fun `system filesystem provides required containing-directory durability`() {
+        val capabilityFailure = runCatching {
+            AcceptanceLedgerDurability.SYSTEM.forceDirectory(root)
+        }.exceptionOrNull()
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            capabilityFailure == null,
+            "NOT APPLICABLE ON THIS FILESYSTEM: containing-directory fsync is unavailable (${capabilityFailure?.javaClass?.simpleName})",
+        )
+        val identity = AcceptanceExecutionIdentity(
+            AcceptanceExecutionId("linux-directory-durability"), "UNIT_O4R", "FAKE", 1, "evidence-fake",
+            "a".repeat(64), 1, "application/pdf", "a".repeat(40), "Fake", "fixed", "fake",
+            "b".repeat(64), "c".repeat(64), "byte-exact", "1",
+        )
+        val tracker = UnitOAcceptanceAttemptTracker(FileSystemAcceptanceAttemptLedger(root), identity)
+        tracker.authorized(); tracker.preflightPassed(); tracker.sourceRetrieved(); tracker.requestPrepared()
+        tracker.providerAttemptStarting(); tracker.providerResponseReceived(); tracker.generationAdmitted(); tracker.terminalSuccess()
+        assertEquals(AcceptanceAttemptStage.TERMINAL_SUCCESS, FileSystemAcceptanceAttemptLedger(root).open(identity).latest)
+    }
 }
 
 class UnitOAcceptanceAttemptLedgerMountTest {

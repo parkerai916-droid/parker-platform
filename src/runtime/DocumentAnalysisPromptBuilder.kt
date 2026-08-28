@@ -76,6 +76,19 @@ class DefaultDocumentAnalysisPromptBuilder : DocumentAnalysisPromptBuilder {
                 "\"evidenceArtifactId\":\"${jsonEscape(item.evidenceArtifactId.value)}\"," +
                 "\"derivativeGenerationId\":\"${jsonEscape(item.derivativeGenerationId.value)}\"," +
                 "\"derivativeKind\":\"${jsonEscape(item.derivativeKind)}\"," +
+                "\"assurance\":{" +
+                "\"mechanism\":\"${item.assurance.mechanism.name}\"," +
+                "\"sourceSha256\":${jsonNullable(item.assurance.sourceSha256)}," +
+                "\"sourceMediaType\":${jsonNullable(item.assurance.sourceMediaType)}," +
+                "\"providerIdentity\":${jsonNullable(item.assurance.providerIdentity)}," +
+                "\"modelIdentity\":${jsonNullable(item.assurance.modelIdentity)}," +
+                "\"configurationProfile\":${jsonNullable(item.assurance.configurationProfile)}," +
+                "\"fidelity\":${jsonNullable(item.assurance.fidelity?.name)}," +
+                "\"completeness\":\"${item.assurance.completenessState.name}\"," +
+                "\"humanReviewStates\":[${item.assurance.humanReviewStates.sortedBy { it.name }.joinToString(",") { "\\\"${it.name}\\\"" }}]," +
+                "\"reviewedPages\":[${item.assurance.reviewedPages.sorted().joinToString(",")}]," +
+                "\"containsUncertaintyOrIllegibility\":${item.assurance.containsUncertaintyOrIllegibility}" +
+                "}," +
                 "\"content\":\"${jsonEscape(item.extractedText)}\"" +
                 "}"
         }.joinToString(",")
@@ -93,6 +106,8 @@ class DefaultDocumentAnalysisPromptBuilder : DocumentAnalysisPromptBuilder {
         """.trimIndent()
     }
 }
+
+private fun jsonNullable(value: String?): String = value?.let { "\"${jsonEscape(it)}\"" } ?: "null"
 
 /**
  * Minimal, hand-rolled JSON string escaping -- mirrors

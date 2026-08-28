@@ -37,7 +37,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
     private val fixtureRoot: Path = Path.of("tests", "fixtures", "document-ingestion-bakeoff", "fixtures")
 
     private fun config(
-        doclingPythonExecutablePath: String = "/bin/sh",
+        doclingPythonExecutablePath: String = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath: String,
     ): ParkerRuntimeConfig = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable

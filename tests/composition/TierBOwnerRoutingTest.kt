@@ -57,7 +57,7 @@ class TierBOwnerRoutingTest {
     private val ownerPrincipalId = "user.owner-tier-b-routing-test"
 
     private fun config(
-        doclingPythonExecutablePath: String = "/bin/sh",
+        doclingPythonExecutablePath: String = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath: String,
         doclingTimeoutMillis: Long = 30_000L,
     ): ParkerRuntimeConfig = ParkerRuntimeConfig(

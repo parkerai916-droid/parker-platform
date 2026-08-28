@@ -5,6 +5,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import parker.core.interfaces.AnalysisEvidenceItem
+import parker.core.interfaces.AnalysisAcquisitionAssurance
+import parker.core.interfaces.AnalysisAcquisitionMechanism
+import parker.core.interfaces.AnalysisHumanReviewState
 import parker.core.interfaces.CsvStructuralResult
 import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.DocxStructuralResult
@@ -19,6 +22,10 @@ import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.TierADerivativePayload
 import parker.core.interfaces.TierAContentRetrievalOutcome
 import parker.core.interfaces.TierBOcrContentRetrievalOutcome
+import parker.core.interfaces.EvidenceSourceManifestStorage
+import parker.core.interfaces.HumanVerificationStorage
+import parker.core.interfaces.HumanVerificationOutcome
+import parker.core.interfaces.OcrModelSnapshot
 
 /**
  * Minimum Production Document Pipeline — Local Reasoning Implementation.
@@ -52,6 +59,8 @@ class DocumentAnalysisCoordinator(
     private val modelInferenceClient: ModelInferenceClient,
     private val promptBuilder: DocumentAnalysisPromptBuilder,
     private val modelTimeoutMs: Long,
+    private val sourceManifestStorage: EvidenceSourceManifestStorage? = null,
+    private val humanVerificationStorage: HumanVerificationStorage? = null,
     private val now: () -> Instant = Instant::now,
 ) {
     suspend fun analyse(ownerPrincipalId: PrincipalId, request: OwnerDocumentAnalysisRequest): DocumentAnalysisOutcome {
@@ -146,6 +155,29 @@ class DocumentAnalysisCoordinator(
         val tierB = tierBOcrContentRetrievalCoordinator.retrieve(selection.evidenceArtifactId, selection.derivativeGenerationId)
         when (tierB) {
             is TierBOcrContentRetrievalOutcome.Retrieved -> {
+                val persistedProcessing = tierB.extracted.processingProvenance
+                if (persistedProcessing != null && persistedProcessing.sourceEvidenceArtifactId != selection.evidenceArtifactId) {
+                    return Failed(DocumentAnalysisOutcome.SourceMismatch(selection.evidenceArtifactId, selection.derivativeGenerationId))
+                }
+                val authoritativeManifest = sourceManifestStorage?.read(selection.evidenceArtifactId)
+                if (persistedProcessing != null && authoritativeManifest != null &&
+                    (persistedProcessing.sourceManifestSha256.value != authoritativeManifest.sha256 ||
+                        persistedProcessing.sourceByteLength != authoritativeManifest.byteLength ||
+                        (authoritativeManifest.receivedMediaType != null &&
+                            persistedProcessing.sourceMediaType != authoritativeManifest.receivedMediaType))
+                ) {
+                    return Failed(
+                        DocumentAnalysisOutcome.ContentCorrupt(
+                            selection.derivativeGenerationId,
+                            "Persisted acquisition source assurance does not match the authoritative source manifest",
+                        ),
+                    )
+                }
+                val assurance = projectAssurance(
+                    selection,
+                    tierB.record,
+                    tierB.extracted,
+                )
                 if (tierB.extracted.providerProvenance != null &&
                     tierB.extracted.fidelity == parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION &&
                     !selection.acknowledgesUnverifiedExternalTranscription
@@ -168,6 +200,7 @@ class DocumentAnalysisCoordinator(
                         extractedText = tierB.extracted.recognisedText,
                         completenessState = record.completenessState,
                         warnings = record.warnings,
+                        assurance = assurance,
                     ),
                 )
             }
@@ -190,6 +223,7 @@ class DocumentAnalysisCoordinator(
         return when (tierA) {
             is TierAContentRetrievalOutcome.Retrieved -> {
                 val record = tierA.record
+                val assurance = projectAssurance(selection, record, null)
                 // Defensive, for every governed Tier A kind, not only OCR: Tier A's own retrieval
                 // performs no kind discrimination at all (it decodes whatever payload shape the
                 // content codec reports, independent of the resolved record's own derivativeKind
@@ -231,6 +265,7 @@ class DocumentAnalysisCoordinator(
                         extractedText = extractedText,
                         completenessState = record.completenessState,
                         warnings = record.warnings,
+                        assurance = assurance,
                     ),
                 )
             }
@@ -245,6 +280,67 @@ class DocumentAnalysisCoordinator(
             is TierAContentRetrievalOutcome.UnsupportedRepresentationVersion ->
                 Failed(DocumentAnalysisOutcome.UnsupportedRepresentationVersion(selection.derivativeGenerationId, tierA.version))
         }
+    }
+
+    private suspend fun projectAssurance(
+        selection: EvidenceGenerationSelection,
+        record: parker.core.interfaces.DerivativeGenerationRecord,
+        ocr: parker.core.interfaces.OcrDerivativeExtractedResult?,
+    ): AnalysisAcquisitionAssurance {
+        val manifest = sourceManifestStorage?.read(selection.evidenceArtifactId)
+        val reviews = humanVerificationStorage
+            ?.listForExactGeneration(selection.evidenceArtifactId, selection.derivativeGenerationId)
+            .orEmpty()
+        val reviewStates = if (reviews.isEmpty()) {
+            setOf(AnalysisHumanReviewState.UNREVIEWED)
+        } else {
+            reviews.mapTo(linkedSetOf()) {
+                when (it.outcome) {
+                    HumanVerificationOutcome.PARTIALLY_VERIFIED -> AnalysisHumanReviewState.PARTIALLY_VERIFIED
+                    HumanVerificationOutcome.REVIEW_PASSED -> AnalysisHumanReviewState.REVIEW_PASSED
+                    HumanVerificationOutcome.REVIEW_FAILED -> AnalysisHumanReviewState.REVIEW_FAILED
+                }
+            }
+        }
+        val provider = ocr?.providerProvenance
+        val processing = ocr?.processingProvenance
+        val pages = ocr?.pageAccounting
+        val mechanism = when {
+            provider != null -> AnalysisAcquisitionMechanism.EXTERNAL_TRANSCRIPTION
+            ocr != null -> AnalysisAcquisitionMechanism.LOCAL_OCR
+            else -> AnalysisAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION
+        }
+        return AnalysisAcquisitionAssurance(
+            sourceSha256 = processing?.sourceManifestSha256?.value ?: manifest?.sha256,
+            sourceByteLength = processing?.sourceByteLength ?: manifest?.byteLength,
+            sourceMediaType = processing?.sourceMediaType ?: manifest?.receivedMediaType,
+            mechanism = mechanism,
+            // FA.5 routing decisions were not durably attached to historical generations.
+            capabilityIdentity = null,
+            routingReasons = emptyList(),
+            providerIdentity = provider?.providerIdentity,
+            adapterIdentity = provider?.adapterIdentity ?: record.producerIdentity.adapterIdentity,
+            adapterVersion = provider?.adapterVersion ?: record.producerIdentity.adapterVersion,
+            modelIdentity = provider?.providerReportedModelIdentifier ?: record.producerIdentity.modelIdentity,
+            modelSnapshot = when (val snapshot = provider?.modelSnapshot) {
+                is OcrModelSnapshot.Present -> snapshot.value
+                OcrModelSnapshot.NotExposed, null -> null
+            },
+            configurationProfile = provider?.transcriptionConfigurationProfile ?: record.producerIdentity.configurationIdentity,
+            processingProfile = processing?.processingProfileIdentity,
+            fidelity = ocr?.fidelity,
+            completenessState = record.completenessState,
+            requestedPages = pages?.requestedScope?.pageNumbers,
+            submittedPages = pages?.submittedScope?.pageNumbers,
+            returnedPages = pages?.returnedScope?.pageNumbers,
+            pageOutcomes = pages?.pageOutcomes?.map { "${it.pageNumber}:${it.outcome.name}:${it.reason?.classification.orEmpty()}" }.orEmpty(),
+            containsUncertaintyOrIllegibility = pages?.pageOutcomes?.any {
+                it.uncertaintySpans.isNotEmpty() || it.outcome.name.contains("ILLEGIBLE")
+            } == true,
+            humanReviewStates = reviewStates,
+            reviewedPages = reviews.flatMapTo(linkedSetOf()) { it.reviewedPageScope.pageNumbers },
+            reviewedCharacterScopeCount = reviews.sumOf { it.reviewedCharacterScopes.size },
+        )
     }
 
     private fun extractPdfText(r: PdfStructuralResult): String = r.documentText

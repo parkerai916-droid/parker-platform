@@ -101,9 +101,10 @@ class AuthoritativeAcquisitionSourceResolverTest {
 
     @Test
     fun `E F G composed acquisition boundaries all require custody verification before mechanism input`() {
-        val tierA = java.io.File("src/runtime/TierAOwnerInvocationCoordinator.kt").readText()
-        val localOcr = java.io.File("src/runtime/EvidenceIntelligenceOcrCoordinator.kt").readText()
-        val external = java.io.File("src/runtime/ExternalTranscriptionOwnerInvocationCoordinator.kt").readText()
+        fun source(path: String) = java.io.File(path).readText().replace("\r\n", "\n")
+        val tierA = source("src/runtime/TierAOwnerInvocationCoordinator.kt")
+        val localOcr = source("src/runtime/EvidenceIntelligenceOcrCoordinator.kt")
+        val external = source("src/runtime/ExternalTranscriptionOwnerInvocationCoordinator.kt")
         assertTrue("sourceResolver.resolve" in tierA)
         assertTrue("sourceResolver.verifyAlreadyRetrieved" in localOcr)
         assertTrue("sourceResolver.resolveSourceThenManifest" in external)

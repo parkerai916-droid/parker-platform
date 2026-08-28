@@ -43,6 +43,8 @@ data class SavedAnalysisEvidenceReference(
     val evidenceArtifactId: EvidenceArtifactId,
     val derivativeGenerationId: DerivativeGenerationId,
     val derivativeKind: String,
+    /** Exact server-projected assurance snapshot used for this analysis; absent for version-1 history. */
+    val assurance: AnalysisAcquisitionAssurance? = null,
 )
 
 /**

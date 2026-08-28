@@ -6,6 +6,7 @@ import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceGenerationSelection
 import parker.core.interfaces.PendingAnalysisId
 import parker.core.interfaces.SavedAnalysisId
+import parker.core.interfaces.AnalysisAcquisitionAssurance
 
 /**
  * Owner Evidence Upload & Processing (first version). The owner UI's
@@ -404,6 +405,7 @@ data class OwnerDocumentEvidenceReference(
     val evidenceArtifactId: EvidenceArtifactId,
     val derivativeGenerationId: DerivativeGenerationId,
     val derivativeKind: String,
+    val assurance: AnalysisAcquisitionAssurance? = null,
 )
 
 /**
