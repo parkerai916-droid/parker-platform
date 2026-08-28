@@ -27,6 +27,9 @@ internal class GovernedAcquisitionOwnerWorkflow(
     private val router: DeterministicEvidenceAcquisitionRouter,
     private val executionCoordinator: GovernedAcquisitionExecutionCoordinator,
 ) {
+    private val authoritativeSourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
+    private val pdfCharacteristicsInspector = PdfSourceCharacteristicsInspector()
+
     suspend fun evaluate(evidenceArtifactId: EvidenceArtifactId): GovernedAcquisitionOwnerEvaluation {
         val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
             is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
@@ -60,17 +63,24 @@ internal class GovernedAcquisitionOwnerWorkflow(
         )
     }
 
-    private fun projectTechnicalFacts(manifest: EvidenceSourceManifest): AcquisitionSource? {
+    private suspend fun projectTechnicalFacts(manifest: EvidenceSourceManifest): AcquisitionSource? {
         val media = manifest.receivedMediaType?.lowercase() ?: return null
         val nativeStructured = media == "text/csv" || media == "message/rfc822" ||
             media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         val image = media.startsWith("image/")
+        val pdfInspection = if (media == "application/pdf") {
+            when (val resolved = authoritativeSourceResolver.resolve(ownerPrincipalId, manifest.evidenceArtifactId)) {
+                is AuthoritativeAcquisitionResolution.Verified -> pdfCharacteristicsInspector.inspect(resolved.input)
+                else -> PdfSourceCharacteristicsInspection.Indeterminate("AUTHORITATIVE_SOURCE_UNAVAILABLE")
+            }
+        } else null
+        val establishedPdf = pdfInspection as? PdfSourceCharacteristicsInspection.Established
         return AcquisitionSourceCharacteristicsProjector.project(
             manifest = manifest,
-            pageCount = if (image) AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
-            nativeSearchableText = when { nativeStructured -> AcquisitionCharacteristicState.PRESENT; image -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
-            imageOnlyOrScanned = when { image -> AcquisitionCharacteristicState.PRESENT; nativeStructured -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
-            mixedTextAndImage = if (nativeStructured || image) AcquisitionCharacteristicState.ABSENT else AcquisitionCharacteristicState.UNKNOWN,
+            pageCount = establishedPdf?.pageCount ?: if (image) AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
+            nativeSearchableText = establishedPdf?.nativeSearchableText ?: when { nativeStructured -> AcquisitionCharacteristicState.PRESENT; image -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
+            imageOnlyOrScanned = establishedPdf?.imageOnlyOrScanned ?: when { image -> AcquisitionCharacteristicState.PRESENT; nativeStructured -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
+            mixedTextAndImage = establishedPdf?.mixedTextAndImage ?: if (nativeStructured || image) AcquisitionCharacteristicState.ABSENT else AcquisitionCharacteristicState.UNKNOWN,
         )
     }
 
