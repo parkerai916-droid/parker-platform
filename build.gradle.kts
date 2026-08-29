@@ -40,6 +40,8 @@ dependencies {
     // unreachable, not merely unconfigured (Boundary Clarification Determination 2).
     implementation("org.apache.tika:tika-core:3.3.1")
     implementation("org.apache.tika:tika-parser-pdf-module:3.3.1")
+    // R6.1 direct source-page rendering contract. Explicit rather than relying on Tika's transitive graph.
+    implementation("org.apache.pdfbox:pdfbox:3.0.7")
     implementation("org.apache.commons:commons-csv:1.14.1")
     implementation("org.apache.james:apache-mime4j-core:0.8.14")
     implementation("org.apache.james:apache-mime4j-dom:0.8.14")
