@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PARKER_BUILD_COMMIT: "${PARKER_BUILD_COMMIT:?PARKER_BUILD_COMMIT must be supplied}"
     container_name: parker-runtime
     # Reaches Ollama already running on the host, not a container this
     # compose project manages. `host.docker.internal` is resolved via the
@@ -143,4 +145,3 @@ services:
       # filesystem level.
       - /home/steve/.cache/huggingface:/opt/docling-models:ro
     restart: unless-stopped
-
