@@ -8,6 +8,10 @@ import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.runtime.ExternalTranscriptionOwnerInvocationCoordinator
+import parker.core.runtime.FileSystemFidelityFirstAttemptLedger
+import parker.core.runtime.FileSystemRegionProviderStateStore
+import parker.core.runtime.GovernedRegionTranscriptionExecutionCoordinator
+import parker.core.runtime.OpenAiRegionTranscriptionAdapter
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,27 +40,30 @@ class ParkerRuntimeStartupAndShutdownTest {
         openAiApiCredential: OpenAiApiCredential? = null,
         fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
         fidelityFirstAttemptStorageRootPath: String? = null,
+        regionProviderStateStorageRootPath: String? = null,
         productionCommit: String? = null,
+        testRoot: java.nio.file.Path? = null,
     ) = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by these tests
         modelName = "test-model",
         ownerPrincipalId = "user.owner-lifecycle-test",
         ownerDisplayName = "Test Owner",
         localTextChannelModuleId = localTextChannelModuleId,
-        evidenceStorageRootPath = Files.createTempDirectory("unused-evidence-storage").toString(),
-        evidenceSourceManifestStorageRootPath = Files.createTempDirectory("unused-evidence-storage-manifest").toString(),
-        derivativeGenerationStorageRootPath = Files.createTempDirectory("unused-evidence-storage-manifest-derivative-generation").toString(),
-        derivativeContentStorageRootPath = Files.createTempDirectory("unused-evidence-storage-manifest-derivative-generation-content").toString(),
-        savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
-        documentIngestionAuditLogPath = Files.createTempDirectory("unused-evidence-storage-manifest-ingestion-audit").resolve("audit.log").toString(),
-        evidenceDeletionAuditLogPath = Files.createTempDirectory("unused-evidence-audit").resolve("audit.log").toString(),
-        memoryCoreDurabilityLogPath = Files.createTempDirectory("unused-memory-core").resolve("memory-core.log").toString(),
-        knowledgeItemDurabilityLogPath = Files.createTempDirectory("knowledge-items-test").resolve("items.log").toString(),
+        evidenceStorageRootPath = testDirectory(testRoot, "evidence-storage").toString(),
+        evidenceSourceManifestStorageRootPath = testDirectory(testRoot, "evidence-source-manifest-storage").toString(),
+        derivativeGenerationStorageRootPath = testDirectory(testRoot, "derivative-generation-storage").toString(),
+        derivativeContentStorageRootPath = testDirectory(testRoot, "derivative-content-storage").toString(),
+        savedAnalysisStorageRootPath = testDirectory(testRoot, "saved-analysis-storage").toString(),
+        documentIngestionAuditLogPath = testDirectory(testRoot, "document-ingestion-audit").resolve("audit.log").toString(),
+        evidenceDeletionAuditLogPath = testDirectory(testRoot, "evidence-audit").resolve("audit.log").toString(),
+        memoryCoreDurabilityLogPath = testDirectory(testRoot, "memory-core").resolve("memory-core.log").toString(),
+        knowledgeItemDurabilityLogPath = testDirectory(testRoot, "knowledge-items").resolve("items.log").toString(),
         openAiExternalTranscriptionEnabled = openAiExternalTranscriptionEnabled,
         openAiExternalTranscriptionProviderProfilePath = openAiExternalTranscriptionProviderProfilePath,
         openAiApiCredential = openAiApiCredential,
         fidelityFirstAcceptanceAuthorityStorageRootPath = fidelityFirstAcceptanceAuthorityStorageRootPath,
         fidelityFirstAttemptStorageRootPath = fidelityFirstAttemptStorageRootPath,
+        regionProviderStateStorageRootPath = regionProviderStateStorageRootPath,
         productionCommit = productionCommit,
     )
 
@@ -277,6 +284,89 @@ class ParkerRuntimeStartupAndShutdownTest {
     }
 
     @Test
+    fun `configured region execution composes accepted store ledger and adapter without records or a public execution bypass`() = runTest {
+        val testRoot = Files.createTempDirectory("region-composition-test")
+        try {
+            val authorityRoot = testDirectory(testRoot, "authorities")
+            val attemptRoot = testDirectory(testRoot, "attempts")
+            val providerRoot = testDirectory(testRoot, "provider-state")
+            val profile = profileFile(parent = testRoot)
+            val cfg = config(
+                openAiExternalTranscriptionEnabled = true,
+                openAiExternalTranscriptionProviderProfilePath = profile.toString(),
+                openAiApiCredential = OpenAiApiCredential.fromEnvironment("synthetic-region-composition-credential")!!,
+                fidelityFirstAcceptanceAuthorityStorageRootPath = authorityRoot.toString(),
+                fidelityFirstAttemptStorageRootPath = attemptRoot.toString(),
+                regionProviderStateStorageRootPath = providerRoot.toString(),
+                productionCommit = "a".repeat(40),
+                testRoot = testRoot,
+            )
+
+            repeat(2) {
+                val runtime = ParkerRuntime(
+                    cfg, RecordingParkerLogger(), clock = { Instant.parse("2026-08-26T00:00:00Z") },
+                    buildIdentity = { "a".repeat(40) },
+                )
+                runtime.start()
+                val regionCoordinator = ParkerRuntime::class.java
+                    .getDeclaredField("governedRegionTranscriptionExecutionCoordinator")
+                    .apply { isAccessible = true }
+                    .get(runtime) as GovernedRegionTranscriptionExecutionCoordinator
+                val ledger = GovernedRegionTranscriptionExecutionCoordinator::class.java.getDeclaredField("ledger")
+                    .apply { isAccessible = true }.get(regionCoordinator) as FileSystemFidelityFirstAttemptLedger
+                val store = GovernedRegionTranscriptionExecutionCoordinator::class.java.getDeclaredField("providerStateStore")
+                    .apply { isAccessible = true }.get(regionCoordinator) as FileSystemRegionProviderStateStore
+                val mechanism = GovernedRegionTranscriptionExecutionCoordinator::class.java.getDeclaredField("mechanism")
+                    .apply { isAccessible = true }.get(regionCoordinator)
+                val ledgerRoot = FileSystemFidelityFirstAttemptLedger::class.java.getDeclaredField("root")
+                    .apply { isAccessible = true }.get(ledger) as java.nio.file.Path
+                val storeRoot = FileSystemRegionProviderStateStore::class.java.getDeclaredField("root")
+                    .apply { isAccessible = true }.get(store) as java.nio.file.Path
+
+                assertEquals(attemptRoot.toAbsolutePath().normalize(), ledgerRoot)
+                assertEquals(providerRoot.toAbsolutePath().normalize(), storeRoot)
+                assertIs<OpenAiRegionTranscriptionAdapter>(mechanism)
+                assertTrue(Files.list(attemptRoot).use { paths -> paths.count() == 0L })
+                assertTrue(store.enumerate().isEmpty())
+                assertTrue(ParkerRuntime::class.members.none { member ->
+                    member.name.contains("RegionTranscription") && member.name.startsWith("invoke")
+                })
+                runtime.shutdown()
+            }
+        } finally {
+            deleteTree(testRoot)
+        }
+    }
+
+    @Test
+    fun `configured region execution fails startup when its explicit root is unusable`() = runTest {
+        val testRoot = Files.createTempDirectory("region-invalid-composition-test")
+        try {
+            val authorityRoot = testDirectory(testRoot, "authorities")
+            val attemptRoot = testDirectory(testRoot, "attempts")
+            val missingProviderRoot = testRoot.resolve("missing-provider-state")
+            val runtime = ParkerRuntime(
+                config(
+                openAiExternalTranscriptionEnabled = true,
+                openAiExternalTranscriptionProviderProfilePath = profileFile(parent = testRoot).toString(),
+                openAiApiCredential = OpenAiApiCredential.fromEnvironment("synthetic-region-invalid-credential")!!,
+                fidelityFirstAcceptanceAuthorityStorageRootPath = authorityRoot.toString(),
+                fidelityFirstAttemptStorageRootPath = attemptRoot.toString(),
+                regionProviderStateStorageRootPath = missingProviderRoot.toString(),
+                productionCommit = "a".repeat(40),
+                    testRoot = testRoot,
+                ), RecordingParkerLogger(), clock = { Instant.parse("2026-08-26T00:00:00Z") }, buildIdentity = { "a".repeat(40) },
+            )
+
+            assertFailsWith<ParkerRuntimeException.DependencyConstructionFailed> { runtime.start() }
+            assertEquals(RuntimeLifecycleState.FAILED, runtime.state)
+            assertTrue(!Files.exists(missingProviderRoot))
+        } finally {
+            deleteTree(testRoot)
+        }
+    }
+
+    @Test
     fun `disabled startup never logs a supplied fake OpenAI credential`() = runTest {
         val sentinel = "unit-g-fake-secret-sentinel"
         val logger = RecordingParkerLogger()
@@ -300,8 +390,9 @@ class ParkerRuntimeStartupAndShutdownTest {
         correlationId = CorrelationId("corr-lifecycle-1"),
     )
 
-    private fun profileFile(nextReviewDate: String = "2026-09-01") =
-        Files.createTempFile("openai-composition-profile", ".properties").also { path ->
+    private fun profileFile(nextReviewDate: String = "2026-09-01", parent: java.nio.file.Path? = null) =
+        (parent?.resolve("openai-composition-profile.properties")
+            ?: Files.createTempFile("openai-composition-profile", ".properties")).also { path ->
             Files.writeString(path, """schemaVersion=1
 providerIdentity=OpenAI
 apiProductPath=/v1/responses
@@ -328,4 +419,15 @@ verificationReferences=provider-review
 reverificationTriggers=provider terms change
 """)
         }
+
+    private fun testDirectory(parent: java.nio.file.Path?, name: String): java.nio.file.Path =
+        parent?.resolve(name)?.also { Files.createDirectories(it) } ?: Files.createTempDirectory("unused-$name")
+
+    private fun deleteTree(root: java.nio.file.Path) {
+        if (Files.exists(root)) {
+            Files.walk(root).use { paths ->
+                paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists)
+            }
+        }
+    }
 }

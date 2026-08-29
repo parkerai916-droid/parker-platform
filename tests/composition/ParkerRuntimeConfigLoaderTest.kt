@@ -109,6 +109,39 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(30_000L, config.modelTimeoutMs)
         assertEquals("Owner", config.ownerDisplayName)
         assertEquals("channel.local-text", config.localTextChannelModuleId)
+        assertEquals(null, config.regionProviderStateStorageRootPath)
+    }
+
+    @Test
+    fun `region provider state root is loaded exactly and never invented`() {
+        val authorityRoot = Files.createTempDirectory("config-region-authority")
+        val attemptRoot = Files.createTempDirectory("config-region-attempt")
+        val providerRoot = Files.createTempDirectory("config-region-provider")
+        val config = ParkerRuntimeConfigLoader.load(
+            fullEnvironment(
+                mapOf(
+                    ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT to authorityRoot.toString(),
+                    ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT to attemptRoot.toString(),
+                    ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT to providerRoot.toString(),
+                    ParkerRuntimeConfigLoader.KEY_PRODUCTION_COMMIT to "a".repeat(40),
+                ),
+            ),
+        )
+
+        assertEquals(providerRoot.toString(), config.regionProviderStateStorageRootPath)
+    }
+
+    @Test
+    fun `region provider state root without the governed acceptance configuration fails closed`() {
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(
+                fullEnvironment(
+                    mapOf(ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT to "/not-a-fallback"),
+                ),
+            )
+        }
+
+        assertEquals(ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT, thrown.key)
     }
 
     // Programme 3, Unit 9.7.5 (Runtime Composition Wiring).

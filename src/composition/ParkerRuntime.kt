@@ -123,7 +123,10 @@ import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.runtime.FidelityFirstEffectiveConfiguration
 import parker.core.runtime.FileSystemFidelityFirstAcceptanceAuthorityStorage
 import parker.core.runtime.FileSystemFidelityFirstAttemptLedger
+import parker.core.runtime.FileSystemRegionProviderStateStore
+import parker.core.runtime.GovernedRegionTranscriptionExecutionCoordinator
 import parker.core.runtime.JdkOpenAiResponsesTransport
+import parker.core.runtime.OpenAiRegionTranscriptionAdapter
 import parker.core.runtime.OpenAiResponsesExternalTranscriptionAdapter
 import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
@@ -347,6 +350,9 @@ class ParkerRuntime(
     // provider is composed only after the enablement, profile, and credential gates are all Ready.
     private lateinit var externalTranscriptionOwnerInvocationCoordinator: ExternalTranscriptionOwnerInvocationCoordinator
     private var fidelityFirstAcceptanceCoordinator: FidelityFirstAcceptanceCoordinator? = null
+    // FA.9.4P-A1E-R6.6A: composition only. No public runtime entry point is exposed until a
+    // separately governed region-bound acceptance authority exists.
+    private var governedRegionTranscriptionExecutionCoordinator: GovernedRegionTranscriptionExecutionCoordinator? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
@@ -1404,13 +1410,16 @@ class ParkerRuntime(
             audit = documentIngestionAudit,
             contentStorage = derivativeContentStorage,
         )
+        // One transport implementation is shared by the ordinary (currently disabled while the
+        // profile is ACCEPTANCE_PENDING) and region-bound adapters. Construction performs no I/O.
+        val openAiTransport = JdkOpenAiResponsesTransport()
         val externalTranscriptionMechanism: ExternalTranscriptionMechanism =
             when (openAiExternalTranscriptionBackendReadiness) {
                 OpenAiExternalTranscriptionBackendReadiness.Ready ->
                     OpenAiResponsesExternalTranscriptionAdapter(
                         readiness = openAiExternalTranscriptionReadiness as OpenAiExternalTranscriptionReadiness.Ready,
                         credential = requireNotNull(config.openAiApiCredential),
-                        transport = JdkOpenAiResponsesTransport(),
+                        transport = openAiTransport,
                     )
                 OpenAiExternalTranscriptionBackendReadiness.Disabled,
                 OpenAiExternalTranscriptionBackendReadiness.MissingCredential,
@@ -1437,14 +1446,15 @@ class ParkerRuntime(
         val readyProfile = openAiExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready
         val credential = config.openAiApiCredential
         val embeddedCommit = buildIdentity()
+        val acceptanceAttemptLedger = attemptRoot?.let { FileSystemFidelityFirstAttemptLedger(Path.of(it)) }
         fidelityFirstAcceptanceCoordinator = if (
             authorityRoot != null && attemptRoot != null && buildCommit != null && buildCommit == embeddedCommit &&
-            readyProfile != null && credential != null
+            readyProfile != null && credential != null && acceptanceAttemptLedger != null
         ) {
             val profile = readyProfile.profile
             FidelityFirstAcceptanceCoordinator(
                 authorities = FileSystemFidelityFirstAcceptanceAuthorityStorage(Path.of(authorityRoot)),
-                ledger = FileSystemFidelityFirstAttemptLedger(Path.of(attemptRoot)),
+                ledger = acceptanceAttemptLedger,
                 lifecycle = {
                     when (profile.acceptanceState) {
                         ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING -> FidelityFirstAcceptanceLifecycle.ACCEPTANCE_PENDING
@@ -1477,6 +1487,29 @@ class ParkerRuntime(
                 durableAdmission = tierBDerivativeGenerationCoordinator,
             )
         } else null
+        governedRegionTranscriptionExecutionCoordinator = config.regionProviderStateStorageRootPath?.let { configuredRoot ->
+            stage("Governed region transcription execution composition") {
+                if (
+                    authorityRoot == null || acceptanceAttemptLedger == null || buildCommit == null ||
+                    buildCommit != embeddedCommit || readyProfile == null || credential == null
+                ) {
+                    throw ParkerRuntimeException.InvalidConfiguration(
+                        ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT,
+                        "region execution requires complete acceptance storage, matching build identity, ready provider profile, and credential",
+                    )
+                }
+                val providerStateStore = FileSystemRegionProviderStateStore(Path.of(configuredRoot))
+                GovernedRegionTranscriptionExecutionCoordinator(
+                    ledger = acceptanceAttemptLedger,
+                    providerStateStore = providerStateStore,
+                    mechanism = OpenAiRegionTranscriptionAdapter(
+                        credential = credential,
+                        transport = openAiTransport,
+                        providerStateStore = providerStateStore,
+                    ),
+                )
+            }
+        }
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )

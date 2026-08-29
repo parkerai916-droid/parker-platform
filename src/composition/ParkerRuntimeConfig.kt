@@ -285,6 +285,7 @@ data class ParkerRuntimeConfig(
     val openAiApiCredential: OpenAiApiCredential? = null,
     val fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
     val fidelityFirstAttemptStorageRootPath: String? = null,
+    val regionProviderStateStorageRootPath: String? = null,
     val productionCommit: String? = null,
 )
 
@@ -339,6 +340,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OPENAI_API_KEY = "PARKER_OPENAI_API_KEY"
     const val KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT"
     const val KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT"
+    const val KEY_REGION_PROVIDER_STATE_STORAGE_ROOT = "PARKER_REGION_PROVIDER_STATE_STORAGE_ROOT"
     const val KEY_PRODUCTION_COMMIT = "PARKER_PRODUCTION_COMMIT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
@@ -460,6 +462,7 @@ object ParkerRuntimeConfigLoader {
 
         val acceptanceAuthorityRoot = environment[KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
         val acceptanceAttemptRoot = environment[KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
+        val regionProviderStateRoot = environment[KEY_REGION_PROVIDER_STATE_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
         val productionCommit = environment[KEY_PRODUCTION_COMMIT]?.takeIf { it.isNotBlank() }
         if (listOf(acceptanceAuthorityRoot, acceptanceAttemptRoot, productionCommit).count { it != null } !in setOf(0, 3)) {
             throw ParkerRuntimeException.InvalidConfiguration(
@@ -469,6 +472,12 @@ object ParkerRuntimeConfigLoader {
         }
         if (productionCommit != null && !Regex("^[0-9a-f]{40}$").matches(productionCommit)) {
             throw ParkerRuntimeException.InvalidConfiguration(KEY_PRODUCTION_COMMIT, "must be an exact 40-character lowercase Git commit")
+        }
+        if (regionProviderStateRoot != null && acceptanceAttemptRoot == null) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_REGION_PROVIDER_STATE_STORAGE_ROOT,
+                "region provider state requires the governed acceptance authority root, attempt root, and production commit",
+            )
         }
 
         return ParkerRuntimeConfig(
@@ -510,6 +519,7 @@ object ParkerRuntimeConfigLoader {
             openAiApiCredential = OpenAiApiCredential.fromEnvironment(environment[KEY_OPENAI_API_KEY]),
             fidelityFirstAcceptanceAuthorityStorageRootPath = acceptanceAuthorityRoot,
             fidelityFirstAttemptStorageRootPath = acceptanceAttemptRoot,
+            regionProviderStateStorageRootPath = regionProviderStateRoot,
             productionCommit = productionCommit,
         )
     }
