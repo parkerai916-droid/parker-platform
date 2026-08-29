@@ -74,6 +74,7 @@ class OpenAiRegionTranscriptionAdapter internal constructor(
     private val validator: RegionTranscriptionValidator = RegionTranscriptionValidator(),
     private val timeoutMillis: Long = 300_000,
     private val maximumResponseBytes: Long = 20L * 1024L * 1024L,
+    private val providerStateStore: FileSystemRegionProviderStateStore? = null,
 ) : RegionExternalTranscriptionMechanism {
     init { require(timeoutMillis > 0 && maximumResponseBytes in 1..20L * 1024L * 1024L) }
 
@@ -91,8 +92,18 @@ class OpenAiRegionTranscriptionAdapter internal constructor(
         } catch (_: Exception) {
             return failure("PROVIDER_TRANSPORT_FAILURE")
         }
-        if (response.statusCode !in 200..299) return failure(httpFailure(response.statusCode))
-        return parseResponse(request, response.body)
+        val receipt = providerStateStore?.persistReceived(request, response.statusCode, null, response.body)
+        val outcome = if (response.statusCode !in 200..299) failure(httpFailure(response.statusCode)) else parseResponse(request, response.body)
+        receipt?.let { saved -> providerStateStore?.recordAssessment(saved, (outcome as? OpenAiRegionAdapterOutcome.Failure)?.code ?: "SUCCESS", structuredForPersistence(response.body)) }
+        return outcome
+    }
+
+    private fun structuredForPersistence(bytes: ByteArray): Map<String, Any?>? {
+        return try {
+            val envelope = RegionJson.parse(bytes.toString(Charsets.UTF_8)) as? Map<*, *> ?: return null
+            val text = outputText(envelope) ?: return null
+            @Suppress("UNCHECKED_CAST") (RegionJson.parse(text) as? Map<String, Any?>)
+        } catch (_: Exception) { null }
     }
 
     internal fun buildRequestBody(request: RegionTranscriptionRequest): String {
