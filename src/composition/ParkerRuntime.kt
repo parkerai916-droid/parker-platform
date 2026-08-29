@@ -353,6 +353,7 @@ class ParkerRuntime(
     // FA.9.4P-A1E-R6.6A: composition only. No public runtime entry point is exposed until a
     // separately governed region-bound acceptance authority exists.
     private var governedRegionTranscriptionExecutionCoordinator: GovernedRegionTranscriptionExecutionCoordinator? = null
+    private var regionAcceptanceExecutionCoordinator: parker.core.runtime.RegionAcceptanceExecutionCoordinator? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
@@ -1510,6 +1511,37 @@ class ParkerRuntime(
                 )
             }
         }
+        regionAcceptanceExecutionCoordinator = config.regionAcceptanceAuthorityStorageRootPath?.let { configuredRoot ->
+            stage("Region-specific acceptance authority composition") {
+                val sourceCommit = requireNotNull(config.sourceCommit)
+                val imageId = requireNotNull(config.deployedImmutableImageId)
+                val runtimeCommit = requireNotNull(embeddedCommit)
+                val executionCoordinator = requireNotNull(governedRegionTranscriptionExecutionCoordinator)
+                val deployment = parker.core.runtime.RegionAcceptanceDeploymentFacts(
+                    sourceCommit, requireNotNull(buildCommit), runtimeCommit, imageId,
+                    parker.core.runtime.OpenAiRegionTranscriptionAdapter.ENDPOINT.toString(),
+                )
+                parker.core.runtime.RegionAcceptanceExecutionCoordinator(
+                    authorities = parker.core.runtime.FileSystemRegionAcceptanceAuthorityStorage(Path.of(configuredRoot)),
+                    lifecycle = {
+                        when (readyProfile!!.profile.acceptanceState) {
+                            ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING -> FidelityFirstAcceptanceLifecycle.ACCEPTANCE_PENDING
+                            ExternalTranscriptionAcceptanceState.ACCEPTED -> FidelityFirstAcceptanceLifecycle.ACCEPTED
+                            ExternalTranscriptionAcceptanceState.DISABLED -> FidelityFirstAcceptanceLifecycle.DISABLED
+                            ExternalTranscriptionAcceptanceState.SUSPENDED -> FidelityFirstAcceptanceLifecycle.SUSPENDED
+                            ExternalTranscriptionAcceptanceState.CONFIGURATION_READY -> FidelityFirstAcceptanceLifecycle.INVALID
+                        }
+                    },
+                    deployedSourceCommit = { config.sourceCommit }, deployedBuildCommit = { config.productionCommit },
+                    deployedRuntimeCommit = { buildIdentity() }, deployedImageId = { config.deployedImmutableImageId },
+                    reconstructor = parker.core.runtime.CustodyRegionAcceptanceReconstructor(
+                        defaultEvidenceCustodian, PrincipalId(config.ownerPrincipalId), deployment,
+                        parker.core.runtime.RegionAcceptanceContextPolicy.REGION_ONLY,
+                    ),
+                    execution = parker.core.runtime.GovernedRegionExecutionPort { binding -> executionCoordinator.execute(binding) },
+                )
+            }
+        }
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )
@@ -2155,6 +2187,16 @@ class ParkerRuntime(
         }
         return fidelityFirstAcceptanceCoordinator?.invoke(authorityId)
             ?: FidelityFirstAcceptanceOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
+    }
+
+    /** Region-only, exact-authority acceptance command. No source/request/provider override exists. */
+    suspend fun invokeRegionTranscriptionAcceptanceAsOwner(authorityId: String): parker.core.runtime.RegionAcceptanceExecutionOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        if (!Regex("^[A-Za-z0-9_.-]{1,120}$").matches(authorityId)) {
+            return parker.core.runtime.RegionAcceptanceExecutionOutcome.Blocked("AUTHORITY_ID_INVALID")
+        }
+        return regionAcceptanceExecutionCoordinator?.invoke(authorityId)
+            ?: parker.core.runtime.RegionAcceptanceExecutionOutcome.Blocked("REGION_ACCEPTANCE_LANE_NOT_CONFIGURED")
     }
 
     /** Owner-safe executable readiness, matching the same fail-closed gates used for composition. */

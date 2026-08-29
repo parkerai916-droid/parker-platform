@@ -286,6 +286,9 @@ data class ParkerRuntimeConfig(
     val fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
     val fidelityFirstAttemptStorageRootPath: String? = null,
     val regionProviderStateStorageRootPath: String? = null,
+    val regionAcceptanceAuthorityStorageRootPath: String? = null,
+    val deployedImmutableImageId: String? = null,
+    val sourceCommit: String? = null,
     val productionCommit: String? = null,
 )
 
@@ -341,6 +344,9 @@ object ParkerRuntimeConfigLoader {
     const val KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT"
     const val KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT"
     const val KEY_REGION_PROVIDER_STATE_STORAGE_ROOT = "PARKER_REGION_PROVIDER_STATE_STORAGE_ROOT"
+    const val KEY_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT = "PARKER_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT"
+    const val KEY_DEPLOYED_IMMUTABLE_IMAGE_ID = "PARKER_DEPLOYED_IMMUTABLE_IMAGE_ID"
+    const val KEY_SOURCE_COMMIT = "PARKER_SOURCE_COMMIT"
     const val KEY_PRODUCTION_COMMIT = "PARKER_PRODUCTION_COMMIT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
@@ -463,6 +469,9 @@ object ParkerRuntimeConfigLoader {
         val acceptanceAuthorityRoot = environment[KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
         val acceptanceAttemptRoot = environment[KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
         val regionProviderStateRoot = environment[KEY_REGION_PROVIDER_STATE_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
+        val regionAcceptanceAuthorityRoot = environment[KEY_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
+        val deployedImmutableImageId = environment[KEY_DEPLOYED_IMMUTABLE_IMAGE_ID]?.takeIf { it.isNotBlank() }
+        val sourceCommit = environment[KEY_SOURCE_COMMIT]?.takeIf { it.isNotBlank() }
         val productionCommit = environment[KEY_PRODUCTION_COMMIT]?.takeIf { it.isNotBlank() }
         if (listOf(acceptanceAuthorityRoot, acceptanceAttemptRoot, productionCommit).count { it != null } !in setOf(0, 3)) {
             throw ParkerRuntimeException.InvalidConfiguration(
@@ -472,6 +481,18 @@ object ParkerRuntimeConfigLoader {
         }
         if (productionCommit != null && !Regex("^[0-9a-f]{40}$").matches(productionCommit)) {
             throw ParkerRuntimeException.InvalidConfiguration(KEY_PRODUCTION_COMMIT, "must be an exact 40-character lowercase Git commit")
+        }
+        if (sourceCommit != null && !Regex("^[0-9a-f]{40}$").matches(sourceCommit)) {
+            throw ParkerRuntimeException.InvalidConfiguration(KEY_SOURCE_COMMIT, "must be an exact 40-character lowercase Git commit")
+        }
+        if (deployedImmutableImageId != null && !Regex("^sha256:[0-9a-f]{64}$").matches(deployedImmutableImageId)) {
+            throw ParkerRuntimeException.InvalidConfiguration(KEY_DEPLOYED_IMMUTABLE_IMAGE_ID, "must be an immutable sha256 image id")
+        }
+        if (regionAcceptanceAuthorityRoot != null && listOf(deployedImmutableImageId, sourceCommit, productionCommit, acceptanceAttemptRoot, regionProviderStateRoot).any { it == null }) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT,
+                "region acceptance authority requires immutable image, source/build/runtime commit, attempt ledger, and provider-state roots",
+            )
         }
         if (regionProviderStateRoot != null && acceptanceAttemptRoot == null) {
             throw ParkerRuntimeException.InvalidConfiguration(
@@ -520,6 +541,9 @@ object ParkerRuntimeConfigLoader {
             fidelityFirstAcceptanceAuthorityStorageRootPath = acceptanceAuthorityRoot,
             fidelityFirstAttemptStorageRootPath = acceptanceAttemptRoot,
             regionProviderStateStorageRootPath = regionProviderStateRoot,
+            regionAcceptanceAuthorityStorageRootPath = regionAcceptanceAuthorityRoot,
+            deployedImmutableImageId = deployedImmutableImageId,
+            sourceCommit = sourceCommit,
             productionCommit = productionCommit,
         )
     }

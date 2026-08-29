@@ -144,6 +144,44 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT, thrown.key)
     }
 
+    @Test
+    fun `region acceptance root loads only with complete immutable deployment binding`() {
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
+            ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT to "/legacy-authorities",
+            ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT to "/attempts",
+            ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT to "/provider-state",
+            ParkerRuntimeConfigLoader.KEY_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT to "/region-authorities",
+            ParkerRuntimeConfigLoader.KEY_DEPLOYED_IMMUTABLE_IMAGE_ID to "sha256:" + "b".repeat(64),
+            ParkerRuntimeConfigLoader.KEY_SOURCE_COMMIT to "a".repeat(40),
+            ParkerRuntimeConfigLoader.KEY_PRODUCTION_COMMIT to "a".repeat(40),
+        )))
+        assertEquals("/region-authorities", config.regionAcceptanceAuthorityStorageRootPath)
+        assertEquals("sha256:" + "b".repeat(64), config.deployedImmutableImageId)
+        assertEquals("a".repeat(40), config.sourceCommit)
+    }
+
+    @Test
+    fun `region acceptance root without image and source identity fails closed`() {
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
+                ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT to "/legacy-authorities",
+                ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT to "/attempts",
+                ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT to "/provider-state",
+                ParkerRuntimeConfigLoader.KEY_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT to "/region-authorities",
+                ParkerRuntimeConfigLoader.KEY_PRODUCTION_COMMIT to "a".repeat(40),
+            )))
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT, thrown.key)
+    }
+
+    @Test
+    fun `mutable image tag is rejected for region acceptance`() {
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(ParkerRuntimeConfigLoader.KEY_DEPLOYED_IMMUTABLE_IMAGE_ID to "parker:latest")))
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_DEPLOYED_IMMUTABLE_IMAGE_ID, thrown.key)
+    }
+
     // Programme 3, Unit 9.7.5 (Runtime Composition Wiring).
 
     @Test

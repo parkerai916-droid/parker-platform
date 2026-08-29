@@ -41,6 +41,9 @@ class ParkerRuntimeStartupAndShutdownTest {
         fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
         fidelityFirstAttemptStorageRootPath: String? = null,
         regionProviderStateStorageRootPath: String? = null,
+        regionAcceptanceAuthorityStorageRootPath: String? = null,
+        deployedImmutableImageId: String? = null,
+        sourceCommit: String? = null,
         productionCommit: String? = null,
         testRoot: java.nio.file.Path? = null,
     ) = ParkerRuntimeConfig(
@@ -64,6 +67,9 @@ class ParkerRuntimeStartupAndShutdownTest {
         fidelityFirstAcceptanceAuthorityStorageRootPath = fidelityFirstAcceptanceAuthorityStorageRootPath,
         fidelityFirstAttemptStorageRootPath = fidelityFirstAttemptStorageRootPath,
         regionProviderStateStorageRootPath = regionProviderStateStorageRootPath,
+        regionAcceptanceAuthorityStorageRootPath = regionAcceptanceAuthorityStorageRootPath,
+        deployedImmutableImageId = deployedImmutableImageId,
+        sourceCommit = sourceCommit,
         productionCommit = productionCommit,
     )
 
@@ -284,12 +290,13 @@ class ParkerRuntimeStartupAndShutdownTest {
     }
 
     @Test
-    fun `configured region execution composes accepted store ledger and adapter without records or a public execution bypass`() = runTest {
+    fun `configured region execution remains inert and exposes only authority gated acceptance`() = runTest {
         val testRoot = Files.createTempDirectory("region-composition-test")
         try {
             val authorityRoot = testDirectory(testRoot, "authorities")
             val attemptRoot = testDirectory(testRoot, "attempts")
             val providerRoot = testDirectory(testRoot, "provider-state")
+            val regionAuthorityRoot = testDirectory(testRoot, "region-authorities")
             val profile = profileFile(parent = testRoot)
             val cfg = config(
                 openAiExternalTranscriptionEnabled = true,
@@ -298,6 +305,9 @@ class ParkerRuntimeStartupAndShutdownTest {
                 fidelityFirstAcceptanceAuthorityStorageRootPath = authorityRoot.toString(),
                 fidelityFirstAttemptStorageRootPath = attemptRoot.toString(),
                 regionProviderStateStorageRootPath = providerRoot.toString(),
+                regionAcceptanceAuthorityStorageRootPath = regionAuthorityRoot.toString(),
+                deployedImmutableImageId = "sha256:" + "b".repeat(64),
+                sourceCommit = "a".repeat(40),
                 productionCommit = "a".repeat(40),
                 testRoot = testRoot,
             )
@@ -328,9 +338,11 @@ class ParkerRuntimeStartupAndShutdownTest {
                 assertIs<OpenAiRegionTranscriptionAdapter>(mechanism)
                 assertTrue(Files.list(attemptRoot).use { paths -> paths.count() == 0L })
                 assertTrue(store.enumerate().isEmpty())
-                assertTrue(ParkerRuntime::class.members.none { member ->
-                    member.name.contains("RegionTranscription") && member.name.startsWith("invoke")
-                })
+                assertEquals(listOf("invokeRegionTranscriptionAcceptanceAsOwner"), ParkerRuntime::class.members
+                    .map { it.name }.filter { it.contains("RegionTranscription") && it.startsWith("invoke") })
+                assertEquals("AUTHORITY_MISSING", assertIs<parker.core.runtime.RegionAcceptanceExecutionOutcome.Blocked>(
+                    runtime.invokeRegionTranscriptionAcceptanceAsOwner("synthetic-missing-authority"),
+                ).reason)
                 runtime.shutdown()
             }
         } finally {
