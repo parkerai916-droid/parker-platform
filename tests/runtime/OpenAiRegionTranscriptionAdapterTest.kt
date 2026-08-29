@@ -20,7 +20,7 @@ class OpenAiRegionTranscriptionAdapterTest {
 
     @Test fun `profile and frozen instruction schema identities are exact`() {
         val profile = OpenAiRegionTranscriptionProfile()
-        assertEquals(OPENAI_REGION_ADAPTER_ID, profile.adapterId); assertEquals("3.0.0", profile.adapterVersion)
+        assertEquals(OPENAI_REGION_ADAPTER_ID, profile.adapterId); assertEquals("4.0.0", profile.adapterVersion)
         assertEquals("gpt-5.6-sol", profile.model); assertEquals("none", profile.reasoning); assertFalse(profile.store)
         assertEquals("original", profile.imageDetail); assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING, profile.lifecycle)
         assertEquals(REGION_TRANSCRIPTION_SCHEMA_SHA256, OPENAI_REGION_WIRE_SCHEMA_SHA256)

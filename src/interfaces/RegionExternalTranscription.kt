@@ -4,7 +4,8 @@ import java.security.MessageDigest
 
 const val REGION_TRANSCRIPTION_PROFILE_ID = "region-anchored-fidelity-acquisition-v1"
 const val REGION_TRANSCRIPTION_SCHEMA_ID = "region-anchored-transcription-schema-v1"
-const val REGION_TRANSCRIPTION_WIRE_VERSION = 4
+const val REGION_TRANSCRIPTION_WIRE_VERSION_V4 = 4
+const val REGION_TRANSCRIPTION_WIRE_VERSION = 5
 const val REGION_TRANSCRIPTION_PROCESSING_PROFILE = "external-transcription.deterministic-source-region-raster-v1"
 
 enum class RegionTranscriptionStatus {
@@ -18,6 +19,29 @@ enum class RegionTranscriptionUncertaintyCategory {
 
 enum class RegionVisualObservationKind {
     LINE_BREAK, PARAGRAPH_BREAK, LIST_MARKER, TABLE_CELL_TEXT, BOLD, ITALIC, UNDERLINE, ALL_CAPS, ENLARGED_TEXT,
+}
+
+sealed interface RegionVisualObservationAnchor {
+    data object Unanchored : RegionVisualObservationAnchor
+    data class Point(val codePoint: Int) : RegionVisualObservationAnchor
+    data class Range(val startCodePoint: Int, val endCodePointExclusive: Int) : RegionVisualObservationAnchor
+
+    companion object {
+        fun resolve(start: Int?, end: Int?, textCodePoints: Int, pointsAllowed: Boolean): RegionVisualObservationAnchor {
+            require(textCodePoints >= 0)
+            if (start == null || end == null) {
+                require(start == null && end == null)
+                return Unanchored
+            }
+            require(start >= 0 && end >= 0 && start <= end)
+            require(start <= textCodePoints && end <= textCodePoints)
+            if (start == end) {
+                require(pointsAllowed)
+                return Point(start)
+            }
+            return Range(start, end)
+        }
+    }
 }
 
 data class RegionTranscriptionUncertainty(
@@ -97,7 +121,8 @@ data class RegionTranscriptionRequest(
     init {
         require(correlationId.matches(Regex("^[A-Za-z0-9_-]{1,120}$")))
         require(transcriptionProfileId == REGION_TRANSCRIPTION_PROFILE_ID)
-        require(schemaId == REGION_TRANSCRIPTION_SCHEMA_ID && schemaVersion == REGION_TRANSCRIPTION_WIRE_VERSION)
+        require(schemaId == REGION_TRANSCRIPTION_SCHEMA_ID &&
+            schemaVersion in setOf(REGION_TRANSCRIPTION_WIRE_VERSION_V4, REGION_TRANSCRIPTION_WIRE_VERSION))
         require(schemaSha256.matches(Regex("^[0-9a-f]{64}$")))
         require(processingProfile == REGION_TRANSCRIPTION_PROCESSING_PROFILE)
         require(literalInstruction.isNotBlank() && literalInstruction.length <= 4_096)

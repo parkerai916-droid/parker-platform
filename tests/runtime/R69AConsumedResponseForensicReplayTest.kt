@@ -29,6 +29,7 @@ class R69AConsumedResponseForensicReplayTest {
         val transport = FixtureTransport(OpenAiResponsesTransportResponse(integer(record, "http_status"), raw))
         val outcome = OpenAiRegionTranscriptionAdapter(
             OpenAiApiCredential.fromEnvironment("R69A_OFFLINE_SENTINEL")!!, transport,
+            profile = historicalV4Profile(),
         ).transcribeWithRawState(request)
         assertEquals(1, transport.calls)
         assertEquals("VALIDATION_MALFORMED_SCHEMA", assertIs<OpenAiRegionAdapterOutcome.Failure>(outcome).code)
@@ -114,13 +115,13 @@ class R69AConsumedResponseForensicReplayTest {
             PagePixelDimensions(1, 1), SourceRegionId("d".repeat(64)), bounds, crop,
             SourceRegionStructuralClass.TEXT_LIKE, "r69a", 1, image)
         return RegionTranscriptionRequest("r69a", REGION_TRANSCRIPTION_PROFILE_ID, REGION_TRANSCRIPTION_SCHEMA_ID,
-            REGION_TRANSCRIPTION_WIRE_VERSION, REGION_TRANSCRIPTION_SCHEMA_SHA256,
+            REGION_TRANSCRIPTION_WIRE_VERSION_V4, REGION_TRANSCRIPTION_SCHEMA_SHA256_V4,
             REGION_TRANSCRIPTION_PROCESSING_PROFILE, REGION_LITERAL_TRANSCRIPTION_INSTRUCTION, listOf(target))
     }
 
     private fun syntheticWire(start: Int?, end: Int?) = mapOf<String, Any?>(
         "correlation_id" to "r69a", "transcription_profile_id" to REGION_TRANSCRIPTION_PROFILE_ID,
-        "schema_id" to REGION_TRANSCRIPTION_SCHEMA_ID, "schema_version" to REGION_TRANSCRIPTION_WIRE_VERSION,
+        "schema_id" to REGION_TRANSCRIPTION_SCHEMA_ID, "schema_version" to REGION_TRANSCRIPTION_WIRE_VERSION_V4,
         "provider_provenance" to mapOf("provider" to "OpenAI", "requested_model" to OPENAI_REGION_MODEL,
             "provider_reported_model" to OPENAI_REGION_MODEL, "provider_response_id" to "resp-r69a",
             "adapter_id" to OPENAI_REGION_ADAPTER_ID, "adapter_version" to OPENAI_REGION_ADAPTER_VERSION,
@@ -129,6 +130,16 @@ class R69AConsumedResponseForensicReplayTest {
             "status" to "TRANSCRIBED", "uncertainties" to emptyList<Any?>(), "warnings" to emptyList<String>(),
             "provider_returned_ordinal" to 1, "visual_observations" to listOf(mapOf("kind" to "LINE_BREAK",
                 "start_code_point" to start, "end_code_point_exclusive" to end)))))
+
+
+    private fun historicalV4Profile() = OpenAiRegionTranscriptionProfile(
+        profileId = OPENAI_REGION_PROFILE_ID_V4,
+        wireVersion = REGION_TRANSCRIPTION_WIRE_VERSION_V4,
+        schemaSha256 = REGION_TRANSCRIPTION_SCHEMA_SHA256_V4,
+        instructionSha256 = OPENAI_REGION_INSTRUCTION_SHA256_V4,
+        adapterVersion = OPENAI_REGION_ADAPTER_VERSION_V4,
+        instruction = OPENAI_REGION_INSTRUCTION_V4,
+    )
 
     @Suppress("UNCHECKED_CAST") private fun obj(value: Any?) = value as Map<String, Any?>
     @Suppress("UNCHECKED_CAST") private fun array(value: Map<String, Any?>, key: String) = value.getValue(key) as List<Any?>

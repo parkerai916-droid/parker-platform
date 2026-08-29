@@ -11,15 +11,21 @@ import parker.composition.ExternalTranscriptionAcceptanceState
 import parker.core.interfaces.*
 
 const val OPENAI_REGION_ADAPTER_ID = "openai-responses-region-transcription-adapter"
-const val OPENAI_REGION_ADAPTER_VERSION = "3.0.0"
+const val OPENAI_REGION_ADAPTER_VERSION_V4 = "3.0.0"
+const val OPENAI_REGION_ADAPTER_VERSION = "4.0.0"
 const val OPENAI_REGION_PARSER_ID = "openai-region-structured-response-parser"
 const val OPENAI_REGION_PARSER_VERSION = "1.0.0"
-const val OPENAI_REGION_PROFILE_ID = "openai-region-anchored-transcription-v1"
+const val OPENAI_REGION_PROFILE_ID_V4 = "openai-region-anchored-transcription-v1"
+const val OPENAI_REGION_PROFILE_ID = "openai-region-anchored-transcription-v2"
 const val OPENAI_REGION_MODEL = "gpt-5.6-sol"
 const val OPENAI_REGION_IMAGE_DETAIL = "original"
 
-const val OPENAI_REGION_INSTRUCTION = "Transcribe only text visibly present in each supplied Parker target region. Preserve exact visible Unicode, spelling, punctuation, capitalization, numbers, dates, identifiers, line breaks, paragraph breaks, repeated spaces, tabs, indentation, and significant emphasis. Bind every block only to its supplied source_region_id and page_number. Report bounded uncertainty instead of guessing. Use NO_VISIBLE_TEXT for no visible text and ILLEGIBLE for unreadable content. Never summarize, interpret, reason, rewrite, correct, normalize, infer, complete, regroup, move text between regions, create region IDs, transcribe surrounding page context, or decide source order. Provider-returned ordinal is forensic metadata only. Return only the strict structured schema."
+const val OPENAI_REGION_INSTRUCTION_V4 = "Transcribe only text visibly present in each supplied Parker target region. Preserve exact visible Unicode, spelling, punctuation, capitalization, numbers, dates, identifiers, line breaks, paragraph breaks, repeated spaces, tabs, indentation, and significant emphasis. Bind every block only to its supplied source_region_id and page_number. Report bounded uncertainty instead of guessing. Use NO_VISIBLE_TEXT for no visible text and ILLEGIBLE for unreadable content. Never summarize, interpret, reason, rewrite, correct, normalize, infer, complete, regroup, move text between regions, create region IDs, transcribe surrounding page context, or decide source order. Provider-returned ordinal is forensic metadata only. Return only the strict structured schema."
+val OPENAI_REGION_INSTRUCTION_SHA256_V4 = regionSha256(OPENAI_REGION_INSTRUCTION_V4.toByteArray(Charsets.UTF_8))
+const val OPENAI_REGION_INSTRUCTION = OPENAI_REGION_INSTRUCTION_V4 + " For visual_observations, LINE_BREAK uses a zero-width point anchor [n,n) at the exact Unicode code-point boundary; zero width is valid and does not mean an empty observation. Other text-anchored observations use a non-empty half-open range [start,end). Use null/null only for an unanchored region observation, and never mix a null endpoint with a non-null endpoint."
 val OPENAI_REGION_INSTRUCTION_SHA256 = regionSha256(OPENAI_REGION_INSTRUCTION.toByteArray(Charsets.UTF_8))
+val OPENAI_REGION_WIRE_SCHEMA_SOURCE_V4 = REGION_TRANSCRIPTION_SCHEMA_SOURCE_V4
+val OPENAI_REGION_WIRE_SCHEMA_SHA256_V4 = regionSha256(OPENAI_REGION_WIRE_SCHEMA_SOURCE_V4.toByteArray(Charsets.UTF_8))
 val OPENAI_REGION_WIRE_SCHEMA_SOURCE = REGION_TRANSCRIPTION_SCHEMA_SOURCE
 val OPENAI_REGION_WIRE_SCHEMA_SHA256 = regionSha256(OPENAI_REGION_WIRE_SCHEMA_SOURCE.toByteArray(Charsets.UTF_8))
 
@@ -38,14 +44,20 @@ data class OpenAiRegionTranscriptionProfile(
     val reasoning: String = "none",
     val store: Boolean = false,
     val imageDetail: String = OPENAI_REGION_IMAGE_DETAIL,
+    val instruction: String = OPENAI_REGION_INSTRUCTION,
     val lifecycle: ExternalTranscriptionAcceptanceState = ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING,
 ) {
     init {
-        require(profileId == OPENAI_REGION_PROFILE_ID && provider == "OpenAI" && model == OPENAI_REGION_MODEL)
+        require(provider == "OpenAI" && model == OPENAI_REGION_MODEL)
         require(providerNeutralProfileId == REGION_TRANSCRIPTION_PROFILE_ID && schemaId == REGION_TRANSCRIPTION_SCHEMA_ID)
-        require(wireVersion == REGION_TRANSCRIPTION_WIRE_VERSION && schemaSha256 == REGION_TRANSCRIPTION_SCHEMA_SHA256)
-        require(instructionSha256 == OPENAI_REGION_INSTRUCTION_SHA256 && processingProfile == REGION_TRANSCRIPTION_PROCESSING_PROFILE)
-        require(adapterId == OPENAI_REGION_ADAPTER_ID && adapterVersion == OPENAI_REGION_ADAPTER_VERSION)
+        val current = profileId == OPENAI_REGION_PROFILE_ID && wireVersion == REGION_TRANSCRIPTION_WIRE_VERSION &&
+            schemaSha256 == REGION_TRANSCRIPTION_SCHEMA_SHA256 && instruction == OPENAI_REGION_INSTRUCTION &&
+            instructionSha256 == OPENAI_REGION_INSTRUCTION_SHA256 && adapterVersion == OPENAI_REGION_ADAPTER_VERSION
+        val historicalV4 = profileId == OPENAI_REGION_PROFILE_ID_V4 && wireVersion == REGION_TRANSCRIPTION_WIRE_VERSION_V4 &&
+            schemaSha256 == REGION_TRANSCRIPTION_SCHEMA_SHA256_V4 && instruction == OPENAI_REGION_INSTRUCTION_V4 &&
+            instructionSha256 == OPENAI_REGION_INSTRUCTION_SHA256_V4 && adapterVersion == OPENAI_REGION_ADAPTER_VERSION_V4
+        require(current || historicalV4)
+        require(processingProfile == REGION_TRANSCRIPTION_PROCESSING_PROFILE && adapterId == OPENAI_REGION_ADAPTER_ID)
         require(reasoning == "none" && !store && imageDetail == "original")
         require(lifecycle == ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING)
     }
@@ -109,7 +121,7 @@ class OpenAiRegionTranscriptionAdapter internal constructor(
     internal fun buildRequestBody(request: RegionTranscriptionRequest): String {
         require(matchesProfile(request))
         val content = mutableListOf<Map<String, Any?>>()
-        content += mapOf("type" to "input_text", "text" to OPENAI_REGION_INSTRUCTION + "\nrequest_correlation_id=" + request.correlationId)
+        content += mapOf("type" to "input_text", "text" to profile.instruction + "\nrequest_correlation_id=" + request.correlationId)
         request.targets.forEach { target ->
             content += mapOf("type" to "input_text", "text" to manifest(target, false))
             content += mapOf("type" to "input_image", "image_url" to dataUrl(target.regionImage), "detail" to profile.imageDetail)
@@ -125,7 +137,10 @@ class OpenAiRegionTranscriptionAdapter internal constructor(
             "reasoning" to mapOf("effort" to "none"),
             "input" to listOf(mapOf("role" to "user", "content" to content)),
             "text" to mapOf("format" to mapOf("type" to "json_schema", "name" to REGION_TRANSCRIPTION_SCHEMA_ID,
-                "strict" to true, "schema" to RegionJson.parse(OPENAI_REGION_WIRE_SCHEMA_SOURCE))),
+                "strict" to true, "schema" to RegionJson.parse(
+                    if (profile.wireVersion == REGION_TRANSCRIPTION_WIRE_VERSION_V4) OPENAI_REGION_WIRE_SCHEMA_SOURCE_V4
+                    else OPENAI_REGION_WIRE_SCHEMA_SOURCE
+                ))),
         )
         return RegionJson.encode(body)
     }
@@ -148,7 +163,7 @@ class OpenAiRegionTranscriptionAdapter internal constructor(
             is RegionTranscriptionValidationOutcome.Valid -> {
                 val p = validated.result.providerProvenance
                 if (p.provider != "OpenAI" || p.requestedModel != profile.model || p.providerReportedModel != model ||
-                    p.providerResponseId != responseId || p.adapterId != OPENAI_REGION_ADAPTER_ID || p.adapterVersion != OPENAI_REGION_ADAPTER_VERSION ||
+                    p.providerResponseId != responseId || p.adapterId != profile.adapterId || p.adapterVersion != profile.adapterVersion ||
                     p.parserId != OPENAI_REGION_PARSER_ID || p.parserVersion != OPENAI_REGION_PARSER_VERSION
                 ) return failure("INVALID_PROVIDER_PROVENANCE")
                 OpenAiRegionAdapterOutcome.Success(validated.result,

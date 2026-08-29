@@ -26,7 +26,7 @@ class RegionAcceptanceAuthorityV2Test {
         val facts = authority.manifest.facts.associate { it.name to it.value }
         assertEquals(REGION_ACCEPTANCE_AUTHORITY_SCHEMA_V2, "parker.region-transcription-acceptance-authority.v2")
         assertEquals("5e96163553ebb56982bff8735ee3ab58f7b16d0c1ead4c282a970c915dfb2b43", facts["request.provider_neutral_instruction_sha256"])
-        assertEquals("fe65ec1c8784a16f0755d62f47700340ee9745b08e48270cf289bb8e05c5c54c", facts["adapter.provider_instruction_sha256"])
+        assertEquals("3e1c1c647d011f748fc2cc81cb9e17a4354b0ca879abd28888005ef8d05d71e2", facts["adapter.provider_instruction_sha256"])
         assertEquals(OPENAI_REGION_PROFILE_ID, facts["provider.profile_id"]); assertEquals("none", facts["provider.reasoning"])
         assertEquals("POST /v1/responses", facts["provider.operation"]); assertEquals("Responses API", facts["provider.endpoint_family"])
         assertEquals(RegionAcceptancePurposeCode.CONTROLLED_LIVE_FIDELITY_ACCEPTANCE.name, facts["authority.purpose_code"])

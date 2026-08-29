@@ -5,14 +5,22 @@ import parker.core.interfaces.*
 
 const val REGION_LITERAL_TRANSCRIPTION_INSTRUCTION = "Transcribe only text visibly present inside each specified Parker source region. Preserve visible characters, spelling, punctuation, capitalization, line breaks, paragraph breaks, repeated spaces, indentation, symbols, numbers, dates, identifiers, and visibly significant emphasis. Do not summarize, interpret, reason, rewrite, correct, normalize, infer, complete, regroup, or move text between regions. Use only the supplied Parker region identifiers. If text is uncertain or illegible, report bounded uncertainty instead of guessing. If no text is visible, return NO_VISIBLE_TEXT and no caption or description. Full-page context, when supplied, is context only: return no surrounding text. Return only the strict structured response."
 
-val REGION_TRANSCRIPTION_SCHEMA_SOURCE = """{"additionalProperties":false,"properties":{"blocks":{"items":{"additionalProperties":false,"properties":{"literal_text":{"maxLength":100000,"type":["string","null"]},"page_number":{"maximum":10000,"minimum":1,"type":"integer"},"provider_returned_ordinal":{"maximum":32,"minimum":1,"type":"integer"},"source_region_id":{"pattern":"^[0-9a-f]{64}$","type":"string"},"status":{"enum":["TRANSCRIBED","PARTIALLY_TRANSCRIBED","ILLEGIBLE","NO_VISIBLE_TEXT","UNSUPPORTED_VISUAL_CONTENT"],"type":"string"},"uncertainties":{"items":{"additionalProperties":false,"properties":{"alternatives":{"items":{"maxLength":256,"type":"string"},"maxItems":8,"type":"array"},"category":{"enum":["ILLEGIBLE","AMBIGUOUS_CHARACTER","AMBIGUOUS_WORD","PARTIALLY_OCCLUDED","LOW_CONTRAST","HANDWRITING_UNCERTAIN","CLIPPED","OTHER_VISUAL_UNCERTAINTY"],"type":"string"},"end_code_point_exclusive":{"minimum":1,"type":"integer"},"exact_substring":{"maxLength":4096,"type":"string"},"provider_confidence":{"maxLength":64,"type":["string","null"]},"start_code_point":{"minimum":0,"type":"integer"}},"required":["start_code_point","end_code_point_exclusive","exact_substring","category","alternatives","provider_confidence"],"type":"object"},"maxItems":200,"type":"array"},"visual_observations":{"items":{"additionalProperties":false,"properties":{"end_code_point_exclusive":{"minimum":1,"type":["integer","null"]},"kind":{"enum":["LINE_BREAK","PARAGRAPH_BREAK","LIST_MARKER","TABLE_CELL_TEXT","BOLD","ITALIC","UNDERLINE","ALL_CAPS","ENLARGED_TEXT"],"type":"string"},"start_code_point":{"minimum":0,"type":["integer","null"]}},"required":["kind","start_code_point","end_code_point_exclusive"],"type":"object"},"maxItems":200,"type":"array"},"warnings":{"items":{"maxLength":1024,"minLength":1,"type":"string"},"maxItems":50,"type":"array"}},"required":["source_region_id","page_number","literal_text","status","uncertainties","warnings","provider_returned_ordinal","visual_observations"],"type":"object"},"maxItems":32,"minItems":1,"type":"array"},"correlation_id":{"maxLength":120,"minLength":1,"pattern":"^[A-Za-z0-9_-]+$","type":"string"},"provider_provenance":{"additionalProperties":false,"properties":{"adapter_id":{"maxLength":128,"minLength":1,"type":"string"},"adapter_version":{"maxLength":64,"minLength":1,"type":"string"},"parser_id":{"maxLength":128,"minLength":1,"type":"string"},"parser_version":{"maxLength":64,"minLength":1,"type":"string"},"provider":{"maxLength":128,"minLength":1,"type":"string"},"provider_reported_model":{"maxLength":256,"type":["string","null"]},"provider_response_id":{"maxLength":256,"type":["string","null"]},"requested_model":{"maxLength":256,"minLength":1,"type":"string"}},"required":["provider","requested_model","provider_reported_model","provider_response_id","adapter_id","adapter_version","parser_id","parser_version"],"type":"object"},"schema_id":{"const":"region-anchored-transcription-schema-v1","type":"string"},"schema_version":{"const":4,"type":"integer"},"transcription_profile_id":{"const":"region-anchored-fidelity-acquisition-v1","type":"string"}},"required":["correlation_id","transcription_profile_id","schema_id","schema_version","provider_provenance","blocks"],"type":"object"}"""
+val REGION_TRANSCRIPTION_SCHEMA_SOURCE_V4 = """{"additionalProperties":false,"properties":{"blocks":{"items":{"additionalProperties":false,"properties":{"literal_text":{"maxLength":100000,"type":["string","null"]},"page_number":{"maximum":10000,"minimum":1,"type":"integer"},"provider_returned_ordinal":{"maximum":32,"minimum":1,"type":"integer"},"source_region_id":{"pattern":"^[0-9a-f]{64}$","type":"string"},"status":{"enum":["TRANSCRIBED","PARTIALLY_TRANSCRIBED","ILLEGIBLE","NO_VISIBLE_TEXT","UNSUPPORTED_VISUAL_CONTENT"],"type":"string"},"uncertainties":{"items":{"additionalProperties":false,"properties":{"alternatives":{"items":{"maxLength":256,"type":"string"},"maxItems":8,"type":"array"},"category":{"enum":["ILLEGIBLE","AMBIGUOUS_CHARACTER","AMBIGUOUS_WORD","PARTIALLY_OCCLUDED","LOW_CONTRAST","HANDWRITING_UNCERTAIN","CLIPPED","OTHER_VISUAL_UNCERTAINTY"],"type":"string"},"end_code_point_exclusive":{"minimum":1,"type":"integer"},"exact_substring":{"maxLength":4096,"type":"string"},"provider_confidence":{"maxLength":64,"type":["string","null"]},"start_code_point":{"minimum":0,"type":"integer"}},"required":["start_code_point","end_code_point_exclusive","exact_substring","category","alternatives","provider_confidence"],"type":"object"},"maxItems":200,"type":"array"},"visual_observations":{"items":{"additionalProperties":false,"properties":{"end_code_point_exclusive":{"minimum":1,"type":["integer","null"]},"kind":{"enum":["LINE_BREAK","PARAGRAPH_BREAK","LIST_MARKER","TABLE_CELL_TEXT","BOLD","ITALIC","UNDERLINE","ALL_CAPS","ENLARGED_TEXT"],"type":"string"},"start_code_point":{"minimum":0,"type":["integer","null"]}},"required":["kind","start_code_point","end_code_point_exclusive"],"type":"object"},"maxItems":200,"type":"array"},"warnings":{"items":{"maxLength":1024,"minLength":1,"type":"string"},"maxItems":50,"type":"array"}},"required":["source_region_id","page_number","literal_text","status","uncertainties","warnings","provider_returned_ordinal","visual_observations"],"type":"object"},"maxItems":32,"minItems":1,"type":"array"},"correlation_id":{"maxLength":120,"minLength":1,"pattern":"^[A-Za-z0-9_-]+$","type":"string"},"provider_provenance":{"additionalProperties":false,"properties":{"adapter_id":{"maxLength":128,"minLength":1,"type":"string"},"adapter_version":{"maxLength":64,"minLength":1,"type":"string"},"parser_id":{"maxLength":128,"minLength":1,"type":"string"},"parser_version":{"maxLength":64,"minLength":1,"type":"string"},"provider":{"maxLength":128,"minLength":1,"type":"string"},"provider_reported_model":{"maxLength":256,"type":["string","null"]},"provider_response_id":{"maxLength":256,"type":["string","null"]},"requested_model":{"maxLength":256,"minLength":1,"type":"string"}},"required":["provider","requested_model","provider_reported_model","provider_response_id","adapter_id","adapter_version","parser_id","parser_version"],"type":"object"},"schema_id":{"const":"region-anchored-transcription-schema-v1","type":"string"},"schema_version":{"const":4,"type":"integer"},"transcription_profile_id":{"const":"region-anchored-fidelity-acquisition-v1","type":"string"}},"required":["correlation_id","transcription_profile_id","schema_id","schema_version","provider_provenance","blocks"],"type":"object"}"""
+val REGION_TRANSCRIPTION_SCHEMA_SHA256_V4: String = sha256(REGION_TRANSCRIPTION_SCHEMA_SOURCE_V4.toByteArray(Charsets.UTF_8))
+val REGION_TRANSCRIPTION_SCHEMA_SOURCE: String = REGION_TRANSCRIPTION_SCHEMA_SOURCE_V4.replace(
+    "\"end_code_point_exclusive\":{\"minimum\":1,\"type\":[\"integer\",\"null\"]},\"kind\"",
+    "\"end_code_point_exclusive\":{\"minimum\":0,\"type\":[\"integer\",\"null\"]},\"kind\"",
+).replace(
+    "\"schema_version\":{\"const\":4,\"type\":\"integer\"}",
+    "\"schema_version\":{\"const\":5,\"type\":\"integer\"}",
+).also { require(it != REGION_TRANSCRIPTION_SCHEMA_SOURCE_V4) }
 val REGION_TRANSCRIPTION_SCHEMA_SHA256: String = sha256(REGION_TRANSCRIPTION_SCHEMA_SOURCE.toByteArray(Charsets.UTF_8))
 
 enum class RegionTranscriptionRejection {
     MALFORMED_SCHEMA, ADDITIONAL_FIELD, CORRELATION_MISMATCH, PROFILE_OR_SCHEMA_MISMATCH,
     UNKNOWN_REGION, MISSING_REGION, DUPLICATE_REGION, PAGE_MISMATCH, INVALID_STATUS,
     INVALID_UNCERTAINTY, INVALID_UNICODE, INVALID_STATUS_TEXT, INVALID_ORDINAL,
-    EXCESSIVE_TEXT, EXCESSIVE_BLOCK_COUNT, INVALID_PROVENANCE,
+    INVALID_VISUAL_OBSERVATION, EXCESSIVE_TEXT, EXCESSIVE_BLOCK_COUNT, INVALID_PROVENANCE,
 }
 
 sealed interface RegionTranscriptionValidationOutcome {
@@ -20,7 +28,13 @@ sealed interface RegionTranscriptionValidationOutcome {
     data class Rejected(val reason: RegionTranscriptionRejection) : RegionTranscriptionValidationOutcome
 }
 
-class RegionTranscriptionValidator {
+enum class RegionVisualObservationSemantics {
+    WIRE_BOUND, V4_NON_EMPTY_RANGES, V5_EXPLICIT_ANCHORS,
+}
+
+class RegionTranscriptionValidator(
+    private val observationSemantics: RegionVisualObservationSemantics = RegionVisualObservationSemantics.WIRE_BOUND,
+) {
     fun validate(request: RegionTranscriptionRequest, wire: Map<String, Any?>): RegionTranscriptionValidationOutcome = try {
         exactKeys(wire, setOf("correlation_id", "transcription_profile_id", "schema_id", "schema_version", "provider_provenance", "blocks"))
         if (wire.string("correlation_id") != request.correlationId) reject(RegionTranscriptionRejection.CORRELATION_MISMATCH)
@@ -29,7 +43,7 @@ class RegionTranscriptionValidator {
         val rawBlocks = wire.list("blocks")
         if (rawBlocks.size !in 1..RegionTranscriptionRequest.MAX_REGIONS_PER_REQUEST) reject(RegionTranscriptionRejection.EXCESSIVE_BLOCK_COUNT)
         val requested = request.targets.associateBy { it.sourceRegionId }
-        val blocks = rawBlocks.map { parseBlock(it as? Map<*, *> ?: malformed(), requested) }
+        val blocks = rawBlocks.map { parseBlock(it as? Map<*, *> ?: malformed(), requested, request.schemaVersion) }
         val ids = blocks.map { it.sourceRegionId }
         if (ids.distinct().size != ids.size) reject(RegionTranscriptionRejection.DUPLICATE_REGION)
         if (ids.any { it !in requested }) reject(RegionTranscriptionRejection.UNKNOWN_REGION)
@@ -50,7 +64,7 @@ class RegionTranscriptionValidator {
         return RegionTranscriptionProviderProvenance(required("provider", 128), required("requested_model", 256), optional("provider_reported_model", 256), optional("provider_response_id", 256), required("adapter_id", 128), required("adapter_version", 64), required("parser_id", 128), required("parser_version", 64))
     }
 
-    private fun parseBlock(raw: Map<*, *>, requested: Map<SourceRegionId, RegionTranscriptionTarget>): RegionTranscriptionBlock {
+    private fun parseBlock(raw: Map<*, *>, requested: Map<SourceRegionId, RegionTranscriptionTarget>, wireVersion: Int): RegionTranscriptionBlock {
         val value = raw.entries.associate { (k, v) -> (k as? String ?: malformed()) to v }
         exactKeys(value, setOf("source_region_id", "page_number", "literal_text", "status", "uncertainties", "warnings", "provider_returned_ordinal", "visual_observations"))
         val id = runCatching { SourceRegionId(value.string("source_region_id")) }.getOrElse { reject(RegionTranscriptionRejection.UNKNOWN_REGION) }
@@ -63,7 +77,7 @@ class RegionTranscriptionValidator {
         val status = runCatching { RegionTranscriptionStatus.valueOf(value.string("status")) }.getOrElse { reject(RegionTranscriptionRejection.INVALID_STATUS) }
         val uncertainties = value.list("uncertainties").also { if (it.size > 200) reject(RegionTranscriptionRejection.INVALID_UNCERTAINTY) }.map { parseUncertainty(it as? Map<*, *> ?: malformed(), text.orEmpty()) }
         val warnings = value.list("warnings").also { if (it.size > 50) malformed() }.map { (it as? String ?: malformed()).also { warning -> if (warning.isBlank() || warning.length > 1024) malformed() } }
-        val observations = value.list("visual_observations").also { if (it.size > 200) malformed() }.map { parseObservation(it as? Map<*, *> ?: malformed(), text.orEmpty()) }
+        val observations = value.list("visual_observations").also { if (it.size > 200) malformed() }.map { parseObservation(it as? Map<*, *> ?: malformed(), text.orEmpty(), wireVersion) }
         when (status) {
             RegionTranscriptionStatus.TRANSCRIBED -> if (text.isNullOrEmpty() || uncertainties.isNotEmpty()) reject(RegionTranscriptionRejection.INVALID_STATUS_TEXT)
             RegionTranscriptionStatus.PARTIALLY_TRANSCRIBED -> if (text.isNullOrEmpty() || uncertainties.isEmpty()) reject(RegionTranscriptionRejection.INVALID_STATUS_TEXT)
@@ -88,12 +102,35 @@ class RegionTranscriptionValidator {
         return RegionTranscriptionUncertainty(start, end, substring, category, alternatives, confidence)
     }
 
-    private fun parseObservation(raw: Map<*, *>, text: String): RegionVisualObservation {
+    private fun parseObservation(raw: Map<*, *>, text: String, wireVersion: Int): RegionVisualObservation {
         val value = raw.entries.associate { (k, v) -> (k as? String ?: malformed()) to v }
         exactKeys(value, setOf("kind", "start_code_point", "end_code_point_exclusive"))
-        val kind = RegionVisualObservationKind.valueOf(value.string("kind")); val start = value.nullableInt("start_code_point"); val end = value.nullableInt("end_code_point_exclusive")
-        if ((start == null) != (end == null)) malformed()
-        if (start != null && (start < 0 || end!! <= start || end > text.codePointCount(0, text.length))) malformed()
+        val kind = runCatching { RegionVisualObservationKind.valueOf(value.string("kind")) }
+            .getOrElse { reject(RegionTranscriptionRejection.INVALID_VISUAL_OBSERVATION) }
+        val start = value.nullableInt("start_code_point")
+        val end = value.nullableInt("end_code_point_exclusive")
+        val pointKind = kind == RegionVisualObservationKind.LINE_BREAK
+        val explicitAnchors = when (observationSemantics) {
+            RegionVisualObservationSemantics.WIRE_BOUND -> wireVersion >= REGION_TRANSCRIPTION_WIRE_VERSION
+            RegionVisualObservationSemantics.V4_NON_EMPTY_RANGES -> false
+            RegionVisualObservationSemantics.V5_EXPLICIT_ANCHORS -> true
+        }
+        if (!explicitAnchors && start != null && end != null && start == end) {
+            malformed()
+        }
+        val anchor = runCatching {
+            RegionVisualObservationAnchor.resolve(
+                start, end, text.codePointCount(0, text.length), pointsAllowed = explicitAnchors,
+            )
+        }.getOrElse { reject(RegionTranscriptionRejection.INVALID_VISUAL_OBSERVATION) }
+        if (explicitAnchors) {
+            if (anchor is RegionVisualObservationAnchor.Point && !pointKind) {
+                reject(RegionTranscriptionRejection.INVALID_VISUAL_OBSERVATION)
+            }
+            if (anchor is RegionVisualObservationAnchor.Range && pointKind) {
+                reject(RegionTranscriptionRejection.INVALID_VISUAL_OBSERVATION)
+            }
+        }
         return RegionVisualObservation(kind, start, end)
     }
 
