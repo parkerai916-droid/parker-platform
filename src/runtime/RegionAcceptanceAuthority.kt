@@ -244,6 +244,12 @@ internal class CustodyRegionAcceptanceReconstructor(
     override suspend fun reconstruct(authority: RegionTranscriptionAcceptanceAuthority): RegionAcceptanceReconstruction? {
         val authorisedFacts = authority.manifest.facts.associate { it.name to it.value }
         val evidenceId = runCatching { EvidenceArtifactId(authorisedFacts.getValue("source.evidence_artifact_id")) }.getOrNull() ?: return null
+        val correlation = authorisedFacts["request.correlation_id"] ?: return null
+        return reconstructCurrent(evidenceId, correlation, authority.executionId)
+    }
+
+    /** Shared custody reconstruction used by both preserved v1 execution and governed v2 creation/execution. */
+    internal suspend fun reconstructCurrent(evidenceId: EvidenceArtifactId, correlation: String, executionId: String): RegionAcceptanceReconstruction? {
         val source = (sourceResolver.resolveSourceThenManifest(ownerPrincipalId, evidenceId) as? AuthoritativeAcquisitionResolution.Verified)?.input ?: return null
         val mediaType = source.mediaType ?: return null; val bytes = source.bytes()
         val first = renderer.render(SourcePageRenderRequest(evidenceId, source.sha256, mediaType, bytes, 1, renderProfile(mediaType))) as? SourcePageRepresentationOutcome.Created ?: return null
@@ -254,14 +260,13 @@ internal class CustodyRegionAcceptanceReconstructor(
             pages += rendered.representation
         }
         val graphs = pages.map { (deriver.derive(it) as? SourceRegionDerivationOutcome.Derived)?.graph ?: return null }
-        val correlation = authorisedFacts["request.correlation_id"] ?: return null
         val targets = pages.zip(graphs).flatMap { (page, graph) -> graph.regions.map { region -> target(source, page, region) } }
         if (targets.size !in 1..RegionTranscriptionRequest.MAX_REGIONS_PER_REQUEST) return null
         val request = RegionTranscriptionRequest(correlation, REGION_TRANSCRIPTION_PROFILE_ID, REGION_TRANSCRIPTION_SCHEMA_ID, REGION_TRANSCRIPTION_WIRE_VERSION,
             REGION_TRANSCRIPTION_SCHEMA_SHA256, REGION_TRANSCRIPTION_PROCESSING_PROFILE, REGION_LITERAL_TRANSCRIPTION_INSTRUCTION, targets)
         val manifest = RegionAcceptanceManifestFactory.create(evidenceId, source.sha256, source.byteLength, mediaType, pages, graphs, request, contextPolicy, deployment)
         val requestDigest = regionAcceptanceRequestDigest(request)
-        val identity = FidelityFirstExecutionIdentity(authority.executionId, requestDigest, correlation, evidenceId.value, source.sha256, source.byteLength, mediaType,
+        val identity = FidelityFirstExecutionIdentity(executionId, requestDigest, correlation, evidenceId.value, source.sha256, source.byteLength, mediaType,
             deployment.runtimeCommit, "OpenAI", OPENAI_REGION_MODEL, OPENAI_REGION_PROFILE_ID, OPENAI_REGION_INSTRUCTION_SHA256, request.schemaSha256,
             request.processingProfile, OPENAI_REGION_ADAPTER_VERSION)
         return RegionAcceptanceReconstruction(manifest, GovernedRegionExecutionBinding(identity, request, targets.map { it.sourceRegionId }))

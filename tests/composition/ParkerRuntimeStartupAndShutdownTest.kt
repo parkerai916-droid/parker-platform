@@ -18,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.reflect.KParameter
 
 /**
@@ -340,9 +341,11 @@ class ParkerRuntimeStartupAndShutdownTest {
                 assertTrue(store.enumerate().isEmpty())
                 assertEquals(listOf("invokeRegionTranscriptionAcceptanceAsOwner"), ParkerRuntime::class.members
                     .map { it.name }.filter { it.contains("RegionTranscription") && it.startsWith("invoke") })
-                assertEquals("AUTHORITY_MISSING", assertIs<parker.core.runtime.RegionAcceptanceExecutionOutcome.Blocked>(
+                assertEquals("AUTHORITY_MISSING", assertIs<parker.core.runtime.RegionAcceptanceExecutionOutcomeV2.Blocked>(
                     runtime.invokeRegionTranscriptionAcceptanceAsOwner("synthetic-missing-authority"),
                 ).reason)
+                assertNotNull(ParkerRuntime::class.java.getDeclaredField("regionAcceptanceAuthorityCreationCoordinator").apply { isAccessible = true }.get(runtime))
+                assertTrue(Files.list(regionAuthorityRoot).use { paths -> paths.count() == 0L })
                 runtime.shutdown()
             }
         } finally {

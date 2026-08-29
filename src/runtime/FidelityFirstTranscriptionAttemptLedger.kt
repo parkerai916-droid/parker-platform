@@ -104,6 +104,9 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
     private val root = storageRoot.toAbsolutePath().normalize()
     init { require(Files.isDirectory(root) && Files.isWritable(root)) }
 
+    /** Read-only pre-creation guard; unlike [open], this never creates a lock or ledger record. */
+    fun exists(identity: FidelityFirstExecutionIdentity): Boolean = Files.exists(path(identity.safeExecutionId))
+
     fun open(identity: FidelityFirstExecutionIdentity): FidelityFirstAttemptSnapshot = locked(identity.safeExecutionId) {
         val file = path(identity.safeExecutionId)
         if (!Files.exists(file)) create(file, identity)
