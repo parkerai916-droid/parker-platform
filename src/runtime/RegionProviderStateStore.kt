@@ -90,11 +90,13 @@ class FileSystemRegionProviderStateStore(root: Path) {
     }
 
     fun enumerate(): List<String> = Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".provider-state") }.map { it.fileName.toString().removeSuffix(".provider-state") }.sorted().toList() }
-    fun responseExistsFor(request: RegionTranscriptionRequest): Boolean {
-        val digest = regionSha256(canonical(requestBinding(request)))
-        val id = regionSha256("${request.correlationId}|OpenAI|$OPENAI_REGION_ADAPTER_ID|$OPENAI_REGION_ADAPTER_VERSION|$digest".toByteArray())
-        return Files.exists(recordPath(id))
-    }
+    fun requestDigestFor(request: RegionTranscriptionRequest): String = regionSha256(canonical(requestBinding(request)))
+    fun recordIdFor(request: RegionTranscriptionRequest): String = regionSha256(
+        "${request.correlationId}|OpenAI|$OPENAI_REGION_ADAPTER_ID|$OPENAI_REGION_ADAPTER_VERSION|${requestDigestFor(request)}".toByteArray(),
+    )
+    fun responseExistsFor(request: RegionTranscriptionRequest): Boolean = Files.exists(recordPath(recordIdFor(request)))
+    fun readFor(request: RegionTranscriptionRequest): RecoveredRegionProviderState? =
+        if (responseExistsFor(request)) read(recordIdFor(request)).also { require(it.requestDigest == requestDigestFor(request)) } else null
 
     private fun requestBinding(r: RegionTranscriptionRequest): Map<String, Any?> = linkedMapOf(
         "correlation_id" to r.correlationId, "transcription_profile" to r.transcriptionProfileId,
