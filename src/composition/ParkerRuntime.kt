@@ -2313,6 +2313,25 @@ class ParkerRuntime(
         workflow.createAuthorization(grant); return true
     }
 
+    /** Fresh evidence-bound authorization projection; no reservation, attempt, or provider activity. */
+    suspend fun ordinaryRegionAuthorizationStatusAsOwner(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.OrdinaryRegionOwnerAuthorizationView {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.authorizationStatus(evidenceArtifactId)
+            ?: parker.core.runtime.OrdinaryRegionOwnerAuthorizationView(
+                parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,
+                evidenceArtifactId.value, detail = "AUTHORIZATION_LANE_NOT_CONFIGURED")
+    }
+
+    /** Narrow owner UI command; reconstructs the exact governed grant and never executes. */
+    suspend fun authorizeOrdinaryRegionIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.authorize(evidenceArtifactId)
+            ?: parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome.Blocked(
+                parker.core.runtime.OrdinaryRegionOwnerAuthorizationView(
+                    parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,
+                    evidenceArtifactId.value, detail = "AUTHORIZATION_LANE_NOT_CONFIGURED"))
+    }
+
     /** Explicit non-executing reservation to one governed execution identity. */
     fun reserveOrdinaryRegionAuthorizationAsOwner(authorizationId: String, executionId: String): parker.core.runtime.OrdinaryRegionAuthorizationSnapshot? {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)

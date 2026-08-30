@@ -30,6 +30,11 @@ interface OwnerEvidenceOperations {
             listOf("Required technical source characteristics are not established."),
         )
 
+    /** Explicit evidence-specific external-transmission authorization; never executes or reserves work. */
+    suspend fun authorizeOrdinaryRegionTranscription(evidenceArtifactId: EvidenceArtifactId): OwnerOrdinaryRegionAuthorizationView =
+        OwnerOrdinaryRegionAuthorizationView("UNAVAILABLE", evidenceArtifactId.value, "OpenAI", null,
+            "AUTHORIZATION_LANE_NOT_CONFIGURED", null, null)
+
     /** Explicit owner action; the expected capability is revalidated server-side before exact execution. */
     suspend fun executeGovernedAcquisition(
         evidenceArtifactId: EvidenceArtifactId,
@@ -157,6 +162,16 @@ interface OwnerEvidenceOperations {
      */
     suspend fun listSavedAnalyses(): List<OwnerSavedAnalysisSummary>
 }
+
+data class OwnerOrdinaryRegionAuthorizationView(
+    val status: String,
+    val evidenceArtifactId: String,
+    val provider: String,
+    val disclosure: String?,
+    val detail: String?,
+    val authorizationId: String?,
+    val expiresAt: String?,
+)
 
 /** The truthful result of one [OwnerEvidenceOperations.importFile] call. */
 sealed interface EvidenceImportOutcome {

@@ -17,6 +17,9 @@ import parker.ui.OwnerAcquisitionSourceFacts
 import parker.core.runtime.OrdinaryRegionCapabilityDisposition
 import parker.core.runtime.OrdinaryRegionCapabilityStatus
 import parker.core.runtime.OrdinaryRegionProposal
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 import kotlin.test.Test
@@ -84,6 +87,13 @@ class OwnerUiEvidenceRuntimeAdapterTest {
             )
         },
         ordinaryProposal: suspend (EvidenceArtifactId) -> OrdinaryRegionProposal? = { null },
+        authorizationStatus: suspend (EvidenceArtifactId) -> OrdinaryRegionOwnerAuthorizationView = {
+            OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED, it.value)
+        },
+        authorize: suspend (EvidenceArtifactId) -> OrdinaryRegionOwnerAuthorizationOutcome = {
+            OrdinaryRegionOwnerAuthorizationOutcome.Blocked(OrdinaryRegionOwnerAuthorizationView(
+                OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE, it.value, detail = "disabled"))
+        },
     ) = OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(ownerPrincipalId),
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
@@ -100,6 +110,8 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         invokeExternalTranscriptionAsOwner = external,
         governedDecisionAsOwner = governed,
         ordinaryRegionProposalAsOwner = ordinaryProposal,
+        ordinaryRegionAuthorizationStatusAsOwner = authorizationStatus,
+        authorizeOrdinaryRegionAsOwner = authorize,
     )
 
     private fun ordinaryStatus(disposition: OrdinaryRegionCapabilityDisposition) = OrdinaryRegionCapabilityStatus(
@@ -121,10 +133,30 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         val proposed = assertIs<OwnerAcquisitionDecisionView.Proposed>(adapter.governedAcquisitionDecision(EvidenceArtifactId("pdf-native-text")))
         assertEquals("ordinary-external-region-transcription-v5", proposed.capability.capabilityId)
         assertEquals("NOT_AUTHORISED", proposed.egressAuthorization)
-        assertEquals("OWNER_REVIEW_REQUIRED", proposed.nextStep)
+        assertEquals("OWNER_AUTHORIZATION_REQUIRED", proposed.nextStep)
+        assertTrue(proposed.authorizationAvailable)
         assertTrue(proposed.disclosure.contains("transmitted to OpenAI"))
         disposition = OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED
         assertIs<OwnerAcquisitionDecisionView.NoEligible>(adapter.governedAcquisitionDecision(EvidenceArtifactId("pdf-native-text")))
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `explicit authorization action is projected without invoking execution`() = runTest {
+        val scriptDir = Files.createTempDirectory("ordinary-owner-authorization")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        var authorizeCalls = 0
+        val view = OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED,
+            "pdf-native-text", authorizationId = "ordinary-auth-test", approvedAt = java.time.Instant.parse("2026-08-30T00:00:00Z"),
+            expiresAt = java.time.Instant.parse("2026-08-31T00:00:00Z"))
+        val adapter = adapterFor(runtime,
+            ordinaryProposal = { OrdinaryRegionProposal(it.value, "ordinary-external-region-transcription-v5", capabilityStatus = ordinaryStatus(OrdinaryRegionCapabilityDisposition.ACCEPTED)) },
+            authorize = { authorizeCalls++; OrdinaryRegionOwnerAuthorizationOutcome.Created(view) })
+        val outcome = adapter.authorizeOrdinaryRegionTranscription(EvidenceArtifactId("pdf-native-text"))
+        assertEquals("AUTHORISED", outcome.status)
+        assertEquals("ordinary-auth-test", outcome.authorizationId)
+        assertEquals(1, authorizeCalls)
         runtime.shutdown()
     }
 

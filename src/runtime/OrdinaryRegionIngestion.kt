@@ -394,6 +394,9 @@ class FileSystemOrdinaryRegionAuthorizationStore(storageRoot: Path) {
 
     fun create(grant: OrdinaryRegionOwnerAuthorization) = createOnce(base(grant.authorizationId), encodeGrant(grant), "authorization identity conflict")
 
+    fun loadIfPresent(id: String): OrdinaryRegionAuthorizationSnapshot? =
+        if (Files.exists(base(id))) load(id) else null
+
     fun load(id: String, providerAttemptStarted: Boolean = false): OrdinaryRegionAuthorizationSnapshot {
         val grant = decodeGrant(Files.readString(base(id)))
         val events = event(id).let { if (Files.exists(it)) Files.readAllLines(it) else emptyList() }.map(::decodeEvent)
@@ -463,6 +466,25 @@ data class OrdinaryRegionProposal(
     val executing: Boolean = false,
     val capabilityStatus: OrdinaryRegionCapabilityStatus,
 )
+
+enum class OrdinaryRegionOwnerAuthorizationDisposition { NOT_AUTHORISED, AUTHORISED, UNAVAILABLE }
+
+data class OrdinaryRegionOwnerAuthorizationView(
+    val disposition: OrdinaryRegionOwnerAuthorizationDisposition,
+    val evidenceArtifactId: String,
+    val provider: String = "OpenAI",
+    val disclosure: String = "Selected authoritative PDF evidence crops will be transmitted to OpenAI for literal transcription.",
+    val authorizationId: String? = null,
+    val approvedAt: Instant? = null,
+    val expiresAt: Instant? = null,
+    val detail: String? = null,
+)
+
+sealed interface OrdinaryRegionOwnerAuthorizationOutcome {
+    data class Created(val view: OrdinaryRegionOwnerAuthorizationView) : OrdinaryRegionOwnerAuthorizationOutcome
+    data class Existing(val view: OrdinaryRegionOwnerAuthorizationView) : OrdinaryRegionOwnerAuthorizationOutcome
+    data class Blocked(val view: OrdinaryRegionOwnerAuthorizationView) : OrdinaryRegionOwnerAuthorizationOutcome
+}
 
 enum class OrdinaryRegionCapabilityDisposition { CAPABILITY_NOT_ACCEPTED, ACCEPTED, NOT_CONFIGURED }
 data class OrdinaryRegionCapabilityStatus(
@@ -703,6 +725,51 @@ class OrdinaryRegionIngestionWorkflow(
             else -> null
         }
 
+    /** Fresh canonical status for the exact evidence/source/build binding; never creates state. */
+    suspend fun authorizationStatus(evidenceId: EvidenceArtifactId): OrdinaryRegionOwnerAuthorizationView {
+        if (acceptance.evaluate() !is OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted)
+            return authorizationUnavailable(evidenceId, "CAPABILITY_NOT_ACCEPTED")
+        val source = verifiedPdf(evidenceId) ?: return authorizationUnavailable(evidenceId, "SOURCE_UNAVAILABLE_OR_UNSUPPORTED")
+        val id = authorizationIdentity(source)
+        val snapshot = try { authorizations.loadIfPresent(id) }
+        catch (_: Exception) { return authorizationUnavailable(evidenceId, "AUTHORIZATION_STORE_UNAVAILABLE_OR_CORRUPT") }
+        return snapshot?.let(::authorizationView) ?: OrdinaryRegionOwnerAuthorizationView(
+            OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED, evidenceId.value)
+    }
+
+    /** Explicit authorization only. Governed binding fields are reconstructed server-side; no execution occurs. */
+    suspend fun authorize(evidenceId: EvidenceArtifactId): OrdinaryRegionOwnerAuthorizationOutcome {
+        if (acceptance.evaluate() !is OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted)
+            return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(authorizationUnavailable(evidenceId, "CAPABILITY_NOT_ACCEPTED"))
+        val source = verifiedPdf(evidenceId) ?: return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(
+            authorizationUnavailable(evidenceId, "SOURCE_UNAVAILABLE_OR_UNSUPPORTED"))
+        val id = authorizationIdentity(source)
+        return try {
+            guard.locked(id) {
+                authorizations.loadIfPresent(id)?.let {
+                    return@locked OrdinaryRegionOwnerAuthorizationOutcome.Existing(authorizationView(it))
+                }
+                val approvedAt = now()
+                authorizations.create(OrdinaryRegionOwnerAuthorization(
+                    authorizationId = id,
+                    evidenceArtifactId = evidenceId.value,
+                    sourceSha256 = source.sha256,
+                    capabilityDigest = capability.digest(),
+                    provider = "OpenAI",
+                    purpose = "literal transcription",
+                    transmittedScope = "Selected authoritative PDF evidence crops",
+                    disclosure = "Selected authoritative PDF evidence crops will be transmitted to OpenAI for literal transcription.",
+                    approvedBy = ownerPrincipalId.value,
+                    approvedAt = approvedAt,
+                    expiresAt = approvedAt.plusSeconds(86_400),
+                ))
+                OrdinaryRegionOwnerAuthorizationOutcome.Created(authorizationView(authorizations.load(id)))
+            }
+        } catch (_: Exception) {
+            OrdinaryRegionOwnerAuthorizationOutcome.Blocked(authorizationUnavailable(evidenceId, "AUTHORIZATION_CREATE_FAILED"))
+        }
+    }
+
     fun createAuthorization(grant: OrdinaryRegionOwnerAuthorization) { require(grant.capabilityDigest == capability.digest()); authorizations.create(grant) }
     fun reserve(authorizationId: String, executionId: String) = guard.locked(authorizationId) { authorizations.reserve(authorizationId, executionId, now()) }
     fun revoke(authorizationId: String): OrdinaryRegionAuthorizationSnapshot = guard.locked(authorizationId) {
@@ -710,6 +777,31 @@ class OrdinaryRegionIngestionWorkflow(
         val started = executionId?.let { runCatching { ledger.providerAttemptStartedForExecution(it) }.getOrDefault(false) } ?: false
         authorizations.revoke(authorizationId, now(), started)
     }
+
+    private suspend fun verifiedPdf(evidenceId: EvidenceArtifactId): AuthoritativeAcquisitionInput? =
+        ((resolver.resolve(ownerPrincipalId, evidenceId) as? AuthoritativeAcquisitionResolution.Verified)?.input)
+            ?.takeIf { it.mediaType == "application/pdf" }
+
+    private fun authorizationIdentity(source: AuthoritativeAcquisitionInput): String = "ordinary-auth-" + ordinaryRegionDigest(
+        "parker.ordinary-region-owner-authorization.ui.v1", source.evidenceArtifactId.value, source.sha256,
+        capability.digest(), runtimeCommit(), ownerPrincipalId.value)
+
+    private fun authorizationView(snapshot: OrdinaryRegionAuthorizationSnapshot): OrdinaryRegionOwnerAuthorizationView {
+        val detail = when {
+            snapshot.revokedAt != null -> "OWNER_AUTHORIZATION_REVOKED"
+            !now().isBefore(snapshot.grant.expiresAt) -> "OWNER_AUTHORIZATION_EXPIRED"
+            else -> null
+        }
+        return OrdinaryRegionOwnerAuthorizationView(
+        if (detail == null) OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED else OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,
+        snapshot.grant.evidenceArtifactId,
+        snapshot.grant.provider, snapshot.grant.disclosure, snapshot.grant.authorizationId,
+        snapshot.grant.approvedAt, snapshot.grant.expiresAt, detail,
+    )
+    }
+
+    private fun authorizationUnavailable(evidenceId: EvidenceArtifactId, detail: String) =
+        OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE, evidenceId.value, detail = detail)
 
     suspend fun execute(evidenceId: EvidenceArtifactId, authorizationId: String, executionId: String,
         attemptId: String): OrdinaryRegionOwnerResult {

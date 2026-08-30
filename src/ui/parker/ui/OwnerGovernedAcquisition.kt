@@ -50,6 +50,9 @@ sealed interface OwnerAcquisitionDecisionView {
         val disclosure: String,
         val egressAuthorization: String = "NOT_AUTHORISED",
         val nextStep: String = "OWNER_REVIEW_REQUIRED",
+        val authorizationAvailable: Boolean = false,
+        val authorizationId: String? = null,
+        val authorizationExpiresAt: String? = null,
     ) : OwnerAcquisitionDecisionView
     data class NoEligible(
         override val source: OwnerAcquisitionSourceFacts,

@@ -62,6 +62,10 @@ import parker.core.runtime.GovernedAcquisitionOwnerExecution
 import parker.core.runtime.GovernedAcquisitionExecutionResult
 import parker.core.runtime.OrdinaryRegionCapabilityDisposition
 import parker.core.runtime.OrdinaryRegionProposal
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
+import parker.ui.OwnerOrdinaryRegionAuthorizationView
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.interfaces.*
 
@@ -190,6 +194,13 @@ class OwnerUiEvidenceRuntimeAdapter(
         )
     },
     private val ordinaryRegionProposalAsOwner: suspend (EvidenceArtifactId) -> OrdinaryRegionProposal? = { null },
+    private val ordinaryRegionAuthorizationStatusAsOwner: suspend (EvidenceArtifactId) -> OrdinaryRegionOwnerAuthorizationView = {
+        OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE, it.value, detail = "AUTHORIZATION_LANE_NOT_CONFIGURED")
+    },
+    private val authorizeOrdinaryRegionAsOwner: suspend (EvidenceArtifactId) -> OrdinaryRegionOwnerAuthorizationOutcome = {
+        OrdinaryRegionOwnerAuthorizationOutcome.Blocked(OrdinaryRegionOwnerAuthorizationView(
+            OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE, it.value, detail = "AUTHORIZATION_LANE_NOT_CONFIGURED"))
+    },
     private val executeGovernedAsOwner: suspend (EvidenceArtifactId, String) -> OwnerAcquisitionExecutionView = { _, _ ->
         OwnerAcquisitionExecutionView.Failed("SELECTED_CAPABILITY_UNAVAILABLE")
     },
@@ -201,6 +212,7 @@ class OwnerUiEvidenceRuntimeAdapter(
         if (proposal == null || proposal.capabilityStatus.disposition != OrdinaryRegionCapabilityDisposition.ACCEPTED) return governed
         check(proposal.capabilityId == ORDINARY_REGION_CAPABILITY_ID)
         val status = proposal.capabilityStatus
+        val authorization = ordinaryRegionAuthorizationStatusAsOwner(evidenceArtifactId)
         return OwnerAcquisitionDecisionView.Proposed(
             source = governed.source,
             capability = OwnerAcquisitionCapabilityView(
@@ -221,7 +233,23 @@ class OwnerUiEvidenceRuntimeAdapter(
             ),
             explanation = "The governed ordinary region-v5 capability is accepted for this PDF. Owner review and separate evidence-specific authorization are required before any external processing.",
             disclosure = proposal.disclosure,
+            egressAuthorization = authorization.disposition.name,
+            nextStep = if (authorization.disposition == OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED)
+                "SEPARATE_EXECUTION_ACTION_REQUIRED" else "OWNER_AUTHORIZATION_REQUIRED",
+            authorizationAvailable = authorization.disposition == OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED,
+            authorizationId = authorization.authorizationId,
+            authorizationExpiresAt = authorization.expiresAt?.toString(),
         )
+    }
+
+    override suspend fun authorizeOrdinaryRegionTranscription(evidenceArtifactId: EvidenceArtifactId): OwnerOrdinaryRegionAuthorizationView {
+        val view = when (val outcome = authorizeOrdinaryRegionAsOwner(evidenceArtifactId)) {
+            is OrdinaryRegionOwnerAuthorizationOutcome.Created -> outcome.view
+            is OrdinaryRegionOwnerAuthorizationOutcome.Existing -> outcome.view
+            is OrdinaryRegionOwnerAuthorizationOutcome.Blocked -> outcome.view
+        }
+        return OwnerOrdinaryRegionAuthorizationView(view.disposition.name, view.evidenceArtifactId, view.provider,
+            view.disclosure, view.detail, view.authorizationId, view.expiresAt?.toString())
     }
 
     override suspend fun executeGovernedAcquisition(

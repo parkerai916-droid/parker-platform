@@ -186,7 +186,6 @@ class OrdinaryRegionIngestionTest {
         val acceptanceRoot=dir("e2e-accept"); val authRoot=dir("e2e-auth"); val ledgerRoot=dir("e2e-ledger")
         val stateRoot=dir("e2e-state"); val generationRoot=dir("e2e-generation"); val contentRoot=dir("e2e-content")
         val acceptanceStore=FileSystemOrdinaryRegionCapabilityAcceptanceStore(acceptanceRoot);acceptanceStore.admit(acceptance())
-        val authStore=FileSystemOrdinaryRegionAuthorizationStore(authRoot);val authorization=grant("auth-e2e",evidence.value,digest(pdf));authStore.create(authorization)
         val calls=AtomicInteger(); val mechanism=PersistingMechanism(FileSystemRegionProviderStateStore(stateRoot),calls)
         fun workflow():OrdinaryRegionIngestionWorkflow {
             val state=FileSystemRegionProviderStateStore(stateRoot); val ledger=FileSystemFidelityFirstAttemptLedger(ledgerRoot){now}
@@ -200,9 +199,17 @@ class OrdinaryRegionIngestionTest {
                 FileSystemOrdinaryRegionAuthorizationStore(authRoot),OrdinaryRegionAuthorizationGuard(authRoot),ledger,preparer,coordinator,state,admission,{commit},{now})
         }
         assertFalse(requireNotNull(workflow().proposal(evidence)).executing)
-        val first=workflow().execute(evidence,authorization.authorizationId,"execution-e2e","attempt-e2e")
+        assertEquals(OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED, workflow().authorizationStatus(evidence).disposition)
+        val created = assertIs<OrdinaryRegionOwnerAuthorizationOutcome.Created>(workflow().authorize(evidence)).view
+        assertEquals(evidence.value, created.evidenceArtifactId)
+        assertEquals("OpenAI", created.provider)
+        assertEquals(OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED, workflow().authorizationStatus(evidence).disposition)
+        assertIs<OrdinaryRegionOwnerAuthorizationOutcome.Existing>(workflow().authorize(evidence))
+        assertEquals(1L, Files.list(authRoot).use { stream -> stream.filter { it.fileName.toString().endsWith(".region-owner-authorization-v1") }.count() })
+        assertEquals(0, calls.get())
+        val first=workflow().execute(evidence,requireNotNull(created.authorizationId),"execution-e2e","attempt-e2e")
         assertEquals(OrdinaryRegionDisposition.ADMITTED,first.disposition);assertEquals(1,calls.get())
-        val second=workflow().execute(evidence,authorization.authorizationId,"execution-e2e","attempt-e2e")
+        val second=workflow().execute(evidence,requireNotNull(created.authorizationId),"execution-e2e","attempt-e2e")
         assertEquals(OrdinaryRegionDisposition.ADMITTED,second.disposition);assertEquals(first.derivativeGenerationId,second.derivativeGenerationId)
         assertEquals(1,calls.get());assertEquals(1L,Files.list(generationRoot).use{it.filter{p->p.fileName.toString().endsWith(".derivative")}.count()})
     }

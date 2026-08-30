@@ -256,6 +256,8 @@ class OwnerEvidenceHttpServer(
                         handleOcrDurable(exchange, segments[0])
                     segments.size == 2 && segments[1] == "acquisition" && method == "GET" ->
                         handleAcquisitionDecision(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "authorize-region-transcription" && method == "POST" ->
+                        handleOrdinaryRegionAuthorization(exchange, segments[0])
                     segments.size == 2 && segments[1] == "acquire" && method == "POST" ->
                         handleGovernedAcquisition(exchange, segments[0])
                     segments.size == 2 && segments[1] == "transcribe-external" && method == "POST" ->
@@ -371,6 +373,19 @@ class OwnerEvidenceHttpServer(
             runCatching { exchange.requestBody.use { it.readBytes() } }
             val id = parseEvidenceId(exchange, rawId) ?: return
             writeJson(exchange, 200, acquisitionDecisionJson(runBlocking { operations.governedAcquisitionDecision(id) }))
+        }
+
+        private fun handleOrdinaryRegionAuthorization(exchange: HttpExchange, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val id = parseEvidenceId(exchange, rawId) ?: return
+            val view = runBlocking { operations.authorizeOrdinaryRegionTranscription(id) }
+            val status = if (view.status == "UNAVAILABLE") 409 else 200
+            writeJson(exchange, status, jsonObject(
+                "status" to view.status, "evidenceArtifactId" to view.evidenceArtifactId,
+                "provider" to view.provider, "disclosure" to view.disclosure, "detail" to view.detail,
+                "authorizationId" to view.authorizationId, "expiresAt" to view.expiresAt,
+                "executionStarted" to false,
+            ))
         }
 
         private fun handleGovernedAcquisition(exchange: HttpExchange, rawId: String) {
@@ -959,6 +974,9 @@ class OwnerEvidenceHttpServer(
             "capability" to acquisitionCapabilityJson(decision.capability), "explanation" to decision.explanation,
             "disclosure" to decision.disclosure, "egressAuthorization" to decision.egressAuthorization,
             "nextStep" to decision.nextStep, "executeAvailable" to false,
+            "authorizationAvailable" to decision.authorizationAvailable,
+            "authorizationId" to decision.authorizationId,
+            "authorizationExpiresAt" to decision.authorizationExpiresAt,
         )
         is OwnerAcquisitionDecisionView.NoEligible -> jsonObject(
             "status" to "NO_ELIGIBLE_CAPABILITY", "source" to acquisitionSourceJson(decision.source),
@@ -2099,6 +2117,7 @@ function buildAcquisitionPanel(row, index) {
     appendField(panel, 'Next step', 'Owner review of this proposal; authorization remains a separate action.');
   }
   if (d.source) {
+    appendField(panel, 'Evidence filename', row.name || 'UNKNOWN');
     appendField(panel, 'Source', 'Original Parker evidence artifact ' + d.source.evidenceArtifactId);
     appendField(panel, 'Media type', d.source.mediaType || 'UNKNOWN');
     appendField(panel, 'Native searchable text', d.source.nativeSearchableText);
@@ -2139,6 +2158,11 @@ function buildAcquisitionPanel(row, index) {
       appendField(panel, 'Machine transcription — unverified', 'Machine transcription — unverified');
       appendField(panel, 'Safety warning', 'Fluent machine transcription may contain plausible text that is inconsistent with the source.');
     }
+  } else if (d.status === 'PROPOSED' && d.authorizationAvailable) {
+    const authorize = document.createElement('button');
+    authorize.textContent = 'Authorize external transcription';
+    authorize.onclick = () => authorizeRegionTranscription(index, d);
+    panel.appendChild(authorize);
   } else if (d.status === 'SELECTED' && d.executeAvailable) {
     const execute = document.createElement('button');
     execute.textContent = 'Execute selected acquisition';
@@ -2158,6 +2182,24 @@ async function loadAcquisitionDecision(index) {
     else row.acquisitionDecision = result;
   } catch (e) { row.acquisitionError = 'Acquisition decision request failed safely.'; }
   render();
+}
+
+async function authorizeRegionTranscription(index, decision) {
+  const row = rows[index];
+  const disclosure = decision.disclosure || 'Selected authoritative PDF evidence crops will be transmitted to OpenAI for literal transcription.';
+  const confirmed = window.confirm(
+    'Authorize external transcription for evidence "' + (row.name || row.evidenceArtifactId) + '" (' + row.evidenceArtifactId + ')?\n\n' +
+    'Provider: OpenAI\n' + disclosure + '\n\nThis creates authorization only; it does not transmit or execute.'
+  );
+  if (!confirmed) return;
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/authorize-region-transcription`, {
+      method: 'POST', headers: authHeaders(),
+    });
+    const result = await resp.json();
+    if (!resp.ok) row.acquisitionError = result.detail || 'Authorization was not created.';
+    await loadAcquisitionDecision(index);
+  } catch (e) { row.acquisitionError = 'Authorization request failed safely.'; render(); }
 }
 
 async function executeAcquisition(index, expectedCapabilityId) {
