@@ -12,6 +12,23 @@ import parker.core.runtime.FileSystemFidelityFirstAttemptLedger
 import parker.core.runtime.FileSystemRegionProviderStateStore
 import parker.core.runtime.GovernedRegionTranscriptionExecutionCoordinator
 import parker.core.runtime.OpenAiRegionTranscriptionAdapter
+import parker.core.runtime.R69_ASSESSMENT_DIGEST
+import parker.core.runtime.R69_AUTHORITY_ID
+import parker.core.runtime.R69_EXECUTION_ID
+import parker.core.runtime.R69_PROVIDER_RECORD_DIGEST
+import parker.core.runtime.R69_PROVIDER_RESPONSE_ID
+import parker.core.runtime.R69_PROVIDER_STATE_ID
+import parker.core.runtime.R69_RAW_RESPONSE_DIGEST
+import parker.core.runtime.R69_REQUEST_DIGEST
+import parker.core.runtime.R69_STRUCTURED_STATE_DIGEST
+import parker.core.runtime.OrdinaryRegionAcceptanceEvidenceRole
+import parker.core.runtime.OrdinaryRegionCapabilityAcceptanceRecord
+import parker.core.runtime.OrdinaryRegionCapabilityDisposition
+import parker.core.runtime.OrdinaryRegionCapabilityIdentity
+import parker.core.runtime.OrdinaryRegionDisposition
+import parker.core.runtime.OrdinaryRegionLiveR69Evidence
+import parker.core.runtime.RegionTranscriptionCapabilityAcceptanceEvidenceV1
+import parker.core.runtime.FileSystemOrdinaryRegionCapabilityAcceptanceStore
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -43,6 +60,9 @@ class ParkerRuntimeStartupAndShutdownTest {
         fidelityFirstAttemptStorageRootPath: String? = null,
         regionProviderStateStorageRootPath: String? = null,
         regionAcceptanceAuthorityStorageRootPath: String? = null,
+        ordinaryRegionIngestionEnabled: Boolean = false,
+        ordinaryRegionCapabilityAcceptanceStorageRootPath: String? = null,
+        ordinaryRegionOwnerAuthorizationStorageRootPath: String? = null,
         deployedImmutableImageId: String? = null,
         sourceCommit: String? = null,
         productionCommit: String? = null,
@@ -69,10 +89,90 @@ class ParkerRuntimeStartupAndShutdownTest {
         fidelityFirstAttemptStorageRootPath = fidelityFirstAttemptStorageRootPath,
         regionProviderStateStorageRootPath = regionProviderStateStorageRootPath,
         regionAcceptanceAuthorityStorageRootPath = regionAcceptanceAuthorityStorageRootPath,
+        ordinaryRegionIngestionEnabled = ordinaryRegionIngestionEnabled,
+        ordinaryRegionCapabilityAcceptanceStorageRootPath = ordinaryRegionCapabilityAcceptanceStorageRootPath,
+        ordinaryRegionOwnerAuthorizationStorageRootPath = ordinaryRegionOwnerAuthorizationStorageRootPath,
         deployedImmutableImageId = deployedImmutableImageId,
         sourceCommit = sourceCommit,
         productionCommit = productionCommit,
     )
+
+    private fun ordinaryAcceptance(build: String, acceptedAt: Instant): OrdinaryRegionCapabilityAcceptanceRecord {
+        val live = OrdinaryRegionLiveR69Evidence(
+            OrdinaryRegionAcceptanceEvidenceRole.R6_9_LIVE_PROVIDER_RESULT,
+            R69_AUTHORITY_ID, R69_EXECUTION_ID, R69_REQUEST_DIGEST, R69_PROVIDER_RESPONSE_ID,
+            R69_PROVIDER_STATE_ID, R69_RAW_RESPONSE_DIGEST, R69_STRUCTURED_STATE_DIGEST,
+            R69_PROVIDER_RECORD_DIGEST, R69_ASSESSMENT_DIGEST,
+        )
+        return OrdinaryRegionCapabilityAcceptanceRecord.create(
+            OrdinaryRegionCapabilityIdentity(), RegionTranscriptionCapabilityAcceptanceEvidenceV1.governed(live),
+            build, "user.owner-lifecycle-test", acceptedAt,
+        )
+    }
+
+    @Test
+    fun `future exact builds start administratively unaccepted and transition dynamically without weakening execution`() = runTest {
+        val root = Files.createTempDirectory("ordinary-build-transition")
+        try {
+            val acceptanceRoot = testDirectory(root, "capability-acceptances")
+            val authorizationRoot = testDirectory(root, "owner-authorizations")
+            val attemptRoot = testDirectory(root, "attempts")
+            val providerRoot = testDirectory(root, "provider-state")
+            val fidelityAuthorityRoot = testDirectory(root, "fidelity-authorities")
+            val regionAuthorityRoot = testDirectory(root, "region-authorities")
+            val store = FileSystemOrdinaryRegionCapabilityAcceptanceStore(acceptanceRoot)
+            val buildA = "a".repeat(40)
+            val buildB = "b".repeat(40)
+            val buildC = "c".repeat(40)
+            store.admit(ordinaryAcceptance(buildA, Instant.parse("2026-08-30T00:00:00Z")))
+
+            fun runtime(build: String) = ParkerRuntime(
+                config(
+                    openAiExternalTranscriptionEnabled = true,
+                    openAiExternalTranscriptionProviderProfilePath = profileFile(parent = root).toString(),
+                    openAiApiCredential = OpenAiApiCredential.fromEnvironment("synthetic-build-transition-credential")!!,
+                    fidelityFirstAcceptanceAuthorityStorageRootPath = fidelityAuthorityRoot.toString(),
+                    fidelityFirstAttemptStorageRootPath = attemptRoot.toString(),
+                    regionProviderStateStorageRootPath = providerRoot.toString(),
+                    regionAcceptanceAuthorityStorageRootPath = regionAuthorityRoot.toString(),
+                    ordinaryRegionIngestionEnabled = true,
+                    ordinaryRegionCapabilityAcceptanceStorageRootPath = acceptanceRoot.toString(),
+                    ordinaryRegionOwnerAuthorizationStorageRootPath = authorizationRoot.toString(),
+                    deployedImmutableImageId = "sha256:" + "d".repeat(64),
+                    sourceCommit = build,
+                    productionCommit = build,
+                    testRoot = root,
+                ), RecordingParkerLogger(), clock = { Instant.parse("2026-08-30T01:00:00Z") },
+                buildIdentity = { build },
+            )
+
+            runtime(buildA).also {
+                it.start()
+                assertEquals(OrdinaryRegionCapabilityDisposition.ACCEPTED, it.ordinaryRegionCapabilityStatusAsOwner().disposition)
+                it.shutdown()
+            }
+            runtime(buildB).also {
+                it.start()
+                assertEquals(OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED, it.ordinaryRegionCapabilityStatusAsOwner().disposition)
+                val blocked = it.executeOrdinaryRegionIngestionAsOwner(EvidenceArtifactId("synthetic"), "none", "none", "none")
+                assertEquals(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED, blocked.disposition)
+                assertTrue(Files.list(attemptRoot).use { files -> files.count() == 0L })
+                assertTrue(FileSystemRegionProviderStateStore(providerRoot).enumerate().isEmpty())
+                store.admit(ordinaryAcceptance(buildB, Instant.parse("2026-08-30T00:00:01Z")))
+                assertEquals(OrdinaryRegionCapabilityDisposition.ACCEPTED, it.ordinaryRegionCapabilityStatusAsOwner().disposition)
+                it.shutdown()
+            }
+            runtime(buildC).also {
+                it.start()
+                assertEquals(OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED, it.ordinaryRegionCapabilityStatusAsOwner().disposition)
+                assertEquals(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED,
+                    it.executeOrdinaryRegionIngestionAsOwner(EvidenceArtifactId("synthetic"), "none", "none", "none").disposition)
+                it.shutdown()
+            }
+        } finally {
+            deleteTree(root)
+        }
+    }
 
     @Test
     fun `start() transitions NOT_STARTED to RUNNING and logs Runtime starting then Runtime started, in order`() = runTest {
