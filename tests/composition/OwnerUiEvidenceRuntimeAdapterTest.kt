@@ -20,6 +20,9 @@ import parker.core.runtime.OrdinaryRegionProposal
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
+import parker.core.runtime.OrdinaryRegionOwnerResult
+import parker.core.runtime.OrdinaryRegionDisposition
+import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.runtime.OwnerRegisteredEvidence
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
@@ -97,6 +100,9 @@ class OwnerUiEvidenceRuntimeAdapterTest {
             OrdinaryRegionOwnerAuthorizationOutcome.Blocked(OrdinaryRegionOwnerAuthorizationView(
                 OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE, it.value, detail = "disabled"))
         },
+        execute: suspend (EvidenceArtifactId, String, String, String) -> OrdinaryRegionOwnerResult =
+            { _, _, _, _ -> OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED, "disabled") },
+        executionIdentity: () -> String = { "test-identity" },
     ) = OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(ownerPrincipalId),
         listRegisteredEvidenceAsOwner = listing,
@@ -116,6 +122,8 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         ordinaryRegionProposalAsOwner = ordinaryProposal,
         ordinaryRegionAuthorizationStatusAsOwner = authorizationStatus,
         authorizeOrdinaryRegionAsOwner = authorize,
+        executeOrdinaryRegionAsOwner = execute,
+        executionIdentity = executionIdentity,
     )
 
     @Test
@@ -181,6 +189,55 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         assertEquals("AUTHORISED", outcome.status)
         assertEquals("ordinary-auth-test", outcome.authorizationId)
         assertEquals(1, authorizeCalls)
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `authorized accepted proposal exposes explicit execution and backend derives all governed identities`() = runTest {
+        val scriptDir = Files.createTempDirectory("ordinary-owner-execution")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        var captured: List<String>? = null
+        val authorization = OrdinaryRegionOwnerAuthorizationView(
+            OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED, "pdf-native-text",
+            authorizationId = "ordinary-auth-test", executionState = "NOT_STARTED",
+        )
+        val adapter = adapterFor(runtime,
+            ordinaryProposal = { OrdinaryRegionProposal(it.value, ORDINARY_REGION_CAPABILITY_ID,
+                capabilityStatus = ordinaryStatus(OrdinaryRegionCapabilityDisposition.ACCEPTED)) },
+            authorizationStatus = { authorization },
+            executionIdentity = { "fixed" },
+            execute = { id, auth, execution, attempt ->
+                captured = listOf(id.value, auth, execution, attempt)
+                OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.ADMITTED, "admitted", "region-result")
+            },
+        )
+        val decision = assertIs<OwnerAcquisitionDecisionView.Proposed>(adapter.governedAcquisitionDecision(EvidenceArtifactId("pdf-native-text")))
+        assertTrue(decision.executeAvailable)
+        val result = adapter.executeOrdinaryRegionTranscription(EvidenceArtifactId("pdf-native-text"))
+        assertEquals("ADMITTED", result.status)
+        assertEquals(listOf("pdf-native-text", "ordinary-auth-test", "ordinary-exec-fixed", "ordinary-attempt-fixed"), captured)
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `execution remains unavailable without accepted available authorization`() = runTest {
+        val scriptDir = Files.createTempDirectory("ordinary-owner-execution-blocked")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        var calls = 0
+        val adapter = adapterFor(runtime,
+            ordinaryProposal = { OrdinaryRegionProposal(it.value, ORDINARY_REGION_CAPABILITY_ID,
+                capabilityStatus = ordinaryStatus(OrdinaryRegionCapabilityDisposition.ACCEPTED)) },
+            authorizationStatus = { OrdinaryRegionOwnerAuthorizationView(
+                OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED, it.value,
+                authorizationId = "ordinary-auth-test", executionState = "RESERVED") },
+            execute = { _, _, _, _ -> calls++; OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.ADMITTED, "unexpected") },
+        )
+        val decision = assertIs<OwnerAcquisitionDecisionView.Proposed>(adapter.governedAcquisitionDecision(EvidenceArtifactId("pdf-native-text")))
+        assertFalse(decision.executeAvailable)
+        assertEquals("UNAVAILABLE", adapter.executeOrdinaryRegionTranscription(EvidenceArtifactId("pdf-native-text")).status)
+        assertEquals(0, calls)
         runtime.shutdown()
     }
 

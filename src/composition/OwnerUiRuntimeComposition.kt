@@ -92,6 +92,7 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         ordinaryRegionProposalAsOwner = runtime::proposeOrdinaryRegionIngestionAsOwner,
         ordinaryRegionAuthorizationStatusAsOwner = runtime::ordinaryRegionAuthorizationStatusAsOwner,
         authorizeOrdinaryRegionAsOwner = runtime::authorizeOrdinaryRegionIngestionAsOwner,
+        executeOrdinaryRegionAsOwner = runtime::executeOrdinaryRegionIngestionAsOwner,
         executeGovernedAsOwner = { id, expected ->
             projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
         },

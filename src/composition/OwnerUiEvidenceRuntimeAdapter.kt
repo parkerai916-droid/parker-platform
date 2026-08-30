@@ -65,7 +65,10 @@ import parker.core.runtime.OrdinaryRegionProposal
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
+import parker.core.runtime.OrdinaryRegionOwnerResult
+import parker.core.runtime.OrdinaryRegionDisposition
 import parker.ui.OwnerOrdinaryRegionAuthorizationView
+import parker.ui.OwnerOrdinaryRegionExecutionView
 import parker.ui.OwnerRegisteredEvidenceView
 import parker.core.runtime.OwnerRegisteredEvidence
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
@@ -204,6 +207,9 @@ class OwnerUiEvidenceRuntimeAdapter(
         OrdinaryRegionOwnerAuthorizationOutcome.Blocked(OrdinaryRegionOwnerAuthorizationView(
             OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE, it.value, detail = "AUTHORIZATION_LANE_NOT_CONFIGURED"))
     },
+    private val executeOrdinaryRegionAsOwner: suspend (EvidenceArtifactId, String, String, String) -> OrdinaryRegionOwnerResult =
+        { _, _, _, _ -> OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED, "EXECUTION_LANE_NOT_CONFIGURED") },
+    private val executionIdentity: () -> String = { java.util.UUID.randomUUID().toString() },
     private val executeGovernedAsOwner: suspend (EvidenceArtifactId, String) -> OwnerAcquisitionExecutionView = { _, _ ->
         OwnerAcquisitionExecutionView.Failed("SELECTED_CAPABILITY_UNAVAILABLE")
     },
@@ -248,6 +254,9 @@ class OwnerUiEvidenceRuntimeAdapter(
             authorizationAvailable = authorization.disposition == OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED,
             authorizationId = authorization.authorizationId,
             authorizationExpiresAt = authorization.expiresAt?.toString(),
+            executeAvailable = authorization.disposition == OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED &&
+                authorization.executionState == "NOT_STARTED",
+            executionState = authorization.executionState,
         )
     }
 
@@ -259,6 +268,22 @@ class OwnerUiEvidenceRuntimeAdapter(
         }
         return OwnerOrdinaryRegionAuthorizationView(view.disposition.name, view.evidenceArtifactId, view.provider,
             view.disclosure, view.detail, view.authorizationId, view.expiresAt?.toString())
+    }
+
+    override suspend fun executeOrdinaryRegionTranscription(evidenceArtifactId: EvidenceArtifactId): OwnerOrdinaryRegionExecutionView {
+        val proposal = ordinaryRegionProposalAsOwner(evidenceArtifactId)
+            ?: return OwnerOrdinaryRegionExecutionView("UNAVAILABLE", "SOURCE_UNAVAILABLE_OR_UNSUPPORTED", evidenceArtifactId.value)
+        if (proposal.capabilityStatus.disposition != OrdinaryRegionCapabilityDisposition.ACCEPTED)
+            return OwnerOrdinaryRegionExecutionView("CAPABILITY_NOT_ACCEPTED", "CAPABILITY_NOT_ACCEPTED", evidenceArtifactId.value)
+        val authorization = ordinaryRegionAuthorizationStatusAsOwner(evidenceArtifactId)
+        val authorizationId = authorization.authorizationId
+        if (authorization.disposition != OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED ||
+            authorization.executionState != "NOT_STARTED" || authorizationId == null)
+            return OwnerOrdinaryRegionExecutionView("UNAVAILABLE", authorization.detail ?: authorization.executionState, evidenceArtifactId.value)
+        val nonce = executionIdentity()
+        val result = executeOrdinaryRegionAsOwner(evidenceArtifactId, authorizationId, "ordinary-exec-$nonce", "ordinary-attempt-$nonce")
+        return OwnerOrdinaryRegionExecutionView(result.disposition.name, result.detail, evidenceArtifactId.value,
+            result.derivativeGenerationId)
     }
 
     override suspend fun executeGovernedAcquisition(

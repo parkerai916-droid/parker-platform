@@ -478,6 +478,7 @@ data class OrdinaryRegionOwnerAuthorizationView(
     val approvedAt: Instant? = null,
     val expiresAt: Instant? = null,
     val detail: String? = null,
+    val executionState: String = "NOT_STARTED",
 )
 
 sealed interface OrdinaryRegionOwnerAuthorizationOutcome {
@@ -731,7 +732,10 @@ class OrdinaryRegionIngestionWorkflow(
             return authorizationUnavailable(evidenceId, "CAPABILITY_NOT_ACCEPTED")
         val source = verifiedPdf(evidenceId) ?: return authorizationUnavailable(evidenceId, "SOURCE_UNAVAILABLE_OR_UNSUPPORTED")
         val id = authorizationIdentity(source)
-        val snapshot = try { authorizations.loadIfPresent(id) }
+        val snapshot = try { authorizations.loadIfPresent(id)?.let { current ->
+            val started = current.executionId?.let { ledger.providerAttemptStartedForExecution(it) } ?: false
+            authorizations.load(id, started)
+        } }
         catch (_: Exception) { return authorizationUnavailable(evidenceId, "AUTHORIZATION_STORE_UNAVAILABLE_OR_CORRUPT") }
         return snapshot?.let(::authorizationView) ?: OrdinaryRegionOwnerAuthorizationView(
             OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED, evidenceId.value)
@@ -790,13 +794,21 @@ class OrdinaryRegionIngestionWorkflow(
         val detail = when {
             snapshot.revokedAt != null -> "OWNER_AUTHORIZATION_REVOKED"
             !now().isBefore(snapshot.grant.expiresAt) -> "OWNER_AUTHORIZATION_EXPIRED"
+            snapshot.state == OrdinaryRegionAuthorizationState.RESERVED_FOR_EXECUTION -> "OWNER_AUTHORIZATION_RESERVED"
+            snapshot.state == OrdinaryRegionAuthorizationState.CONSUMED_BY_PROVIDER_ATTEMPT -> "PROVIDER_ATTEMPT_STARTED"
             else -> null
         }
         return OrdinaryRegionOwnerAuthorizationView(
-        if (detail == null) OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED else OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,
+        if (snapshot.revokedAt == null && now().isBefore(snapshot.grant.expiresAt)) OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED
+        else OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,
         snapshot.grant.evidenceArtifactId,
         snapshot.grant.provider, snapshot.grant.disclosure, snapshot.grant.authorizationId,
         snapshot.grant.approvedAt, snapshot.grant.expiresAt, detail,
+        when (snapshot.state) {
+            OrdinaryRegionAuthorizationState.AVAILABLE -> "NOT_STARTED"
+            OrdinaryRegionAuthorizationState.RESERVED_FOR_EXECUTION -> "RESERVED"
+            OrdinaryRegionAuthorizationState.CONSUMED_BY_PROVIDER_ATTEMPT -> "ATTEMPT_STARTED"
+        },
     )
     }
 

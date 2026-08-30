@@ -24,6 +24,11 @@ import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
 import parker.core.runtime.OrdinaryRegionCapabilityDisposition
 import parker.core.runtime.OrdinaryRegionCapabilityStatus
+import parker.core.runtime.OrdinaryRegionProposal
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
+import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
+import parker.core.runtime.OrdinaryRegionOwnerResult
+import parker.core.runtime.OrdinaryRegionDisposition
 import parker.core.interfaces.*
 import parker.ui.EnhancedTranscriptionReadiness
 import java.time.Instant
@@ -98,6 +103,12 @@ class OwnerEvidenceHttpServerTest {
             OrdinaryRegionCapabilityPromotionOutcome.Blocked("disabled")
         },
         evaluateRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
+        ordinaryProposal: suspend (EvidenceArtifactId) -> OrdinaryRegionProposal? = { null },
+        ordinaryAuthorizationStatus: suspend (EvidenceArtifactId) -> OrdinaryRegionOwnerAuthorizationView = {
+            OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED, it.value)
+        },
+        ordinaryExecute: suspend (EvidenceArtifactId, String, String, String) -> OrdinaryRegionOwnerResult =
+            { _, _, _, _ -> OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED, "disabled") },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -121,6 +132,9 @@ class OwnerEvidenceHttpServerTest {
             externalReadiness = externalReadiness,
             invokeExternalTranscriptionAsOwner = invokeExternal,
             governedDecisionAsOwner = { projectGovernedDecision(runtime.evaluateGovernedAcquisitionAsOwner(it)) },
+            ordinaryRegionProposalAsOwner = ordinaryProposal,
+            ordinaryRegionAuthorizationStatusAsOwner = ordinaryAuthorizationStatus,
+            executeOrdinaryRegionAsOwner = ordinaryExecute,
             executeGovernedAsOwner = { id, expected -> projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected)) },
         )
         val server = OwnerEvidenceHttpServer(
@@ -192,6 +206,40 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(page.contains("loadExistingEvidence();"))
             assertTrue(page.contains("Refresh existing evidence"))
             assertTrue(page.contains("Durably registered evidence"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `ordinary execution route is owner authenticated accepts no overrides and UI requires explicit confirmation`() {
+        var calls = 0
+        val accepted = OrdinaryRegionCapabilityStatus(
+            ORDINARY_REGION_CAPABILITY_ID, "OpenAI", "POST /v1/responses", "gpt-5.6-sol",
+            "openai-responses-region-transcription-adapter", "4.0.0", "openai-region-anchored-transcription-v2", 5,
+            "application/pdf", 32, 16_777_216, false, OrdinaryRegionCapabilityDisposition.ACCEPTED,
+            "a".repeat(40), "a".repeat(40),
+        )
+        val evidenceId = "evidence-execution-test"
+        val harness = startHarness("",
+            ordinaryProposal = { OrdinaryRegionProposal(it.value, ORDINARY_REGION_CAPABILITY_ID, capabilityStatus = accepted) },
+            ordinaryAuthorizationStatus = { OrdinaryRegionOwnerAuthorizationView(
+                OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED, it.value,
+                authorizationId = "ordinary-auth-test", executionState = "NOT_STARTED") },
+            ordinaryExecute = { _, _, _, _ -> calls++; OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.ADMITTED, "admitted") },
+        )
+        try {
+            val uri = URI.create("${harness.baseUri()}/owner/evidence/$evidenceId/execute-region-transcription")
+            assertEquals(401, send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.noBody()).build()).statusCode())
+            assertEquals(0, calls)
+            val override = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"provider\":\"caller\",\"model\":\"caller\"}")).build())
+            assertEquals(400, override.statusCode()); assertEquals(0, calls)
+            val execute = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.noBody()).build())
+            assertEquals(200, execute.statusCode()); assertEquals(1, calls)
+            val page = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(page.contains("Execute external transcription"))
+            assertTrue(page.contains("This action initiates the authorized external transcription"))
+            assertTrue(page.contains("if (!confirmed) return"))
         } finally { harness.shutdown() }
     }
 

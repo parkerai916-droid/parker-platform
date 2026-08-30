@@ -38,6 +38,10 @@ interface OwnerEvidenceOperations {
         OwnerOrdinaryRegionAuthorizationView("UNAVAILABLE", evidenceArtifactId.value, "OpenAI", null,
             "AUTHORIZATION_LANE_NOT_CONFIGURED", null, null)
 
+    /** Explicit governed ordinary region-v5 execution. Browser supplies only route-bound evidence identity. */
+    suspend fun executeOrdinaryRegionTranscription(evidenceArtifactId: EvidenceArtifactId): OwnerOrdinaryRegionExecutionView =
+        OwnerOrdinaryRegionExecutionView("UNAVAILABLE", "EXECUTION_LANE_NOT_CONFIGURED", evidenceArtifactId.value)
+
     /** Explicit owner action; the expected capability is revalidated server-side before exact execution. */
     suspend fun executeGovernedAcquisition(
         evidenceArtifactId: EvidenceArtifactId,

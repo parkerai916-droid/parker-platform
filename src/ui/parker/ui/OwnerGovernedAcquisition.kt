@@ -53,6 +53,8 @@ sealed interface OwnerAcquisitionDecisionView {
         val authorizationAvailable: Boolean = false,
         val authorizationId: String? = null,
         val authorizationExpiresAt: String? = null,
+        val executeAvailable: Boolean = false,
+        val executionState: String = "NOT_STARTED",
     ) : OwnerAcquisitionDecisionView
     data class NoEligible(
         override val source: OwnerAcquisitionSourceFacts,
@@ -81,3 +83,10 @@ sealed interface OwnerAcquisitionExecutionView {
     data class StaleDecision(val currentDecision: OwnerAcquisitionDecisionView) : OwnerAcquisitionExecutionView
     data class Failed(val reason: String, val capability: OwnerAcquisitionCapabilityView? = null) : OwnerAcquisitionExecutionView
 }
+
+data class OwnerOrdinaryRegionExecutionView(
+    val status: String,
+    val detail: String,
+    val evidenceArtifactId: String,
+    val derivativeGenerationId: String? = null,
+)

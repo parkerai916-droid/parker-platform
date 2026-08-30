@@ -129,6 +129,7 @@ fun main(args: Array<String>) = runBlocking {
             ordinaryRegionProposalAsOwner = runtime::proposeOrdinaryRegionIngestionAsOwner,
             ordinaryRegionAuthorizationStatusAsOwner = runtime::ordinaryRegionAuthorizationStatusAsOwner,
             authorizeOrdinaryRegionAsOwner = runtime::authorizeOrdinaryRegionIngestionAsOwner,
+            executeOrdinaryRegionAsOwner = runtime::executeOrdinaryRegionIngestionAsOwner,
             executeGovernedAsOwner = { id, expected ->
                 projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
             },
