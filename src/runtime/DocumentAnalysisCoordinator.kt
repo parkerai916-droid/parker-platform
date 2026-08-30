@@ -244,6 +244,8 @@ class DocumentAnalysisCoordinator(
                         // far only because Tier B's own kind check above already reported
                         // WrongDerivativeKind for it.
                         return Failed(DocumentAnalysisOutcome.UnsupportedDerivativeKind(selection.derivativeGenerationId, record.derivativeKind))
+                    is TierADerivativePayload.RegionTranscription ->
+                        return Failed(DocumentAnalysisOutcome.UnsupportedDerivativeKind(selection.derivativeGenerationId, record.derivativeKind))
                 }
                 if (record.derivativeKind != expectedKind) {
                     return Failed(DocumentAnalysisOutcome.UnsupportedDerivativeKind(selection.derivativeGenerationId, record.derivativeKind))
@@ -254,6 +256,7 @@ class DocumentAnalysisCoordinator(
                     is TierADerivativePayload.Eml -> extractEmlText(payload.value)
                     is TierADerivativePayload.Docx -> extractDocxText(payload.value)
                     is TierADerivativePayload.Ocr -> error("unreachable -- handled above")
+                    is TierADerivativePayload.RegionTranscription -> error("unreachable -- handled above")
                 }
                 Resolved(
                     AnalysisEvidenceItem(

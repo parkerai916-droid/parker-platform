@@ -40,6 +40,9 @@ sealed class TierADerivativePayload {
      * this variant's own name is a storage-shape label only.
      */
     data class Ocr(val value: OcrDerivativeExtractedResult) : TierADerivativePayload()
+
+    /** Ordinary external region-v5 transcription. This is deliberately distinct from OCR. */
+    data class RegionTranscription(val value: OrdinaryRegionTranscriptionDerivative) : TierADerivativePayload()
 }
 
 sealed class TierADocumentRoutingResult {

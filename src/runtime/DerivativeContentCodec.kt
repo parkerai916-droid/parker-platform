@@ -68,12 +68,14 @@ internal object DerivativeContentCodec {
     const val OCR_REPRESENTATION_VERSION = 3
     const val OCR_V2_REPRESENTATION_VERSION = 2
     const val OCR_LEGACY_REPRESENTATION_VERSION = 1
+    const val REGION_TRANSCRIPTION_REPRESENTATION_VERSION = 1
 
     private const val FORMAT_CSV: Byte = 1
     private const val FORMAT_EML: Byte = 2
     private const val FORMAT_DOCX: Byte = 3
     private const val FORMAT_PDF: Byte = 4
     private const val FORMAT_OCR: Byte = 5
+    private const val FORMAT_REGION_TRANSCRIPTION: Byte = 6
 
     private const val MAX_SHORT_STRING_BYTES = 1024 * 1024 // 1 MiB -- identifiers/names
     private const val MAX_LARGE_TEXT_BYTES = 32 * 1024 * 1024 // 32 MiB -- documentText/body/paragraph blobs
@@ -111,6 +113,11 @@ internal object DerivativeContentCodec {
                             OcrTranscriptionConfiguration.DigestedConfiguration
                         output.writeInt(when { v3 -> OCR_REPRESENTATION_VERSION; v2 -> OCR_V2_REPRESENTATION_VERSION; else -> OCR_LEGACY_REPRESENTATION_VERSION })
                         when { v3 -> output.writeOcrV3(payload.value); v2 -> output.writeOcrV2(payload.value); else -> output.writeOcr(payload.value) }
+                    }
+                    is TierADerivativePayload.RegionTranscription -> {
+                        output.writeByte(FORMAT_REGION_TRANSCRIPTION.toInt())
+                        output.writeInt(REGION_TRANSCRIPTION_REPRESENTATION_VERSION)
+                        output.writeRegionTranscription(payload.value)
                     }
                 }
             }
@@ -166,11 +173,45 @@ internal object DerivativeContentCodec {
                     }
                     TierADerivativePayload.Ocr(ocr)
                 }
+                FORMAT_REGION_TRANSCRIPTION -> {
+                    if (representationVersion != REGION_TRANSCRIPTION_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
+                    TierADerivativePayload.RegionTranscription(input.readRegionTranscription())
+                }
                 else -> throw MalformedRepresentationException("unknown format kind byte $formatByte")
             }
             if (input.available() != 0) throw MalformedRepresentationException("trailing bytes after derivative payload")
             DerivativeContentEntry(id, root, payload)
         }
+    }
+
+    // ---- Ordinary external region-v5 transcription ------------------------------------------
+
+    private fun DataOutputStream.writeRegionTranscription(r: OrdinaryRegionTranscriptionDerivative) {
+        writeInt(r.representationVersion)
+        writeString(r.evidenceArtifactId, MAX_SHORT_STRING_BYTES)
+        writeString(r.sourceSha256, MAX_SHORT_STRING_BYTES)
+        writeStrings(r.pageBindings); writeStrings(r.regionBindings); writeStrings(r.transcriptionBlocks)
+        writeStrings(r.providerReturnedOrder); writeStrings(r.parkerSourceOrder)
+        listOf(r.provider, r.model, r.adapterId, r.adapterVersion, r.providerProfile).forEach { writeString(it, MAX_SHORT_STRING_BYTES) }
+        writeInt(r.wireVersion)
+        listOf(r.schemaSha256, r.instructionSha256, r.processingProfile, r.requestIdentity,
+            r.requestDigest, r.responseIdentity, r.providerStateRecordIdentity,
+            r.capabilityAcceptanceRecordIdentity, r.ownerAuthorizationIdentity, r.executionIdentity,
+            r.attemptIdentity, r.reconstructedContentDigest, r.canonicalGenerationKeyDigest,
+            r.admissionProvenance).forEach { writeString(it, MAX_SHORT_STRING_BYTES) }
+    }
+
+    private fun DataInputStream.readRegionTranscription(): OrdinaryRegionTranscriptionDerivative {
+        val version = readInt(); val evidence = readString(MAX_SHORT_STRING_BYTES); val source = readString(MAX_SHORT_STRING_BYTES)
+        val pages = readStrings(); val regions = readStrings(); val blocks = readStrings(); val providerOrder = readStrings(); val parkerOrder = readStrings()
+        val provider = readString(MAX_SHORT_STRING_BYTES); val model = readString(MAX_SHORT_STRING_BYTES)
+        val adapterId = readString(MAX_SHORT_STRING_BYTES); val adapterVersion = readString(MAX_SHORT_STRING_BYTES)
+        val profile = readString(MAX_SHORT_STRING_BYTES); val wire = readInt()
+        val values = List(14) { readString(MAX_SHORT_STRING_BYTES) }
+        return OrdinaryRegionTranscriptionDerivative(version, evidence, source, pages, regions, blocks,
+            providerOrder, parkerOrder, provider, model, adapterId, adapterVersion, profile, wire,
+            values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
+            values[8], values[9], values[10], values[11], values[12], values[13])
     }
 
     // ---- PDF ----------------------------------------------------------------------------------

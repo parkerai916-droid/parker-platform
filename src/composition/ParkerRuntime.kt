@@ -127,6 +127,14 @@ import parker.core.runtime.FileSystemRegionProviderStateStore
 import parker.core.runtime.GovernedRegionTranscriptionExecutionCoordinator
 import parker.core.runtime.JdkOpenAiResponsesTransport
 import parker.core.runtime.OpenAiRegionTranscriptionAdapter
+import parker.core.runtime.FileSystemOrdinaryRegionCapabilityAcceptanceStore
+import parker.core.runtime.FileSystemOrdinaryRegionAuthorizationStore
+import parker.core.runtime.OrdinaryRegionAuthorizationGuard
+import parker.core.runtime.OrdinaryRegionCapabilityAcceptanceEvaluator
+import parker.core.runtime.OrdinaryRegionCapabilityIdentity
+import parker.core.runtime.OrdinaryRegionDerivativeAdmission
+import parker.core.runtime.OrdinaryRegionIngestionWorkflow
+import parker.core.runtime.OrdinaryRegionRequestPreparer
 import parker.core.runtime.OpenAiResponsesExternalTranscriptionAdapter
 import parker.core.runtime.EvidenceIntelligenceReasoningCoordinator
 import parker.core.runtime.EvidenceRegistrationCoordinator
@@ -355,6 +363,7 @@ class ParkerRuntime(
     private var governedRegionTranscriptionExecutionCoordinator: GovernedRegionTranscriptionExecutionCoordinator? = null
     private var regionAcceptanceExecutionCoordinator: parker.core.runtime.RegionAcceptanceExecutionCoordinatorV2? = null
     private var regionAcceptanceAuthorityCreationCoordinator: parker.core.runtime.RegionTranscriptionAcceptanceAuthorityCreationCoordinator? = null
+    private var ordinaryRegionIngestionWorkflow: OrdinaryRegionIngestionWorkflow? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
@@ -1554,6 +1563,35 @@ class ParkerRuntime(
                 )
             }
         }
+        ordinaryRegionIngestionWorkflow = if (config.ordinaryRegionIngestionEnabled) {
+            stage("Ordinary external region-v5 ingestion composition") {
+                val capability = OrdinaryRegionCapabilityIdentity()
+                val acceptanceStore = FileSystemOrdinaryRegionCapabilityAcceptanceStore(
+                    Path.of(requireNotNull(config.ordinaryRegionCapabilityAcceptanceStorageRootPath)))
+                val authorizationRoot = Path.of(requireNotNull(config.ordinaryRegionOwnerAuthorizationStorageRootPath))
+                val authorizationStore = FileSystemOrdinaryRegionAuthorizationStore(authorizationRoot)
+                val ledger = requireNotNull(acceptanceAttemptLedger)
+                val providerStateStore = requireNotNull(composedRegionProviderStateStore)
+                val regionExecution = requireNotNull(governedRegionTranscriptionExecutionCoordinator)
+                val embedded = requireNotNull(embeddedCommit)
+                val bodyEncoder = OpenAiRegionTranscriptionAdapter(
+                    credential = requireNotNull(credential), transport = openAiTransport,
+                    providerStateStore = providerStateStore,
+                )
+                OrdinaryRegionIngestionWorkflow(
+                    ownerPrincipalId = PrincipalId(config.ownerPrincipalId), evidenceCustodian = defaultEvidenceCustodian,
+                    capability = capability,
+                    acceptance = OrdinaryRegionCapabilityAcceptanceEvaluator(acceptanceStore, capability) { buildIdentity() },
+                    authorizations = authorizationStore, guard = OrdinaryRegionAuthorizationGuard(authorizationRoot),
+                    ledger = ledger,
+                    preparer = OrdinaryRegionRequestPreparer(bodyEncoder = bodyEncoder::buildRequestBody,
+                        requestDigest = providerStateStore::requestDigestFor),
+                    execution = regionExecution, providerState = providerStateStore,
+                    admission = OrdinaryRegionDerivativeAdmission(derivativeGenerationStorage, derivativeContentStorage, documentIngestionAudit),
+                    runtimeCommit = { embedded },
+                )
+            }
+        } else null
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )
@@ -2218,6 +2256,42 @@ class ParkerRuntime(
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return regionAcceptanceAuthorityCreationCoordinator?.create(request)
             ?: parker.core.runtime.RegionAcceptanceAuthorityCreationOutcome.Blocked("REGION_ACCEPTANCE_CREATION_LANE_NOT_CONFIGURED")
+    }
+
+    /** Non-executing ordinary region-v5 proposal. It never reserves or creates attempt state. */
+    suspend fun proposeOrdinaryRegionIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.OrdinaryRegionProposal? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.proposal(evidenceArtifactId)
+    }
+
+    /** Explicit owner grant creation only; no reservation, attempt, or provider activity. */
+    fun createOrdinaryRegionAuthorizationAsOwner(grant: parker.core.runtime.OrdinaryRegionOwnerAuthorization): Boolean {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val workflow = ordinaryRegionIngestionWorkflow ?: return false
+        workflow.createAuthorization(grant); return true
+    }
+
+    /** Explicit non-executing reservation to one governed execution identity. */
+    fun reserveOrdinaryRegionAuthorizationAsOwner(authorizationId: String, executionId: String): parker.core.runtime.OrdinaryRegionAuthorizationSnapshot? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.reserve(authorizationId, executionId)
+    }
+
+    /** Revocation shares the same authorization guard as durable attempt-start. */
+    fun revokeOrdinaryRegionAuthorizationAsOwner(authorizationId: String): parker.core.runtime.OrdinaryRegionAuthorizationSnapshot? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.revoke(authorizationId)
+    }
+
+    /** The only ordinary region-v5 execution entry point; all provider facts are composed internally. */
+    suspend fun executeOrdinaryRegionIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId, authorizationId: String,
+        executionId: String, attemptId: String): parker.core.runtime.OrdinaryRegionOwnerResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.execute(evidenceArtifactId, authorizationId, executionId, attemptId)
+            ?: parker.core.runtime.OrdinaryRegionOwnerResult(
+                parker.core.runtime.OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED,
+                "ordinary region-v5 ingestion is not configured",
+            )
     }
 
     /** Owner-safe executable readiness, matching the same fail-closed gates used for composition. */

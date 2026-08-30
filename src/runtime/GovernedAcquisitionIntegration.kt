@@ -259,6 +259,7 @@ private fun TierADerivativePayload.completenessState(): DerivativeCompletenessSt
     is TierADerivativePayload.Docx -> value.completenessState
     is TierADerivativePayload.Pdf -> value.completenessState
     is TierADerivativePayload.Ocr -> value.completenessState
+    is TierADerivativePayload.RegionTranscription -> DerivativeCompletenessState.ACCOUNTED_FOR
 }
 private fun failed() = BoundAcquisitionExecutorOutcome.ExecutionFailed(
     AcquisitionExecutionFailureReason.ACQUISITION_EXECUTION_FAILED,

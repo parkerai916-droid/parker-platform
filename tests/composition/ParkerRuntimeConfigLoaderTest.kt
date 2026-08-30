@@ -644,4 +644,56 @@ class ParkerRuntimeConfigLoaderTest {
         assertTrue(!config.openAiApiCredential.toString().contains(sentinel))
         assertEquals(sentinel, config.openAiApiCredential?.useValue { it })
     }
+
+    @Test
+    fun `ordinary region ingestion loads exact coupled roots only with complete provider and durable configuration`() {
+        val authority = Files.createTempDirectory("ordinary-acceptance-authority")
+        val attempt = Files.createTempDirectory("ordinary-attempt")
+        val provider = Files.createTempDirectory("ordinary-provider-state")
+        val capability = Files.createTempDirectory("ordinary-capability-acceptance")
+        val authorization = Files.createTempDirectory("ordinary-owner-authorization")
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
+            ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED to "true",
+            ParkerRuntimeConfigLoader.KEY_OPENAI_API_KEY to "offline-config-test-only",
+            ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT to authority.toString(),
+            ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT to attempt.toString(),
+            ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT to provider.toString(),
+            ParkerRuntimeConfigLoader.KEY_PRODUCTION_COMMIT to "a".repeat(40),
+            ParkerRuntimeConfigLoader.KEY_SOURCE_COMMIT to "a".repeat(40),
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_INGESTION_ENABLED to "true",
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT to capability.toString(),
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT to authorization.toString(),
+        )))
+        assertTrue(config.ordinaryRegionIngestionEnabled)
+        assertEquals(capability.toString(), config.ordinaryRegionCapabilityAcceptanceStorageRootPath)
+        assertEquals(authorization.toString(), config.ordinaryRegionOwnerAuthorizationStorageRootPath)
+    }
+
+    @Test
+    fun `ordinary region ingestion enablement with any missing coupled dependency fails closed`() {
+        val complete = mapOf(
+            ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED to "true",
+            ParkerRuntimeConfigLoader.KEY_OPENAI_API_KEY to "offline-config-test-only",
+            ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT to "/acceptance",
+            ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT to "/attempt",
+            ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT to "/provider",
+            ParkerRuntimeConfigLoader.KEY_PRODUCTION_COMMIT to "a".repeat(40),
+            ParkerRuntimeConfigLoader.KEY_SOURCE_COMMIT to "a".repeat(40),
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_INGESTION_ENABLED to "true",
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT to "/capability",
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT to "/authorization",
+        )
+        listOf(
+            ParkerRuntimeConfigLoader.KEY_OPENAI_API_KEY,
+            ParkerRuntimeConfigLoader.KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT,
+            ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT,
+            ParkerRuntimeConfigLoader.KEY_SOURCE_COMMIT,
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT,
+            ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT,
+        ).forEach { missing ->
+            assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+                ParkerRuntimeConfigLoader.load(fullEnvironment(complete + (missing to null)))
+            }
+        }
+    }
 }

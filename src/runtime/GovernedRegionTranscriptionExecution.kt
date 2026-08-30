@@ -63,6 +63,13 @@ class GovernedRegionTranscriptionExecutionCoordinator(
     private val validator: RegionTranscriptionValidator = RegionTranscriptionValidator(),
 ) {
     suspend fun execute(binding: GovernedRegionExecutionBinding): GovernedRegionExecutionOutcome {
+        prepareForGuardedAttempt(binding)?.let { return it }
+        durablyStartProviderAttempt(binding)?.let { return it }
+        return transportAfterGuardRelease(binding)
+    }
+
+    /** Preparation phase. It is provider-free and never records attempt-start. */
+    fun prepareForGuardedAttempt(binding: GovernedRegionExecutionBinding): GovernedRegionExecutionOutcome? {
         val mismatch = bindingMismatch(binding)
         if (mismatch != null) return GovernedRegionExecutionOutcome.Blocked(GovernedRegionRecoveryState.ATTEMPT_OUTCOME_UNKNOWN, mismatch)
         val request = binding.request
@@ -77,13 +84,32 @@ class GovernedRegionTranscriptionExecutionCoordinator(
             ledger.advancePreAttempt(binding.identity, FidelityFirstAttemptStage.PREFLIGHT_PASSED)
             ledger.advancePreAttempt(binding.identity, FidelityFirstAttemptStage.SOURCE_RETRIEVED)
             ledger.advancePreAttempt(binding.identity, FidelityFirstAttemptStage.REQUEST_PREPARED)
-            ledger.transition(binding.identity, FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED)
         } catch (_: Exception) {
             providerStateStore.readFor(request)?.let { return recover(it, binding, firstAttempt = false) }
             val started = runCatching { ledger.open(binding.identity).providerAttemptStarted }.getOrDefault(false)
             return if (started) blocked("CONCURRENT_OR_PRIOR_ATTEMPT_STARTED") else blocked("ATTEMPT_MARKER_PERSISTENCE_FAILED")
         }
+        return null
+    }
 
+    /** Must be called while the owner-authorization guard is held. */
+    fun durablyStartProviderAttempt(binding: GovernedRegionExecutionBinding): GovernedRegionExecutionOutcome? {
+        val mismatch = bindingMismatch(binding)
+        if (mismatch != null) return blocked(mismatch)
+        providerStateStore.readFor(binding.request)?.let { return recover(it, binding, firstAttempt = false) }
+        return try {
+            val state = ledger.open(binding.identity)
+            if (state.providerAttemptStarted) blocked("CONCURRENT_OR_PRIOR_ATTEMPT_STARTED")
+            else { ledger.transition(binding.identity, FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED); null }
+        } catch (_: Exception) { blocked("ATTEMPT_MARKER_PERSISTENCE_FAILED") }
+    }
+
+    /** Transport occurs only after the caller has released the owner-authorization guard. */
+    suspend fun transportAfterGuardRelease(binding: GovernedRegionExecutionBinding): GovernedRegionExecutionOutcome {
+        val request = binding.request
+        providerStateStore.readFor(request)?.let { return recover(it, binding, firstAttempt = false) }
+        val started = runCatching { ledger.open(binding.identity).providerAttemptStarted }.getOrDefault(false)
+        if (!started) return blocked("PROVIDER_ATTEMPT_NOT_STARTED")
         val mechanismOutcome = try { mechanism.transcribe(request) }
         catch (_: RegionProviderStateException) { return blocked("PROVIDER_STATE_PERSISTENCE_FAILED") }
         catch (_: Exception) { return blocked("TRANSPORT_OUTCOME_UNKNOWN") }

@@ -107,6 +107,13 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
     /** Read-only pre-creation guard; unlike [open], this never creates a lock or ledger record. */
     fun exists(identity: FidelityFirstExecutionIdentity): Boolean = Files.exists(path(identity.safeExecutionId))
 
+    /** Read-only execution-bound revocation check. It never creates attempt state. */
+    fun providerAttemptStartedForExecution(executionId: String): Boolean {
+        val safe = FidelityFirstExecutionSafeIdentity.derive(executionId)
+        if (!Files.exists(path(safe))) return false
+        return locked(safe) { decode(path(safe)).providerAttemptStarted }
+    }
+
     fun open(identity: FidelityFirstExecutionIdentity): FidelityFirstAttemptSnapshot = locked(identity.safeExecutionId) {
         val file = path(identity.safeExecutionId)
         if (!Files.exists(file)) create(file, identity)

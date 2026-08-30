@@ -7,14 +7,16 @@ object ProductionAcquisitionCapabilityCatalogue {
     const val NATIVE_CAPABILITY_ID = "parker-tier-a-native-v1"
     const val LOCAL_OCR_CAPABILITY_ID = "parker-docling-local-ocr-v1"
     const val FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID = "openai-gpt-5.6-sol-fidelity-first-v1"
+    const val ORDINARY_REGION_V5_CAPABILITY_ID = ORDINARY_REGION_CAPABILITY_ID
 
-    fun create(externalCapabilityProjection: EvidenceAcquisitionCapability? = fidelityFirstExternalCapability()): GovernedAcquisitionCapabilityRegistry {
-        if (externalCapabilityProjection != null) {
-            require(externalCapabilityProjection.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED)
-            require(externalCapabilityProjection.providerConfiguration != null)
+    fun create(externalCapabilityProjection: EvidenceAcquisitionCapability? = fidelityFirstExternalCapability(),
+        ordinaryRegionCapabilityProjection: EvidenceAcquisitionCapability? = null): GovernedAcquisitionCapabilityRegistry {
+        listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection).forEach {
+            require(it.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED)
+            require(it.providerConfiguration != null)
         }
         return GovernedAcquisitionCapabilityRegistry(
-            listOf(nativeCapability(), localOcrCapability()) + listOfNotNull(externalCapabilityProjection),
+            listOf(nativeCapability(), localOcrCapability()) + listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection),
         )
     }
 
@@ -62,5 +64,23 @@ object ProductionAcquisitionCapabilityCatalogue {
         ),
         AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
         AcquisitionOperationalLimits(ExternalTranscriptionRequest.MAX_SOURCE_BYTES, ExternalTranscriptionRequest.MAX_PAGE_COUNT),
+    )
+
+    /** Dynamic acceptance evaluation chooses [accepted] on every projection; no lifecycle snapshot is retained here. */
+    fun ordinaryRegionV5Capability(accepted: Boolean) = EvidenceAcquisitionCapability(
+        ORDINARY_REGION_V5_CAPABILITY_ID, EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION,
+        setOf("application/pdf"), setOf(AcquisitionSourceForm.NATIVE_SEARCHABLE,
+            AcquisitionSourceForm.IMAGE_ONLY_OR_SCANNED, AcquisitionSourceForm.MIXED_TEXT_AND_IMAGE),
+        AcquisitionFidelityCapabilities(true, false, true, true, true, true,
+            pageAssociation = true, regionAssociation = true, uncertaintyReporting = true, structuredOutput = true),
+        setOf(AcquisitionRepresentationClass.DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION),
+        AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+        AcquisitionProviderConfiguration("OpenAI", OPENAI_REGION_MODEL, OPENAI_REGION_PROFILE_ID,
+            OrdinaryRegionCapabilityIdentity().digest(), OPENAI_REGION_INSTRUCTION_SHA256,
+            REGION_TRANSCRIPTION_SCHEMA_SHA256, OPENAI_REGION_ADAPTER_ID, OPENAI_REGION_ADAPTER_VERSION,
+            REGION_TRANSCRIPTION_PROCESSING_PROFILE, "none", false, "NOT_APPLICABLE", "original"),
+        if (accepted) AcquisitionAvailability.Available else
+            AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
+        AcquisitionOperationalLimits(64L * 1024L * 1024L, 200),
     )
 }

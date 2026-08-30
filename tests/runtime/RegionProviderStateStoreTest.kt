@@ -76,7 +76,7 @@ class RegionProviderStateStoreTest {
         listOf("raw_base64", "literal_text", "record_sha256", "source_sha256").forEach { marker ->
             val (dir, id) = built(); val target = if (marker == "literal_text") dir.resolve("$id.assessment") else dir.resolve("$id.provider-state")
             val text = Files.readString(target)
-            val changed = when (marker) { "raw_base64" -> text.replace("cmF3", "YmFk"); "literal_text" -> text.replace("\"x\"", "\"y\""); "record_sha256" -> text.replace(Regex("(?<=record_sha256\\\":\\\")[0-9a-f]"), "0"); else -> text.replace("a".repeat(64), "b".repeat(64)) }
+            val changed = when (marker) { "raw_base64" -> text.replace("cmF3", "YmFk"); "literal_text" -> text.replace("\"x\"", "\"y\""); "record_sha256" -> text.replace(Regex("(?<=record_sha256\\\":\\\")[0-9a-f]")) { if (it.value == "0") "1" else "0" }; else -> text.replace("a".repeat(64), "b".repeat(64)) }
             Files.writeString(target, changed); assertFailsWith<RegionProviderStateException>(marker) { FileSystemRegionProviderStateStore(dir).read(id) }
         }
     }

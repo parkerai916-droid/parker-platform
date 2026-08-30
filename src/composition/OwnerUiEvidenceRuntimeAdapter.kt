@@ -366,6 +366,9 @@ class OwnerUiEvidenceRuntimeAdapter(
             "TierADerivativePayload.Ocr is never routed through Tier A content presentation -- " +
                 "it is retrieved exclusively via retrieveTierBOcrContent/toOwnerOcrContent",
         )
+        is TierADerivativePayload.RegionTranscription -> error(
+            "Ordinary region transcription uses its governed owner-result projection, not historical Tier A presentation",
+        )
     }
 
     private fun DerivativeProducerIdentity.toSummary(): OwnerDerivativeProducerSummary = OwnerDerivativeProducerSummary(
