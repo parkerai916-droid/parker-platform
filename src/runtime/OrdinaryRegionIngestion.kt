@@ -19,6 +19,7 @@ const val ORDINARY_REGION_CAPABILITY_ID = "ordinary-external-region-transcriptio
 const val ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORE_ID = "ordinary-region-capability-acceptance-v1"
 const val ORDINARY_REGION_AUTHORIZATION_STORE_ID = "ordinary-region-owner-authorization-v1"
 const val R69_AUTHORITY_ID = "authority-fa-9.4p-a1e-r6.8c1"
+const val R69_AUTHORITY_RECORD_ID = "5497f12e65d6e7a4d795cfec22ee3aa99c40eb00a8fc2e9f76835b5cfb2d23c9"
 const val R69_EXECUTION_ID = "execution-fa-9.4p-a1e-r6.8c1"
 const val R69_REQUEST_DIGEST = "1a691388478370add9bae4e920fb1071369efa543057403727b422e9000a3d36"
 const val R69_PROVIDER_RESPONSE_ID = "resp_0007d6aa81587b3e016a92f716feb087d0ae9e005456676627"
@@ -27,6 +28,9 @@ const val R69_RAW_RESPONSE_DIGEST = "500863d65c7f9ca69a66b2ffef3ef8a42b7033903cf
 const val R69_STRUCTURED_STATE_DIGEST = "7031179aa4267fdc12a50a429eef184e4ecfb2efb3ae993b6a5527ecf9f4c476"
 const val R69_PROVIDER_RECORD_DIGEST = "ad2542015546250bfe0640e5c31636bb6401a20d537d95db04248c81883ad135"
 const val R69_ASSESSMENT_DIGEST = "39fbc01c7cf831ebf5fc0751cfcca73310bc1a1a1846508ff46d64c61bd09da7"
+const val R69_INPUT_TOKENS = 19364
+const val R69_OUTPUT_TOKENS = 4803
+const val R69_TOTAL_TOKENS = 24167
 const val R69A_COMMIT = "07b5b07769e57f5e066b680599143a2de6082ad8"
 const val R69A_REPORT_DIGEST = "6e3260effc4862bc4eed0a0b2e05aac5a118524f85ae16e4afec1d24e8d93200"
 const val R69B_COMMIT = "ac6c49115a756d4b5b88ff69e1789b36f54b03e0"
@@ -241,13 +245,62 @@ sealed interface OrdinaryRegionCapabilityPromotionOutcome {
 /** Reconstructs the fixed accepted R6.9 chain from durable provider state; never performs transport. */
 fun interface OrdinaryRegionR69EvidenceLoader { fun load(): OrdinaryRegionLiveR69Evidence }
 
-class DurableOrdinaryRegionR69EvidenceLoader(private val providerState: FileSystemRegionProviderStateStore) : OrdinaryRegionR69EvidenceLoader {
+class DurableOrdinaryRegionR69EvidenceLoader(
+    private val providerState: FileSystemRegionProviderStateStore,
+    private val authorities: FileSystemRegionAcceptanceAuthorityStorageV2,
+    private val attempts: FileSystemFidelityFirstAttemptLedger,
+) : OrdinaryRegionR69EvidenceLoader {
     override fun load(): OrdinaryRegionLiveR69Evidence {
+        val authority = requireNotNull(authorities.load(R69_AUTHORITY_ID)) { "R6.9 authority missing" }
+        require(authority.authorityId == R69_AUTHORITY_ID && authority.executionId == R69_EXECUTION_ID)
+        require(authority.recordId == R69_AUTHORITY_RECORD_ID) { "R6.9 authority identity mismatch" }
+        require(authority.maximumProviderAttempts == 1 && authority.purpose.code == RegionAcceptancePurposeCode.CONTROLLED_LIVE_FIDELITY_ACCEPTANCE)
+        val facts = authority.manifest.facts.associate { it.name to it.value }
+        require(facts.getValue("request.correlation_id") == "correlation-fa-9-4p-a1e-r6-8c1")
+        require(facts.getValue("request.schema_version") == "4")
+        require(facts.getValue("provider.wire_version") == "4")
+        require(facts.getValue("provider.adapter_version") == "3.0.0")
+        require(facts.getValue("provider.profile_id") == "openai-region-anchored-transcription-v1")
+        val expectedAttempt = FidelityFirstExecutionIdentity(
+            authority.executionId, R69_REQUEST_DIGEST, facts.getValue("request.correlation_id"),
+            facts.getValue("source.evidence_artifact_id"), facts.getValue("source.sha256"),
+            facts.getValue("source.byte_length").toLong(), facts.getValue("source.media_type"),
+            facts.getValue("deployment.runtime_commit"), facts.getValue("provider.name"),
+            facts.getValue("provider.model"), facts.getValue("provider.profile_id"),
+            facts.getValue("adapter.provider_instruction_sha256"), facts.getValue("request.schema_sha256"),
+            facts.getValue("request.processing_profile"), facts.getValue("provider.adapter_version"),
+        )
+        val attempt = requireNotNull(attempts.readExisting(R69_EXECUTION_ID)) { "R6.9 attempt missing" }
+        require(attempt.identity == expectedAttempt) { "R6.9 authority-to-attempt linkage mismatch" }
+        require(attempt.stages.lastOrNull() == FidelityFirstAttemptStage.PROVIDER_RESPONSE_RECEIVED)
+        require(attempt.stages.count { it == FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED } == 1)
+        require(attempt.stages.count { it == FidelityFirstAttemptStage.PROVIDER_RESPONSE_RECEIVED } == 1)
+
         val recovered = providerState.read(R69_PROVIDER_STATE_ID)
+        require(recovered.requestDigest == attempt.identity.requestId)
+        require(recovered.recordId == R69_PROVIDER_STATE_ID)
+        require(recovered.rawDigest == R69_RAW_RESPONSE_DIGEST)
+        require(recovered.recordDigest == R69_PROVIDER_RECORD_DIGEST)
+        require(recovered.structuredDigest == R69_STRUCTURED_STATE_DIGEST)
+        require(recovered.assessmentDigest == R69_ASSESSMENT_DIGEST)
+        require(recovered.outcomeCode == "VALIDATION_MALFORMED_SCHEMA")
+        require(!recovered.downstreamProcessingPending)
         @Suppress("UNCHECKED_CAST")
         val provenance = recovered.exactStructuredState?.get("provider_provenance") as? Map<String, Any?>
             ?: error("R6.9 provider result incomplete")
-        val responseId = provenance["provider_response_id"] as? String ?: error("R6.9 provider response identity missing")
+        require(provenance["provider"] == "OpenAI")
+        require(provenance["provider_response_id"] == null) // historical v4 projection; identity remains in verified raw envelope
+        @Suppress("UNCHECKED_CAST")
+        val raw = RegionJson.parse(String(recovered.rawBytes, StandardCharsets.UTF_8)) as? Map<String, Any?>
+            ?: error("R6.9 raw provider response malformed")
+        val responseId = raw["id"] as? String ?: error("R6.9 provider response identity missing")
+        require(responseId == R69_PROVIDER_RESPONSE_ID)
+        require(raw["model"] == "gpt-5.6-sol" && raw["status"] == "completed" && raw["error"] == null)
+        @Suppress("UNCHECKED_CAST")
+        val usage = raw["usage"] as? Map<String, Any?> ?: error("R6.9 provider usage missing")
+        require((usage["input_tokens"] as? Number)?.toInt() == R69_INPUT_TOKENS)
+        require((usage["output_tokens"] as? Number)?.toInt() == R69_OUTPUT_TOKENS)
+        require((usage["total_tokens"] as? Number)?.toInt() == R69_TOTAL_TOKENS)
         return OrdinaryRegionLiveR69Evidence(
             OrdinaryRegionAcceptanceEvidenceRole.R6_9_LIVE_PROVIDER_RESULT,
             R69_AUTHORITY_ID, R69_EXECUTION_ID, recovered.requestDigest, responseId, recovered.recordId,

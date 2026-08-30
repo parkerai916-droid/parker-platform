@@ -1577,7 +1577,12 @@ class ParkerRuntime(
                 val embedded = requireNotNull(embeddedCommit)
                 ordinaryRegionCapabilityAcceptanceCoordinator = parker.core.runtime.OrdinaryRegionCapabilityAcceptanceCoordinator(
                     acceptanceStore,
-                    parker.core.runtime.DurableOrdinaryRegionR69EvidenceLoader(providerStateStore),
+                    parker.core.runtime.DurableOrdinaryRegionR69EvidenceLoader(
+                        providerStateStore,
+                        parker.core.runtime.FileSystemRegionAcceptanceAuthorityStorageV2(
+                            Path.of(requireNotNull(config.regionAcceptanceAuthorityStorageRootPath))),
+                        ledger,
+                    ),
                     { buildIdentity() },
                     config.ownerPrincipalId,
                     clock,
