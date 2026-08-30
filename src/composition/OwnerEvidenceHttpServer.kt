@@ -48,6 +48,7 @@ import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
+import parker.core.runtime.OrdinaryRegionCapabilityStatus
 
 /**
  * Owner LAN Evidence Upload. Pure HTTP transport for the exact same
@@ -94,6 +95,7 @@ class OwnerEvidenceHttpServer(
     private val createOrdinaryRegionCapabilityAcceptance: (OrdinaryRegionCapabilityPromotionRequest) -> OrdinaryRegionCapabilityPromotionOutcome = {
         OrdinaryRegionCapabilityPromotionOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
     },
+    private val evaluateOrdinaryRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -168,9 +170,16 @@ class OwnerEvidenceHttpServer(
         override fun handle(exchange: HttpExchange) {
             try {
                 if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
-                if (exchange.requestMethod != "POST" || exchange.requestURI.path != "/owner/admin/region-capability-acceptance") {
+                if (exchange.requestURI.path != "/owner/admin/region-capability-acceptance") {
                     writeJson(exchange, 404, jsonObject("error" to "not found")); return
                 }
+                if (exchange.requestMethod == "GET") {
+                    val status = evaluateOrdinaryRegionCapability()
+                    if (status == null) writeJson(exchange, 409, jsonObject("status" to "NOT_CONFIGURED"))
+                    else writeJson(exchange, 200, capabilityStatusJson(status))
+                    return
+                }
+                if (exchange.requestMethod != "POST") { writeJson(exchange, 404, jsonObject("error" to "not found")); return }
                 val body = try { readBounded(exchange.requestBody, MAX_PROMOTION_REQUEST_BODY_BYTES) }
                 catch (_: RequestBodyTooLargeException) { writeJson(exchange, 413, jsonObject("error" to "request body too large")); return }
                 val request = try { parseCapabilityPromotionRequest(body) }
@@ -189,6 +198,17 @@ class OwnerEvidenceHttpServer(
         private fun promotionJson(status: String, record: parker.core.runtime.OrdinaryRegionCapabilityAcceptanceRecord) = jsonObject(
             "status" to status, "recordId" to record.recordId, "recordDigest" to record.recordId,
             "capabilityDigest" to record.capabilityDigest, "promotingBuildCommit" to record.promotingBuildCommit,
+        )
+        private fun capabilityStatusJson(status: OrdinaryRegionCapabilityStatus) = jsonObject(
+            "capabilityId" to status.capabilityId, "provider" to status.provider,
+            "operation" to status.endpointOperation, "model" to status.model,
+            "adapterId" to status.adapterId, "adapterVersion" to status.adapterVersion,
+            "profile" to status.providerProfile, "wireVersion" to status.wireVersion,
+            "mediaType" to status.mediaType, "maximumRegions" to status.maximumRegions,
+            "aggregateRequestBodyMaximumBytes" to status.aggregateRequestBodyMaximumBytes,
+            "batching" to status.batching, "disposition" to status.disposition.name,
+            "runtimeEmbeddedBuildCommit" to status.runtimeEmbeddedBuildCommit,
+            "acceptedPromotingBuildCommit" to status.acceptedPromotingBuildCommit,
         )
     }
 

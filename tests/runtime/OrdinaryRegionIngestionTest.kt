@@ -28,6 +28,34 @@ class OrdinaryRegionIngestionTest {
     private val capability = OrdinaryRegionCapabilityIdentity()
     private val now = Instant.parse("2026-08-30T00:00:00Z")
 
+    @Test fun `production catalogue registers canonical ordinary region v5 projection`() {
+        val projected = ProductionAcquisitionCapabilityCatalogue.ordinaryRegionV5Capability(false)
+        val registered = ProductionAcquisitionCapabilityCatalogue.create(ordinaryRegionCapabilityProjection = projected)
+            .capability(ORDINARY_REGION_CAPABILITY_ID)
+        assertNotNull(registered)
+        assertEquals(capability.digest(), registered.providerConfiguration?.configurationIdentity)
+        assertEquals(OPENAI_REGION_ADAPTER_VERSION, registered.providerConfiguration?.adapterVersion)
+        assertEquals(setOf("application/pdf"), registered.supportedMediaTypes)
+    }
+
+    @Test fun `read only status is dynamic exact build and exposes routing bounds without side effects`() {
+        val root = dir("status"); val store = FileSystemOrdinaryRegionCapabilityAcceptanceStore(root)
+        val evaluator = OrdinaryRegionCapabilityAcceptanceEvaluator(store, capability) { commit }
+        val before = evaluateOrdinaryRegionCapabilityStatus(capability, evaluator) { commit }
+        assertEquals(OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED, before.disposition)
+        assertEquals(32, before.maximumRegions); assertEquals(16_777_216, before.aggregateRequestBodyMaximumBytes)
+        assertFalse(before.batching); assertEquals("application/pdf", before.mediaType)
+        store.admit(acceptance())
+        val after = evaluateOrdinaryRegionCapabilityStatus(capability, evaluator) { commit }
+        assertEquals(OrdinaryRegionCapabilityDisposition.ACCEPTED, after.disposition)
+        assertEquals(commit, after.acceptedPromotingBuildCommit)
+        assertEquals(1L, Files.list(root).use { it.count() })
+        assertEquals(after, evaluateOrdinaryRegionCapabilityStatus(capability, evaluator) { commit })
+        assertEquals(OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED,
+            evaluateOrdinaryRegionCapabilityStatus(capability,
+                OrdinaryRegionCapabilityAcceptanceEvaluator(store, capability) { "b".repeat(40) }) { "b".repeat(40) }.disposition)
+    }
+
     @Test fun `capability acceptance is create-once exact-build and dynamically reloaded without stale acceptance`() {
         val root = dir("acceptance"); val store = FileSystemOrdinaryRegionCapabilityAcceptanceStore(root)
         val evaluator = OrdinaryRegionCapabilityAcceptanceEvaluator(store, capability) { commit }

@@ -1603,7 +1603,13 @@ class ParkerRuntime(
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )
-        val acquisitionRegistry = ProductionAcquisitionCapabilityCatalogue.create()
+        val acquisitionRegistry = ProductionAcquisitionCapabilityCatalogue.create(
+            ordinaryRegionCapabilityProjection = ordinaryRegionIngestionWorkflow?.let {
+                ProductionAcquisitionCapabilityCatalogue.ordinaryRegionV5Capability(
+                    it.capabilityStatus().disposition == parker.core.runtime.OrdinaryRegionCapabilityDisposition.ACCEPTED,
+                )
+            },
+        )
         val acquisitionRouter = DeterministicEvidenceAcquisitionRouter()
         governedAcquisitionOwnerWorkflow = GovernedAcquisitionOwnerWorkflow(
             ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
@@ -2270,6 +2276,20 @@ class ParkerRuntime(
     suspend fun proposeOrdinaryRegionIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.OrdinaryRegionProposal? {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return ordinaryRegionIngestionWorkflow?.proposal(evidenceArtifactId)
+    }
+
+    /** Fresh, read-only exact region-v5 acceptance and routing identity evaluation. */
+    fun ordinaryRegionCapabilityStatusAsOwner(): parker.core.runtime.OrdinaryRegionCapabilityStatus {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.capabilityStatus() ?: parker.core.runtime.OrdinaryRegionCapabilityIdentity().let { capability ->
+            parker.core.runtime.OrdinaryRegionCapabilityStatus(
+                capability.capabilityId, capability.provider, capability.endpointOperation, capability.model,
+                capability.adapterId, capability.adapterVersion, capability.providerProfile, capability.wireVersion,
+                capability.mediaType, capability.maximumRegions, capability.aggregateRequestBodyMaximumBytes,
+                capability.batching, parker.core.runtime.OrdinaryRegionCapabilityDisposition.NOT_CONFIGURED,
+                buildIdentity(), null,
+            )
+        }
     }
 
     /** Governed capability promotion only; reconstructs fixed evidence and performs no egress or execution. */

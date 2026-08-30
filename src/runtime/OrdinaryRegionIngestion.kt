@@ -408,7 +408,33 @@ data class OrdinaryRegionProposal(
     val provider: String = "OpenAI",
     val disclosure: String = "Selected authoritative PDF evidence crops will be transmitted to OpenAI for literal transcription.",
     val executing: Boolean = false,
+    val capabilityStatus: OrdinaryRegionCapabilityStatus,
 )
+
+enum class OrdinaryRegionCapabilityDisposition { CAPABILITY_NOT_ACCEPTED, ACCEPTED, NOT_CONFIGURED }
+data class OrdinaryRegionCapabilityStatus(
+    val capabilityId: String, val provider: String, val endpointOperation: String, val model: String,
+    val adapterId: String, val adapterVersion: String, val providerProfile: String, val wireVersion: Int,
+    val mediaType: String, val maximumRegions: Int, val aggregateRequestBodyMaximumBytes: Int,
+    val batching: Boolean, val disposition: OrdinaryRegionCapabilityDisposition,
+    val runtimeEmbeddedBuildCommit: String?, val acceptedPromotingBuildCommit: String?,
+)
+
+fun evaluateOrdinaryRegionCapabilityStatus(
+    capability: OrdinaryRegionCapabilityIdentity,
+    acceptance: OrdinaryRegionCapabilityAcceptanceEvaluator,
+    runtimeCommit: () -> String,
+): OrdinaryRegionCapabilityStatus {
+    val accepted = acceptance.evaluate() as? OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted
+    return OrdinaryRegionCapabilityStatus(
+        capability.capabilityId, capability.provider, capability.endpointOperation, capability.model,
+        capability.adapterId, capability.adapterVersion, capability.providerProfile, capability.wireVersion,
+        capability.mediaType, capability.maximumRegions, capability.aggregateRequestBodyMaximumBytes,
+        capability.batching,
+        if (accepted == null) OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED else OrdinaryRegionCapabilityDisposition.ACCEPTED,
+        runtimeCommit(), accepted?.record?.promotingBuildCommit,
+    )
+}
 
 data class OrdinaryRegionPreparedRequest(
     val binding: GovernedRegionExecutionBinding,
@@ -613,10 +639,14 @@ class OrdinaryRegionIngestionWorkflow(
 ) {
     private val resolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
 
+    fun capabilityStatus(): OrdinaryRegionCapabilityStatus {
+        return evaluateOrdinaryRegionCapabilityStatus(capability, acceptance, runtimeCommit)
+    }
+
     suspend fun proposal(evidenceId: EvidenceArtifactId): OrdinaryRegionProposal? =
         when (val source = resolver.resolve(ownerPrincipalId, evidenceId)) {
             is AuthoritativeAcquisitionResolution.Verified -> if (source.input.mediaType == "application/pdf")
-                OrdinaryRegionProposal(evidenceId.value, capability.capabilityId) else null
+                OrdinaryRegionProposal(evidenceId.value, capability.capabilityId, capabilityStatus = capabilityStatus()) else null
             else -> null
         }
 

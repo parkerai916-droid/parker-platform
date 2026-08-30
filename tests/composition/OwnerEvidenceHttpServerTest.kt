@@ -22,6 +22,8 @@ import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
+import parker.core.runtime.OrdinaryRegionCapabilityDisposition
+import parker.core.runtime.OrdinaryRegionCapabilityStatus
 import parker.core.interfaces.*
 import parker.ui.EnhancedTranscriptionReadiness
 import java.time.Instant
@@ -95,6 +97,7 @@ class OwnerEvidenceHttpServerTest {
         invokePromotion: (OrdinaryRegionCapabilityPromotionRequest) -> OrdinaryRegionCapabilityPromotionOutcome = {
             OrdinaryRegionCapabilityPromotionOutcome.Blocked("disabled")
         },
+        evaluateRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -127,6 +130,7 @@ class OwnerEvidenceHttpServerTest {
             logger = serverLogger,
             invokeFidelityFirstAcceptance = invokeAcceptance,
             createOrdinaryRegionCapabilityAcceptance = invokePromotion,
+            evaluateOrdinaryRegionCapability = evaluateRegionCapability,
         )
         server.start()
         return Harness(runtime, server, runtimeLogger, serverLogger)
@@ -164,6 +168,28 @@ class OwnerEvidenceHttpServerTest {
 
     private fun send(request: HttpRequest): HttpResponse<String> =
         client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+
+    @Test
+    fun `capability status GET is authenticated exact and read only`() {
+        var calls = 0
+        val status = OrdinaryRegionCapabilityStatus(
+            ORDINARY_REGION_CAPABILITY_ID, "OpenAI", "POST /v1/responses", "gpt-5.6-sol",
+            "openai-responses-region-transcription-adapter", "4.0.0", "openai-region-anchored-transcription-v2", 5,
+            "application/pdf", 32, 16_777_216, false, OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED,
+            "a".repeat(40), null,
+        )
+        val harness = startHarness("", evaluateRegionCapability = { calls++; status })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/admin/region-capability-acceptance")
+            assertEquals(401, send(HttpRequest.newBuilder(uri).GET().build()).statusCode()); assertEquals(0, calls)
+            val first = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
+            val second = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
+            assertEquals(200, first.statusCode()); assertEquals(2, calls)
+            assertTrue(first.body().contains("CAPABILITY_NOT_ACCEPTED"))
+            assertTrue(first.body().contains("openai-responses-region-transcription-adapter"))
+            assertTrue(first.body().contains("16777216")); assertEquals(first.body(), second.body())
+        } finally { harness.shutdown() }
+    }
 
     @Test
     fun `capability promotion endpoint is authenticated bounded and coordinator only`() {
