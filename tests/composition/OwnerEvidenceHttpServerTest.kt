@@ -19,6 +19,9 @@ import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
 import parker.core.runtime.DocumentAnalysisCoordinator
 import parker.core.runtime.FidelityFirstAcceptanceOutcome
+import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
+import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
+import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
 import parker.core.interfaces.*
 import parker.ui.EnhancedTranscriptionReadiness
 import java.time.Instant
@@ -89,6 +92,9 @@ class OwnerEvidenceHttpServerTest {
         externalReadiness: () -> EnhancedTranscriptionReadiness = { EnhancedTranscriptionReadiness.Disabled },
         invokeExternal: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = { ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("disabled") },
         invokeAcceptance: suspend (String) -> FidelityFirstAcceptanceOutcome = { FidelityFirstAcceptanceOutcome.Blocked("disabled") },
+        invokePromotion: (OrdinaryRegionCapabilityPromotionRequest) -> OrdinaryRegionCapabilityPromotionOutcome = {
+            OrdinaryRegionCapabilityPromotionOutcome.Blocked("disabled")
+        },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -120,6 +126,7 @@ class OwnerEvidenceHttpServerTest {
             operations = adapter,
             logger = serverLogger,
             invokeFidelityFirstAcceptance = invokeAcceptance,
+            createOrdinaryRegionCapabilityAcceptance = invokePromotion,
         )
         server.start()
         return Harness(runtime, server, runtimeLogger, serverLogger)
@@ -157,6 +164,29 @@ class OwnerEvidenceHttpServerTest {
 
     private fun send(request: HttpRequest): HttpResponse<String> =
         client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+
+    @Test
+    fun `capability promotion endpoint is authenticated bounded and coordinator only`() {
+        var calls = 0
+        var request: OrdinaryRegionCapabilityPromotionRequest? = null
+        val harness = startHarness("", invokePromotion = {
+            calls++; request = it; OrdinaryRegionCapabilityPromotionOutcome.Blocked("SYNTHETIC_GOVERNED_BLOCK")
+        })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/admin/region-capability-acceptance")
+            val body = "{\"capabilityId\":\"$ORDINARY_REGION_CAPABILITY_ID\",\"promotingBuildCommit\":\"${"a".repeat(40)}\"}"
+            assertEquals(401, send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.ofString(body)).build()).statusCode())
+            assertEquals(0, calls)
+            val response = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build())
+            assertEquals(409, response.statusCode()); assertEquals(1, calls)
+            assertEquals(ORDINARY_REGION_CAPABILITY_ID, request?.capabilityId)
+            assertTrue(response.body().contains("SYNTHETIC_GOVERNED_BLOCK"))
+            val arbitrary = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"capabilityId\":\"$ORDINARY_REGION_CAPABILITY_ID\",\"promotingBuildCommit\":\"${"a".repeat(40)}\",\"evidence\":[\"${"f".repeat(64)}\"]}" )).build())
+            assertEquals(400, arbitrary.statusCode()); assertEquals(1, calls)
+        } finally { harness.shutdown() }
+    }
 
     @Test
     fun `acceptance endpoint is owner authenticated exact-authority only and accepts no source overrides`() {

@@ -45,6 +45,9 @@ import parker.ui.OwnerAcquisitionExecutionView
 import parker.ui.OwnerAcquisitionSourceFacts
 import parker.ui.OwnerAcquisitionCapabilityView
 import parker.core.runtime.FidelityFirstAcceptanceOutcome
+import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
+import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
+import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
 
 /**
  * Owner LAN Evidence Upload. Pure HTTP transport for the exact same
@@ -88,6 +91,9 @@ class OwnerEvidenceHttpServer(
     private val invokeFidelityFirstAcceptance: suspend (String) -> FidelityFirstAcceptanceOutcome = {
         FidelityFirstAcceptanceOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
     },
+    private val createOrdinaryRegionCapabilityAcceptance: (OrdinaryRegionCapabilityPromotionRequest) -> OrdinaryRegionCapabilityPromotionOutcome = {
+        OrdinaryRegionCapabilityPromotionOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
+    },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -106,6 +112,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/evidence", EvidenceHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
+        httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
@@ -155,6 +162,34 @@ class OwnerEvidenceHttpServer(
         // an unauthorised request.
         runCatching { exchange.requestBody.use { it.readBytes() } }
         writeJson(exchange, 401, jsonObject("error" to "unauthorised"))
+    }
+
+    private inner class RegionCapabilityAcceptanceHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                if (exchange.requestMethod != "POST" || exchange.requestURI.path != "/owner/admin/region-capability-acceptance") {
+                    writeJson(exchange, 404, jsonObject("error" to "not found")); return
+                }
+                val body = try { readBounded(exchange.requestBody, MAX_PROMOTION_REQUEST_BODY_BYTES) }
+                catch (_: RequestBodyTooLargeException) { writeJson(exchange, 413, jsonObject("error" to "request body too large")); return }
+                val request = try { parseCapabilityPromotionRequest(body) }
+                catch (_: Exception) { writeJson(exchange, 400, jsonObject("error" to "invalid promotion request")); return }
+                when (val outcome = createOrdinaryRegionCapabilityAcceptance(request)) {
+                    is OrdinaryRegionCapabilityPromotionOutcome.Created -> writeJson(exchange, 201, promotionJson("CREATED", outcome.record))
+                    is OrdinaryRegionCapabilityPromotionOutcome.Existing -> writeJson(exchange, 200, promotionJson("EXISTING", outcome.record))
+                    is OrdinaryRegionCapabilityPromotionOutcome.Blocked -> writeJson(exchange, 409,
+                        jsonObject("status" to "BLOCKED", "reason" to outcome.reason))
+                }
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: capability promotion failed safely", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally { exchange.close() }
+        }
+        private fun promotionJson(status: String, record: parker.core.runtime.OrdinaryRegionCapabilityAcceptanceRecord) = jsonObject(
+            "status" to status, "recordId" to record.recordId, "recordDigest" to record.recordId,
+            "capabilityDigest" to record.capabilityDigest, "promotingBuildCommit" to record.promotingBuildCommit,
+        )
     }
 
     // ---- static owner page ---------------------------------------------------------------
@@ -1111,6 +1146,7 @@ class OwnerEvidenceHttpServer(
          * generous bound comfortably covers it with headroom for JSON structure.
          */
         const val MAX_SAVE_REQUEST_BODY_BYTES: Long = 4L * 1024L
+        const val MAX_PROMOTION_REQUEST_BODY_BYTES: Long = 1024L
     }
 }
 
@@ -1194,6 +1230,17 @@ private fun parseExpectedCapabilityId(bodyBytes: ByteArray): String {
         ?: throw JsonParseException("expected an 'expectedCapabilityId' string")
     if (value.isBlank() || value.length > 256) throw JsonParseException("invalid expected capability identity")
     return value
+}
+
+private fun parseCapabilityPromotionRequest(bodyBytes: ByteArray): OrdinaryRegionCapabilityPromotionRequest {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    if (obj.keys != setOf("capabilityId", "promotingBuildCommit")) throw JsonParseException("unexpected promotion fields")
+    val capability = obj["capabilityId"] as? String ?: throw JsonParseException("missing capabilityId")
+    val commit = obj["promotingBuildCommit"] as? String ?: throw JsonParseException("missing promotingBuildCommit")
+    if (capability != ORDINARY_REGION_CAPABILITY_ID || !commit.matches(Regex("^[0-9a-f]{40}$")))
+        throw JsonParseException("invalid governed promotion identity")
+    return OrdinaryRegionCapabilityPromotionRequest(capability, commit)
 }
 
 /** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */

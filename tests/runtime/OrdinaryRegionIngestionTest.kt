@@ -35,8 +35,45 @@ class OrdinaryRegionIngestionTest {
         val record = acceptance(); store.admit(record)
         assertEquals(record, assertIs<OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted>(evaluator.evaluate()).record)
         assertIs<OrdinaryRegionCapabilityAcceptanceEvaluation.NotAccepted>(OrdinaryRegionCapabilityAcceptanceEvaluator(store, capability) { "b".repeat(40) }.evaluate())
-        Files.writeString(root.resolve("corrupt.region-capability-acceptance-v1"), "corrupt")
+        Files.writeString(root.resolve("corrupt.region-capability-acceptance-v2"), "corrupt")
         assertIs<OrdinaryRegionCapabilityAcceptanceEvaluation.NotAccepted>(evaluator.evaluate())
+    }
+
+    @Test fun `typed evidence roles and governed values fail closed`() {
+        val valid = typedEvidence()
+        assertEquals(OrdinaryRegionFidelityClassification.PASS_FIDELITY, valid.fidelityReview.classification)
+        assertFails { valid.copy(forensicAnalysis = valid.forensicAnalysis.copy(role = OrdinaryRegionAcceptanceEvidenceRole.R6_9B_POINT_ANCHOR_SEMANTICS)) }
+        assertFails { valid.copy(pointAnchorSemantics = valid.pointAnchorSemantics.copy(role = OrdinaryRegionAcceptanceEvidenceRole.R6_9A_FORENSIC_ANALYSIS)) }
+        assertFails { valid.copy(
+            forensicAnalysis = valid.forensicAnalysis.copy(role = OrdinaryRegionAcceptanceEvidenceRole.R6_9B_POINT_ANCHOR_SEMANTICS),
+            pointAnchorSemantics = valid.pointAnchorSemantics.copy(role = OrdinaryRegionAcceptanceEvidenceRole.R6_9A_FORENSIC_ANALYSIS)) }
+        assertFails { valid.copy(pointAnchorSemantics = valid.pointAnchorSemantics.copy(commit = "f".repeat(40))) }
+        assertFails { valid.copy(fidelityReview = valid.fidelityReview.copy(reportDigest = "f".repeat(64))) }
+        assertFails { valid.copy(fidelityReview = valid.fidelityReview.copy(classification = OrdinaryRegionFidelityClassification.FAIL_FIDELITY)) }
+        assertFails { valid.copy(fidelityReview = valid.fidelityReview.copy(reviewedRegions = 23)) }
+        assertFails { valid.copy(liveResult = valid.liveResult.copy(requestDigest = "f".repeat(64))) }
+        assertFails { OrdinaryRegionCapabilityIdentity(model = "wrong") }
+        assertFails { OrdinaryRegionCapabilityAcceptanceRecord.create(capability, valid, "not-a-commit", "owner", now) }
+    }
+
+    @Test fun `governed coordinator creates once replays idempotently and legacy untyped record cannot accept`() {
+        val root = dir("coordinator"); val store = FileSystemOrdinaryRegionCapabilityAcceptanceStore(root)
+        val calls = AtomicInteger()
+        val coordinator = OrdinaryRegionCapabilityAcceptanceCoordinator(store, OrdinaryRegionR69EvidenceLoader { calls.incrementAndGet(); liveEvidence() },
+            { commit }, "owner", { now })
+        val request = OrdinaryRegionCapabilityPromotionRequest(ORDINARY_REGION_CAPABILITY_ID, commit)
+        val created = assertIs<OrdinaryRegionCapabilityPromotionOutcome.Created>(coordinator.create(request))
+        assertEquals(created.record, assertIs<OrdinaryRegionCapabilityPromotionOutcome.Existing>(coordinator.create(request)).record)
+        assertEquals(1, calls.get())
+        assertEquals(1L, Files.list(root).use { it.count() })
+        val conflict = OrdinaryRegionCapabilityAcceptanceRecord.create(capability, typedEvidence(), commit, "different-owner", now.plusSeconds(1))
+        assertFails { store.admit(conflict) }
+        assertIs<OrdinaryRegionCapabilityPromotionOutcome.Blocked>(coordinator.create(request.copy(capabilityId = "wrong")))
+        assertIs<OrdinaryRegionCapabilityPromotionOutcome.Blocked>(coordinator.create(request.copy(promotingBuildCommit = "b".repeat(40))))
+        val legacyRoot = dir("legacy-acceptance")
+        Files.writeString(legacyRoot.resolve("legacy.region-capability-acceptance-v1"), "${"1".repeat(64)}\tlegacy\n")
+        assertIs<OrdinaryRegionCapabilityAcceptanceEvaluation.NotAccepted>(
+            OrdinaryRegionCapabilityAcceptanceEvaluator(FileSystemOrdinaryRegionCapabilityAcceptanceStore(legacyRoot), capability) { commit }.evaluate())
     }
 
     @Test fun `authorization reservation is durable idempotent exact-bound and expiry and revocation fail closed`() {
@@ -161,7 +198,12 @@ class OrdinaryRegionIngestionTest {
         "provider_provenance" to mapOf("provider" to "OpenAI","requested_model" to OPENAI_REGION_MODEL,"provider_reported_model" to OPENAI_REGION_MODEL,"provider_response_id" to "resp-offline","adapter_id" to OPENAI_REGION_ADAPTER_ID,"adapter_version" to OPENAI_REGION_ADAPTER_VERSION,"parser_id" to OPENAI_REGION_PARSER_ID,"parser_version" to OPENAI_REGION_PARSER_VERSION),
         "blocks" to request.targets.reversed().mapIndexed{i,t->mapOf<String,Any?>("source_region_id" to t.sourceRegionId.value,"page_number" to t.pageNumber,"literal_text" to "offline literal ${i+1}","status" to "TRANSCRIBED","uncertainties" to emptyList<Any>(),"warnings" to emptyList<String>(),"provider_returned_ordinal" to i+1,"visual_observations" to emptyList<Any>())})
     private fun envelope(w:Map<String,Any?>)=RegionJson.encode(mapOf("id" to "resp-offline","model" to OPENAI_REGION_MODEL,"output" to listOf(mapOf("type" to "message","content" to listOf(mapOf("type" to "output_text","text" to RegionJson.encode(w)))))))
-    private fun acceptance()=OrdinaryRegionCapabilityAcceptanceRecord.create(capability,listOf("1".repeat(64),"2".repeat(64),"3".repeat(64)),commit,"owner",now)
+    private fun liveEvidence() = OrdinaryRegionLiveR69Evidence(
+        OrdinaryRegionAcceptanceEvidenceRole.R6_9_LIVE_PROVIDER_RESULT, R69_AUTHORITY_ID, R69_EXECUTION_ID,
+        R69_REQUEST_DIGEST, R69_PROVIDER_RESPONSE_ID, R69_PROVIDER_STATE_ID, R69_RAW_RESPONSE_DIGEST,
+        R69_STRUCTURED_STATE_DIGEST, R69_PROVIDER_RECORD_DIGEST, R69_ASSESSMENT_DIGEST)
+    private fun typedEvidence() = RegionTranscriptionCapabilityAcceptanceEvidenceV1.governed(liveEvidence())
+    private fun acceptance()=OrdinaryRegionCapabilityAcceptanceRecord.create(capability,typedEvidence(),commit,"owner",now)
     private fun grant(id:String,evidence:String="evidence",source:String="a".repeat(64),expires:Instant=now.plus(1,ChronoUnit.DAYS))=OrdinaryRegionOwnerAuthorization(id,evidence,source,capability.digest(),"OpenAI","literal transcription","deterministic PDF region crops","Selected authoritative PDF evidence crops will be transmitted to OpenAI for transcription.","owner",now.minusSeconds(1),expires)
     private fun identity(execution:String,attempt:String)=FidelityFirstExecutionIdentity(execution,"1".repeat(64),attempt,"evidence","a".repeat(64),1,"application/pdf",commit,"OpenAI",OPENAI_REGION_MODEL,OPENAI_REGION_PROFILE_ID,OPENAI_REGION_INSTRUCTION_SHA256,REGION_TRANSCRIPTION_SCHEMA_SHA256,REGION_TRANSCRIPTION_PROCESSING_PROFILE,OPENAI_REGION_ADAPTER_VERSION)
     private fun graph(count:Int):SourceRegionOrderGraph { val page=PageRepresentationId("b".repeat(64));val dims=PagePixelDimensions(1000,2000);val regions=(0 until count).map{i->val id=SourceRegionId("%064x".format(i+1));val b=PixelCropBounds(10,10+i*20,100,25+i*20);SourceRegion(id,b,SourceRegionStructuralClass.TEXT_LIKE,CanonicalPixelDigest("%064x".format(i+100)),SourceRegionProvenance(EvidenceArtifactId("evidence"),"a".repeat(64),page,1,dims,CanonicalPixelDigest("c".repeat(64)),"pixel-whitespace-source-regions-v1",1))};return SourceRegionOrderGraph(page,regions,emptySet(),SourceRegionAmbiguityState.UNAMBIGUOUS) }

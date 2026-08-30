@@ -136,6 +136,7 @@ fun main(args: Array<String>) = runBlocking {
             operations = adapter,
             logger = ConsoleParkerLogger("owner-http", minLevel = effectiveLogLevel),
             invokeFidelityFirstAcceptance = runtime::invokeFidelityFirstAcceptanceAsOwner,
+            createOrdinaryRegionCapabilityAcceptance = runtime::createOrdinaryRegionCapabilityAcceptanceAsOwner,
         ).also { it.start() }
     } else {
         null

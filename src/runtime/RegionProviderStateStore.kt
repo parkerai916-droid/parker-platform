@@ -17,7 +17,7 @@ data class RegionProviderStateReceipt(val recordId: String, val requestDigest: S
 data class RecoveredRegionProviderState(
     val recordId: String, val requestDigest: String, val rawDigest: String, val rawBytes: ByteArray,
     val recordDigest: String, val outcomeCode: String?, val structuredDigest: String?,
-    val exactStructuredState: Map<String, Any?>?, val downstreamProcessingPending: Boolean,
+    val assessmentDigest: String?, val exactStructuredState: Map<String, Any?>?, val downstreamProcessingPending: Boolean,
 )
 
 class RegionProviderStateException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
@@ -80,13 +80,14 @@ class FileSystemRegionProviderStateStore(root: Path) {
         if (raw.size != number(top, "raw_length") || regionSha256(raw) != rawDigest) corrupt("raw response digest mismatch")
         val recordDigest = regionSha256(canonical(top))
         val assessmentFile = assessmentPath(recordId)
-        if (!Files.exists(assessmentFile)) return RecoveredRegionProviderState(recordId, requestDigest, rawDigest, raw, recordDigest, null, null, null, true)
+        if (!Files.exists(assessmentFile)) return RecoveredRegionProviderState(recordId, requestDigest, rawDigest, raw, recordDigest, null, null, null, null, true)
         val assessment = decodeVerified(assessmentFile, "assessment", "assessment_sha256")
         requireString(assessment, "record_id", recordId); requireString(assessment, "request_digest", requestDigest); requireString(assessment, "raw_sha256", rawDigest)
         @Suppress("UNCHECKED_CAST") val structured = assessment["exact_structured_state"] as? Map<String, Any?>
         val structuredDigest = assessment["structured_sha256"] as? String
         if ((structured == null) != (structuredDigest == null) || (structured != null && regionSha256(canonical(structured)) != structuredDigest)) corrupt("structured state digest mismatch")
-        return RecoveredRegionProviderState(recordId, requestDigest, rawDigest, raw, recordDigest, string(assessment, "outcome_code"), structuredDigest, structured, false)
+        return RecoveredRegionProviderState(recordId, requestDigest, rawDigest, raw, recordDigest,
+            string(assessment, "outcome_code"), structuredDigest, regionSha256(canonical(assessment)), structured, false)
     }
 
     fun enumerate(): List<String> = Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".provider-state") }.map { it.fileName.toString().removeSuffix(".provider-state") }.sorted().toList() }

@@ -364,6 +364,7 @@ class ParkerRuntime(
     private var regionAcceptanceExecutionCoordinator: parker.core.runtime.RegionAcceptanceExecutionCoordinatorV2? = null
     private var regionAcceptanceAuthorityCreationCoordinator: parker.core.runtime.RegionTranscriptionAcceptanceAuthorityCreationCoordinator? = null
     private var ordinaryRegionIngestionWorkflow: OrdinaryRegionIngestionWorkflow? = null
+    private var ordinaryRegionCapabilityAcceptanceCoordinator: parker.core.runtime.OrdinaryRegionCapabilityAcceptanceCoordinator? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
@@ -1574,6 +1575,13 @@ class ParkerRuntime(
                 val providerStateStore = requireNotNull(composedRegionProviderStateStore)
                 val regionExecution = requireNotNull(governedRegionTranscriptionExecutionCoordinator)
                 val embedded = requireNotNull(embeddedCommit)
+                ordinaryRegionCapabilityAcceptanceCoordinator = parker.core.runtime.OrdinaryRegionCapabilityAcceptanceCoordinator(
+                    acceptanceStore,
+                    parker.core.runtime.DurableOrdinaryRegionR69EvidenceLoader(providerStateStore),
+                    { buildIdentity() },
+                    config.ownerPrincipalId,
+                    clock,
+                )
                 val bodyEncoder = OpenAiRegionTranscriptionAdapter(
                     credential = requireNotNull(credential), transport = openAiTransport,
                     providerStateStore = providerStateStore,
@@ -2262,6 +2270,15 @@ class ParkerRuntime(
     suspend fun proposeOrdinaryRegionIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.OrdinaryRegionProposal? {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return ordinaryRegionIngestionWorkflow?.proposal(evidenceArtifactId)
+    }
+
+    /** Governed capability promotion only; reconstructs fixed evidence and performs no egress or execution. */
+    fun createOrdinaryRegionCapabilityAcceptanceAsOwner(
+        request: parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest,
+    ): parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionCapabilityAcceptanceCoordinator?.create(request)
+            ?: parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
     }
 
     /** Explicit owner grant creation only; no reservation, attempt, or provider activity. */

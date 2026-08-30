@@ -18,6 +18,21 @@ import parker.core.interfaces.*
 const val ORDINARY_REGION_CAPABILITY_ID = "ordinary-external-region-transcription-v5"
 const val ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORE_ID = "ordinary-region-capability-acceptance-v1"
 const val ORDINARY_REGION_AUTHORIZATION_STORE_ID = "ordinary-region-owner-authorization-v1"
+const val R69_AUTHORITY_ID = "authority-fa-9.4p-a1e-r6.8c1"
+const val R69_EXECUTION_ID = "execution-fa-9.4p-a1e-r6.8c1"
+const val R69_REQUEST_DIGEST = "1a691388478370add9bae4e920fb1071369efa543057403727b422e9000a3d36"
+const val R69_PROVIDER_RESPONSE_ID = "resp_0007d6aa81587b3e016a92f716feb087d0ae9e005456676627"
+const val R69_PROVIDER_STATE_ID = "31b997b2a5208ab120fa483778bca9f1ec270c994b7937b3e5dd765db2bfabcd"
+const val R69_RAW_RESPONSE_DIGEST = "500863d65c7f9ca69a66b2ffef3ef8a42b7033903cf1b5a5bd774d9f0decd87f"
+const val R69_STRUCTURED_STATE_DIGEST = "7031179aa4267fdc12a50a429eef184e4ecfb2efb3ae993b6a5527ecf9f4c476"
+const val R69_PROVIDER_RECORD_DIGEST = "ad2542015546250bfe0640e5c31636bb6401a20d537d95db04248c81883ad135"
+const val R69_ASSESSMENT_DIGEST = "39fbc01c7cf831ebf5fc0751cfcca73310bc1a1a1846508ff46d64c61bd09da7"
+const val R69A_COMMIT = "07b5b07769e57f5e066b680599143a2de6082ad8"
+const val R69A_REPORT_DIGEST = "6e3260effc4862bc4eed0a0b2e05aac5a118524f85ae16e4afec1d24e8d93200"
+const val R69B_COMMIT = "ac6c49115a756d4b5b88ff69e1789b36f54b03e0"
+const val R69B_REPORT_DIGEST = "2295ea42f7b447806e66d3aac2bec9a1a7875040c0d23aa16cee6d47d013a2dc"
+const val R69C_COMMIT = "b9a964a98edf9803791a046d189a61c2353a44a3"
+const val R69C_REPORT_DIGEST = "3245780663d86c486bf8b42d4dded31beb0cf8b00cb6641f8d596ce077fc6d4e"
 const val ORDINARY_REGION_MAX_REQUEST_BODY_BYTES: Int = 16 * 1024 * 1024
 const val ORDINARY_REGION_CAPABILITY_ACCEPTANCE_CONTAINER_ROOT = "/data/region-transcription-capability-acceptances"
 const val ORDINARY_REGION_OWNER_AUTHORIZATION_CONTAINER_ROOT = "/data/external-region-owner-authorizations"
@@ -38,6 +53,10 @@ data class OrdinaryRegionCapabilityIdentity(
     val instructionSha256: String = OPENAI_REGION_INSTRUCTION_SHA256,
     val processingProfile: String = REGION_TRANSCRIPTION_PROCESSING_PROFILE,
     val rendererIdentity: String = "${DeterministicSourcePageRenderer.PDFBOX_ID}:${DeterministicSourcePageRenderer.PDFBOX_VERSION}:300dpi",
+    val mediaType: String = "application/pdf",
+    val maximumRegions: Int = 32,
+    val aggregateRequestBodyMaximumBytes: Int = ORDINARY_REGION_MAX_REQUEST_BODY_BYTES,
+    val batching: Boolean = false,
 ) {
     init {
         require(capabilityId == ORDINARY_REGION_CAPABILITY_ID && provider == "OpenAI")
@@ -45,37 +64,104 @@ data class OrdinaryRegionCapabilityIdentity(
         require(reasoning == "none" && !store && imageDetail == "original")
         require(adapterId == "openai-responses-region-transcription-adapter" && adapterVersion == "4.0.0")
         require(providerProfile == "openai-region-anchored-transcription-v2" && wireVersion == 5)
+        require(schemaSha256 == REGION_TRANSCRIPTION_SCHEMA_SHA256 && instructionSha256 == OPENAI_REGION_INSTRUCTION_SHA256)
+        require(processingProfile == REGION_TRANSCRIPTION_PROCESSING_PROFILE)
+        require(rendererIdentity == "apache-pdfbox:3.0.7:300dpi")
+        require(mediaType == "application/pdf" && maximumRegions == 32)
+        require(aggregateRequestBodyMaximumBytes == 16_777_216 && !batching)
     }
 
     fun digest(): String = ordinaryRegionDigest(*fields().toTypedArray())
     internal fun fields() = listOf(capabilityId, provider, endpointOperation, model, reasoning, store.toString(),
         imageDetail, adapterId, adapterVersion, providerProfile, wireVersion.toString(), schemaSha256,
-        instructionSha256, processingProfile, rendererIdentity)
+        instructionSha256, processingProfile, rendererIdentity, mediaType, maximumRegions.toString(),
+        aggregateRequestBodyMaximumBytes.toString(), batching.toString())
+}
+
+enum class OrdinaryRegionAcceptanceEvidenceRole {
+    R6_9_LIVE_PROVIDER_RESULT, R6_9A_FORENSIC_ANALYSIS, R6_9B_POINT_ANCHOR_SEMANTICS, R6_9C_FIDELITY_REVIEW,
+}
+enum class OrdinaryRegionFidelityClassification { PASS_FIDELITY, FAIL_FIDELITY }
+
+data class OrdinaryRegionLiveR69Evidence(
+    val role: OrdinaryRegionAcceptanceEvidenceRole,
+    val authorityId: String, val executionId: String, val requestDigest: String,
+    val providerResponseId: String, val providerStateRecordId: String,
+    val rawResponseDigest: String, val structuredStateDigest: String,
+    val providerStateRecordDigest: String, val assessmentDigest: String,
+)
+data class OrdinaryRegionR69AEvidence(val role: OrdinaryRegionAcceptanceEvidenceRole, val commit: String, val reportDigest: String)
+data class OrdinaryRegionR69BEvidence(val role: OrdinaryRegionAcceptanceEvidenceRole, val commit: String, val reportDigest: String, val wireVersion: Int)
+data class OrdinaryRegionR69CEvidence(
+    val role: OrdinaryRegionAcceptanceEvidenceRole, val commit: String, val reportDigest: String,
+    val classification: OrdinaryRegionFidelityClassification, val reviewedRegions: Int,
+    val exactRegions: Int, val nonExactDiscrepancies: Int,
+)
+
+data class RegionTranscriptionCapabilityAcceptanceEvidenceV1(
+    val liveResult: OrdinaryRegionLiveR69Evidence,
+    val forensicAnalysis: OrdinaryRegionR69AEvidence,
+    val pointAnchorSemantics: OrdinaryRegionR69BEvidence,
+    val fidelityReview: OrdinaryRegionR69CEvidence,
+) {
+    init {
+        val roles = listOf(liveResult.role, forensicAnalysis.role, pointAnchorSemantics.role, fidelityReview.role)
+        require(roles.toSet().size == 4 && roles.toSet() == OrdinaryRegionAcceptanceEvidenceRole.entries.toSet())
+        require(liveResult.role == OrdinaryRegionAcceptanceEvidenceRole.R6_9_LIVE_PROVIDER_RESULT)
+        require(liveResult.authorityId == R69_AUTHORITY_ID && liveResult.executionId == R69_EXECUTION_ID)
+        require(liveResult.requestDigest == R69_REQUEST_DIGEST && liveResult.providerResponseId == R69_PROVIDER_RESPONSE_ID)
+        require(liveResult.providerStateRecordId == R69_PROVIDER_STATE_ID)
+        require(liveResult.rawResponseDigest == R69_RAW_RESPONSE_DIGEST)
+        require(liveResult.structuredStateDigest == R69_STRUCTURED_STATE_DIGEST)
+        require(liveResult.providerStateRecordDigest == R69_PROVIDER_RECORD_DIGEST)
+        require(liveResult.assessmentDigest == R69_ASSESSMENT_DIGEST)
+        require(forensicAnalysis == OrdinaryRegionR69AEvidence(OrdinaryRegionAcceptanceEvidenceRole.R6_9A_FORENSIC_ANALYSIS, R69A_COMMIT, R69A_REPORT_DIGEST))
+        require(pointAnchorSemantics == OrdinaryRegionR69BEvidence(OrdinaryRegionAcceptanceEvidenceRole.R6_9B_POINT_ANCHOR_SEMANTICS, R69B_COMMIT, R69B_REPORT_DIGEST, 5))
+        require(fidelityReview == OrdinaryRegionR69CEvidence(OrdinaryRegionAcceptanceEvidenceRole.R6_9C_FIDELITY_REVIEW,
+            R69C_COMMIT, R69C_REPORT_DIGEST, OrdinaryRegionFidelityClassification.PASS_FIDELITY, 24, 24, 0))
+    }
+    internal fun fields(): List<String> = listOf(
+        liveResult.role.name, liveResult.authorityId, liveResult.executionId, liveResult.requestDigest,
+        liveResult.providerResponseId, liveResult.providerStateRecordId, liveResult.rawResponseDigest,
+        liveResult.structuredStateDigest, liveResult.providerStateRecordDigest, liveResult.assessmentDigest,
+        forensicAnalysis.role.name, forensicAnalysis.commit, forensicAnalysis.reportDigest,
+        pointAnchorSemantics.role.name, pointAnchorSemantics.commit, pointAnchorSemantics.reportDigest, pointAnchorSemantics.wireVersion.toString(),
+        fidelityReview.role.name, fidelityReview.commit, fidelityReview.reportDigest, fidelityReview.classification.name,
+        fidelityReview.reviewedRegions.toString(), fidelityReview.exactRegions.toString(), fidelityReview.nonExactDiscrepancies.toString(),
+    )
+    companion object {
+        fun governed(live: OrdinaryRegionLiveR69Evidence) = RegionTranscriptionCapabilityAcceptanceEvidenceV1(
+            live,
+            OrdinaryRegionR69AEvidence(OrdinaryRegionAcceptanceEvidenceRole.R6_9A_FORENSIC_ANALYSIS, R69A_COMMIT, R69A_REPORT_DIGEST),
+            OrdinaryRegionR69BEvidence(OrdinaryRegionAcceptanceEvidenceRole.R6_9B_POINT_ANCHOR_SEMANTICS, R69B_COMMIT, R69B_REPORT_DIGEST, 5),
+            OrdinaryRegionR69CEvidence(OrdinaryRegionAcceptanceEvidenceRole.R6_9C_FIDELITY_REVIEW, R69C_COMMIT,
+                R69C_REPORT_DIGEST, OrdinaryRegionFidelityClassification.PASS_FIDELITY, 24, 24, 0),
+        )
+    }
 }
 
 data class OrdinaryRegionCapabilityAcceptanceRecord(
     val recordId: String,
     val capabilityDigest: String,
-    val r69EvidenceChain: List<String>,
+    val evidence: RegionTranscriptionCapabilityAcceptanceEvidenceV1,
     val promotingBuildCommit: String,
     val acceptedBy: String,
     val acceptedAt: Instant,
 ) {
     init {
         require(recordId.matches(SHA256) && capabilityDigest.matches(SHA256))
-        require(r69EvidenceChain.isNotEmpty() && r69EvidenceChain.all(SHA256::matches))
         require(promotingBuildCommit.matches(COMMIT))
         require(acceptedBy.isNotBlank() && acceptedBy.length <= 256)
-        require(recordId == identity(capabilityDigest, r69EvidenceChain, promotingBuildCommit, acceptedBy, acceptedAt))
+        require(recordId == identity(capabilityDigest, evidence, promotingBuildCommit, acceptedBy, acceptedAt))
     }
     companion object {
         private val SHA256 = Regex("^[0-9a-f]{64}$"); private val COMMIT = Regex("^[0-9a-f]{40}$")
-        fun create(capability: OrdinaryRegionCapabilityIdentity, evidence: List<String>, commit: String,
+        fun create(capability: OrdinaryRegionCapabilityIdentity, evidence: RegionTranscriptionCapabilityAcceptanceEvidenceV1, commit: String,
             acceptedBy: String, acceptedAt: Instant) = OrdinaryRegionCapabilityAcceptanceRecord(
             identity(capability.digest(), evidence, commit, acceptedBy, acceptedAt), capability.digest(),
-            evidence.toList(), commit, acceptedBy, acceptedAt)
-        private fun identity(capability: String, evidence: List<String>, commit: String, by: String, at: Instant) =
-            ordinaryRegionDigest("parker.region-capability-acceptance.v1", capability, evidence.joinToString(","), commit, by, at.toString())
+            evidence, commit, acceptedBy, acceptedAt)
+        private fun identity(capability: String, evidence: RegionTranscriptionCapabilityAcceptanceEvidenceV1, commit: String, by: String, at: Instant) =
+            ordinaryRegionDigest("parker.region-capability-acceptance.v2", capability, *evidence.fields().toTypedArray(), commit, by, at.toString())
     }
 }
 
@@ -84,14 +170,19 @@ class FileSystemOrdinaryRegionCapabilityAcceptanceStore(storageRoot: Path) {
     init { require(Files.isDirectory(root) && Files.isReadable(root) && Files.isWritable(root)) }
 
     fun admit(record: OrdinaryRegionCapabilityAcceptanceRecord) {
-        val target = root.resolve("${record.recordId}.region-capability-acceptance-v1")
+        val existing = findExact(OrdinaryRegionCapabilityIdentity(), record.promotingBuildCommit)
+        if (existing != null) {
+            require(existing == record) { "capability acceptance conflict" }
+            return
+        }
+        val target = root.resolve("${record.recordId}.region-capability-acceptance-v2")
         createOnce(target, encode(record), "capability acceptance conflict")
     }
 
     fun findExact(capability: OrdinaryRegionCapabilityIdentity, runtimeCommit: String): OrdinaryRegionCapabilityAcceptanceRecord? {
         require(runtimeCommit.matches(Regex("^[0-9a-f]{40}$")))
         val records = try {
-            Files.list(root).use { stream -> stream.filter { it.fileName.toString().endsWith(".region-capability-acceptance-v1") }
+            Files.list(root).use { stream -> stream.filter { it.fileName.toString().endsWith(".region-capability-acceptance-v2") }
                 .map { decode(Files.readString(it)) }.toList() }
         } catch (e: Exception) { throw IllegalStateException("capability acceptance store unavailable or corrupt", e) }
         return records.filter { it.capabilityDigest == capability.digest() && it.promotingBuildCommit == runtimeCommit }
@@ -100,16 +191,23 @@ class FileSystemOrdinaryRegionCapabilityAcceptanceStore(storageRoot: Path) {
     }
 
     private fun encode(r: OrdinaryRegionCapabilityAcceptanceRecord): String {
-        val fields = listOf(r.recordId, r.capabilityDigest, r.r69EvidenceChain.joinToString(","), r.promotingBuildCommit,
+        val fields = listOf(r.recordId, r.capabilityDigest) + r.evidence.fields() + listOf(r.promotingBuildCommit,
             b64(r.acceptedBy), r.acceptedAt.toString())
         val payload = fields.joinToString("\t"); return "$payload\t${ordinaryRegionDigest(payload)}\n"
     }
     private fun decode(text: String): OrdinaryRegionCapabilityAcceptanceRecord {
         require(text.endsWith('\n') && text.count { it == '\n' } == 1)
-        val p = text.trimEnd().split('\t'); require(p.size == 7)
-        val payload = p.take(6).joinToString("\t"); require(p[6] == ordinaryRegionDigest(payload))
-        return OrdinaryRegionCapabilityAcceptanceRecord(p[0], p[1], p[2].split(',').filter(String::isNotEmpty),
-            p[3], unb64(p[4]), Instant.parse(p[5]))
+        val p = text.trimEnd().split('\t'); require(p.size == 30)
+        val payload = p.take(29).joinToString("\t"); require(p[29] == ordinaryRegionDigest(payload))
+        fun role(i: Int) = OrdinaryRegionAcceptanceEvidenceRole.valueOf(p[i])
+        val evidence = RegionTranscriptionCapabilityAcceptanceEvidenceV1(
+            OrdinaryRegionLiveR69Evidence(role(2), p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11]),
+            OrdinaryRegionR69AEvidence(role(12), p[13], p[14]),
+            OrdinaryRegionR69BEvidence(role(15), p[16], p[17], p[18].toInt()),
+            OrdinaryRegionR69CEvidence(role(19), p[20], p[21], OrdinaryRegionFidelityClassification.valueOf(p[22]),
+                p[23].toInt(), p[24].toInt(), p[25].toInt()),
+        )
+        return OrdinaryRegionCapabilityAcceptanceRecord(p[0], p[1], evidence, p[26], unb64(p[27]), Instant.parse(p[28]))
     }
 }
 
@@ -131,6 +229,62 @@ class OrdinaryRegionCapabilityAcceptanceEvaluator(
             ?: OrdinaryRegionCapabilityAcceptanceEvaluation.NotAccepted }
         catch (_: Exception) { OrdinaryRegionCapabilityAcceptanceEvaluation.NotAccepted }
     }
+}
+
+data class OrdinaryRegionCapabilityPromotionRequest(val capabilityId: String, val promotingBuildCommit: String)
+sealed interface OrdinaryRegionCapabilityPromotionOutcome {
+    data class Created(val record: OrdinaryRegionCapabilityAcceptanceRecord) : OrdinaryRegionCapabilityPromotionOutcome
+    data class Existing(val record: OrdinaryRegionCapabilityAcceptanceRecord) : OrdinaryRegionCapabilityPromotionOutcome
+    data class Blocked(val reason: String) : OrdinaryRegionCapabilityPromotionOutcome
+}
+
+/** Reconstructs the fixed accepted R6.9 chain from durable provider state; never performs transport. */
+fun interface OrdinaryRegionR69EvidenceLoader { fun load(): OrdinaryRegionLiveR69Evidence }
+
+class DurableOrdinaryRegionR69EvidenceLoader(private val providerState: FileSystemRegionProviderStateStore) : OrdinaryRegionR69EvidenceLoader {
+    override fun load(): OrdinaryRegionLiveR69Evidence {
+        val recovered = providerState.read(R69_PROVIDER_STATE_ID)
+        @Suppress("UNCHECKED_CAST")
+        val provenance = recovered.exactStructuredState?.get("provider_provenance") as? Map<String, Any?>
+            ?: error("R6.9 provider result incomplete")
+        val responseId = provenance["provider_response_id"] as? String ?: error("R6.9 provider response identity missing")
+        return OrdinaryRegionLiveR69Evidence(
+            OrdinaryRegionAcceptanceEvidenceRole.R6_9_LIVE_PROVIDER_RESULT,
+            R69_AUTHORITY_ID, R69_EXECUTION_ID, recovered.requestDigest, responseId, recovered.recordId,
+            recovered.rawDigest, requireNotNull(recovered.structuredDigest), recovered.recordDigest,
+            requireNotNull(recovered.assessmentDigest),
+        )
+    }
+}
+
+class OrdinaryRegionCapabilityAcceptanceCoordinator(
+    private val store: FileSystemOrdinaryRegionCapabilityAcceptanceStore,
+    private val evidenceLoader: OrdinaryRegionR69EvidenceLoader,
+    private val runtimeEmbeddedParkerSourceCommit: () -> String?,
+    private val acceptedBy: String,
+    private val now: () -> Instant = Instant::now,
+) {
+    fun create(request: OrdinaryRegionCapabilityPromotionRequest): OrdinaryRegionCapabilityPromotionOutcome {
+        if (request.capabilityId != ORDINARY_REGION_CAPABILITY_ID) return blocked("CAPABILITY_ID_MISMATCH")
+        if (!request.promotingBuildCommit.matches(Regex("^[0-9a-f]{40}$"))) return blocked("BUILD_COMMIT_MALFORMED")
+        if (runtimeEmbeddedParkerSourceCommit() != request.promotingBuildCommit) return blocked("BUILD_COMMIT_MISMATCH")
+        val capability = OrdinaryRegionCapabilityIdentity()
+        val existing = runCatching { store.findExact(capability, request.promotingBuildCommit) }
+            .getOrElse { return blocked("ACCEPTANCE_STORE_UNAVAILABLE_OR_CORRUPT") }
+        if (existing != null) return OrdinaryRegionCapabilityPromotionOutcome.Existing(existing)
+        val live = runCatching { evidenceLoader.load() }
+            .getOrElse { return blocked("R6_9_PROVIDER_EVIDENCE_UNAVAILABLE_OR_CORRUPT") }
+        val evidence = runCatching { RegionTranscriptionCapabilityAcceptanceEvidenceV1.governed(live) }
+            .getOrElse { return blocked("R6_9_EVIDENCE_CHAIN_MISMATCH") }
+        val record = runCatching { OrdinaryRegionCapabilityAcceptanceRecord.create(
+            capability, evidence, request.promotingBuildCommit, acceptedBy, now())
+        }.getOrElse { return blocked("ACCEPTANCE_RECORD_INVALID") }
+        return try {
+            store.admit(record)
+            OrdinaryRegionCapabilityPromotionOutcome.Created(record)
+        } catch (_: Exception) { blocked("ACCEPTANCE_CREATE_CONFLICT") }
+    }
+    private fun blocked(reason: String) = OrdinaryRegionCapabilityPromotionOutcome.Blocked(reason)
 }
 
 enum class OrdinaryRegionAuthorizationState { AVAILABLE, RESERVED_FOR_EXECUTION, CONSUMED_BY_PROVIDER_ATTEMPT }
