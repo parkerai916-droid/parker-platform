@@ -60,6 +60,9 @@ import parker.ui.OwnerAcquisitionCapabilityView
 import parker.core.runtime.GovernedAcquisitionOwnerEvaluation
 import parker.core.runtime.GovernedAcquisitionOwnerExecution
 import parker.core.runtime.GovernedAcquisitionExecutionResult
+import parker.core.runtime.OrdinaryRegionCapabilityDisposition
+import parker.core.runtime.OrdinaryRegionProposal
+import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.interfaces.*
 
 /** OCR Mechanism Unit 12's own, unmodified, already-governed analysisKind convention. */
@@ -186,13 +189,40 @@ class OwnerUiEvidenceRuntimeAdapter(
             listOf("Required technical source characteristics are not established."),
         )
     },
+    private val ordinaryRegionProposalAsOwner: suspend (EvidenceArtifactId) -> OrdinaryRegionProposal? = { null },
     private val executeGovernedAsOwner: suspend (EvidenceArtifactId, String) -> OwnerAcquisitionExecutionView = { _, _ ->
         OwnerAcquisitionExecutionView.Failed("SELECTED_CAPABILITY_UNAVAILABLE")
     },
 ) : OwnerEvidenceOperations {
 
-    override suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView =
-        governedDecisionAsOwner(evidenceArtifactId)
+    override suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView {
+        val governed = governedDecisionAsOwner(evidenceArtifactId)
+        val proposal = ordinaryRegionProposalAsOwner(evidenceArtifactId)
+        if (proposal == null || proposal.capabilityStatus.disposition != OrdinaryRegionCapabilityDisposition.ACCEPTED) return governed
+        check(proposal.capabilityId == ORDINARY_REGION_CAPABILITY_ID)
+        val status = proposal.capabilityStatus
+        return OwnerAcquisitionDecisionView.Proposed(
+            source = governed.source,
+            capability = OwnerAcquisitionCapabilityView(
+                capabilityId = status.capabilityId,
+                mechanismLabel = "External region transcription",
+                executionLocation = "EXTERNAL",
+                externalEgressRequired = true,
+                provider = status.provider,
+                modelRule = status.model,
+                profile = status.providerProfile,
+                representationLabel = "Selected authoritative PDF evidence crops",
+                availability = "READY",
+                selectionReasons = listOf("ACCEPTED_REGION_V5_CAPABILITY", "PDF_SOURCE"),
+                configurationIdentity = "${status.adapterId}:${status.adapterVersion}:wire-${status.wireVersion}",
+                processingProfile = status.providerProfile,
+                store = false,
+                imageDetail = "original",
+            ),
+            explanation = "The governed ordinary region-v5 capability is accepted for this PDF. Owner review and separate evidence-specific authorization are required before any external processing.",
+            disclosure = proposal.disclosure,
+        )
+    }
 
     override suspend fun executeGovernedAcquisition(
         evidenceArtifactId: EvidenceArtifactId,

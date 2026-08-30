@@ -43,6 +43,14 @@ sealed interface OwnerAcquisitionDecisionView {
         val capability: OwnerAcquisitionCapabilityView,
         val explanation: String,
     ) : OwnerAcquisitionDecisionView
+    data class Proposed(
+        override val source: OwnerAcquisitionSourceFacts,
+        val capability: OwnerAcquisitionCapabilityView,
+        val explanation: String,
+        val disclosure: String,
+        val egressAuthorization: String = "NOT_AUTHORISED",
+        val nextStep: String = "OWNER_REVIEW_REQUIRED",
+    ) : OwnerAcquisitionDecisionView
     data class NoEligible(
         override val source: OwnerAcquisitionSourceFacts,
         val reasons: List<String>,

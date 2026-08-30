@@ -88,6 +88,7 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         invokeExternalTranscriptionAsOwner = runtime::invokeExternalTranscriptionAsOwner,
         listHumanVerificationRecordsAsOwner = runtime::listHumanVerificationRecordsAsOwner,
         governedDecisionAsOwner = { projectGovernedDecision(runtime.evaluateGovernedAcquisitionAsOwner(it)) },
+        ordinaryRegionProposalAsOwner = runtime::proposeOrdinaryRegionIngestionAsOwner,
         executeGovernedAsOwner = { id, expected ->
             projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
         },

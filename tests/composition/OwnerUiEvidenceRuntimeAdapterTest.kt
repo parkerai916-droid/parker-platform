@@ -12,6 +12,11 @@ import parker.ui.EnhancedTranscriptionReadiness
 import parker.ui.EnhancedTranscriptionOutcome
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerTierAContent
+import parker.ui.OwnerAcquisitionDecisionView
+import parker.ui.OwnerAcquisitionSourceFacts
+import parker.core.runtime.OrdinaryRegionCapabilityDisposition
+import parker.core.runtime.OrdinaryRegionCapabilityStatus
+import parker.core.runtime.OrdinaryRegionProposal
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 import kotlin.test.Test
@@ -72,6 +77,13 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         runtime: ParkerRuntime,
         readiness: EnhancedTranscriptionReadiness = EnhancedTranscriptionReadiness.Disabled,
         external: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = { ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("disabled") },
+        governed: suspend (EvidenceArtifactId) -> OwnerAcquisitionDecisionView = { id ->
+            OwnerAcquisitionDecisionView.NoEligible(
+                OwnerAcquisitionSourceFacts(id.value, "application/pdf", 42, 1, "PRESENT", "NO", "NO", "NO", "NO", "NO"),
+                listOf("EXTERNAL_EGRESS_NOT_AUTHORISED"),
+            )
+        },
+        ordinaryProposal: suspend (EvidenceArtifactId) -> OrdinaryRegionProposal? = { null },
     ) = OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(ownerPrincipalId),
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
@@ -86,7 +98,46 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
         externalReadiness = { readiness },
         invokeExternalTranscriptionAsOwner = external,
+        governedDecisionAsOwner = governed,
+        ordinaryRegionProposalAsOwner = ordinaryProposal,
     )
+
+    private fun ordinaryStatus(disposition: OrdinaryRegionCapabilityDisposition) = OrdinaryRegionCapabilityStatus(
+        "ordinary-external-region-transcription-v5", "OpenAI", "POST /v1/responses", "gpt-5.6-sol",
+        "openai-responses-region-transcription-adapter", "4.0.0", "openai-region-anchored-transcription-v2", 5,
+        "application/pdf", 32, 16_777_216, false, disposition, "runtime-build", "accepted-build",
+    )
+
+    @Test
+    fun `accepted ordinary region PDF is a read-only proposal and fresh acceptance is evaluated every time`() = runTest {
+        val scriptDir = Files.createTempDirectory("ordinary-owner-workflow")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        var disposition = OrdinaryRegionCapabilityDisposition.ACCEPTED
+        val adapter = adapterFor(runtime, ordinaryProposal = { id ->
+            OrdinaryRegionProposal(id.value, "ordinary-external-region-transcription-v5", capabilityStatus = ordinaryStatus(disposition))
+        })
+
+        val proposed = assertIs<OwnerAcquisitionDecisionView.Proposed>(adapter.governedAcquisitionDecision(EvidenceArtifactId("pdf-native-text")))
+        assertEquals("ordinary-external-region-transcription-v5", proposed.capability.capabilityId)
+        assertEquals("NOT_AUTHORISED", proposed.egressAuthorization)
+        assertEquals("OWNER_REVIEW_REQUIRED", proposed.nextStep)
+        assertTrue(proposed.disclosure.contains("transmitted to OpenAI"))
+        disposition = OrdinaryRegionCapabilityDisposition.CAPABILITY_NOT_ACCEPTED
+        assertIs<OwnerAcquisitionDecisionView.NoEligible>(adapter.governedAcquisitionDecision(EvidenceArtifactId("pdf-native-text")))
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `non PDF without ordinary proposal remains unavailable`() = runTest {
+        val scriptDir = Files.createTempDirectory("ordinary-owner-workflow-non-pdf")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val source = OwnerAcquisitionSourceFacts("image", "image/png", 42, null, "ABSENT", "YES", null, "UNKNOWN", "UNKNOWN", "UNKNOWN")
+        val adapter = adapterFor(runtime, governed = { OwnerAcquisitionDecisionView.NoEligible(source, listOf("UNSUPPORTED_MEDIA")) })
+        assertIs<OwnerAcquisitionDecisionView.NoEligible>(adapter.governedAcquisitionDecision(EvidenceArtifactId("image")))
+        runtime.shutdown()
+    }
 
     @Test
     fun `bounded external failures map to safe owner text without raw reason leakage`() = runTest {
@@ -111,7 +162,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         )
         failures.forEach { failure ->
             val mapped = assertIs<EnhancedTranscriptionOutcome.Failed>(
-                adapterFor(runtime, EnhancedTranscriptionReadiness.Ready) { failure }.transcribeExternal(id),
+                adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = { failure }).transcribeExternal(id),
             )
             assertTrue(mapped.safeMessage.isNotBlank())
             sentinels.forEach { assertTrue(!mapped.safeMessage.contains(it)) }

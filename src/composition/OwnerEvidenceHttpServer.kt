@@ -954,6 +954,12 @@ class OwnerEvidenceHttpServer(
             "capability" to acquisitionCapabilityJson(decision.capability), "explanation" to decision.explanation,
             "executeAvailable" to (decision.capability.availability == "READY"),
         )
+        is OwnerAcquisitionDecisionView.Proposed -> jsonObject(
+            "status" to "PROPOSED", "source" to acquisitionSourceJson(decision.source),
+            "capability" to acquisitionCapabilityJson(decision.capability), "explanation" to decision.explanation,
+            "disclosure" to decision.disclosure, "egressAuthorization" to decision.egressAuthorization,
+            "nextStep" to decision.nextStep, "executeAvailable" to false,
+        )
         is OwnerAcquisitionDecisionView.NoEligible -> jsonObject(
             "status" to "NO_ELIGIBLE_CAPABILITY", "source" to acquisitionSourceJson(decision.source),
             "reasons" to jsonArray(decision.reasons), "executeAvailable" to false,
@@ -2087,6 +2093,11 @@ function buildAcquisitionPanel(row, index) {
   const d = row.acquisitionResult || row.acquisitionDecision;
   appendField(panel, 'Status', d.status);
   if (d.explanation) appendField(panel, 'Why Parker selected this mechanism', d.explanation);
+  if (d.status === 'PROPOSED') {
+    appendField(panel, 'External transmission disclosure', d.disclosure);
+    appendField(panel, 'Evidence-specific egress authorization', d.egressAuthorization);
+    appendField(panel, 'Next step', 'Owner review of this proposal; authorization remains a separate action.');
+  }
   if (d.source) {
     appendField(panel, 'Source', 'Original Parker evidence artifact ' + d.source.evidenceArtifactId);
     appendField(panel, 'Media type', d.source.mediaType || 'UNKNOWN');
