@@ -43,4 +43,16 @@ Before deployment, the running container remained healthy with restart count zer
 
 ## Deployment and promotion
 
-Pending exact commit, image, deployment, pre-promotion fail-closed check, one-shot capability re-promotion, and final read-only production verification.
+Implementation commit `3ae55f492e10f18b9dca0846114bd80458680fe6` was pushed to `origin/main`. The exact build succeeded and produced immutable image `sha256:6e811f2af485f8e65ade9a44e10cc1d49041bd41b7679eff2cc5b7b1bcbc4588`. Only Parker was recreated with `--no-deps --no-build --pull=never --force-recreate` using the governed three-file Compose stack.
+
+The replacement container is `1a7e2120f6cb47335b0c34253386adab28bd97134d4429e19acb1179a6c0c653`, running with restart count zero. Its source commit, production commit, configured immutable image, and actual image all match the exact values above. The unauthenticated administration endpoint returns HTTP 401. The only startup log match for `error|exception` is Log4j's known missing-provider diagnostic, not a Parker startup failure.
+
+Before promotion, authenticated fresh evaluation returned `CAPABILITY_NOT_ACCEPTED`, exact runtime commit, and no accepted commit. Exactly one promotion POST was issued with only capability ID and promoting commit. It returned HTTP 201 `CREATED`, record `1c08c6e5bce06505dc114970fb36a9e59f664326688f280b46403e5265bec01b`, capability digest `9b404e8dfc4f0ffa3067fcffb00c39e6bd739050f173418de740239a1dc94103`, and the exact runtime commit.
+
+Fresh post-promotion evaluation returned `ACCEPTED` with runtime and accepted commits both equal to the implementation commit. Read-only acquisition requests for the intended fixture (`evidence-4c6f2ee8-2f62-47be-bd7a-946c744b2766`) and CV (`evidence-99b1c6fa-91e7-4a30-b212-b7a677718417`) both returned `PROPOSED`, `NOT_AUTHORISED`, `OWNER_AUTHORIZATION_REQUIRED`, `authorizationAvailable: true`, and `executeAvailable: false`, with the exact OpenAI transmission disclosure. The served UI contains the explicit authorization control and confirmation copy.
+
+Final durable counts are capability acceptances 3, owner authorizations 0, attempts 4, and provider-state records 2. Therefore the sole intended production-store mutation was the one exact-build capability acceptance; no production evidence authorization, reservation, execution, provider call, retry, provider-state write, derivative admission, or other evidence mutation occurred.
+
+## Verdict
+
+UNIT ORDINARY-INGESTION-3 COMPLETE — EXISTING GOVERNED EVIDENCE-SPECIFIC AUTHORIZATION BOUNDARY IS EXPOSED THROUGH THE OWNER WORKFLOW WITH EXPLICIT TRANSMISSION DISCLOSURE; PRODUCTION PDF PROPOSALS NOW PRESENT A DISTINCT OWNER AUTHORIZATION ACTION WHILE EXECUTION REMAINS DISABLED; ZERO PRODUCTION AUTHORIZATION OR PROVIDER EGRESS OCCURRED
