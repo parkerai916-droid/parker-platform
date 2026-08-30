@@ -2237,9 +2237,10 @@ function buildAcquisitionPanel(row, index) {
   return panel;
 }
 
-async function loadAcquisitionDecision(index) {
+async function loadAcquisitionDecision(index, preserveExecutionError = false) {
   const row = rows[index];
-  row.acquisitionError = null; row.acquisitionResult = null;
+  if (!preserveExecutionError) row.acquisitionError = null;
+  row.acquisitionResult = null;
   try {
     const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, { method: 'GET', headers: authHeaders() });
     const result = await resp.json();
@@ -2299,7 +2300,7 @@ async function executeRegionTranscription(index, decision) {
     });
     const result = await resp.json();
     row.acquisitionError = resp.ok ? null : (result.detail || result.error || 'Execution failed safely.');
-    await loadAcquisitionDecision(index);
+    await loadAcquisitionDecision(index, true);
   } catch (e) { row.acquisitionError = 'Execution request failed safely.'; render(); }
 }
 

@@ -214,6 +214,38 @@ class OrdinaryRegionIngestionTest {
         assertEquals(1,calls.get());assertEquals(1L,Files.list(generationRoot).use{it.filter{p->p.fileName.toString().endsWith(".derivative")}.count()})
     }
 
+    @Test fun `provider free bounds failure is returned before a new authorization reservation`() = runTest {
+        val pdf=pdf(); val evidence=EvidenceArtifactId("evidence-preparation-bound"); val custody=custodian(evidence,pdf,"application/pdf")
+        val acceptanceRoot=dir("prebound-accept"); val authRoot=dir("prebound-auth"); val ledgerRoot=dir("prebound-ledger")
+        val stateRoot=dir("prebound-state"); val generationRoot=dir("prebound-generation"); val contentRoot=dir("prebound-content")
+        FileSystemOrdinaryRegionCapabilityAcceptanceStore(acceptanceRoot).admit(acceptance())
+        val calls=AtomicInteger(); val state=FileSystemRegionProviderStateStore(stateRoot)
+        val ledger=FileSystemFidelityFirstAttemptLedger(ledgerRoot){now}
+        val encoder=OpenAiRegionTranscriptionAdapter(OpenAiApiCredential.fromEnvironment("OFFLINE_TEST_ONLY")!!,
+            OpenAiResponsesTransport{error("provider transport is prohibited")})
+        val renderer=DeterministicSourcePageRenderer()
+        val preparer=OrdinaryRegionRequestPreparer(renderer,graphDeriver(renderer,33,SourceRegionAmbiguityState.UNAMBIGUOUS),
+            encoder::buildRequestBody,state::requestDigestFor)
+        val coordinator=GovernedRegionTranscriptionExecutionCoordinator(ledger,state,object:RegionExternalTranscriptionMechanism{
+            override suspend fun transcribe(request:RegionTranscriptionRequest):RegionExternalTranscriptionOutcome {
+                calls.incrementAndGet(); error("provider transport is prohibited")
+            }
+        })
+        val workflow=OrdinaryRegionIngestionWorkflow(PrincipalId("owner"),custody,capability,
+            OrdinaryRegionCapabilityAcceptanceEvaluator(FileSystemOrdinaryRegionCapabilityAcceptanceStore(acceptanceRoot),capability){commit},
+            FileSystemOrdinaryRegionAuthorizationStore(authRoot),OrdinaryRegionAuthorizationGuard(authRoot),ledger,preparer,coordinator,state,
+            OrdinaryRegionDerivativeAdmission(FileSystemDerivativeGenerationStorage(generationRoot),FileSystemDerivativeContentStorage(contentRoot),DocumentIngestionAudit{}, {now}),
+            {commit},{now})
+        val authorization=assertIs<OrdinaryRegionOwnerAuthorizationOutcome.Created>(workflow.authorize(evidence)).view
+        val result=workflow.execute(evidence,requireNotNull(authorization.authorizationId),"execution-bound","attempt-bound")
+        assertEquals(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,result.disposition)
+        assertEquals("complete region set exceeds 32",result.detail)
+        assertEquals(OrdinaryRegionAuthorizationState.AVAILABLE,
+            FileSystemOrdinaryRegionAuthorizationStore(authRoot).load(requireNotNull(authorization.authorizationId)).state)
+        assertEquals(0,calls.get())
+        assertEquals(0L,Files.list(ledgerRoot).use{it.count()})
+    }
+
     @Test fun `all governed crash boundaries preserve one attempt identity and one deterministic generation key`() {
         val checkpoints=listOf("reservation","request-preparation","guard-before-start","after-start","guard-release-before-transport",
             "unknown-transport","raw-provider-state","structured-provider-state","validation","reconstruction","derivative-content",

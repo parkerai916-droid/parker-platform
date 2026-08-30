@@ -821,13 +821,24 @@ class OrdinaryRegionIngestionWorkflow(
             ?: return result(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED)
         val source = (resolver.resolve(ownerPrincipalId, evidenceId) as? AuthoritativeAcquisitionResolution.Verified)?.input
             ?: return result(OrdinaryRegionDisposition.SOURCE_UNAVAILABLE)
-        val reserved = try { guard.locked(authorizationId) { authorizations.reserve(authorizationId, executionId, now()) } }
-        catch (e: Exception) { return authorizationFailure(e) }
-        if (!bindingMatches(reserved.grant, source)) return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT, "authorization binding mismatch")
+        val existing = try { guard.locked(authorizationId) {
+            authorizations.load(authorizationId).also { snapshot ->
+                require(snapshot.revokedAt == null) { "OWNER_AUTHORIZATION_REVOKED" }
+                require(snapshot.executionId == null || snapshot.executionId == executionId) {
+                    "authorization reserved to different execution"
+                }
+                if (snapshot.executionId == null) require(now().isBefore(snapshot.grant.expiresAt)) {
+                    "OWNER_AUTHORIZATION_EXPIRED_BEFORE_RESERVATION"
+                }
+            }
+        } } catch (e: Exception) { return authorizationFailure(e) }
+        if (!bindingMatches(existing.grant, source)) return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT, "authorization binding mismatch")
         val prepared = when (val p = preparer.prepare(source, executionId, attemptId, runtimeCommit())) {
             is OrdinaryRegionPreparationOutcome.Blocked -> return result(p.disposition, p.detail)
             is OrdinaryRegionPreparationOutcome.Prepared -> p.value
         }
+        try { guard.locked(authorizationId) { authorizations.reserve(authorizationId, executionId, now()) } }
+        catch (e: Exception) { return authorizationFailure(e) }
         val recoveredBeforeStart = execution.prepareForGuardedAttempt(prepared.binding)
         val providerOutcome = if (recoveredBeforeStart != null) {
             if (recoveredBeforeStart is GovernedRegionExecutionOutcome.Blocked) return executionFailure(recoveredBeforeStart)

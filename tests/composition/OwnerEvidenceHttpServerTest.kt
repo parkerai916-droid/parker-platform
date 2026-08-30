@@ -240,6 +240,8 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(page.contains("Execute external transcription"))
             assertTrue(page.contains("This action initiates the authorized external transcription"))
             assertTrue(page.contains("if (!confirmed) return"))
+            assertTrue(page.contains("loadAcquisitionDecision(index, true)"))
+            assertTrue(page.contains("if (!preserveExecutionError) row.acquisitionError = null"))
         } finally { harness.shutdown() }
     }
 
