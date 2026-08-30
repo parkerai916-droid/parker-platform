@@ -66,6 +66,8 @@ import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
 import parker.ui.OwnerOrdinaryRegionAuthorizationView
+import parker.ui.OwnerRegisteredEvidenceView
+import parker.core.runtime.OwnerRegisteredEvidence
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.interfaces.*
 
@@ -172,6 +174,7 @@ private fun mechanismLabel(mechanism: EvidenceAcquisitionMechanism) = when (mech
  */
 class OwnerUiEvidenceRuntimeAdapter(
     private val ownerPrincipalId: PrincipalId,
+    private val listRegisteredEvidenceAsOwner: suspend () -> List<OwnerRegisteredEvidence> = { emptyList() },
     private val importEvidenceFileAsOwner: suspend (String, String?) -> OwnerLocalFileIngressOutcome,
     private val invokeTierAIngestionAsOwner: suspend (EvidenceArtifactId) -> TierAOwnerInvocationOutcome,
     private val analyseEvidence: suspend (PrincipalId, EvidenceAnalysisRequest) -> EvidenceIntelligenceInvocationOutcome,
@@ -205,6 +208,12 @@ class OwnerUiEvidenceRuntimeAdapter(
         OwnerAcquisitionExecutionView.Failed("SELECTED_CAPABILITY_UNAVAILABLE")
     },
 ) : OwnerEvidenceOperations {
+
+    override suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> =
+        listRegisteredEvidenceAsOwner().map {
+            OwnerRegisteredEvidenceView(it.evidenceArtifactId.value, it.sha256, it.byteLength,
+                it.mediaType, it.originalFileName)
+        }
 
     override suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView {
         val governed = governedDecisionAsOwner(evidenceArtifactId)

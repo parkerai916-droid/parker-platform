@@ -247,6 +247,7 @@ class OwnerEvidenceHttpServer(
                 val segments = path.removePrefix("/owner/evidence").trim('/').split('/').filter { it.isNotEmpty() }
 
                 when {
+                    segments.isEmpty() && method == "GET" -> handleEvidenceList(exchange)
                     segments.isEmpty() && method == "POST" -> handleUpload(exchange)
                     segments.size == 2 && segments[1] == "process" && method == "POST" ->
                         handleProcess(exchange, segments[0])
@@ -281,6 +282,20 @@ class OwnerEvidenceHttpServer(
             } finally {
                 exchange.close()
             }
+        }
+
+        private fun handleEvidenceList(exchange: HttpExchange) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val evidence = runBlocking { operations.listRegisteredEvidence() }
+            writeJson(exchange, 200, jsonObject("evidence" to jsonArray(evidence.map { item ->
+                jsonObject(
+                    "evidenceArtifactId" to item.evidenceArtifactId,
+                    "sha256" to item.sha256,
+                    "byteLength" to item.byteLength,
+                    "mediaType" to item.mediaType,
+                    "originalFileName" to item.originalFileName,
+                )
+            })))
         }
 
         private fun handleUpload(exchange: HttpExchange) {
@@ -1697,6 +1712,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <p class="note">Use only on a trusted device. Anyone with access to this browser profile could read a remembered token.</p>
 <p><button id="checkEnhancedReadinessButton">Check enhanced transcription readiness</button> <span id="enhancedReadinessStatus" class="note"></span></p>
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
+<p><button id="refreshEvidenceButton">Refresh existing evidence</button></p>
 <p id="status"></p>
 <table>
   <thead><tr><th>File</th><th>Size</th><th>Status</th><th>Evidence ID</th><th>Result</th><th>Analyse</th><th>Actions</th></tr></thead>
@@ -2100,6 +2116,30 @@ document.getElementById('uploadButton').onclick = async () => {
     document.getElementById('status').textContent = 'Upload failed: ' + e;
   }
 };
+
+async function loadExistingEvidence() {
+  const status = document.getElementById('status');
+  try {
+    const resp = await fetch('/owner/evidence', { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) { rows = []; render(); return; }
+    const result = await resp.json();
+    if (!resp.ok) { status.textContent = result.error || 'Existing evidence list unavailable.'; return; }
+    const existingById = new Map(rows.filter(r => r.evidenceArtifactId).map(r => [r.evidenceArtifactId, r]));
+    rows = (result.evidence || []).map(item => Object.assign({
+      originalFileName: item.originalFileName || item.evidenceArtifactId,
+      byteLength: item.byteLength,
+      status: 'READY_TO_PROCESS',
+      evidenceArtifactId: item.evidenceArtifactId,
+      message: 'Durably registered evidence',
+      sha256: item.sha256,
+      mediaType: item.mediaType,
+    }, existingById.get(item.evidenceArtifactId) || {}));
+    status.textContent = '';
+    render();
+  } catch (e) { status.textContent = 'Existing evidence list request failed safely.'; }
+}
+
+document.getElementById('refreshEvidenceButton').onclick = loadExistingEvidence;
 
 function buildAcquisitionPanel(row, index) {
   const panel = document.createElement('div');
@@ -2596,6 +2636,7 @@ async function viewSavedAnalysis(savedAnalysisId) {
 }
 
 document.getElementById('refreshSavedAnalysesButton').onclick = refreshSavedAnalyses;
+loadExistingEvidence();
 refreshSavedAnalyses();
 </script>
 </body>

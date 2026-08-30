@@ -324,6 +324,7 @@ class ParkerRuntime(
     // this class's own submitEvidence/retrieveEvidence/deleteEvidenceAsOwner methods read them
     // (Boundary Clarification Section 5).
     private lateinit var evidenceCustodian: EvidenceCustodian
+    private lateinit var ownerEvidenceListing: parker.core.runtime.FileSystemOwnerEvidenceListing
     private lateinit var evidenceRegistrationCoordinator: EvidenceRegistrationCoordinator
     private lateinit var ownerEvidenceDeletionAuthority: OwnerEvidenceDeletionAuthority
 
@@ -1042,6 +1043,11 @@ class ParkerRuntime(
             evidenceSourceManifestStorage,
         )
         evidenceCustodian = defaultEvidenceCustodian
+        ownerEvidenceListing = parker.core.runtime.FileSystemOwnerEvidenceListing(
+            Path.of(config.evidenceSourceManifestStorageRootPath),
+            PrincipalId(config.ownerPrincipalId),
+            defaultEvidenceCustodian,
+        )
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
         // Document Ingestion, Derivative-to-Memory-Core Registration. Depends on memoryCore and
         // permissionEngine only -- never evidenceCustodian, never DerivativeGenerationStorage,
@@ -2174,6 +2180,12 @@ class ParkerRuntime(
             evidenceArtifactId,
             UUID.randomUUID().toString(),
         )
+    }
+
+    /** Fresh durable owner evidence listing; validates every manifest against governed custody bytes. */
+    suspend fun listRegisteredEvidenceAsOwner(): List<parker.core.runtime.OwnerRegisteredEvidence> {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ownerEvidenceListing.listRegistered()
     }
 
     /**

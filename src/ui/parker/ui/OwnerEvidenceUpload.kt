@@ -23,6 +23,9 @@ import parker.core.interfaces.AnalysisAcquisitionAssurance
  * bulk evidence authority is created by this unit).
  */
 interface OwnerEvidenceOperations {
+    /** Fresh durable custody-backed listing. Never uploads, executes, authorizes, or invokes a provider. */
+    suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> = emptyList()
+
     /** Read-only governed acquisition decision for one exact custodied source; never executes acquisition. */
     suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView =
         OwnerAcquisitionDecisionView.Indeterminate(
@@ -162,6 +165,14 @@ interface OwnerEvidenceOperations {
      */
     suspend fun listSavedAnalyses(): List<OwnerSavedAnalysisSummary>
 }
+
+data class OwnerRegisteredEvidenceView(
+    val evidenceArtifactId: String,
+    val sha256: String,
+    val byteLength: Long,
+    val mediaType: String?,
+    val originalFileName: String?,
+)
 
 data class OwnerOrdinaryRegionAuthorizationView(
     val status: String,

@@ -107,6 +107,7 @@ class OwnerEvidenceHttpServerTest {
         kotlinx.coroutines.runBlocking { runtime.start() }
         val adapter = OwnerUiEvidenceRuntimeAdapter(
             ownerPrincipalId = PrincipalId(ownerPrincipalId),
+            listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
             importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
@@ -168,6 +169,31 @@ class OwnerEvidenceHttpServerTest {
 
     private fun send(request: HttpRequest): HttpResponse<String> =
         client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+
+    @Test
+    fun `authenticated evidence GET returns durable rows and browser loads them on page start`() {
+        val harness = startHarness("")
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/evidence")
+            assertEquals(401, send(HttpRequest.newBuilder(uri).GET().build()).statusCode())
+            val empty = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
+            assertEquals(200, empty.statusCode()); assertTrue(empty.body().contains("\"evidence\":[]"))
+
+            val bytes = "durable-list-route".toByteArray()
+            val upload = send(uploadRequest(harness, listOf(UploadPart("files", "before-reload.pdf", "application/pdf", bytes))))
+            assertEquals(200, upload.statusCode())
+            val id = Regex("evidence-[0-9a-f-]{36}").find(upload.body())!!.value
+            val listed = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
+            assertEquals(200, listed.statusCode())
+            assertTrue(listed.body().contains(id)); assertTrue(listed.body().contains("\"byteLength\":${bytes.size}"))
+            assertTrue(listed.body().contains("application/pdf"))
+
+            val page = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(page.contains("loadExistingEvidence();"))
+            assertTrue(page.contains("Refresh existing evidence"))
+            assertTrue(page.contains("Durably registered evidence"))
+        } finally { harness.shutdown() }
+    }
 
     @Test
     fun `capability status GET is authenticated exact and read only`() {

@@ -111,6 +111,7 @@ fun main(args: Array<String>) = runBlocking {
     val ownerHttpServer = if (config.ownerHttpPort != null && config.ownerHttpToken != null) {
         val adapter = OwnerUiEvidenceRuntimeAdapter(
             ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+            listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
             importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,

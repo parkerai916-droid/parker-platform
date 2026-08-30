@@ -20,10 +20,12 @@ import parker.core.runtime.OrdinaryRegionProposal
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationOutcome
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
+import parker.core.runtime.OwnerRegisteredEvidence
 import parker.ui.TierAProcessingOutcome
 import parker.ui.TierBProcessingOutcome
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -87,6 +89,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
             )
         },
         ordinaryProposal: suspend (EvidenceArtifactId) -> OrdinaryRegionProposal? = { null },
+        listing: suspend () -> List<OwnerRegisteredEvidence> = { emptyList() },
         authorizationStatus: suspend (EvidenceArtifactId) -> OrdinaryRegionOwnerAuthorizationView = {
             OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED, it.value)
         },
@@ -96,6 +99,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         },
     ) = OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(ownerPrincipalId),
+        listRegisteredEvidenceAsOwner = listing,
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
         invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
         analyseEvidence = runtime::analyseEvidence,
@@ -113,6 +117,26 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         ordinaryRegionAuthorizationStatusAsOwner = authorizationStatus,
         authorizeOrdinaryRegionAsOwner = authorize,
     )
+
+    @Test
+    fun `durable backend rows project unchanged and can reconstruct accepted PDF proposal`() = runTest {
+        val scriptDir = Files.createTempDirectory("durable-owner-list-proposal")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("evidence-existing-pdf")
+        val registered = OwnerRegisteredEvidence(id, "a".repeat(64), 42, "application/pdf", "existing.pdf")
+        val adapter = adapterFor(runtime,
+            listing = { listOf(registered) },
+            ordinaryProposal = { OrdinaryRegionProposal(it.value, "ordinary-external-region-transcription-v5", capabilityStatus = ordinaryStatus(OrdinaryRegionCapabilityDisposition.ACCEPTED)) })
+        val listed = adapter.listRegisteredEvidence()
+        assertEquals(listOf(id.value), listed.map { it.evidenceArtifactId })
+        assertEquals("a".repeat(64), listed.single().sha256)
+        val proposal = assertIs<OwnerAcquisitionDecisionView.Proposed>(adapter.governedAcquisitionDecision(id))
+        assertEquals("NOT_AUTHORISED", proposal.egressAuthorization)
+        assertTrue(proposal.authorizationAvailable)
+        assertFalse(proposal.nextStep == "SEPARATE_EXECUTION_ACTION_REQUIRED")
+        runtime.shutdown()
+    }
 
     private fun ordinaryStatus(disposition: OrdinaryRegionCapabilityDisposition) = OrdinaryRegionCapabilityStatus(
         "ordinary-external-region-transcription-v5", "OpenAI", "POST /v1/responses", "gpt-5.6-sol",
