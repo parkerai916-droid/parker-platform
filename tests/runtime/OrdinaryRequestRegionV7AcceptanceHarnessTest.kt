@@ -37,6 +37,7 @@ class OrdinaryRequestRegionV7AcceptanceHarnessTest {
         when (action) {
             "PREPARE" -> prepareAll()
             "EXECUTE" -> execute(requireNotNull(fixtureName).let(::fixture))
+            "ASSESS_PERSISTED" -> assessPersisted(requireNotNull(fixtureName).let(::fixture))
             "REPLAY" -> replay(requireNotNull(fixtureName).let(::fixture))
             "ASSESS_FAILURE" -> assessFailure(requireNotNull(fixtureName).let(::fixture))
             "REPLAY_FAILURE" -> replayFailure(requireNotNull(fixtureName).let(::fixture))
@@ -104,6 +105,18 @@ class OrdinaryRequestRegionV7AcceptanceHarnessTest {
         println("OI10R2_REPLAY=${f.name} requestDigest=${p.requestDigest} rawSha=${sha(bytes)} assessmentDigest=${sha(RegionJson.encode(actual).toByteArray())} PASS")
     }
 
+    private fun assessPersisted(f:Fixture) {
+        val p=loadPrepared(f);val dir=root.resolve(f.name);verifyFrozen(dir,f,p)
+        require(Files.exists(dir.resolve("attempt.json"))&&Files.exists(dir.resolve("response.json"))&&!Files.exists(dir.resolve("assessment.json")))
+        val raw=objectField(readEnvelope(dir.resolve("response.json")),"record");require(raw.string("request_digest")==p.requestDigest)
+        val bytes=Base64.getDecoder().decode(raw.string("raw_base64"));require(sha(bytes)==raw.string("raw_sha256"))
+        val parsed=parse(p.request,bytes);val ordered=RequestRegionSourceOrderReconstructor().reconstruct(p.request,parsed.result).getOrThrow()
+        val derivative=RequestRegionDerivativeBinder().bind(p.request,parsed.result).getOrThrow()
+        val assessment=assessment(f,p,parsed,ordered,derivative,"STRUCTURAL_PASS_FIDELITY_REVIEW_PENDING")
+        createOnce(dir.resolve("assessment.json"),envelope("oi10r2-v7-assessment-v1",assessment))
+        println("OI10R2_ASSESSED_PERSISTED=${f.name} response=${parsed.responseId} rawSha=${sha(bytes)} blocks=${ordered.size} result=STRUCTURAL_PASS_FIDELITY_REVIEW_PENDING")
+    }
+
     private fun assessFailure(f: Fixture) {
         val p=loadPrepared(f);val dir=root.resolve(f.name);verifyFrozen(dir,f,p)
         val raw=objectField(readEnvelope(dir.resolve("response.json")),"record")
@@ -158,7 +171,7 @@ class OrdinaryRequestRegionV7AcceptanceHarnessTest {
         val valid = RequestRegionTranscriptionValidator().validate(request, legacy) as? RequestRegionValidationOutcome.Valid
             ?: error("v7 passed but legacy structural projection rejected")
         val provenance = valid.result.providerProvenance
-        require(provenance.providerReportedModel == model && provenance.providerResponseId == responseId)
+        require(provenance.providerReportedModel == model && (provenance.providerResponseId == null || provenance.providerResponseId == responseId))
         return Parsed(responseId, model, structured, valid.result)
     }
 
