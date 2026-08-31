@@ -82,5 +82,46 @@ class OrdinaryRequestRegionV8TruthfulContractTest {
         repeat(10){val repeated=CanonicalRequestRegionV8Builder().build(id,sha,"application/pdf",bytes,"oi10r4-sprint2-offline");assertEquals(ladder(r4),ladder(repeated));assertEquals(r4.providerBody,repeated.providerBody);assertEquals(r4.requestBindingSha256,repeated.requestBindingSha256);assertEquals(r4.providerBodySha256,repeated.providerBodySha256)}
         assertEquals("parker.request-region-v8.canonical-binding.v1",CanonicalRequestRegionV8Construction.REQUEST_DIGEST_DOMAIN);assertEquals("parker.request-region-v8.provider-body.utf8.v1",CanonicalRequestRegionV8Construction.BODY_DIGEST_DOMAIN)
     }
+
+    @Test fun `provider ordinal is preserved forensic metadata while governed identity and Parker order remain authoritative`() {
+        val path=Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/02-multicolumn-complex.pdf")
+        val bytes=Files.readAllBytes(path);val sourceSha=sha(bytes)
+        val request=CanonicalRequestRegionV8Builder().build(EvidenceArtifactId("evidence-oi11r2a-provider-ordinal"),sourceSha,"application/pdf",bytes,"oi11r2a-provider-ordinal").request
+        assertTrue(request.regions.size>=3)
+        fun block(r:RequestRegion,i:Int,ordinal:Int):Map<String,Any?> = linkedMapOf("request_region_id" to r.id.value,"page_number" to r.pageNumber,
+            "literal_text" to "literal-$i","status" to "TRANSCRIBED","uncertainties" to emptyList<Any>(),"warnings" to emptyList<Any>(),"provider_returned_ordinal" to ordinal)
+        fun blocks(ordinals:List<Int>)=request.regions.mapIndexed{i,r->block(r,i,ordinals[i])}
+        fun wire(providerBlocks:List<Map<String,Any?>>)=linkedMapOf<String,Any?>("correlation_id" to request.correlationId,
+            "transcription_profile_id" to REQUEST_REGION_V8_PROFILE_ID,"schema_id" to REQUEST_REGION_V8_SCHEMA_ID,"schema_version" to 8,
+            "provider_provenance" to linkedMapOf("provider" to REQUEST_REGION_PROVIDER,"requested_model" to REQUEST_REGION_MODEL,
+                "provider_reported_model" to REQUEST_REGION_MODEL,"provider_response_id" to "resp-offline","adapter_id" to REQUEST_REGION_ADAPTER_ID,
+                "adapter_version" to REQUEST_REGION_V8_ADAPTER_VERSION,"parser_id" to REQUEST_REGION_PARSER_ID,"parser_version" to REQUEST_REGION_V8_PARSER_VERSION),
+            "blocks" to providerBlocks)
+        fun valid(providerBlocks:List<Map<String,Any?>>)=assertIs<RequestRegionV8ValidationOutcome.Valid>(RequestRegionV8StructuredValidator().validate(request,wire(providerBlocks))).result
+        fun derivative(providerBlocks:List<Map<String,Any?>>)=RequestRegionV8DerivativeBinder().bind(request,valid(providerBlocks)).getOrThrow()
+
+        val canonicalOrdinals=request.regions.indices.map{it+1};valid(blocks(canonicalOrdinals))
+        val reversedOrdinals=canonicalOrdinals.reversed();val reversedOrdinalResult=valid(blocks(reversedOrdinals))
+        assertEquals(reversedOrdinals,reversedOrdinalResult.blocksInProviderOrder.map{it.providerReturnedOrdinal})
+        val nonMonotonicOrdinals=request.regions.indices.map{if(it%3==0)2 else if(it%3==1)1 else 3}
+        val nonMonotonicResult=valid(blocks(nonMonotonicOrdinals))
+        assertEquals(nonMonotonicOrdinals,nonMonotonicResult.blocksInProviderOrder.map{it.providerReturnedOrdinal})
+        val repeatedOrdinals=List(request.regions.size){1};assertEquals(repeatedOrdinals,valid(blocks(repeatedOrdinals)).blocksInProviderOrder.map{it.providerReturnedOrdinal})
+
+        val canonicalDerivative=derivative(blocks(canonicalOrdinals));val variedDerivative=derivative(blocks(nonMonotonicOrdinals).reversed())
+        assertEquals(request.regions.map{it.id.value},variedDerivative.blocksInParkerOrder.map{it.requestRegionId})
+        assertEquals(request.regions.map{it.pageNumber},variedDerivative.blocksInParkerOrder.map{it.pageNumber})
+        assertEquals(request.regions.map{it.constituentIds.map(SourceRegionId::value)},variedDerivative.blocksInParkerOrder.map{it.constituentSourceRegionIds})
+        assertEquals(canonicalDerivative.blocksInParkerOrder,variedDerivative.blocksInParkerOrder)
+        assertEquals(canonicalDerivative.canonicalDigest,variedDerivative.canonicalDigest)
+
+        val canonicalBlocks=blocks(canonicalOrdinals)
+        assertIs<RequestRegionV8ValidationOutcome.Rejected>(RequestRegionV8StructuredValidator().validate(request,wire(canonicalBlocks.dropLast(1))))
+        assertIs<RequestRegionV8ValidationOutcome.Rejected>(RequestRegionV8StructuredValidator().validate(request,wire(canonicalBlocks.dropLast(1)+canonicalBlocks.first())))
+        val unknown=canonicalBlocks.toMutableList();unknown[0]=unknown[0].toMutableMap().also{it["request_region_id"]="f".repeat(64);it["provider_returned_ordinal"]=1}
+        assertIs<RequestRegionV8ValidationOutcome.Rejected>(RequestRegionV8StructuredValidator().validate(request,wire(unknown)))
+        val missingIdentity=canonicalBlocks.toMutableList();missingIdentity[0]=missingIdentity[0].filterKeys{it!="request_region_id"}
+        assertIs<RequestRegionV8ValidationOutcome.Rejected>(RequestRegionV8StructuredValidator().validate(request,wire(missingIdentity)))
+    }
     private fun sha(bytes:ByteArray)=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it.toInt()and 255)}
 }
