@@ -52,13 +52,10 @@ class OrdinaryRequestRegionV8TruthfulContractTest {
     @Test fun `Sprint 2 v8 request is deterministic complete and bounded`() {
         val path=System.getenv("OI10R2_B_SOURCE_PATH")?.let(Path::of);assumeTrue(path!=null&&Files.isRegularFile(path),"Sprint 2 source not supplied")
         val bytes=Files.readAllBytes(path);val sourceSha=sha(bytes);assertEquals("ce8bd4b53d8b007026575974014e71f648f045bf3970b0e984605cf842a7b4a5",sourceSha)
-        val renderer=DeterministicSourcePageRenderer();val deriver=DeterministicSourceRegionDeriver();val profile=parker.core.interfaces.PageRenderProfile("authoritative-page-region-raster-v1",1,300)
-        fun render(n:Int)=assertIs<SourcePageRepresentationOutcome.Created>(renderer.render(parker.core.interfaces.SourcePageRenderRequest(parker.core.interfaces.EvidenceArtifactId("evidence-4c6f2ee8-2f62-47be-bd7a-946c744b2766"),sourceSha,"application/pdf",bytes,n,profile))).representation
-        val first=render(1);val pages=(1..first.provenance.declaredPageCount).map{if(it==1)first else render(it)}
-        val graphs=pages.map{assertIs<SourceRegionDerivationOutcome.Derived>(deriver.derive(it)).graph};assertEquals(listOf(16,14,6),graphs.map{it.regions.size})
-        val shaped=assertIs<RequestRegionShapingOutcome.Shaped>(DeterministicCompleteSetRequestRegionShaper(renderer).shape(pages,graphs));assertEquals(listOf(14,12,6),shaped.regions.groupingBy{it.pageNumber}.eachCount().toSortedMap().values.toList())
-        assertEquals(36,shaped.regions.flatMap{it.constituentIds}.distinct().size);val request=RequestRegionV8Request("oi10r4-sprint2-offline",shaped.regions);val codec=OpenAiRequestRegionV8Codec()
-        val body1=codec.buildRequestBody(request);val body2=codec.buildRequestBody(request);assertEquals(body1,body2);assertTrue(body1.toByteArray().size<=REQUEST_REGION_BODY_MAXIMUM_BYTES)
+        val canonical=CanonicalRequestRegionV8Builder().build(EvidenceArtifactId("evidence-4c6f2ee8-2f62-47be-bd7a-946c744b2766"),sourceSha,"application/pdf",bytes,"oi10r4-sprint2-offline")
+        val graphs=canonical.sourceGraphs;val request=canonical.request;val codec=OpenAiRequestRegionV8Codec();val body1=canonical.providerBody
+        assertEquals(listOf(16,14,6),graphs.map{it.regions.size});assertEquals(listOf(14,12,6),request.regions.groupingBy{it.pageNumber}.eachCount().toSortedMap().values.toList())
+        assertEquals(36,request.regions.flatMap{it.constituentIds}.distinct().size);assertEquals(body1,codec.buildRequestBody(request));assertTrue(body1.toByteArray().size<=REQUEST_REGION_BODY_MAXIMUM_BYTES)
         fun block(r:RequestRegion,i:Int)=linkedMapOf<String,Any?>("request_region_id" to r.id.value,"page_number" to r.pageNumber,"literal_text" to if(i==0)"A😀e\u0301\r\nB\n" else "literal-$i","status" to "TRANSCRIBED",
             "uncertainties" to if(i==0)listOf(linkedMapOf("category" to "AMBIGUOUS","description" to "visual ambiguity","alternatives" to listOf("A","B"),"provider_confidence" to "low"))else emptyList<Any>(),"warnings" to emptyList<Any>(),"provider_returned_ordinal" to i+1)
         fun wire(blocks:List<Map<String,Any?>>)=linkedMapOf<String,Any?>("correlation_id" to request.correlationId,"transcription_profile_id" to REQUEST_REGION_V8_PROFILE_ID,"schema_id" to REQUEST_REGION_V8_SCHEMA_ID,"schema_version" to 8,
@@ -72,6 +69,18 @@ class OrdinaryRequestRegionV8TruthfulContractTest {
         val unknown=canonicalBlocks.toMutableList();unknown[0]=unknown[0].toMutableMap().also{it["request_region_id"]="f".repeat(64)};assertIs<RequestRegionV8ValidationOutcome.Rejected>(RequestRegionV8StructuredValidator().validate(request,wire(unknown)))
         val legacy=canonicalBlocks.toMutableList();legacy[0]=legacy[0].toMutableMap().also{it["visual_observations"]=emptyList<Any>()};assertIs<RequestRegionV8ValidationOutcome.Rejected>(RequestRegionV8StructuredValidator().validate(request,wire(legacy)))
         println("OI10R4_SPRINT2 sourceRegions=36 requestRegions=32 bodyBytes=${body1.toByteArray().size} requestDigest=${codec.requestDigest(request)} manifestDigest=${sha(body1.toByteArray())}")
+    }
+    @Test fun `canonical builder proves R4 R5 divergence is only governed correlation id and repeats ten times`() {
+        val path=System.getenv("OI10R2_B_SOURCE_PATH")?.let(Path::of);assumeTrue(path!=null&&Files.isRegularFile(path),"Sprint 2 source not supplied")
+        val bytes=Files.readAllBytes(path);val sha="ce8bd4b53d8b007026575974014e71f648f045bf3970b0e984605cf842a7b4a5";val id=EvidenceArtifactId("evidence-4c6f2ee8-2f62-47be-bd7a-946c744b2766");val builder=CanonicalRequestRegionV8Builder()
+        val r4=builder.build(id,sha,"application/pdf",bytes,"oi10r4-sprint2-offline");val r5=builder.build(id,sha,"application/pdf",bytes,"oi10r5-v8-b-acceptance")
+        assertEquals("a5ef4672e07493ae870cc798fe24a87651ffc007446e40716f48ea5e62356d03",r4.requestBindingSha256);assertEquals("8bf1c47066c6c13bd2a72757712ceebe5497b3929153b0c5befc0a56c362690a",r4.providerBodySha256);assertEquals(1165499,r4.providerBody.toByteArray().size)
+        assertEquals("d87de41366052eff66b45ede428536e56dd54df8a9efcfdbab4dce41a6858768",r5.requestBindingSha256);assertEquals("826119f3e767c5da008f9237c2111f21013254e8d8553f22b48ba26e66ce6f7e",r5.providerBodySha256);assertEquals(1165499,r5.providerBody.toByteArray().size)
+        fun ladder(x:CanonicalRequestRegionV8Construction)=listOf(x.pages.map{it.provenance.canonicalPixelDigest.value},x.sourceGraphs.flatMap{it.regions}.map{it.id.value},x.request.regions.map{it.id.value},x.request.regions.map{it.constituentIds.map(SourceRegionId::value)},x.request.regions.map{it.image.encodedSha256})
+        assertEquals(ladder(r4),ladder(r5))
+        val r4Wire=RegionJson.parse(r4.providerBody) as Map<*,*>;val r5Wire=RegionJson.parse(r5.providerBody) as Map<*,*>;assertEquals(r4Wire.keys,r5Wire.keys);assertNotEquals(r4Wire,r5Wire)
+        repeat(10){val repeated=CanonicalRequestRegionV8Builder().build(id,sha,"application/pdf",bytes,"oi10r4-sprint2-offline");assertEquals(ladder(r4),ladder(repeated));assertEquals(r4.providerBody,repeated.providerBody);assertEquals(r4.requestBindingSha256,repeated.requestBindingSha256);assertEquals(r4.providerBodySha256,repeated.providerBodySha256)}
+        assertEquals("parker.request-region-v8.canonical-binding.v1",CanonicalRequestRegionV8Construction.REQUEST_DIGEST_DOMAIN);assertEquals("parker.request-region-v8.provider-body.utf8.v1",CanonicalRequestRegionV8Construction.BODY_DIGEST_DOMAIN)
     }
     private fun sha(bytes:ByteArray)=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it.toInt()and 255)}
 }

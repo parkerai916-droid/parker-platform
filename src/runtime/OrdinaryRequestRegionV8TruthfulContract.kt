@@ -51,6 +51,50 @@ class OpenAiRequestRegionV8Codec {
     private fun manifest(r:RequestRegion)="REQUEST_REGION request_region_id=${r.id.value} page_number=${r.pageNumber} bounds=${r.bounds.left},${r.bounds.top},${r.bounds.rightExclusive},${r.bounds.bottomExclusive} crop_digest=${r.cropDigest.value}"
 }
 
+/** One provider-free construction path for offline proof, governed acceptance, and eventual execution. */
+data class CanonicalRequestRegionV8Construction(
+    val pages:List<AuthoritativePageRepresentation>,
+    val sourceGraphs:List<SourceRegionOrderGraph>,
+    val request:RequestRegionV8Request,
+    val providerBody:String,
+    val requestBindingSha256:String,
+    val providerBodySha256:String,
+) {
+    companion object {
+        const val REQUEST_DIGEST_DOMAIN="parker.request-region-v8.canonical-binding.v1"
+        const val BODY_DIGEST_DOMAIN="parker.request-region-v8.provider-body.utf8.v1"
+    }
+}
+
+class CanonicalRequestRegionV8Builder(
+    private val renderer:DeterministicSourcePageRenderer=DeterministicSourcePageRenderer(),
+    private val deriver:DeterministicSourceRegionDeriver=DeterministicSourceRegionDeriver(),
+    private val shaper:DeterministicCompleteSetRequestRegionShaper=DeterministicCompleteSetRequestRegionShaper(renderer),
+    private val codec:OpenAiRequestRegionV8Codec=OpenAiRequestRegionV8Codec(),
+) {
+    fun build(evidenceId:EvidenceArtifactId,sourceSha256:String,mimeType:String,sourceBytes:ByteArray,correlationId:String):CanonicalRequestRegionV8Construction {
+        require(requestRegionV8Sha256(sourceBytes)==sourceSha256)
+        val profile=PageRenderProfile("authoritative-page-region-raster-v1",1,300)
+        fun render(pageNumber:Int):AuthoritativePageRepresentation {
+            val outcome=renderer.render(SourcePageRenderRequest(evidenceId,sourceSha256,mimeType,sourceBytes,pageNumber,profile))
+            return (outcome as? SourcePageRepresentationOutcome.Created)?.representation
+                ?: error("authoritative page render failed: $outcome")
+        }
+        val first=render(1)
+        val pages=(1..first.provenance.declaredPageCount).map{if(it==1)first else render(it)}
+        val graphs=pages.map { page ->
+            val outcome=deriver.derive(page)
+            (outcome as? SourceRegionDerivationOutcome.Derived)?.graph
+                ?: error("source-region derivation failed: $outcome")
+        }
+        val shaped=shaper.shape(pages,graphs) as? RequestRegionShapingOutcome.Shaped
+            ?: error("request-region shaping failed")
+        val request=RequestRegionV8Request(correlationId,shaped.regions)
+        val body=codec.buildRequestBody(request)
+        return CanonicalRequestRegionV8Construction(pages,graphs,request,body,codec.requestDigest(request),requestRegionV8Sha256(body.toByteArray()))
+    }
+}
+
 class RequestRegionV8StructuredValidator {
     fun parseExact(request:RequestRegionV8Request,json:String)=try{ @Suppress("UNCHECKED_CAST") val wire=RegionJson.parse(json) as Map<String,Any?>;validate(request,wire)}catch(e:Exception){RequestRegionV8ValidationOutcome.Rejected(e.message?:"MALFORMED")}
     fun validate(request:RequestRegionV8Request,wire:Map<String,Any?>):RequestRegionV8ValidationOutcome=try{
