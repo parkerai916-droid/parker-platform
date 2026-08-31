@@ -41,7 +41,7 @@ sealed class TierADerivativePayload {
      */
     data class Ocr(val value: OcrDerivativeExtractedResult) : TierADerivativePayload()
 
-    /** Ordinary external region-v5 transcription. This is deliberately distinct from OCR. */
+    /** Versioned ordinary external request-region transcription. This is distinct from OCR. */
     data class RegionTranscription(val value: OrdinaryRegionTranscriptionDerivative) : TierADerivativePayload()
 }
 

@@ -26,6 +26,7 @@ import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.OcrModelSnapshot
 import parker.core.interfaces.HumanVerificationRecord
+import parker.core.runtime.ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerDocumentAnalysisInvocationOutcome
@@ -225,8 +226,8 @@ class OwnerUiEvidenceRuntimeAdapter(
         val governed = governedDecisionAsOwner(evidenceArtifactId)
         val proposal = ordinaryRegionProposalAsOwner(evidenceArtifactId)
         if (proposal == null || proposal.capabilityStatus.disposition != OrdinaryRegionCapabilityDisposition.ACCEPTED) return governed
-        check(proposal.capabilityId == ORDINARY_REGION_CAPABILITY_ID)
         val status = proposal.capabilityStatus
+        val isV8 = proposal.capabilityId == ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID
         val authorization = ordinaryRegionAuthorizationStatusAsOwner(evidenceArtifactId)
         return OwnerAcquisitionDecisionView.Proposed(
             source = governed.source,
@@ -240,13 +241,13 @@ class OwnerUiEvidenceRuntimeAdapter(
                 profile = status.providerProfile,
                 representationLabel = "Selected authoritative PDF evidence crops",
                 availability = "READY",
-                selectionReasons = listOf("ACCEPTED_REGION_V5_CAPABILITY", "PDF_SOURCE"),
+                selectionReasons = listOf(if (isV8) "ACCEPTED_REQUEST_REGION_V8_CAPABILITY" else "ACCEPTED_ORDINARY_REGION_CAPABILITY", "PDF_SOURCE"),
                 configurationIdentity = "${status.adapterId}:${status.adapterVersion}:wire-${status.wireVersion}",
                 processingProfile = status.providerProfile,
                 store = false,
                 imageDetail = "original",
             ),
-            explanation = "The governed ordinary region-v5 capability is accepted for this PDF. Owner review and separate evidence-specific authorization are required before any external processing.",
+            explanation = "The governed ordinary ${if (isV8) "request-region-v8" else "region"} capability is accepted for this PDF. Owner review and separate evidence-specific authorization are required before any external processing.",
             disclosure = proposal.disclosure,
             egressAuthorization = authorization.disposition.name,
             nextStep = if (authorization.disposition == OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED)

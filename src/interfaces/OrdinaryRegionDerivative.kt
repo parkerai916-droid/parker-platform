@@ -1,9 +1,10 @@
 package parker.core.interfaces
 
-/** Durable, versioned ordinary region-v5 transcription content. Each binding is canonical text
- * produced by Parker, never provider-selected ordering or native PDF text. */
+/** Durable, explicitly capability-bound ordinary request-region transcription content. */
 data class OrdinaryRegionTranscriptionDerivative(
     val representationVersion: Int = 1,
+    val capabilityId: String = "ordinary-external-region-transcription-v5",
+    val capabilityDigest: String = "historical-v5-capability-digest-not-persisted",
     val evidenceArtifactId: String,
     val sourceSha256: String,
     val pageBindings: List<String>,
@@ -33,12 +34,13 @@ data class OrdinaryRegionTranscriptionDerivative(
     val admissionProvenance: String,
 ) {
     init {
-        require(representationVersion == 1)
+        require(representationVersion in 1..2)
+        if (representationVersion == 2) require(capabilityDigest.matches(SHA256))
         require(listOf(sourceSha256, schemaSha256, instructionSha256, requestDigest,
             reconstructedContentDigest, canonicalGenerationKeyDigest).all { SHA256.matches(it) })
         require(pageBindings.isNotEmpty() && regionBindings.isNotEmpty() && transcriptionBlocks.isNotEmpty())
         require(regionBindings.size == parkerSourceOrder.size && providerReturnedOrder.size == parkerSourceOrder.size)
-        require(listOf(evidenceArtifactId, provider, model, adapterId, adapterVersion, providerProfile,
+        require(listOf(capabilityId, capabilityDigest, evidenceArtifactId, provider, model, adapterId, adapterVersion, providerProfile,
             processingProfile, requestIdentity, responseIdentity, providerStateRecordIdentity,
             capabilityAcceptanceRecordIdentity, ownerAuthorizationIdentity, executionIdentity,
             attemptIdentity, admissionProvenance).all { it.isNotBlank() && it.length <= 4096 })

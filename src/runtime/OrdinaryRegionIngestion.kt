@@ -239,8 +239,11 @@ data class OrdinaryRegionCapabilityPromotionRequest(val capabilityId: String, va
 sealed interface OrdinaryRegionCapabilityPromotionOutcome {
     data class Created(val record: OrdinaryRegionCapabilityAcceptanceRecord) : OrdinaryRegionCapabilityPromotionOutcome
     data class Existing(val record: OrdinaryRegionCapabilityAcceptanceRecord) : OrdinaryRegionCapabilityPromotionOutcome
+    data class V8Created(val record: OrdinaryRequestRegionV8CapabilityAcceptanceRecord) : OrdinaryRegionCapabilityPromotionOutcome
+    data class V8Existing(val record: OrdinaryRequestRegionV8CapabilityAcceptanceRecord) : OrdinaryRegionCapabilityPromotionOutcome
     data class Blocked(val reason: String) : OrdinaryRegionCapabilityPromotionOutcome
 }
+fun interface OrdinaryRegionCapabilityPromotionPort { fun create(request:OrdinaryRegionCapabilityPromotionRequest):OrdinaryRegionCapabilityPromotionOutcome }
 
 /** Reconstructs the fixed accepted R6.9 chain from durable provider state; never performs transport. */
 fun interface OrdinaryRegionR69EvidenceLoader { fun load(): OrdinaryRegionLiveR69Evidence }
@@ -316,8 +319,8 @@ class OrdinaryRegionCapabilityAcceptanceCoordinator(
     private val runtimeEmbeddedParkerSourceCommit: () -> String?,
     private val acceptedBy: String,
     private val now: () -> Instant = Instant::now,
-) {
-    fun create(request: OrdinaryRegionCapabilityPromotionRequest): OrdinaryRegionCapabilityPromotionOutcome {
+) : OrdinaryRegionCapabilityPromotionPort {
+    override fun create(request: OrdinaryRegionCapabilityPromotionRequest): OrdinaryRegionCapabilityPromotionOutcome {
         if (request.capabilityId != ORDINARY_REGION_CAPABILITY_ID) return blocked("CAPABILITY_ID_MISMATCH")
         if (!request.promotingBuildCommit.matches(Regex("^[0-9a-f]{40}$"))) return blocked("BUILD_COMMIT_MALFORMED")
         if (runtimeEmbeddedParkerSourceCommit() != request.promotingBuildCommit) return blocked("BUILD_COMMIT_MISMATCH")
@@ -670,7 +673,7 @@ class OrdinaryRegionDerivativeAdmission(
     }
     private fun record(id: DerivativeGenerationId, p: OrdinaryRegionTranscriptionDerivative) = DerivativeGenerationRecord(id,
         EvidenceArtifactId(p.evidenceArtifactId), listOf(DerivativeParentReference.RootEvidenceArtifact(EvidenceArtifactId(p.evidenceArtifactId))),
-        "ordinary region-v5 transcription", DerivativeProducerIdentity("parker-region-transcription", "1.0.0",
+        if(p.capabilityId==ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID)"ordinary request-region-v8 transcription" else "ordinary region-v5 transcription", DerivativeProducerIdentity("parker-region-transcription", if(p.representationVersion==2)"2.0.0" else "1.0.0",
             p.providerProfile, p.adapterId, p.adapterVersion, p.model, p.model),
         listOf(DerivativeTransformation.PAGE_RENDERING, DerivativeTransformation.MODEL_INFERENCE,
             DerivativeTransformation.READING_ORDER_INFERENCE), now(), DerivativeContentIdentity.Digest("SHA-256", p.reconstructedContentDigest),
@@ -681,7 +684,7 @@ class OrdinaryRegionDerivativeAdmission(
             (r.contentIdentity as? DerivativeContentIdentity.Digest)?.digest == p.reconstructedContentDigest
     private fun audit(p: OrdinaryRegionTranscriptionDerivative, principal: PrincipalId, id: DerivativeGenerationId, stage: DocumentIngestionAuditStage) =
         DocumentIngestionAuditRecord(p.executionIdentity, EvidenceArtifactId(p.evidenceArtifactId), principal,
-            "ordinary region-v5 transcription", now(), id, stage)
+            if(p.capabilityId==ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID)"ordinary request-region-v8 transcription" else "ordinary region-v5 transcription", now(), id, stage)
     private fun conflict(reason: String) = OrdinaryRegionAdmissionOutcome.Conflict(reason)
 }
 
@@ -696,6 +699,17 @@ data class OrdinaryRegionOwnerResult(
     val derivativeGenerationId: String? = null,
     val providerCalls: Int? = null,
 )
+
+interface OrdinaryRegionOwnerWorkflowPort {
+    fun capabilityStatus():OrdinaryRegionCapabilityStatus
+    suspend fun proposal(evidenceId:EvidenceArtifactId):OrdinaryRegionProposal?
+    suspend fun authorizationStatus(evidenceId:EvidenceArtifactId):OrdinaryRegionOwnerAuthorizationView
+    suspend fun authorize(evidenceId:EvidenceArtifactId):OrdinaryRegionOwnerAuthorizationOutcome
+    fun createAuthorization(grant:OrdinaryRegionOwnerAuthorization)
+    fun reserve(authorizationId:String,executionId:String):OrdinaryRegionAuthorizationSnapshot
+    fun revoke(authorizationId:String):OrdinaryRegionAuthorizationSnapshot
+    suspend fun execute(evidenceId:EvidenceArtifactId,authorizationId:String,executionId:String,attemptId:String):OrdinaryRegionOwnerResult
+}
 
 /** Owner-facing ordinary API. Proposal, authorization and reservation are explicitly non-executing. */
 class OrdinaryRegionIngestionWorkflow(
@@ -712,14 +726,14 @@ class OrdinaryRegionIngestionWorkflow(
     private val admission: OrdinaryRegionDerivativeAdmission,
     private val runtimeCommit: () -> String,
     private val now: () -> Instant = Instant::now,
-) {
+) : OrdinaryRegionOwnerWorkflowPort {
     private val resolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
 
-    fun capabilityStatus(): OrdinaryRegionCapabilityStatus {
+    override fun capabilityStatus(): OrdinaryRegionCapabilityStatus {
         return evaluateOrdinaryRegionCapabilityStatus(capability, acceptance, runtimeCommit)
     }
 
-    suspend fun proposal(evidenceId: EvidenceArtifactId): OrdinaryRegionProposal? =
+    override suspend fun proposal(evidenceId: EvidenceArtifactId): OrdinaryRegionProposal? =
         when (val source = resolver.resolve(ownerPrincipalId, evidenceId)) {
             is AuthoritativeAcquisitionResolution.Verified -> if (source.input.mediaType == "application/pdf")
                 OrdinaryRegionProposal(evidenceId.value, capability.capabilityId, capabilityStatus = capabilityStatus()) else null
@@ -727,7 +741,7 @@ class OrdinaryRegionIngestionWorkflow(
         }
 
     /** Fresh canonical status for the exact evidence/source/build binding; never creates state. */
-    suspend fun authorizationStatus(evidenceId: EvidenceArtifactId): OrdinaryRegionOwnerAuthorizationView {
+    override suspend fun authorizationStatus(evidenceId: EvidenceArtifactId): OrdinaryRegionOwnerAuthorizationView {
         if (acceptance.evaluate() !is OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted)
             return authorizationUnavailable(evidenceId, "CAPABILITY_NOT_ACCEPTED")
         val source = verifiedPdf(evidenceId) ?: return authorizationUnavailable(evidenceId, "SOURCE_UNAVAILABLE_OR_UNSUPPORTED")
@@ -742,7 +756,7 @@ class OrdinaryRegionIngestionWorkflow(
     }
 
     /** Explicit authorization only. Governed binding fields are reconstructed server-side; no execution occurs. */
-    suspend fun authorize(evidenceId: EvidenceArtifactId): OrdinaryRegionOwnerAuthorizationOutcome {
+    override suspend fun authorize(evidenceId: EvidenceArtifactId): OrdinaryRegionOwnerAuthorizationOutcome {
         if (acceptance.evaluate() !is OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted)
             return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(authorizationUnavailable(evidenceId, "CAPABILITY_NOT_ACCEPTED"))
         val source = verifiedPdf(evidenceId) ?: return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(
@@ -774,9 +788,9 @@ class OrdinaryRegionIngestionWorkflow(
         }
     }
 
-    fun createAuthorization(grant: OrdinaryRegionOwnerAuthorization) { require(grant.capabilityDigest == capability.digest()); authorizations.create(grant) }
-    fun reserve(authorizationId: String, executionId: String) = guard.locked(authorizationId) { authorizations.reserve(authorizationId, executionId, now()) }
-    fun revoke(authorizationId: String): OrdinaryRegionAuthorizationSnapshot = guard.locked(authorizationId) {
+    override fun createAuthorization(grant: OrdinaryRegionOwnerAuthorization) { require(grant.capabilityDigest == capability.digest()); authorizations.create(grant) }
+    override fun reserve(authorizationId: String, executionId: String) = guard.locked(authorizationId) { authorizations.reserve(authorizationId, executionId, now()) }
+    override fun revoke(authorizationId: String): OrdinaryRegionAuthorizationSnapshot = guard.locked(authorizationId) {
         val executionId = authorizations.load(authorizationId).executionId
         val started = executionId?.let { runCatching { ledger.providerAttemptStartedForExecution(it) }.getOrDefault(false) } ?: false
         authorizations.revoke(authorizationId, now(), started)
@@ -815,7 +829,7 @@ class OrdinaryRegionIngestionWorkflow(
     private fun authorizationUnavailable(evidenceId: EvidenceArtifactId, detail: String) =
         OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE, evidenceId.value, detail = detail)
 
-    suspend fun execute(evidenceId: EvidenceArtifactId, authorizationId: String, executionId: String,
+    override suspend fun execute(evidenceId: EvidenceArtifactId, authorizationId: String, executionId: String,
         attemptId: String): OrdinaryRegionOwnerResult {
         val accepted = acceptance.evaluate() as? OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted
             ?: return result(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED)

@@ -83,4 +83,15 @@ object ProductionAcquisitionCapabilityCatalogue {
             AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
         AcquisitionOperationalLimits(64L * 1024L * 1024L, 200),
     )
+
+    fun ordinaryRequestRegionV8Capability(accepted:Boolean):EvidenceAcquisitionCapability {
+        val c=OrdinaryRequestRegionV8CapabilityIdentity()
+        return EvidenceAcquisitionCapability(c.capabilityId,EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION,setOf("application/pdf"),
+            setOf(AcquisitionSourceForm.NATIVE_SEARCHABLE,AcquisitionSourceForm.IMAGE_ONLY_OR_SCANNED,AcquisitionSourceForm.MIXED_TEXT_AND_IMAGE),
+            AcquisitionFidelityCapabilities(true,false,true,true,true,true,pageAssociation=true,regionAssociation=true,uncertaintyReporting=true,structuredOutput=true),
+            setOf(AcquisitionRepresentationClass.DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION),AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+            AcquisitionProviderConfiguration(c.provider,c.model,c.profile,c.capabilityDigest,c.instructionSha256,c.schemaSha256,c.adapterId,c.adapterVersion,c.processing,c.reasoning,c.store,"NOT_APPLICABLE","original"),
+            if(accepted)AcquisitionAvailability.Available else AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
+            AcquisitionOperationalLimits(64L*1024L*1024L,200))
+    }
 }

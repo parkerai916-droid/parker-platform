@@ -187,6 +187,8 @@ class OwnerEvidenceHttpServer(
                 when (val outcome = createOrdinaryRegionCapabilityAcceptance(request)) {
                     is OrdinaryRegionCapabilityPromotionOutcome.Created -> writeJson(exchange, 201, promotionJson("CREATED", outcome.record))
                     is OrdinaryRegionCapabilityPromotionOutcome.Existing -> writeJson(exchange, 200, promotionJson("EXISTING", outcome.record))
+                    is OrdinaryRegionCapabilityPromotionOutcome.V8Created -> writeJson(exchange, 201, promotionJsonV8("CREATED", outcome.record))
+                    is OrdinaryRegionCapabilityPromotionOutcome.V8Existing -> writeJson(exchange, 200, promotionJsonV8("EXISTING", outcome.record))
                     is OrdinaryRegionCapabilityPromotionOutcome.Blocked -> writeJson(exchange, 409,
                         jsonObject("status" to "BLOCKED", "reason" to outcome.reason))
                 }
@@ -199,6 +201,10 @@ class OwnerEvidenceHttpServer(
             "status" to status, "recordId" to record.recordId, "recordDigest" to record.recordId,
             "capabilityDigest" to record.capabilityDigest, "promotingBuildCommit" to record.promotingBuildCommit,
         )
+        private fun promotionJsonV8(status:String,record:parker.core.runtime.OrdinaryRequestRegionV8CapabilityAcceptanceRecord)=jsonObject(
+            "status" to status,"recordId" to record.recordId,"recordDigest" to record.recordId,
+            "capabilityId" to record.capabilityId,"capabilityDigest" to record.capabilityDigest,
+            "promotingBuildCommit" to record.implementationCommit,"acceptedBy" to record.acceptedBy,"acceptedAt" to record.acceptedAt.toString())
         private fun capabilityStatusJson(status: OrdinaryRegionCapabilityStatus) = jsonObject(
             "capabilityId" to status.capabilityId, "provider" to status.provider,
             "operation" to status.endpointOperation, "model" to status.model,

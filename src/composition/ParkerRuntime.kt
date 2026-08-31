@@ -364,8 +364,9 @@ class ParkerRuntime(
     private var governedRegionTranscriptionExecutionCoordinator: GovernedRegionTranscriptionExecutionCoordinator? = null
     private var regionAcceptanceExecutionCoordinator: parker.core.runtime.RegionAcceptanceExecutionCoordinatorV2? = null
     private var regionAcceptanceAuthorityCreationCoordinator: parker.core.runtime.RegionTranscriptionAcceptanceAuthorityCreationCoordinator? = null
-    private var ordinaryRegionIngestionWorkflow: OrdinaryRegionIngestionWorkflow? = null
-    private var ordinaryRegionCapabilityAcceptanceCoordinator: parker.core.runtime.OrdinaryRegionCapabilityAcceptanceCoordinator? = null
+    private var ordinaryRegionIngestionWorkflow: parker.core.runtime.OrdinaryRegionOwnerWorkflowPort? = null
+    private var ordinaryRegionCapabilityAcceptanceCoordinator: parker.core.runtime.OrdinaryRegionCapabilityPromotionPort? = null
+    private var legacyOrdinaryRegionAcceptanceEvaluator: parker.core.runtime.OrdinaryRegionCapabilityAcceptanceEvaluator? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
@@ -1571,41 +1572,30 @@ class ParkerRuntime(
             }
         }
         ordinaryRegionIngestionWorkflow = if (config.ordinaryRegionIngestionEnabled) {
-            stage("Ordinary external region-v5 ingestion composition") {
-                val capability = OrdinaryRegionCapabilityIdentity()
-                val acceptanceStore = FileSystemOrdinaryRegionCapabilityAcceptanceStore(
+            stage("Ordinary external request-region-v8 ingestion composition") {
+                val acceptanceStore = parker.core.runtime.FileSystemOrdinaryRequestRegionV8CapabilityAcceptanceStore(
                     Path.of(requireNotNull(config.ordinaryRegionCapabilityAcceptanceStorageRootPath)))
+                legacyOrdinaryRegionAcceptanceEvaluator = parker.core.runtime.OrdinaryRegionCapabilityAcceptanceEvaluator(
+                    parker.core.runtime.FileSystemOrdinaryRegionCapabilityAcceptanceStore(
+                        Path.of(requireNotNull(config.ordinaryRegionCapabilityAcceptanceStorageRootPath))),
+                    parker.core.runtime.OrdinaryRegionCapabilityIdentity()
+                ) { buildIdentity() }
                 val authorizationRoot = Path.of(requireNotNull(config.ordinaryRegionOwnerAuthorizationStorageRootPath))
-                val authorizationStore = FileSystemOrdinaryRegionAuthorizationStore(authorizationRoot)
+                val authorizationStore = parker.core.runtime.FileSystemOrdinaryRequestRegionV8AuthorizationStore(authorizationRoot)
                 val ledger = requireNotNull(acceptanceAttemptLedger)
-                val providerStateStore = requireNotNull(composedRegionProviderStateStore)
-                val regionExecution = requireNotNull(governedRegionTranscriptionExecutionCoordinator)
+                val providerStateRoot = requireNotNull(config.regionProviderStateStorageRootPath)
+                val providerStateStore = parker.core.runtime.FileSystemRequestRegionV8ProviderStateStore(Path.of(providerStateRoot))
                 val embedded = requireNotNull(embeddedCommit)
-                ordinaryRegionCapabilityAcceptanceCoordinator = parker.core.runtime.OrdinaryRegionCapabilityAcceptanceCoordinator(
-                    acceptanceStore,
-                    parker.core.runtime.DurableOrdinaryRegionR69EvidenceLoader(
-                        providerStateStore,
-                        parker.core.runtime.FileSystemRegionAcceptanceAuthorityStorageV2(
-                            Path.of(requireNotNull(config.regionAcceptanceAuthorityStorageRootPath))),
-                        ledger,
-                    ),
-                    { buildIdentity() },
-                    config.ownerPrincipalId,
-                    clock,
-                )
-                val bodyEncoder = OpenAiRegionTranscriptionAdapter(
-                    credential = requireNotNull(credential), transport = openAiTransport,
-                    providerStateStore = providerStateStore,
-                )
-                OrdinaryRegionIngestionWorkflow(
-                    ownerPrincipalId = PrincipalId(config.ownerPrincipalId), evidenceCustodian = defaultEvidenceCustodian,
-                    capability = capability,
-                    acceptance = OrdinaryRegionCapabilityAcceptanceEvaluator(acceptanceStore, capability) { buildIdentity() },
-                    authorizations = authorizationStore, guard = OrdinaryRegionAuthorizationGuard(authorizationRoot),
-                    ledger = ledger,
-                    preparer = OrdinaryRegionRequestPreparer(bodyEncoder = bodyEncoder::buildRequestBody,
-                        requestDigest = providerStateStore::requestDigestFor),
-                    execution = regionExecution, providerState = providerStateStore,
+                ordinaryRegionCapabilityAcceptanceCoordinator=parker.core.runtime.OrdinaryRequestRegionV8CapabilityAcceptanceCoordinator(
+                    acceptanceStore,{buildIdentity()},config.ownerPrincipalId,clock)
+                val exchange = parker.core.runtime.OpenAiRequestRegionV8ProviderExchange(
+                    credential = requireNotNull(credential), transport = openAiTransport, state = providerStateStore)
+                parker.core.runtime.OrdinaryRequestRegionV8IngestionWorkflow(
+                    owner = PrincipalId(config.ownerPrincipalId), evidenceCustodian = defaultEvidenceCustodian,
+                    acceptance = parker.core.runtime.OrdinaryRequestRegionV8AcceptanceEvaluator(acceptanceStore) { buildIdentity() },
+                    authorizations = authorizationStore, guard = OrdinaryRegionAuthorizationGuard(authorizationRoot), ledger = ledger,
+                    preparer = parker.core.runtime.OrdinaryRequestRegionV8RequestPreparer(),
+                    execution = parker.core.runtime.GovernedRequestRegionV8ExecutionCoordinator(ledger,providerStateStore,exchange),
                     admission = OrdinaryRegionDerivativeAdmission(derivativeGenerationStorage, derivativeContentStorage, documentIngestionAudit),
                     runtimeCommit = { embedded },
                 )
@@ -1616,7 +1606,7 @@ class ParkerRuntime(
         )
         val acquisitionRegistry = ProductionAcquisitionCapabilityCatalogue.create(
             ordinaryRegionCapabilityProjection = ordinaryRegionIngestionWorkflow?.let {
-                ProductionAcquisitionCapabilityCatalogue.ordinaryRegionV5Capability(
+                ProductionAcquisitionCapabilityCatalogue.ordinaryRequestRegionV8Capability(
                     it.capabilityStatus().disposition == parker.core.runtime.OrdinaryRegionCapabilityDisposition.ACCEPTED,
                 )
             },
@@ -2289,21 +2279,31 @@ class ParkerRuntime(
             ?: parker.core.runtime.RegionAcceptanceAuthorityCreationOutcome.Blocked("REGION_ACCEPTANCE_CREATION_LANE_NOT_CONFIGURED")
     }
 
-    /** Non-executing ordinary region-v5 proposal. It never reserves or creates attempt state. */
+    /** Non-executing ordinary request-region-v8 proposal. It never reserves or creates attempt state. */
     suspend fun proposeOrdinaryRegionIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.OrdinaryRegionProposal? {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return ordinaryRegionIngestionWorkflow?.proposal(evidenceArtifactId)
     }
 
-    /** Fresh, read-only exact region-v5 acceptance and routing identity evaluation. */
+    /** Fresh, read-only exact request-region-v8 acceptance and routing identity evaluation. */
     fun ordinaryRegionCapabilityStatusAsOwner(): parker.core.runtime.OrdinaryRegionCapabilityStatus {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
-        return ordinaryRegionIngestionWorkflow?.capabilityStatus() ?: parker.core.runtime.OrdinaryRegionCapabilityIdentity().let { capability ->
+        // Preserve truthful readback of legacy V5 acceptance records without using them to authorize V8.
+        if (legacyOrdinaryRegionAcceptanceEvaluator?.evaluate() is parker.core.runtime.OrdinaryRegionCapabilityAcceptanceEvaluation.Accepted) {
+            val legacy = parker.core.runtime.OrdinaryRegionCapabilityIdentity()
+            return parker.core.runtime.OrdinaryRegionCapabilityStatus(
+                legacy.capabilityId, legacy.provider, legacy.endpointOperation, legacy.model,
+                legacy.adapterId, legacy.adapterVersion, legacy.providerProfile, legacy.wireVersion,
+                "application/pdf", legacy.maximumRegions, legacy.aggregateRequestBodyMaximumBytes, false,
+                parker.core.runtime.OrdinaryRegionCapabilityDisposition.ACCEPTED, buildIdentity(), null,
+            )
+        }
+        return ordinaryRegionIngestionWorkflow?.capabilityStatus() ?: parker.core.runtime.OrdinaryRequestRegionV8CapabilityIdentity().let { capability ->
             parker.core.runtime.OrdinaryRegionCapabilityStatus(
                 capability.capabilityId, capability.provider, capability.endpointOperation, capability.model,
-                capability.adapterId, capability.adapterVersion, capability.providerProfile, capability.wireVersion,
-                capability.mediaType, capability.maximumRegions, capability.aggregateRequestBodyMaximumBytes,
-                capability.batching, parker.core.runtime.OrdinaryRegionCapabilityDisposition.NOT_CONFIGURED,
+                capability.adapterId, capability.adapterVersion, capability.profile, capability.wireVersion,
+                "application/pdf", capability.maximumRegions, capability.maximumBodyBytes,
+                false, parker.core.runtime.OrdinaryRegionCapabilityDisposition.NOT_CONFIGURED,
                 buildIdentity(), null,
             )
         }
@@ -2356,14 +2356,14 @@ class ParkerRuntime(
         return ordinaryRegionIngestionWorkflow?.revoke(authorizationId)
     }
 
-    /** The only ordinary region-v5 execution entry point; all provider facts are composed internally. */
+    /** The only ordinary request-region-v8 execution entry point; all provider facts are composed internally. */
     suspend fun executeOrdinaryRegionIngestionAsOwner(evidenceArtifactId: EvidenceArtifactId, authorizationId: String,
         executionId: String, attemptId: String): parker.core.runtime.OrdinaryRegionOwnerResult {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return ordinaryRegionIngestionWorkflow?.execute(evidenceArtifactId, authorizationId, executionId, attemptId)
             ?: parker.core.runtime.OrdinaryRegionOwnerResult(
                 parker.core.runtime.OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED,
-                "ordinary region-v5 ingestion is not configured",
+                "ordinary request-region-v8 ingestion is not configured",
             )
     }
 
