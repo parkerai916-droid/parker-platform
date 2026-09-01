@@ -39,3 +39,11 @@ Expected post-acceptance authority state is six legacy records plus the existing
 ## Next action
 
 Steven must explicitly accept execution authority for the exact V8 capability/digest on D335. Only then may the canonical route be invoked. After successful rebinding, a new separately governed live synthetic execution unit (not a retry of OI11R4I) is required.
+
+## Completion
+
+Steven accepted the exact proposition. The canonical route returned `CREATED` and created D335 record `85af5c7b87fe9c7fe5f71a403039aff2e7c5db65e5c598471354ed4796d87d1c.request-region-v8-capability-acceptance-v1`, SHA-256 `b3ec36185e40a1a5940726d1311e6d5351890bb4d14791b97f218ae10f61aca5`. It binds the exact V8 identity/digest, implementation `d33518e85604083d620be08be4a4f001d7be3187`, owner `user.steve`, and canonical timestamp `2026-09-01T10:06:09.939370439Z`.
+
+The evaluator now reports `ACCEPTED` for the running D335 artifact. The historical C304 record (SHA-256 `2704d826896002c077c1eeb8d323c100d313546ef5a477eacb73deb0d15eb03e`) and six legacy records remain unchanged. Acceptance records increased from seven to eight, with no other store mutation.
+
+Production remained on the same container/image with restart count `0`; no rebuild, deployment, or restart occurred. Provider calls were OpenAI `0`, Claude `0`, other external `0`, retries `0`. OI11R4F and OI11R4I histories remain immutable. The next unit is `OI11R4K — Third Governed Live V8 Synthetic Execution`.
