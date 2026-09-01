@@ -71,6 +71,8 @@ class CanonicalRequestRegionV8Builder(
     private val deriver:DeterministicSourceRegionDeriver=DeterministicSourceRegionDeriver(),
     private val shaper:DeterministicCompleteSetRequestRegionShaper=DeterministicCompleteSetRequestRegionShaper(renderer),
     private val codec:OpenAiRequestRegionV8Codec=OpenAiRequestRegionV8Codec(),
+    private val persistence: GovernedPageRepresentationPersistence? = null,
+    private val ownerOrders: Map<PageRepresentationId, List<SourceRegionId>> = emptyMap(),
 ) {
     fun build(evidenceId:EvidenceArtifactId,sourceSha256:String,mimeType:String,sourceBytes:ByteArray,correlationId:String):CanonicalRequestRegionV8Construction {
         require(requestRegionV8Sha256(sourceBytes)==sourceSha256)
@@ -82,12 +84,21 @@ class CanonicalRequestRegionV8Builder(
         }
         val first=render(1)
         val pages=(1..first.provenance.declaredPageCount).map{if(it==1)first else render(it)}
+        persistence?.let { pages.forEach(it::persistPage) }
         val graphs=pages.map { page ->
             val outcome=deriver.derive(page)
             (outcome as? SourceRegionDerivationOutcome.Derived)?.graph
                 ?: error("source-region derivation failed: $outcome")
         }
-        val shaped=shaper.shape(pages,graphs) as? RequestRegionShapingOutcome.Shaped
+        persistence?.let { graphs.forEach { graph ->
+            it.persistGeometry(graph)
+            val disposition = if (graph.ambiguityState == SourceRegionAmbiguityState.UNAMBIGUOUS) "DETERMINISTIC_SOURCE_ORDER" else "SOURCE_ORDER_REVIEW_REQUIRED"
+            val order = if (graph.ambiguityState == SourceRegionAmbiguityState.UNAMBIGUOUS) RegionSourceOrderReconstructor().order(listOf(graph)).getOrThrow() else graph.regions.map { r -> r.id }
+            it.persistOrderState(SourceRegionOrderState(graph.pageRepresentationId, SourceRegionSetIdentity.digest(graph), order, disposition,
+                graph.regions.first().provenance.derivationProfileId, graph.regions.first().provenance.derivationProfileVersion,
+                graph.reason))
+        } }
+        val shaped=shaper.shape(pages,graphs,ownerOrders) as? RequestRegionShapingOutcome.Shaped
             ?: error("request-region shaping failed")
         val request=RequestRegionV8Request(correlationId,shaped.regions)
         val body=codec.buildRequestBody(request)

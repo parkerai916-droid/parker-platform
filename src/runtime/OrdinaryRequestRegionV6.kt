@@ -84,18 +84,25 @@ sealed interface RequestRegionShapingOutcome {
 class DeterministicCompleteSetRequestRegionShaper(
     private val renderer: DeterministicSourcePageRenderer = DeterministicSourcePageRenderer(),
 ) {
-    fun shape(pages: List<AuthoritativePageRepresentation>, graphs: List<SourceRegionOrderGraph>): RequestRegionShapingOutcome {
-        if (graphs.count { it.regions.isNotEmpty() } > REQUEST_REGION_MAXIMUM) return unsupported("nonempty page count exceeds 32")
-        if (pages.map { it.id }.toSet() != graphs.map { it.pageRepresentationId }.toSet()) return unsupported("page/graph set mismatch")
-        graphs.firstOrNull { it.ambiguityState == SourceRegionAmbiguityState.HUMAN_ORDER_REQUIRED }?.let {
+    fun shape(pages: List<AuthoritativePageRepresentation>, graphs: List<SourceRegionOrderGraph>, ownerOrders: Map<PageRepresentationId, List<SourceRegionId>> = emptyMap()): RequestRegionShapingOutcome {
+        val effectiveGraphs = graphs.map { graph ->
+            if (graph.ambiguityState == SourceRegionAmbiguityState.HUMAN_ORDER_REQUIRED) {
+                val order = ownerOrders[graph.pageRepresentationId] ?: return@map graph
+                graph.withOwnerOrder(order)
+            } else graph
+        }
+        val effective = effectiveGraphs
+        if (effective.count { it.regions.isNotEmpty() } > REQUEST_REGION_MAXIMUM) return unsupported("nonempty page count exceeds 32")
+        if (pages.map { it.id }.toSet() != effective.map { it.pageRepresentationId }.toSet()) return unsupported("page/graph set mismatch")
+        effective.firstOrNull { it.ambiguityState == SourceRegionAmbiguityState.HUMAN_ORDER_REQUIRED }?.let {
             return RequestRegionShapingOutcome.Unsupported(OrdinaryRegionDisposition.SOURCE_ORDER_REVIEW_REQUIRED, it.reason ?: "human source-order review required")
         }
-        graphs.firstOrNull { it.ambiguityState != SourceRegionAmbiguityState.UNAMBIGUOUS }?.let {
+        effective.firstOrNull { it.ambiguityState != SourceRegionAmbiguityState.UNAMBIGUOUS }?.let {
             return RequestRegionShapingOutcome.Unsupported(OrdinaryRegionDisposition.SOURCE_ORDER_NOT_SUPPORTED, it.reason ?: "source order not supported")
         }
-        val orderedAll = RegionSourceOrderReconstructor().order(graphs).getOrElse { return unsupported("source-order graph is cyclic or inconsistent") }
+        val orderedAll = RegionSourceOrderReconstructor().order(effective).getOrElse { return unsupported("source-order graph is cyclic or inconsistent") }
         if (orderedAll.isEmpty()) return RequestRegionShapingOutcome.Unsupported(OrdinaryRegionDisposition.NO_TRANSCRIBABLE_REGIONS, "Parker derived no transcribable regions")
-        val nonempty = graphs.filter { it.regions.isNotEmpty() }.sortedWith(compareBy({ pageNumber(it) }, { it.pageRepresentationId.value }))
+        val nonempty = effective.filter { it.regions.isNotEmpty() }.sortedWith(compareBy({ pageNumber(it) }, { it.pageRepresentationId.value }))
         if (nonempty.size > REQUEST_REGION_MAXIMUM) return unsupported("nonempty page count exceeds 32")
         val orderedByPage = nonempty.associateWith { graph ->
             val byId = graph.regions.associateBy { it.id }
@@ -107,7 +114,7 @@ class DeterministicCompleteSetRequestRegionShaper(
             val page = pages.single { it.id == graph.pageRepresentationId }
             partition(orderedByPage.getValue(graph), quotas.getValue(graph)).map { members -> requestRegion(page, members) }
         }
-        return CompleteRequestRegionSetValidator().validate(graphs, requestRegions).fold(
+        return CompleteRequestRegionSetValidator().validate(effective, requestRegions).fold(
             onSuccess = { RequestRegionShapingOutcome.Shaped(requestRegions, orderedAll) },
             onFailure = { unsupported(it.message ?: "complete request-region invariant failed") },
         )
