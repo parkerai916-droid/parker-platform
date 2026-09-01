@@ -3,7 +3,6 @@ package parker.composition
 import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
-import java.util.jar.Manifest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -292,11 +291,7 @@ class ParkerRuntime(
     private val logger: ParkerLogger,
     private val ownerNotificationSink: OwnerNotificationSink = LoggingOwnerNotificationSink(logger),
     private val clock: () -> Instant = Instant::now,
-    private val buildIdentity: () -> String? = {
-        ParkerRuntime::class.java.classLoader.getResources("META-INF/MANIFEST.MF").toList()
-            .mapNotNull { resource -> runCatching { resource.openStream().use { Manifest(it).mainAttributes.getValue("Parker-Source-Commit") } }.getOrNull() }
-            .singleOrNull { Regex("^[0-9a-f]{40}$").matches(it) }
-    },
+    private val buildIdentity: () -> String? = { discoverRuntimeEmbeddedSourceCommit() },
 ) {
 
     private val stateLock = Mutex()
@@ -1466,6 +1461,9 @@ class ParkerRuntime(
         val credential = config.openAiApiCredential
         val embeddedCommit = buildIdentity()
         val acceptanceAttemptLedger = attemptRoot?.let { FileSystemFidelityFirstAttemptLedger(Path.of(it)) }
+        val readinessDiagnostic = RuntimeReadinessDiagnostic.fromEvaluated(
+            config, embeddedCommit, openAiExternalTranscriptionReadiness,
+        )
         fidelityFirstAcceptanceCoordinator = if (
             authorityRoot != null && attemptRoot != null && buildCommit != null && buildCommit == embeddedCommit &&
             readyProfile != null && credential != null && acceptanceAttemptLedger != null
@@ -1498,7 +1496,7 @@ class ParkerRuntime(
                 permissionEngine = permissionEngine,
                 mechanismFactory = { observer ->
                     OpenAiResponsesExternalTranscriptionAdapter(
-                        readiness = readyProfile, credential = credential,
+                        readiness = requireNotNull(readyProfile), credential = requireNotNull(credential),
                         transport = JdkOpenAiResponsesTransport(), transportLifecycleObserver = observer,
                     )
                 },
@@ -1510,8 +1508,7 @@ class ParkerRuntime(
         governedRegionTranscriptionExecutionCoordinator = config.regionProviderStateStorageRootPath?.let { configuredRoot ->
             stage("Governed region transcription execution composition") {
                 if (
-                    authorityRoot == null || acceptanceAttemptLedger == null || buildCommit == null ||
-                    buildCommit != embeddedCommit || readyProfile == null || credential == null
+                    !readinessDiagnostic.overallReady || acceptanceAttemptLedger == null
                 ) {
                     throw ParkerRuntimeException.InvalidConfiguration(
                         ParkerRuntimeConfigLoader.KEY_REGION_PROVIDER_STATE_STORAGE_ROOT,
@@ -1524,7 +1521,7 @@ class ParkerRuntime(
                     ledger = acceptanceAttemptLedger,
                     providerStateStore = providerStateStore,
                     mechanism = OpenAiRegionTranscriptionAdapter(
-                        credential = credential,
+                        credential = requireNotNull(credential),
                         transport = openAiTransport,
                         providerStateStore = providerStateStore,
                     ),
