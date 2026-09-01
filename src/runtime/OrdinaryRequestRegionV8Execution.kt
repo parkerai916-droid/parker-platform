@@ -203,7 +203,7 @@ sealed interface OrdinaryRequestRegionV8PreparationOutcome {
     data class Prepared(val value:OrdinaryRequestRegionV8PreparedRequest):OrdinaryRequestRegionV8PreparationOutcome
     data class Blocked(val disposition:OrdinaryRegionDisposition,val detail:String):OrdinaryRequestRegionV8PreparationOutcome
 }
-class OrdinaryRequestRegionV8RequestPreparer(private val builder:CanonicalRequestRegionV8Builder=CanonicalRequestRegionV8Builder()) {
+class OrdinaryRequestRegionV8RequestPreparer(private val builder:FullPageAchromaticCanonicalRequestRegionV8Builder=FullPageAchromaticCanonicalRequestRegionV8Builder()) {
     internal fun prepare(source:AuthoritativeAcquisitionInput,executionId:String,correlationId:String,commit:String):OrdinaryRequestRegionV8PreparationOutcome {
         val mediaType=source.mediaType
         if(mediaType!="application/pdf")return blocked(OrdinaryRegionDisposition.UNSUPPORTED_MEDIA,"request-region v8 accepts application/pdf only")

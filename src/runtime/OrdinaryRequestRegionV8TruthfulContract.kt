@@ -59,10 +59,56 @@ data class CanonicalRequestRegionV8Construction(
     val providerBody:String,
     val requestBindingSha256:String,
     val providerBodySha256:String,
+    val achromaticPreparation:FullPageAchromaticPreparationDocument?=null,
+    val aggregateImageBytes:Int=regionsImageBytes(request),
+    val aggregateBase64Characters:Int=regionsBase64Characters(request),
 ) {
     companion object {
         const val REQUEST_DIGEST_DOMAIN="parker.request-region-v8.canonical-binding.v1"
         const val BODY_DIGEST_DOMAIN="parker.request-region-v8.provider-body.utf8.v1"
+    }
+}
+
+private fun regionsImageBytes(request:RequestRegionV8Request)=request.regions.sumOf{it.image.encodedBytes().size}
+private fun regionsBase64Characters(request:RequestRegionV8Request)=request.regions.sumOf{4*((it.image.encodedBytes().size+2)/3)}
+
+/** R5I production preparation path. Historical canonical builder above remains available for exact replay. */
+class FullPageAchromaticCanonicalRequestRegionV8Builder(
+    private val renderer:DeterministicSourcePageRenderer=DeterministicSourcePageRenderer(),
+    private val preparer:FullPageAchromaticPreparer=FullPageAchromaticPreparer(),
+    private val codec:OpenAiRequestRegionV8Codec=OpenAiRequestRegionV8Codec(),
+    private val pagePersistence:GovernedPageRepresentationPersistence?=null,
+    private val preparationPersistence:FileSystemFullPageAchromaticPreparationStore?=null,
+) {
+    fun build(evidenceId:EvidenceArtifactId,sourceSha256:String,mimeType:String,sourceBytes:ByteArray,correlationId:String):CanonicalRequestRegionV8Construction {
+        require(requestRegionV8Sha256(sourceBytes)==sourceSha256&&mimeType=="application/pdf")
+        val profile=PageRenderProfile("authoritative-page-region-raster-v1",1,300)
+        fun render(number:Int)=((renderer.render(SourcePageRenderRequest(evidenceId,sourceSha256,mimeType,sourceBytes,number,profile)) as? SourcePageRepresentationOutcome.Created)?.representation
+            ?:error("authoritative page render failed"))
+        val first=render(1);val pages=(1..first.provenance.declaredPageCount).map{if(it==1)first else render(it)}
+        return buildPages(pages,correlationId)
+    }
+    fun buildPages(pages:List<AuthoritativePageRepresentation>,correlationId:String):CanonicalRequestRegionV8Construction {
+        pagePersistence?.let{pages.forEach(it::persistPage)}
+        val prepared=(preparer.prepare(pages) as? FullPageAchromaticPreparationOutcome.Prepared)?.document
+            ?:error("full-page achromatic preparation rejected")
+        preparationPersistence?.persist(prepared)
+        val graphs=prepared.regions.map{r->SourceRegionOrderGraph(r.provenance.authoritativePageRepresentationId,listOf(r.sourceRegion),emptySet(),SourceRegionAmbiguityState.UNAMBIGUOUS)}
+        // Corrected geometry/order is keyed by the new preparation identity in preparationPersistence;
+        // legacy page-representation geometry keys remain exclusively owned by the immutable R5F records.
+        val requestRegions=pages.zip(prepared.regions).map{(page,region)->
+            val source=region.sourceRegion;val bounds=source.bounds;val id=requestRegionIdentity(page,listOf(source),bounds,source.cropDigest)
+            RequestRegion(id,source.provenance.sourceEvidenceArtifactId,source.provenance.sourceSha256,page.id,source.provenance.pageNumber,
+                source.provenance.pagePixelDimensions,bounds,source.cropDigest,SourceRegionStructuralClass.MIXED,FULL_PAGE_ACHROMATIC_PROFILE_ID,1,
+                listOf(source),region.image)
+        }
+        CompleteRequestRegionSetValidator().validate(graphs,requestRegions).getOrThrow()
+        val request=RequestRegionV8Request(correlationId,requestRegions);val imageBytes=regionsImageBytes(request);val base64Chars=regionsBase64Characters(request)
+        require(imageBytes<=FULL_PAGE_ACHROMATIC_IMAGE_BINARY_MAXIMUM){"aggregate encoded image binary exceeds governed R5I bound"}
+        require(base64Chars<=FULL_PAGE_ACHROMATIC_BASE64_MAXIMUM){"aggregate base64 exceeds governed R5I bound"}
+        val body=codec.buildRequestBody(request);val bodyBytes=body.toByteArray(Charsets.UTF_8).size
+        require(bodyBytes<=FULL_PAGE_ACHROMATIC_BODY_MAXIMUM&&bodyBytes<=REQUEST_REGION_BODY_MAXIMUM_BYTES){"exact UTF-8 request body exceeds governed R5I bound"}
+        return CanonicalRequestRegionV8Construction(pages,graphs,request,body,codec.requestDigest(request),requestRegionV8Sha256(body.toByteArray()),prepared,imageBytes,base64Chars)
     }
 }
 
