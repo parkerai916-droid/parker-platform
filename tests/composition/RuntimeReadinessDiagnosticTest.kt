@@ -11,6 +11,7 @@ class RuntimeReadinessDiagnosticTest {
         val config = config(profileFile(ExternalTranscriptionAcceptanceState.ACCEPTED), credential = "secret-value")
         val result = RuntimeReadinessDiagnostic.evaluate(config, COMMIT)
         assertTrue(result.overallReady)
+        assertTrue(result.ordinaryExecutionReady)
         assertTrue(result.providerProfileAccepted)
         assertTrue(result.buildIdentityMatches)
     }
@@ -19,6 +20,7 @@ class RuntimeReadinessDiagnosticTest {
     fun `pending profile is visible and blocks readiness`() {
         val result = RuntimeReadinessDiagnostic.evaluate(config(profileFile(ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING), credential = "secret-value"), COMMIT)
         assertFalse(result.providerProfileAccepted)
+        assertFalse(result.ordinaryExecutionReady)
         assertTrue(result.overallReady)
         assertTrue(result.reasons.containsKey("providerProfileAccepted"))
     }

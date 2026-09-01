@@ -21,6 +21,7 @@ data class RuntimeReadinessDiagnostic(
     val providerProfileReady: Boolean,
     val credentialPresent: Boolean,
     val credentialStructurallyValid: Boolean,
+    val ordinaryExecutionReady: Boolean,
     val overallReady: Boolean,
     val reasons: Map<String, String>,
 ) {
@@ -56,6 +57,7 @@ data class RuntimeReadinessDiagnostic(
             // Startup composes the separately governed acceptance lane while a profile is
             // ACCEPTANCE_PENDING; lifecycle acceptance gates execution, not composition.
             val providerReady = profileValid && nonStale && credentialValid
+            val ordinaryReady = providerReady && accepted
             val regionExecutionConfigured = !config.regionProviderStateStorageRootPath.isNullOrBlank()
             val overall = !regionExecutionConfigured || (acceptanceComplete && providerStatePresent && buildMatches && providerReady)
             val reasons = linkedMapOf<String, String>()
@@ -82,7 +84,7 @@ data class RuntimeReadinessDiagnostic(
             return RuntimeReadinessDiagnostic(
                 authorityPresent, acceptanceComplete, providerStatePresent, buildPresent, buildMatches,
                 profilePresent, profileValid, accepted, nonStale, providerReady,
-                credentialPresent, credentialValid, overall, reasons,
+                credentialPresent, credentialValid, ordinaryReady, overall, reasons,
             )
         }
     }
