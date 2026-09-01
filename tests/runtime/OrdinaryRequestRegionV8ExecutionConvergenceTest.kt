@@ -71,6 +71,44 @@ class OrdinaryRequestRegionV8ExecutionConvergenceTest {
         assertEquals(c.request.regions.indices.map{if(it%2==0)2 else 1}.reversed(),outcome.result.blocksInProviderOrder.map{it.providerReturnedOrdinal})
     }
 
+    @Test fun `offline V8 exchange enriches null provenance from authoritative provider envelope`()=runTest {
+        val c=construction();val state=FileSystemRequestRegionV8ProviderStateStore(dir("enrichment"));val prepared=prepared(c)
+        val raw=envelope(wire(c.request,c.request.regions.indices.map{it+1},reverse=false,providerResponseId=null,providerReportedModel=null)).toByteArray();var calls=0
+        val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,
+            OpenAiResponsesTransport{calls++;OpenAiResponsesTransportResponse(200,raw)},state)
+        val outcome=assertIs<RequestRegionV8ProviderExchangeOutcome.Valid>(exchange.exchange(prepared));assertEquals(1,calls)
+        assertEquals("resp-offline",outcome.result.providerProvenance.providerResponseId)
+        assertEquals(REQUEST_REGION_MODEL,outcome.result.providerProvenance.providerReportedModel)
+        val persisted=state.read(outcome.state.recordId).exactStructuredState!!
+        val p=persisted["provider_provenance"] as Map<*,*>
+        assertEquals("resp-offline",p["provider_response_id"]);assertEquals(REQUEST_REGION_MODEL,p["provider_reported_model"])
+    }
+
+    @Test fun `offline V8 exchange rejects conflicting structured provenance`()=runTest {
+        val c=construction();val state=FileSystemRequestRegionV8ProviderStateStore(dir("conflict"));val prepared=prepared(c)
+        val raw=envelope(wire(c.request,c.request.regions.indices.map{it+1},reverse=false,providerResponseId="resp-other",providerReportedModel=REQUEST_REGION_MODEL)).toByteArray()
+        val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,
+            OpenAiResponsesTransport{OpenAiResponsesTransportResponse(200,raw)},state)
+        assertIs<RequestRegionV8ProviderExchangeOutcome.Invalid>(exchange.exchange(prepared))
+    }
+
+    @Test fun `offline V8 exchange rejects conflicting structured model`()=runTest {
+        val c=construction();val state=FileSystemRequestRegionV8ProviderStateStore(dir("model-conflict"));val prepared=prepared(c)
+        val raw=envelope(wire(c.request,c.request.regions.indices.map{it+1},false,providerReportedModel="other-model")).toByteArray()
+        val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,
+            OpenAiResponsesTransport{OpenAiResponsesTransportResponse(200,raw)},state)
+        assertIs<RequestRegionV8ProviderExchangeOutcome.Invalid>(exchange.exchange(prepared))
+    }
+
+    @Test fun `offline V8 exchange rejects missing authoritative envelope identity`()=runTest {
+        val c=construction();val state=FileSystemRequestRegionV8ProviderStateStore(dir("missing-envelope-id"));val prepared=prepared(c)
+        val structured=wire(c.request,c.request.regions.indices.map{it+1},false,providerResponseId=null,providerReportedModel=null)
+        val raw=RegionJson.encode(mapOf("model" to REQUEST_REGION_MODEL,"output" to listOf(mapOf("type" to "message","content" to listOf(mapOf("type" to "output_text","text" to RegionJson.encode(structured))))))).toByteArray()
+        val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,
+            OpenAiResponsesTransport{OpenAiResponsesTransportResponse(200,raw)},state)
+        assertIs<RequestRegionV8ProviderExchangeOutcome.Invalid>(exchange.exchange(prepared))
+    }
+
     @Test fun `malformed V8 exchange preserves raw and historical V5 plus V8 derivative readback remain truthful`()=runTest {
         val c=construction();val state=FileSystemRequestRegionV8ProviderStateStore(dir("malformed"));val prepared=prepared(c);val raw="{malformed".toByteArray()
         val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,
@@ -87,8 +125,8 @@ class OrdinaryRequestRegionV8ExecutionConvergenceTest {
 
     private fun construction():CanonicalRequestRegionV8Construction {val p=Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/02-multicolumn-complex.pdf");val b=Files.readAllBytes(p);return CanonicalRequestRegionV8Builder().build(EvidenceArtifactId("evidence-v8-convergence"),sha(b),"application/pdf",b,"oi11r2-offline")}
     private fun prepared(c:CanonicalRequestRegionV8Construction):OrdinaryRequestRegionV8PreparedRequest {val cap=OrdinaryRequestRegionV8CapabilityIdentity();val r=c.request.regions.first();return OrdinaryRequestRegionV8PreparedRequest(c,FidelityFirstExecutionIdentity("execution-v8",c.requestBindingSha256,c.request.correlationId,r.sourceEvidenceArtifactId.value,r.sourceSha256,1,"application/pdf",commit,cap.provider,cap.model,cap.profile,cap.instructionSha256,cap.schemaSha256,cap.processing,cap.adapterVersion),cap,commit)}
-    private fun wire(r:RequestRegionV8Request,ordinals:List<Int>,reverse:Boolean):Map<String,Any?> {val blocks=r.regions.mapIndexed{i,x->linkedMapOf<String,Any?>("request_region_id" to x.id.value,"page_number" to x.pageNumber,"literal_text" to "literal-$i","status" to "TRANSCRIBED","uncertainties" to if(i==0)listOf(mapOf("category" to "AMBIGUOUS","description" to "uncertain","alternatives" to listOf("x"),"provider_confidence" to "low"))else emptyList<Any>(),"warnings" to if(i==1)listOf("warning")else emptyList<String>(),"provider_returned_ordinal" to ordinals[i])}.let{if(reverse)it.reversed()else it};return linkedMapOf("correlation_id" to r.correlationId,"transcription_profile_id" to REQUEST_REGION_V8_PROFILE_ID,"schema_id" to REQUEST_REGION_V8_SCHEMA_ID,"schema_version" to 8,"provider_provenance" to linkedMapOf("provider" to REQUEST_REGION_PROVIDER,"requested_model" to REQUEST_REGION_MODEL,"provider_reported_model" to REQUEST_REGION_MODEL,"provider_response_id" to "resp-offline","adapter_id" to REQUEST_REGION_ADAPTER_ID,"adapter_version" to REQUEST_REGION_V8_ADAPTER_VERSION,"parser_id" to REQUEST_REGION_PARSER_ID,"parser_version" to REQUEST_REGION_V8_PARSER_VERSION),"blocks" to blocks)}
-    private fun envelope(w:Map<String,Any?>)=RegionJson.encode(mapOf("id" to "resp-offline","model" to REQUEST_REGION_MODEL,"output" to listOf(mapOf("type" to "message","content" to listOf(mapOf("type" to "output_text","text" to RegionJson.encode(w)))))))
+    private fun wire(r:RequestRegionV8Request,ordinals:List<Int>,reverse:Boolean,providerResponseId:String?="resp-offline",providerReportedModel:String?=REQUEST_REGION_MODEL):Map<String,Any?> {val blocks=r.regions.mapIndexed{i,x->linkedMapOf<String,Any?>("request_region_id" to x.id.value,"page_number" to x.pageNumber,"literal_text" to "literal-$i","status" to "TRANSCRIBED","uncertainties" to if(i==0)listOf(mapOf("category" to "AMBIGUOUS","description" to "uncertain","alternatives" to listOf("x"),"provider_confidence" to "low"))else emptyList<Any>(),"warnings" to if(i==1)listOf("warning")else emptyList<String>(),"provider_returned_ordinal" to ordinals[i])}.let{if(reverse)it.reversed()else it};return linkedMapOf("correlation_id" to r.correlationId,"transcription_profile_id" to REQUEST_REGION_V8_PROFILE_ID,"schema_id" to REQUEST_REGION_V8_SCHEMA_ID,"schema_version" to 8,"provider_provenance" to linkedMapOf("provider" to REQUEST_REGION_PROVIDER,"requested_model" to REQUEST_REGION_MODEL,"provider_reported_model" to providerReportedModel,"provider_response_id" to providerResponseId,"adapter_id" to REQUEST_REGION_ADAPTER_ID,"adapter_version" to REQUEST_REGION_V8_ADAPTER_VERSION,"parser_id" to REQUEST_REGION_PARSER_ID,"parser_version" to REQUEST_REGION_V8_PARSER_VERSION),"blocks" to blocks)}
+    private fun envelope(w:Map<String,Any?>,id:String="resp-offline",model:String=REQUEST_REGION_MODEL)=RegionJson.encode(mapOf("id" to id,"model" to model,"output" to listOf(mapOf("type" to "message","content" to listOf(mapOf("type" to "output_text","text" to RegionJson.encode(w)))))))
     private fun grant(id:String)=OrdinaryRequestRegionV8OwnerAuthorization(id,"evidence","b".repeat(64),ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID,OrdinaryRequestRegionV8Capability().digest(),"OpenAI","owner",now,now.plusSeconds(60))
     private fun payload(v:Int,id:String,digest:String,wire:Int)=OrdinaryRegionTranscriptionDerivative(v,id,digest,"evidence","a".repeat(64),listOf("page"),listOf("region"),listOf("text"),listOf("region"),listOf("region"),"OpenAI","gpt-5.6-sol","adapter",if(wire==8)"7.0.0" else "4.0.0","profile",wire,"b".repeat(64),"c".repeat(64),"processing","request","d".repeat(64),"response","provider-state","acceptance","authorization","execution","attempt","e".repeat(64),"f".repeat(64),"offline")
     private fun entry(s:String,p:OrdinaryRegionTranscriptionDerivative)=DerivativeContentEntry(DerivativeGenerationId("region-$s"),EvidenceArtifactId("evidence"),TierADerivativePayload.RegionTranscription(p))

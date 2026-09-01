@@ -241,14 +241,31 @@ class OpenAiRequestRegionV8ProviderExchange internal constructor(
             @Suppress("UNCHECKED_CAST") val output=envelope["output"] as List<Map<String,Any?>>
             @Suppress("UNCHECKED_CAST") val content=output.single{it["type"]=="message"}["content"] as List<Map<String,Any?>>
             structured=RegionJson.parse(content.single{it["type"]=="output_text"}["text"] as String) as Map<String,Any?>
+            structured = enrichAuthoritativeProviderProvenance(structured!!, responseId, prepared.capability.model)
             val valid=RequestRegionV8StructuredValidator().validate(prepared.construction.request,requireNotNull(structured)) as RequestRegionV8ValidationOutcome.Valid
-            require(valid.result.providerProvenance.providerResponseId==responseId&&valid.result.providerProvenance.providerReportedModel==prepared.capability.model)
             valid.result
         }
         val code=if(parsed.isSuccess)"SUCCESS" else "V8_PARSE_OR_VALIDATION_FAILED"
         state.recordAssessment(receipt,code,structured)
         val recovered=state.read(receipt.recordId)
         return parsed.fold({RequestRegionV8ProviderExchangeOutcome.Valid(recovered,it)},{RequestRegionV8ProviderExchangeOutcome.Invalid(recovered,code)})
+    }
+
+    private fun enrichAuthoritativeProviderProvenance(
+        payload: Map<String, Any?>,
+        responseId: String,
+        responseModel: String,
+    ): Map<String, Any?> {
+        @Suppress("UNCHECKED_CAST")
+        val provenance = payload["provider_provenance"] as? Map<String, Any?> ?: error("missing provider provenance")
+        val structuredResponseId = provenance["provider_response_id"] as? String
+        val structuredModel = provenance["provider_reported_model"] as? String
+        require(structuredResponseId == null || structuredResponseId == responseId) { "provider response identity conflicts with envelope" }
+        require(structuredModel == null || structuredModel == responseModel) { "provider model conflicts with envelope" }
+        val enriched = provenance.toMutableMap()
+        enriched["provider_response_id"] = responseId
+        enriched["provider_reported_model"] = responseModel
+        return payload.toMutableMap().also { it["provider_provenance"] = enriched }
     }
 }
 
