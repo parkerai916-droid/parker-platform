@@ -20,6 +20,7 @@ import parker.core.interfaces.PrincipalId
 import parker.core.runtime.DocumentAnalysisCoordinator
 import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
+import parker.core.runtime.ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
 import parker.core.runtime.OrdinaryRegionCapabilityDisposition
@@ -284,9 +285,17 @@ class OwnerEvidenceHttpServerTest {
             assertEquals(409, response.statusCode()); assertEquals(1, calls)
             assertEquals(ORDINARY_REGION_CAPABILITY_ID, request?.capabilityId)
             assertTrue(response.body().contains("SYNTHETIC_GOVERNED_BLOCK"))
+            val v8Body = "{\"capabilityId\":\"$ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID\",\"promotingBuildCommit\":\"${"b".repeat(40)}\"}"
+            val v8Response = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString(v8Body)).build())
+            assertEquals(409, v8Response.statusCode()); assertEquals(2, calls)
+            assertEquals(ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID, request?.capabilityId)
+            val unknown = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"capabilityId\":\"unknown\",\"promotingBuildCommit\":\"${"c".repeat(40)}\"}")).build())
+            assertEquals(400, unknown.statusCode()); assertEquals(2, calls)
             val arbitrary = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"capabilityId\":\"$ORDINARY_REGION_CAPABILITY_ID\",\"promotingBuildCommit\":\"${"a".repeat(40)}\",\"evidence\":[\"${"f".repeat(64)}\"]}" )).build())
-            assertEquals(400, arbitrary.statusCode()); assertEquals(1, calls)
+            assertEquals(400, arbitrary.statusCode()); assertEquals(2, calls)
         } finally { harness.shutdown() }
     }
 

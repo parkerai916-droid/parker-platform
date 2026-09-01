@@ -1583,8 +1583,21 @@ class ParkerRuntime(
                 val providerStateRoot = requireNotNull(config.regionProviderStateStorageRootPath)
                 val providerStateStore = parker.core.runtime.FileSystemRequestRegionV8ProviderStateStore(Path.of(providerStateRoot))
                 val embedded = requireNotNull(embeddedCommit)
-                ordinaryRegionCapabilityAcceptanceCoordinator=parker.core.runtime.OrdinaryRequestRegionV8CapabilityAcceptanceCoordinator(
+                val v8Promotion = parker.core.runtime.OrdinaryRequestRegionV8CapabilityAcceptanceCoordinator(
                     acceptanceStore,{buildIdentity()},config.ownerPrincipalId,clock)
+                val legacyPromotion = parker.core.runtime.OrdinaryRegionCapabilityAcceptanceCoordinator(
+                    parker.core.runtime.FileSystemOrdinaryRegionCapabilityAcceptanceStore(
+                        Path.of(requireNotNull(config.ordinaryRegionCapabilityAcceptanceStorageRootPath))),
+                    parker.core.runtime.DurableOrdinaryRegionR69EvidenceLoader(
+                        parker.core.runtime.FileSystemRegionProviderStateStore(Path.of(providerStateRoot)),
+                        parker.core.runtime.FileSystemRegionAcceptanceAuthorityStorageV2(
+                            Path.of(requireNotNull(config.regionAcceptanceAuthorityStorageRootPath))),
+                        ledger), { buildIdentity() }, config.ownerPrincipalId, clock)
+                ordinaryRegionCapabilityAcceptanceCoordinator = object : parker.core.runtime.OrdinaryRegionCapabilityPromotionPort {
+                    override fun create(request: parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest) =
+                        if (request.capabilityId == parker.core.runtime.ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID) v8Promotion.create(request)
+                        else legacyPromotion.create(request)
+                }
                 val exchange = parker.core.runtime.OpenAiRequestRegionV8ProviderExchange(
                     credential = requireNotNull(credential), transport = openAiTransport, state = providerStateStore)
                 parker.core.runtime.OrdinaryRequestRegionV8IngestionWorkflow(

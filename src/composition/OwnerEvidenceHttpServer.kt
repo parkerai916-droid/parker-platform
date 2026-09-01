@@ -1323,7 +1323,7 @@ private fun parseCapabilityPromotionRequest(bodyBytes: ByteArray): OrdinaryRegio
     if (obj.keys != setOf("capabilityId", "promotingBuildCommit")) throw JsonParseException("unexpected promotion fields")
     val capability = obj["capabilityId"] as? String ?: throw JsonParseException("missing capabilityId")
     val commit = obj["promotingBuildCommit"] as? String ?: throw JsonParseException("missing promotingBuildCommit")
-    if (capability != ORDINARY_REGION_CAPABILITY_ID || !commit.matches(Regex("^[0-9a-f]{40}$")))
+    if (capability !in setOf(ORDINARY_REGION_CAPABILITY_ID, parker.core.runtime.ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID) || !commit.matches(Regex("^[0-9a-f]{40}$")))
         throw JsonParseException("invalid governed promotion identity")
     return OrdinaryRegionCapabilityPromotionRequest(capability, commit)
 }
