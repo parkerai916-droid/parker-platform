@@ -22,9 +22,11 @@ Read-only acquisition returned `PROPOSED`: `application/pdf`, 5 pages, scanned/i
 
 ## Request-boundary derivation
 
-The canonical `CanonicalRequestRegionV8Builder` was run offline against the registered bytes, evidence ID, and exact SHA. It failed deterministically with `IllegalStateException: request-region shaping failed`. The registered Evidence Custodian manifest contains source identity/media metadata but no page-rendered representations or source-region/page geometry needed by the V8 builder. Therefore no truthful region IDs, ordering, or provider request size can be produced. The proposed all-pages boundary (pages 1–5) cannot proceed to owner acceptance yet.
+The canonical renderer and region deriver were run offline against the registered bytes. All five pages rendered at 2479×3508 pixels. Derived source-region counts were page 1: 72, page 2: 3, page 3: 4, page 4: 1, page 5: 12. The complete-set shaper rejected the graph because page 1 has an ambiguous source-order graph requiring human order review; the V8 builder therefore raised `request-region shaping failed`. No truthful V8 request-region set or provider request size was produced.
 
-This is a specific implementation/data-representation blocker, not a provider or privacy decision. The smallest next governed unit must create the required governed page/region representation (using the existing canonical OCR/representation path, if applicable) for this exact evidence without external execution, then rerun deterministic V8 shaping and identity verification. No workaround, silent page omission, authorization, or provider call is permitted in OI11R5A.
+The renderer/deriver are production runtime classes (`DeterministicSourcePageRenderer`, `DeterministicSourceRegionDeriver`), not synthetic-only helpers, and use Apache PDFBox 3.0.7 at the governed 300-DPI raster profile. Evidence Custodian registration itself persists source/manifest metadata only; page representations and geometry are in-memory preparation outputs and are not persisted by registration. The immediate blocker is thus real-document source-order ambiguity, compounded by the absence of a persisted representation/geometry preparation stage. The proposed all-pages boundary (pages 1–5) cannot proceed to owner acceptance until a separately governed preparation/review step resolves this ambiguity without silently omitting pages.
+
+This is not a provider or privacy decision. No workaround, silent page omission, authorization, or provider call is permitted in OI11R5A.
 
 ## Store accounting and integrity
 
