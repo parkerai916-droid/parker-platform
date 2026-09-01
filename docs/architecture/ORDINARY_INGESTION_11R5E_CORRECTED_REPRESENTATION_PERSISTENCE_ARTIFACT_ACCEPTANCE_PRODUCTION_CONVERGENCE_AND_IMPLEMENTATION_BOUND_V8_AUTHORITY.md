@@ -2,22 +2,26 @@
 
 ## Disposition
 
-Paused at the mandatory owner artifact-acceptance gate. No deployment, capability-authority mutation, real-document preparation, authorization, derivative creation, provider call, retry or external egress occurred.
+Artifact acceptance and production convergence completed. Paused before implementation-bound V8 capability acceptance because no explicit owner capability acceptance for commit `9e2a900fee388ebf4787817c24f34a63190b3f0d` has been supplied.
 
-## Source and baseline
+## Accepted artifact
 
-Repository HEAD/upstream were `9e2a900fee388ebf4787817c24f34a63190b3f0d`; the worktree was clean. Existing production remained container `c3b739bdec37e594b63fe35bad43c4be545f75568db7b431b81b747e1b3c85b6`, running image `sha256:5ca82f03ce61eade58c60eb4d3783547b4b266f974ed2ac218c09cf43f86075a`, restart count 0. The registered real evidence and manifest were not accessed for preparation and remain unchanged.
+Steven accepted source `9e2a900fee388ebf4787817c24f34a63190b3f0d`, JAR SHA-256 `18ecea0f2709913ffb9fd0ba76711bf23facbde91c5b209f8ee6ad47b65632f`, OCI index `sha256:c121ea0d5c55c32a8cec9b38eade8ecb5f2d72f5331a8ed761b10fb8cfef0ae4`, platform manifest `sha256:955e472d9a2ce13f1c81fc9cb8b783513c2253b038bb383b0cceda54f3a88913`, and config `sha256:772c6668636709b446cf054980163cb441f4f2c34c8a54c51985b35d071c69a0`. The preserved archive is `/mnt/parker-data/parker/replacement-candidates/oi11r5e-representation-persistence-9e2a900.tar`, SHA-256 `51375c12b9f78b847694d340695610efdd9cffbae8366b0bd2f16902cc5f11ec`, 867,172,864 bytes, mode 600, owner `steve:steve`.
 
-## Candidate build and preservation
+The immutable artifact-acceptance record is `/mnt/parker-data/parker/replacement-candidates/oi11r5e-artifact-acceptance-c121ea0d-v1.json`, SHA-256 `662776a7a742c486e252718a90f95dee747b988f6108fd4c6ed3b48d642a98b8`.
 
-The candidate was built from the exact source `9e2a900fee388ebf4787817c24f34a63190b3f0d`. The JAR SHA-256 is `18ecea0f2709913ffb9fd0ba76711bf23facbde91c5b209f8ee6ad47b65632f`; its manifest embeds the exact 40-character source. The locally built OCI image/index is `sha256:c121ea0d5c55c32a8cec9b38eade8ecb5f2d72f5331a8ed761b10fb8cfef0ae4`, platform manifest `sha256:955e472d9a2ce13f1c81fc9cb8b783513c2253b038bb383b0cceda54f3a88913`, and config `sha256:772c6668636709b446cf054980163cb441f4f2c34c8a54c51985b35d071c69a0`. It was preserved as `/mnt/parker-data/parker/replacement-candidates/oi11r5e-representation-persistence-9e2a900.tar`, SHA-256 `51375c12b9f78b847694d340695610efdd9cffbae8366b0bd2f16902cc5f11ec`, size 867,172,864 bytes, mode 600, owner `steve:steve`.
+## Deployment and readiness
 
-The candidate contains the R5D persistence and owner-order classes and the V8 shaper integration. Production compilation and the container `installDist` build passed. A clean full-test rerun was attempted; test compilation exceeded the environment JVM heap and failed with `OutOfMemoryError`, while the R5D focused/full test evidence from the implementation commit remains recorded in its report (3,304 tests, 17 skipped, 0 failures, 0 errors).
+The deployment override was bound to the exact candidate with preimage SHA-256 `43f5fc0f66a9b8774eed5c8fdc4a416da70d893d155bb9ca1ebdcbf01db07c4a` and post-bind SHA-256 `f4f05eece9b7f517ad37cbb175ccbc6cd5e63c2567f0b82429fd2d1e6f539aad`. Deployment used `up -d --no-build --pull never --no-deps --force-recreate`. Production now runs container `34e0637eaa2b32c3e4c43b3e29c274b3da2d7a59c641cc5a2e25143465ba36b4`, image `sha256:c121ea0d5c55c32a8cec9b38eade8ecb5f2d72f5331a8ed761b10fb8cfef0ae4`, source/build `9e2a900fee388ebf4787817c24f34a63190b3f0d`, restart count 0. `RuntimeReadinessDiagnosticCli` reported all predicates true, including `ordinaryExecutionReady=true`, `overallReady=true`, and empty reasons.
 
-## Authority and acceptance gates
+## Authority state
 
-V8 capability identity/digest remain `ordinary-external-request-region-transcription-v8` / `c0479979720455d2de3fc9861eeb5dee323a4770bdb15f807af611ad426f9ec0`. No artifact-acceptance record was created because Steven has not yet explicitly accepted this exact R5E candidate. Consequently no production binding, deployment, or implementation-bound V8 acceptance for `9e2a900…` was attempted; historical authority records remain untouched.
+The V8 capability remains `ordinary-external-request-region-transcription-v8` with digest `c0479979720455d2de3fc9861eeb5dee323a4770bdb15f807af611ad426f9ec0`. The accepted provider profile is unchanged. Production capability storage contains the historical C304 and D335 V8 records but no record bound to `9e2a900fee388ebf4787817c24f34a63190b3f0d`; therefore the evaluator cannot yet treat the new implementation as execution-authorized. No historical record was rewritten.
 
-## Provider and execution boundary
+## Preservation and zero-egress boundary
 
-Provider profile, model and Authorization Purpose were not changed. OpenAI calls, Claude calls, other external calls and retries were `0 / 0 / 0 / 0`. The selected Deed was not rendered, region-derived, ordered, authorized or transmitted. The next action requires Steven's explicit acceptance of the exact candidate identity above; only then may canonical artifact acceptance, immutable deployment, and a separate implementation-bound V8 acceptance proceed. Real-document preparation remains reserved for OI11R5F.
+The registered real PDF was not prepared or rendered; no representation, geometry, order-resolution, authorization, attempt, provider-state or derivative record was created. Existing evidence, manifests, legacy capability records, historical OI11R4F/OI11R4K state and prior authority records remain intact. Provider calls, retries and external egress were `0 / 0 / 0`.
+
+## Required next action
+
+Steven must explicitly accept production execution authority for the unchanged V8 capability/digest on implementation `9e2a900fee388ebf4787817c24f34a63190b3f0d`. Only then may the canonical capability-promotion route create the new implementation-bound acceptance record and permit the separately governed OI11R5F real-document preparation/review sequence.
