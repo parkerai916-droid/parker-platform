@@ -96,6 +96,8 @@ class OwnerEvidenceHttpServer(
         OrdinaryRegionCapabilityPromotionOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
     },
     private val evaluateOrdinaryRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
+    private val prepareCorrectedEvidence: suspend (EvidenceArtifactId, String, Int) -> parker.core.runtime.GovernedCorrectedPreparationOutcome =
+        { _, _, _ -> parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected("PREPARATION_LANE_NOT_CONFIGURED") },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -115,6 +117,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
+        httpServer.createContext("/owner/admin/corrected-preparation", CorrectedPreparationHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
@@ -216,6 +219,50 @@ class OwnerEvidenceHttpServer(
             "runtimeEmbeddedBuildCommit" to status.runtimeEmbeddedBuildCommit,
             "acceptedPromotingBuildCommit" to status.acceptedPromotingBuildCommit,
         )
+    }
+
+    private inner class CorrectedPreparationHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                if (exchange.requestMethod != "POST") { writeJson(exchange, 404, jsonObject("error" to "not found")); return }
+                val prefix = "/owner/admin/corrected-preparation/"
+                val rawId = exchange.requestURI.path.takeIf { it.startsWith(prefix) }?.removePrefix(prefix)
+                if (rawId.isNullOrBlank() || '/' in rawId) { writeJson(exchange, 404, jsonObject("error" to "not found")); return }
+                val body = try { readBounded(exchange.requestBody, MAX_PROMOTION_REQUEST_BODY_BYTES) }
+                catch (_: RequestBodyTooLargeException) { writeJson(exchange, 413, jsonObject("error" to "request body too large")); return }
+                val (profile, version) = try { parseCorrectedPreparationRequest(body) }
+                catch (_: Exception) { writeJson(exchange, 400, jsonObject("error" to "invalid preparation request")); return }
+                when (val outcome = runBlocking { prepareCorrectedEvidence(EvidenceArtifactId(rawId), profile, version) }) {
+                    is parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected ->
+                        writeJson(exchange, 409, jsonObject("status" to "REJECTED", "reason" to outcome.reason))
+                    is parker.core.runtime.GovernedCorrectedPreparationOutcome.Prepared -> {
+                        val result = outcome.result
+                        writeJson(exchange, 200, jsonObject(
+                            "status" to "PREPARED", "evidenceId" to result.evidenceId,
+                            "profileId" to result.profileId, "profileVersion" to result.profileVersion,
+                            "preparationIdentity" to result.preparationIdentity, "regionSetDigest" to result.regionSetDigest,
+                            "pageCount" to result.pages.size, "preparationRegionCount" to result.pages.size,
+                            "requestRegionCount" to result.requestRegionCount, "requestDigest" to result.requestDigest,
+                            "requestBodyDigest" to result.requestBodyDigest, "requestBodyByteLength" to result.requestBodyByteLength,
+                            "aggregatePngByteLength" to result.aggregatePngByteLength,
+                            "aggregateBase64Characters" to result.aggregateBase64Characters,
+                            "readbackVerified" to result.readbackVerified,
+                            "pages" to jsonArray(result.pages.map { page -> jsonObject(
+                                "page" to page.pageNumber, "authoritativeRepresentationId" to page.authoritativeRepresentationId,
+                                "authoritativePixelDigest" to page.authoritativePixelDigest, "preparationId" to page.preparationId,
+                                "preparationRegionId" to page.preparationRegionId, "transportSha256" to page.transportSha256,
+                                "transportByteLength" to page.transportByteLength, "width" to page.width, "height" to page.height,
+                                "orderState" to page.orderState,
+                            ) }),
+                        ))
+                    }
+                }
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: corrected preparation failed safely", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally { exchange.close() }
+        }
     }
 
     // ---- static owner page ---------------------------------------------------------------
@@ -1326,6 +1373,16 @@ private fun parseCapabilityPromotionRequest(bodyBytes: ByteArray): OrdinaryRegio
     if (capability !in setOf(ORDINARY_REGION_CAPABILITY_ID, parker.core.runtime.ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID) || !commit.matches(Regex("^[0-9a-f]{40}$")))
         throw JsonParseException("invalid governed promotion identity")
     return OrdinaryRegionCapabilityPromotionRequest(capability, commit)
+}
+
+private fun parseCorrectedPreparationRequest(bodyBytes: ByteArray): Pair<String, Int> {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    if (obj.keys != setOf("profileId", "profileVersion")) throw JsonParseException("unexpected preparation fields")
+    val profile = obj["profileId"] as? String ?: throw JsonParseException("missing profileId")
+    val version = (obj["profileVersion"] as? String)?.toIntOrNull() ?: throw JsonParseException("missing profileVersion")
+    if (profile.isBlank() || profile.length > 160 || version < 1) throw JsonParseException("invalid preparation profile")
+    return profile to version
 }
 
 /** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */

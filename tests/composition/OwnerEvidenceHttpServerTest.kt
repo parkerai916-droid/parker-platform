@@ -30,6 +30,7 @@ import parker.core.runtime.OrdinaryRegionOwnerAuthorizationDisposition
 import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
 import parker.core.runtime.OrdinaryRegionOwnerResult
 import parker.core.runtime.OrdinaryRegionDisposition
+import parker.core.runtime.GovernedCorrectedPreparationOutcome
 import parker.core.interfaces.*
 import parker.ui.EnhancedTranscriptionReadiness
 import java.time.Instant
@@ -104,6 +105,8 @@ class OwnerEvidenceHttpServerTest {
             OrdinaryRegionCapabilityPromotionOutcome.Blocked("disabled")
         },
         evaluateRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
+        prepareCorrected: suspend (EvidenceArtifactId, String, Int) -> GovernedCorrectedPreparationOutcome =
+            { _, _, _ -> GovernedCorrectedPreparationOutcome.Rejected("disabled") },
         ordinaryProposal: suspend (EvidenceArtifactId) -> OrdinaryRegionProposal? = { null },
         ordinaryAuthorizationStatus: suspend (EvidenceArtifactId) -> OrdinaryRegionOwnerAuthorizationView = {
             OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED, it.value)
@@ -147,9 +150,35 @@ class OwnerEvidenceHttpServerTest {
             invokeFidelityFirstAcceptance = invokeAcceptance,
             createOrdinaryRegionCapabilityAcceptance = invokePromotion,
             evaluateOrdinaryRegionCapability = evaluateRegionCapability,
+            prepareCorrectedEvidence = prepareCorrected,
         )
         server.start()
         return Harness(runtime, server, runtimeLogger, serverLogger)
+    }
+
+    @Test
+    fun `corrected preparation endpoint is authenticated profile-bound and preparation-only`() {
+        var calls = 0
+        val harness = startHarness("", prepareCorrected = { id, profile, version ->
+            calls++
+            assertEquals("evidence-synthetic-preparation", id.value)
+            assertEquals("full-page-achromatic-png-preparation-v1", profile)
+            assertEquals(1, version)
+            GovernedCorrectedPreparationOutcome.Rejected("SYNTHETIC_FAIL_CLOSED")
+        })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/admin/corrected-preparation/evidence-synthetic-preparation")
+            val body = "{\"profileId\":\"full-page-achromatic-png-preparation-v1\",\"profileVersion\":\"1\"}"
+            assertEquals(401, send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.ofString(body)).build()).statusCode())
+            assertEquals(0, calls)
+            val response = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build())
+            assertEquals(409, response.statusCode(), response.body()); assertEquals(1, calls)
+            assertTrue(response.body().contains("SYNTHETIC_FAIL_CLOSED"))
+            val extra = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString(body.dropLast(1) + ",\"executionId\":\"forbidden\"}")).build())
+            assertEquals(400, extra.statusCode()); assertEquals(1, calls)
+        } finally { harness.shutdown() }
     }
 
     private data class UploadPart(val fieldName: String, val fileName: String, val contentType: String?, val bytes: ByteArray)

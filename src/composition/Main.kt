@@ -143,6 +143,7 @@ fun main(args: Array<String>) = runBlocking {
             invokeFidelityFirstAcceptance = runtime::invokeFidelityFirstAcceptanceAsOwner,
             createOrdinaryRegionCapabilityAcceptance = runtime::createOrdinaryRegionCapabilityAcceptanceAsOwner,
             evaluateOrdinaryRegionCapability = runtime::ordinaryRegionCapabilityStatusAsOwner,
+            prepareCorrectedEvidence = runtime::prepareCorrectedEvidenceAsOwner,
         ).also { it.start() }
     } else {
         null

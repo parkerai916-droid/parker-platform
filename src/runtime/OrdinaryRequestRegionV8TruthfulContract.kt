@@ -90,8 +90,10 @@ class FullPageAchromaticCanonicalRequestRegionV8Builder(
     }
     fun buildPages(pages:List<AuthoritativePageRepresentation>,correlationId:String):CanonicalRequestRegionV8Construction {
         pagePersistence?.let{pages.forEach(it::persistPage)}
-        val prepared=(preparer.prepare(pages) as? FullPageAchromaticPreparationOutcome.Prepared)?.document
-            ?:error("full-page achromatic preparation rejected")
+        val prepared=when(val outcome=preparer.prepare(pages)) {
+            is FullPageAchromaticPreparationOutcome.Prepared -> outcome.document
+            is FullPageAchromaticPreparationOutcome.Rejected -> error(outcome.reason)
+        }
         preparationPersistence?.persist(prepared)
         val graphs=prepared.regions.map{r->SourceRegionOrderGraph(r.provenance.authoritativePageRepresentationId,listOf(r.sourceRegion),emptySet(),SourceRegionAmbiguityState.UNAMBIGUOUS)}
         // Corrected geometry/order is keyed by the new preparation identity in preparationPersistence;

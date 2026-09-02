@@ -652,6 +652,7 @@ class ParkerRuntimeConfigLoaderTest {
         val provider = Files.createTempDirectory("ordinary-provider-state")
         val capability = Files.createTempDirectory("ordinary-capability-acceptance")
         val authorization = Files.createTempDirectory("ordinary-owner-authorization")
+        val corrected = Files.createTempDirectory("ordinary-corrected-preparation")
         val config = ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
             ParkerRuntimeConfigLoader.KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED to "true",
             ParkerRuntimeConfigLoader.KEY_OPENAI_API_KEY to "offline-config-test-only",
@@ -663,10 +664,12 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_INGESTION_ENABLED to "true",
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT to capability.toString(),
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT to authorization.toString(),
+            ParkerRuntimeConfigLoader.KEY_CORRECTED_PREPARATION_STORAGE_ROOT to corrected.toString(),
         )))
         assertTrue(config.ordinaryRegionIngestionEnabled)
         assertEquals(capability.toString(), config.ordinaryRegionCapabilityAcceptanceStorageRootPath)
         assertEquals(authorization.toString(), config.ordinaryRegionOwnerAuthorizationStorageRootPath)
+        assertEquals(corrected.toString(), config.correctedPreparationStorageRootPath)
     }
 
     @Test
@@ -682,6 +685,7 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_INGESTION_ENABLED to "true",
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT to "/capability",
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT to "/authorization",
+            ParkerRuntimeConfigLoader.KEY_CORRECTED_PREPARATION_STORAGE_ROOT to "/corrected-preparations",
         )
         listOf(
             ParkerRuntimeConfigLoader.KEY_OPENAI_API_KEY,
@@ -690,6 +694,7 @@ class ParkerRuntimeConfigLoaderTest {
             ParkerRuntimeConfigLoader.KEY_SOURCE_COMMIT,
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT,
             ParkerRuntimeConfigLoader.KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT,
+            ParkerRuntimeConfigLoader.KEY_CORRECTED_PREPARATION_STORAGE_ROOT,
         ).forEach { missing ->
             assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
                 ParkerRuntimeConfigLoader.load(fullEnvironment(complete + (missing to null)))

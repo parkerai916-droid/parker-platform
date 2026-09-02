@@ -360,6 +360,7 @@ class ParkerRuntime(
     private var regionAcceptanceExecutionCoordinator: parker.core.runtime.RegionAcceptanceExecutionCoordinatorV2? = null
     private var regionAcceptanceAuthorityCreationCoordinator: parker.core.runtime.RegionTranscriptionAcceptanceAuthorityCreationCoordinator? = null
     private var ordinaryRegionIngestionWorkflow: parker.core.runtime.OrdinaryRegionOwnerWorkflowPort? = null
+    private var correctedPreparationService: parker.core.runtime.GovernedCorrectedPreparationService? = null
     private var ordinaryRegionCapabilityAcceptanceCoordinator: parker.core.runtime.OrdinaryRegionCapabilityPromotionPort? = null
     private var legacyOrdinaryRegionAcceptanceEvaluator: parker.core.runtime.OrdinaryRegionCapabilityAcceptanceEvaluator? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
@@ -1583,6 +1584,10 @@ class ParkerRuntime(
                 val providerStateRoot = requireNotNull(config.regionProviderStateStorageRootPath)
                 val providerStateStore = parker.core.runtime.FileSystemRequestRegionV8ProviderStateStore(Path.of(providerStateRoot))
                 val embedded = requireNotNull(embeddedCommit)
+                val correctedPreparationStore = parker.core.runtime.FileSystemFullPageAchromaticPreparationStore(
+                    Path.of(requireNotNull(config.correctedPreparationStorageRootPath)))
+                correctedPreparationService = parker.core.runtime.GovernedCorrectedPreparationService(
+                    defaultEvidenceCustodian, PrincipalId(config.ownerPrincipalId), correctedPreparationStore)
                 val v8Promotion = parker.core.runtime.OrdinaryRequestRegionV8CapabilityAcceptanceCoordinator(
                     acceptanceStore,{buildIdentity()},config.ownerPrincipalId,clock)
                 val legacyPromotion = parker.core.runtime.OrdinaryRegionCapabilityAcceptanceCoordinator(
@@ -2287,6 +2292,17 @@ class ParkerRuntime(
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return regionAcceptanceAuthorityCreationCoordinator?.create(request)
             ?: parker.core.runtime.RegionAcceptanceAuthorityCreationOutcome.Blocked("REGION_ACCEPTANCE_CREATION_LANE_NOT_CONFIGURED")
+    }
+
+    /** Governed preparation-only command. It persists/readbacks preparation and never creates execution state. */
+    suspend fun prepareCorrectedEvidenceAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        profileId: String,
+        profileVersion: Int,
+    ): parker.core.runtime.GovernedCorrectedPreparationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return correctedPreparationService?.prepare(evidenceArtifactId, profileId, profileVersion)
+            ?: parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected("PREPARATION_LANE_NOT_CONFIGURED")
     }
 
     /** Non-executing ordinary request-region-v8 proposal. It never reserves or creates attempt state. */

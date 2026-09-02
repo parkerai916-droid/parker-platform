@@ -290,6 +290,7 @@ data class ParkerRuntimeConfig(
     val ordinaryRegionIngestionEnabled: Boolean = false,
     val ordinaryRegionCapabilityAcceptanceStorageRootPath: String? = null,
     val ordinaryRegionOwnerAuthorizationStorageRootPath: String? = null,
+    val correctedPreparationStorageRootPath: String? = null,
     val deployedImmutableImageId: String? = null,
     val sourceCommit: String? = null,
     val productionCommit: String? = null,
@@ -351,6 +352,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_ORDINARY_REGION_INGESTION_ENABLED = "PARKER_ORDINARY_REGION_INGESTION_ENABLED"
     const val KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT = "PARKER_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT"
     const val KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT = "PARKER_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT"
+    const val KEY_CORRECTED_PREPARATION_STORAGE_ROOT = "PARKER_CORRECTED_PREPARATION_STORAGE_ROOT"
     const val KEY_DEPLOYED_IMMUTABLE_IMAGE_ID = "PARKER_DEPLOYED_IMMUTABLE_IMAGE_ID"
     const val KEY_SOURCE_COMMIT = "PARKER_SOURCE_COMMIT"
     const val KEY_PRODUCTION_COMMIT = "PARKER_PRODUCTION_COMMIT"
@@ -484,6 +486,7 @@ object ParkerRuntimeConfigLoader {
         val regionAcceptanceAuthorityRoot = environment[KEY_REGION_ACCEPTANCE_AUTHORITY_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
         val ordinaryRegionCapabilityAcceptanceRoot = environment[KEY_ORDINARY_REGION_CAPABILITY_ACCEPTANCE_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
         val ordinaryRegionOwnerAuthorizationRoot = environment[KEY_ORDINARY_REGION_OWNER_AUTHORIZATION_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
+        val correctedPreparationRoot = environment[KEY_CORRECTED_PREPARATION_STORAGE_ROOT]?.takeIf { it.isNotBlank() }
         val deployedImmutableImageId = environment[KEY_DEPLOYED_IMMUTABLE_IMAGE_ID]?.takeIf { it.isNotBlank() }
         val sourceCommit = environment[KEY_SOURCE_COMMIT]?.takeIf { it.isNotBlank() }
         val productionCommit = environment[KEY_PRODUCTION_COMMIT]?.takeIf { it.isNotBlank() }
@@ -516,10 +519,10 @@ object ParkerRuntimeConfigLoader {
         }
         if (ordinaryRegionEnabled && (!externalTranscriptionEnabled || ordinaryRegionCapabilityAcceptanceRoot == null ||
                 ordinaryRegionOwnerAuthorizationRoot == null || acceptanceAttemptRoot == null ||
-                regionProviderStateRoot == null || sourceCommit == null || environment[KEY_OPENAI_API_KEY].isNullOrBlank())) {
+                regionProviderStateRoot == null || correctedPreparationRoot == null || sourceCommit == null || environment[KEY_OPENAI_API_KEY].isNullOrBlank())) {
             throw ParkerRuntimeException.InvalidConfiguration(
                 KEY_ORDINARY_REGION_INGESTION_ENABLED,
-                "ordinary region ingestion requires external provider readiness, exact source commit, capability-acceptance/owner-authorization/attempt/provider-state roots, and deployment-local credential",
+                "ordinary region ingestion requires external provider readiness, exact source commit, capability-acceptance/owner-authorization/attempt/provider-state/corrected-preparation roots, and deployment-local credential",
             )
         }
 
@@ -567,6 +570,7 @@ object ParkerRuntimeConfigLoader {
             ordinaryRegionIngestionEnabled = ordinaryRegionEnabled,
             ordinaryRegionCapabilityAcceptanceStorageRootPath = ordinaryRegionCapabilityAcceptanceRoot,
             ordinaryRegionOwnerAuthorizationStorageRootPath = ordinaryRegionOwnerAuthorizationRoot,
+            correctedPreparationStorageRootPath = correctedPreparationRoot,
             deployedImmutableImageId = deployedImmutableImageId,
             sourceCommit = sourceCommit,
             productionCommit = productionCommit,
