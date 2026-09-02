@@ -2393,6 +2393,17 @@ class ParkerRuntime(
             )
     }
 
+    /** Provider-free continuation from one exact, already-persisted request-region-v8 response. */
+    suspend fun continueOrdinaryRegionPostEgressAsOwner(evidenceArtifactId: EvidenceArtifactId, authorizationId: String,
+        executionId: String, providerStateId: String): parker.core.runtime.OrdinaryRegionOwnerResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return ordinaryRegionIngestionWorkflow?.continuePostEgress(evidenceArtifactId, authorizationId, executionId, providerStateId)
+            ?: parker.core.runtime.OrdinaryRegionOwnerResult(
+                parker.core.runtime.OrdinaryRegionDisposition.VALIDATION_FAILED,
+                "post-egress continuation is not configured",
+            )
+    }
+
     /** Owner-safe executable readiness, matching the same fail-closed gates used for composition. */
     fun ownerEnhancedTranscriptionReadiness(): parker.ui.EnhancedTranscriptionReadiness =
         when (val readiness = openAiExternalTranscriptionBackendReadiness) {

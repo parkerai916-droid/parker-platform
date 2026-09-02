@@ -709,6 +709,9 @@ interface OrdinaryRegionOwnerWorkflowPort {
     fun reserve(authorizationId:String,executionId:String):OrdinaryRegionAuthorizationSnapshot
     fun revoke(authorizationId:String):OrdinaryRegionAuthorizationSnapshot
     suspend fun execute(evidenceId:EvidenceArtifactId,authorizationId:String,executionId:String,attemptId:String):OrdinaryRegionOwnerResult
+    /** Provider-free continuation from an already durable response. Implementations must never start transport here. */
+    suspend fun continuePostEgress(evidenceId:EvidenceArtifactId,authorizationId:String,executionId:String,providerStateId:String):OrdinaryRegionOwnerResult =
+        OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.VALIDATION_FAILED,"POST_EGRESS_CONTINUATION_NOT_CONFIGURED")
 }
 
 /** Owner-facing ordinary API. Proposal, authorization and reservation are explicitly non-executing. */

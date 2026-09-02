@@ -98,6 +98,8 @@ class OwnerEvidenceHttpServer(
     private val evaluateOrdinaryRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
     private val prepareCorrectedEvidence: suspend (EvidenceArtifactId, String, Int) -> parker.core.runtime.GovernedCorrectedPreparationOutcome =
         { _, _, _ -> parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected("PREPARATION_LANE_NOT_CONFIGURED") },
+    private val continuePostEgress: suspend (EvidenceArtifactId, String, String, String) -> parker.core.runtime.OrdinaryRegionOwnerResult =
+        { _, _, _, _ -> parker.core.runtime.OrdinaryRegionOwnerResult(parker.core.runtime.OrdinaryRegionDisposition.VALIDATION_FAILED,"CONTINUATION_LANE_NOT_CONFIGURED") },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -118,6 +120,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
         httpServer.createContext("/owner/admin/corrected-preparation", CorrectedPreparationHandler())
+        httpServer.createContext("/owner/admin/region-transcription-continuation", RegionTranscriptionContinuationHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
@@ -261,6 +264,30 @@ class OwnerEvidenceHttpServer(
             } catch (e: Exception) {
                 logger.error("Owner HTTP: corrected preparation failed safely", e)
                 runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally { exchange.close() }
+        }
+    }
+
+    private inner class RegionTranscriptionContinuationHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                if (exchange.requestURI.path != "/owner/admin/region-transcription-continuation" || exchange.requestMethod != "POST") {
+                    writeJson(exchange, 404, jsonObject("error" to "not found")); return
+                }
+                val body = try { readBounded(exchange.requestBody, MAX_PROMOTION_REQUEST_BODY_BYTES) }
+                catch (_: RequestBodyTooLargeException) { writeJson(exchange, 413, jsonObject("error" to "request body too large")); return }
+                val request = try { parsePostEgressContinuationRequest(body) }
+                catch (_: Exception) { writeJson(exchange, 400, jsonObject("error" to "invalid continuation request")); return }
+                val result = runBlocking { continuePostEgress(request.evidenceId,request.authorizationId,request.executionId,request.providerStateId) }
+                writeJson(exchange,if(result.disposition==parker.core.runtime.OrdinaryRegionDisposition.ADMITTED)200 else 409,jsonObject(
+                    "status" to result.disposition.name,"detail" to result.detail,
+                    "evidenceArtifactId" to request.evidenceId.value,"derivativeGenerationId" to result.derivativeGenerationId,
+                    "providerInvoked" to false,
+                ))
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: post-egress continuation failed safely",e)
+                runCatching { writeJson(exchange,500,jsonObject("error" to "internal error")) }
             } finally { exchange.close() }
         }
     }
@@ -1383,6 +1410,15 @@ private fun parseCorrectedPreparationRequest(bodyBytes: ByteArray): Pair<String,
     val version = (obj["profileVersion"] as? String)?.toIntOrNull() ?: throw JsonParseException("missing profileVersion")
     if (profile.isBlank() || profile.length > 160 || version < 1) throw JsonParseException("invalid preparation profile")
     return profile to version
+}
+
+private data class PostEgressContinuationRequest(val evidenceId:EvidenceArtifactId,val authorizationId:String,val executionId:String,val providerStateId:String)
+private fun parsePostEgressContinuationRequest(bodyBytes:ByteArray):PostEgressContinuationRequest {
+    val root=SimpleJsonReader(String(bodyBytes,StandardCharsets.UTF_8)).parseRootValue()
+    val obj=root as? Map<*,*>?:throw JsonParseException("expected a JSON object")
+    if(obj.keys!=setOf("evidenceId","authorizationId","executionId","providerStateId"))throw JsonParseException("unexpected continuation fields")
+    fun field(name:String)=(obj[name] as? String)?.takeIf{it.isNotBlank()&&it.length<=256}?:throw JsonParseException("invalid $name")
+    return PostEgressContinuationRequest(EvidenceArtifactId(field("evidenceId")),field("authorizationId"),field("executionId"),field("providerStateId"))
 }
 
 /** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */

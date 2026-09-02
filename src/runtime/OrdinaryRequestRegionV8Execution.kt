@@ -348,6 +348,15 @@ class GovernedRequestRegionV8ExecutionCoordinator(
         }catch(_:Exception){return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,"ATTEMPT_MARKER_PERSISTENCE_FAILED")}
         return null
     }
+    /** Recovery-only boundary: it cannot start an attempt or invoke [exchange]. */
+    fun recoverPersistedPostEgress(prepared:OrdinaryRequestRegionV8PreparedRequest):OrdinaryRequestRegionV8ExecutionOutcome {
+        bindingMismatch(prepared)?.let{return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,it)}
+        val durable=providerState.readFor(prepared.construction,prepared.capability,prepared.identity.executionId)
+            ?:return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,"DURABLE_PROVIDER_STATE_REQUIRED")
+        val attemptStarted=runCatching{ledger.open(prepared.identity).providerAttemptStarted}.getOrDefault(false)
+        if(!attemptStarted)return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(durable,"DURABLE_PROVIDER_ATTEMPT_REQUIRED")
+        return recover(prepared,durable,true)
+    }
     fun durablyStartProviderAttempt(prepared:OrdinaryRequestRegionV8PreparedRequest):OrdinaryRequestRegionV8ExecutionOutcome? {
         bindingMismatch(prepared)?.let{return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,it)}
         providerState.readFor(prepared.construction,prepared.capability,prepared.identity.executionId)?.let{return recover(prepared,it,true)}
@@ -419,10 +428,31 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
         val outcome=if(prior!=null)prior else {val start=guard.locked(authorizationId){val s=authorizations.load(authorizationId);if(s.revokedAt!=null||s.executionId!=executionId||!bindingMatches(s.grant,source))OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,"AUTHORIZATION_CHANGED")else execution.durablyStartProviderAttempt(prepared)}
             start?:execution.transportAfterGuardRelease(prepared)}
         val valid=outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Valid?:return result(if((outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Invalid)?.state?.downstreamProcessingPending==true)OrdinaryRegionDisposition.PROVIDER_RESPONSE_AVAILABLE else OrdinaryRegionDisposition.VALIDATION_FAILED,(outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Invalid)?.reason?:"V8_EXECUTION_FAILED")
-        val derivative=RequestRegionV8DerivativeBinder().bind(prepared.construction.request,valid.result).getOrElse{return result(OrdinaryRegionDisposition.REVIEW_REQUIRED,it.message?:"V8 reconstruction failed")}
-        val key=ordinaryRegionGenerationKey(executionId,evidenceId.value,source.sha256,accepted.record.recordId,valid.state.recordId,derivative.canonicalDigest)
-        val payload=payload(source,prepared,valid,derivative,accepted.record.recordId,snapshot.grant,key)
-        return when(val a=admission.admit(payload,owner)){is OrdinaryRegionAdmissionOutcome.Conflict->result(OrdinaryRegionDisposition.ADMISSION_CONFLICT,a.reason);is OrdinaryRegionAdmissionOutcome.Admitted->{runCatching{ledger.transition(prepared.identity,FidelityFirstAttemptStage.GENERATION_ADMITTED)};runCatching{ledger.transition(prepared.identity,FidelityFirstAttemptStage.TERMINAL_SUCCESS,listOf("generationId" to a.record.derivativeGenerationId.value))};result(OrdinaryRegionDisposition.ADMITTED,if(a.recovered)"recovered existing admission" else "admitted",a.record.derivativeGenerationId.value)}}
+        return admitValidated(source,prepared,valid,accepted.record.recordId,snapshot.grant)
+    }
+    override suspend fun continuePostEgress(evidenceId:EvidenceArtifactId,authorizationId:String,executionId:String,providerStateId:String):OrdinaryRegionOwnerResult {
+        val accepted=acceptance.evaluate() as? OrdinaryRequestRegionV8AcceptanceEvaluation.Accepted?:return result(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED)
+        val source=verified(evidenceId)?:return result(OrdinaryRegionDisposition.SOURCE_UNAVAILABLE)
+        val snapshot=try{guard.locked(authorizationId){authorizations.load(authorizationId)}}catch(_:Exception){return result(OrdinaryRegionDisposition.OWNER_AUTHORIZATION_REQUIRED)}
+        if(snapshot.grant.formatVersion!=REQUEST_REGION_V8_EXACT_AUTHORIZATION_FORMAT||snapshot.revokedAt!=null||snapshot.executionId!=executionId||
+            !bindingMatches(snapshot.grant,source))return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT,"continuation authorization binding mismatch")
+        val prepared=when(val p=preparer.prepare(source,requireNotNull(snapshot.grant.preparationIdentity),executionId,requireNotNull(snapshot.grant.correlationId),runtimeCommit())){
+            is OrdinaryRequestRegionV8PreparationOutcome.Blocked->return result(p.disposition,p.detail)
+            is OrdinaryRequestRegionV8PreparationOutcome.Prepared->p.value
+        }
+        if(!exactBindingMatches(snapshot.grant,prepared))return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT,"exact authorization envelope mismatch")
+        val recovered=execution.recoverPersistedPostEgress(prepared)
+        val valid=recovered as? OrdinaryRequestRegionV8ExecutionOutcome.Valid
+            ?:return result(OrdinaryRegionDisposition.VALIDATION_FAILED,(recovered as OrdinaryRequestRegionV8ExecutionOutcome.Invalid).reason)
+        if(!valid.recovered||valid.state.recordId!=providerStateId)return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT,"provider-state binding mismatch")
+        return admitValidated(source,prepared,valid,accepted.record.recordId,snapshot.grant)
+    }
+    private suspend fun admitValidated(source:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest,v:OrdinaryRequestRegionV8ExecutionOutcome.Valid,
+        acceptanceId:String,authorization:OrdinaryRequestRegionV8OwnerAuthorization):OrdinaryRegionOwnerResult {
+        val derivative=RequestRegionV8DerivativeBinder().bind(p.construction.request,v.result).getOrElse{return result(OrdinaryRegionDisposition.REVIEW_REQUIRED,it.message?:"V8 reconstruction failed")}
+        val key=ordinaryRegionGenerationKey(p.identity.executionId,source.evidenceArtifactId.value,source.sha256,acceptanceId,v.state.recordId,derivative.canonicalDigest)
+        val payload=payload(source,p,v,derivative,acceptanceId,authorization,key)
+        return when(val a=admission.admit(payload,owner)){is OrdinaryRegionAdmissionOutcome.Conflict->result(OrdinaryRegionDisposition.ADMISSION_CONFLICT,a.reason);is OrdinaryRegionAdmissionOutcome.Admitted->{runCatching{ledger.transition(p.identity,FidelityFirstAttemptStage.GENERATION_ADMITTED)};runCatching{ledger.transition(p.identity,FidelityFirstAttemptStage.TERMINAL_SUCCESS,listOf("generationId" to a.record.derivativeGenerationId.value))};result(OrdinaryRegionDisposition.ADMITTED,if(a.recovered)"recovered existing admission" else "admitted",a.record.derivativeGenerationId.value)}}
     }
     private fun payload(source:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest,v:OrdinaryRequestRegionV8ExecutionOutcome.Valid,d:RequestRegionV8Derivative,acceptanceId:String,authorization:OrdinaryRequestRegionV8OwnerAuthorization,key:String)=
         OrdinaryRegionTranscriptionDerivative(representationVersion=3,capabilityId=capability.capabilityId,capabilityDigest=capability.capabilityDigest,
@@ -430,7 +460,7 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
             regionBindings=p.construction.request.regions.map{"${it.id.value}|${it.cropDigest.value}|${it.image.encodedSha256}|${it.constituentIds.joinToString(","){x->x.value}}"},
             transcriptionBlocks=d.blocksInParkerOrder.map{listOf(it.requestRegionId,it.pageNumber.toString(),it.literalText?:"<null>",it.status,it.uncertainties.joinToString("|"){u->"${u.category}:${u.description}:${u.alternatives.joinToString(",")}:${u.providerConfidence}"},it.warnings.joinToString("|")).joinToString("\u001f")},
             providerReturnedOrder=v.result.blocksInProviderOrder.map{it.requestRegionId.value},parkerSourceOrder=d.blocksInParkerOrder.map{it.requestRegionId},provider=capability.provider,model=capability.model,
-            adapterId=capability.adapterId,adapterVersion=capability.adapterVersion,providerProfile=capability.profile,wireVersion=capability.wireVersion,schemaSha256=capability.schemaSha256,
+            adapterId=capability.adapterId,adapterVersion=capability.adapterVersion,providerProfile=requestRegionV8DerivativeProviderProfile(authorization),wireVersion=capability.wireVersion,schemaSha256=capability.schemaSha256,
             instructionSha256=capability.instructionSha256,processingProfile=capability.processing,requestIdentity=p.construction.request.correlationId,requestDigest=v.state.requestDigest,
             responseIdentity=v.state.rawDigest,providerStateRecordIdentity=v.state.recordId,capabilityAcceptanceRecordIdentity=acceptanceId,ownerAuthorizationIdentity=authorization.authorizationId,
             executionIdentity=p.identity.executionId,attemptIdentity=p.identity.attemptId,reconstructedContentDigest=d.canonicalDigest,canonicalGenerationKeyDigest=key,
@@ -462,6 +492,16 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
     private fun unavailable(id:EvidenceArtifactId,detail:String)=OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,id.value,detail=detail)
     private fun legacy(s:OrdinaryRequestRegionV8AuthorizationSnapshot)=OrdinaryRegionAuthorizationSnapshot(OrdinaryRegionOwnerAuthorization(s.grant.authorizationId,s.grant.evidenceArtifactId,s.grant.sourceSha256,s.grant.capabilityDigest,s.grant.provider,"literal transcription","Selected authoritative PDF request-region crops","Selected authoritative PDF request-region crops will be transmitted to OpenAI for literal transcription.",s.grant.approvedBy,s.grant.approvedAt,s.grant.expiresAt),s.state,s.executionId,s.reservedAt,s.revokedAt,s.revocationPostAttempt)
     private fun result(d:OrdinaryRegionDisposition,s:String=d.name,id:String?=null)=OrdinaryRegionOwnerResult(d,s,id)
+}
+
+/** Provider-profile provenance is authorization-bound; acquisition/preparation profiles are separate fields. */
+internal fun requestRegionV8DerivativeProviderProfile(
+    authorization:OrdinaryRequestRegionV8OwnerAuthorization,
+):String {
+    require(authorization.formatVersion==REQUEST_REGION_V8_EXACT_AUTHORIZATION_FORMAT)
+    val authoritative=requireNotNull(authorization.providerProfile)
+    require(authoritative==REQUEST_REGION_V8_PROVIDER_PROFILE)
+    return authoritative
 }
 
 private fun v8CreateOnce(path:Path,text:String){val bytes=text.toByteArray();try{FileChannel.open(path,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE).use{c->val b=ByteBuffer.wrap(bytes);while(b.hasRemaining())c.write(b);c.force(true)}}catch(e:java.nio.file.FileAlreadyExistsException){require(Files.readAllBytes(path).contentEquals(bytes))}}

@@ -6,6 +6,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.io.TempDir
 import parker.composition.OpenAiApiCredential
 import parker.core.interfaces.*
@@ -61,6 +62,18 @@ class OrdinaryRequestRegionV8ExecutionConvergenceTest {
         assertEquals(v3,roundTrip)
     }
 
+    @Test fun `post-egress derivative admission is create-once idempotent and conflicts fail closed`()=runTest {
+        val exact=exactGrant();val v3=payload(2,ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID,OrdinaryRequestRegionV8Capability().digest(),8).copy(
+            representationVersion=3,providerProfile=requestRegionV8DerivativeProviderProfile(exact),preparationIdentity=exact.preparationIdentity,
+            preparationProfile=exact.preparationProfile,preparationProfileVersion=1,providerBodyDigest=exact.providerBodyDigest,
+            authorizationPurpose=exact.authorizationPurpose,maximumProviderCalls=1,automaticRetryLimit=0,externalReasoningAuthorized=false)
+        val admission=OrdinaryRegionDerivativeAdmission(FileSystemDerivativeGenerationStorage(dir("continuation-generations")),
+            FileSystemDerivativeContentStorage(dir("continuation-content")),DocumentIngestionAudit{})
+        assertFalse(assertIs<OrdinaryRegionAdmissionOutcome.Admitted>(admission.admit(v3,PrincipalId("owner"))).recovered)
+        assertTrue(assertIs<OrdinaryRegionAdmissionOutcome.Admitted>(admission.admit(v3,PrincipalId("owner"))).recovered)
+        assertIs<OrdinaryRegionAdmissionOutcome.Conflict>(admission.admit(v3.copy(transcriptionBlocks=listOf("different")),PrincipalId("owner")))
+    }
+
     @Test fun `provider attempt budget survives reentry and provider failure is never retried`()=runTest {
         suspend fun scenario(name:String,raw:ByteArray,valid:Boolean){
             val c=construction();val state=FileSystemRequestRegionV8ProviderStateStore(dir("state-$name"));val prepared=prepared(c);var calls=0
@@ -73,6 +86,66 @@ class OrdinaryRequestRegionV8ExecutionConvergenceTest {
         }
         val c=construction();scenario("success",envelope(wire(c.request,c.request.regions.indices.map{it+1},false)).toByteArray(),true)
         scenario("failure","{malformed".toByteArray(),false)
+    }
+
+    @Test fun `derivative provider profile is authorization bound and distinct from acquisition and preparation profiles`() {
+        val authorization=exactGrant()
+        assertEquals(REQUEST_REGION_V8_PROVIDER_PROFILE,requestRegionV8DerivativeProviderProfile(authorization))
+        assertNotEquals(OrdinaryRequestRegionV8CapabilityIdentity().profile,authorization.providerProfile)
+        assertNotEquals(authorization.preparationProfile,authorization.providerProfile)
+        assertEquals(FULL_PAGE_ACHROMATIC_PROFILE_ID,authorization.preparationProfile)
+        assertFailsWith<IllegalArgumentException>{authorization.copy(providerProfile="request-region-fidelity-acquisition-v4")}
+        assertFailsWith<IllegalArgumentException>{authorization.copy(providerProfile="other-provider-profile")}
+    }
+
+    @Test fun `persisted post-egress recovery validates all regions without transport and preserves consumed budget`()=runTest {
+        val c=construction();val prepared=prepared(c);val state=FileSystemRequestRegionV8ProviderStateStore(dir("continuation-state"))
+        val ledger=FileSystemFidelityFirstAttemptLedger(dir("continuation-ledger"));var calls=0
+        val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,
+            OpenAiResponsesTransport{calls++;OpenAiResponsesTransportResponse(200,envelope(wire(c.request,c.request.regions.indices.map{it+1},true)).toByteArray())},state)
+        val coordinator=GovernedRequestRegionV8ExecutionCoordinator(ledger,state,exchange)
+        assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Valid>(coordinator.execute(prepared));assertEquals(1,calls)
+        val recovered=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Valid>(coordinator.recoverPersistedPostEgress(prepared))
+        assertTrue(recovered.recovered);assertEquals(c.request.regions.size,recovered.result.blocksInProviderOrder.size);assertEquals(1,calls)
+        val derivative=RequestRegionV8DerivativeBinder().bind(c.request,recovered.result).getOrThrow()
+        assertEquals(c.request.regions.map{it.pageNumber},derivative.blocksInParkerOrder.map{it.pageNumber})
+        assertTrue(ledger.open(prepared.identity).providerAttemptStarted)
+    }
+
+    @Test fun `post-egress recovery fails closed without raw state or durable started attempt`()=runTest {
+        val c=construction();val prepared=prepared(c);val state=FileSystemRequestRegionV8ProviderStateStore(dir("missing-continuation-state"))
+        val ledger=FileSystemFidelityFirstAttemptLedger(dir("missing-continuation-ledger"));var calls=0
+        val coordinator=GovernedRequestRegionV8ExecutionCoordinator(ledger,state,RequestRegionV8ProviderExchange{calls++;error("must not invoke provider")})
+        val missing=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Invalid>(coordinator.recoverPersistedPostEgress(prepared))
+        assertEquals("DURABLE_PROVIDER_STATE_REQUIRED",missing.reason);assertEquals(0,calls)
+        state.persistReceived(c,prepared.capability,commit,prepared.identity.executionId,200,"application/json","{}".toByteArray())
+        val noAttempt=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Invalid>(coordinator.recoverPersistedPostEgress(prepared))
+        assertEquals("DURABLE_PROVIDER_ATTEMPT_REQUIRED",noAttempt.reason);assertEquals(0,calls)
+    }
+
+    @Test fun `exact R6-R1 copied state is eligible for zero-call continuation and validates five of five`()=runTest {
+        val configured=System.getProperty("parker.r6r1.offline.root")
+        assumeTrue(!configured.isNullOrBlank(),"exact production-state copy is supplied only to the bounded forensic run")
+        val root=Path.of(configured);val authorization=FileSystemOrdinaryRequestRegionV8AuthorizationStore(root.resolve("auth"))
+            .load("ff286fdcc38a35aefed16201724c00d8a9930e2f73c08206571295a664127f97")
+        val preparation=FileSystemFullPageAchromaticPreparationStore(root.resolve("preparation"))
+            .read("85054cc742813d9b05339d07bce77d8665210b7c6e851fe9470b68a33c9bed8f")
+        val construction=FullPageAchromaticCanonicalRequestRegionV8Builder().buildPersisted(preparation,requireNotNull(authorization.grant.correlationId))
+        val capability=OrdinaryRequestRegionV8CapabilityIdentity();val executionId="ordinary-exec-3c2bf685-d6c2-44e0-acf8-0224d92fd976"
+        val identity=FidelityFirstExecutionIdentity(executionId,construction.requestBindingSha256,construction.request.correlationId,
+            authorization.grant.evidenceArtifactId,authorization.grant.sourceSha256,1_887_733,"application/pdf","39fe0e777608c96cba20cec491113e77eee4b8ef",
+            capability.provider,capability.model,capability.profile,capability.instructionSha256,capability.schemaSha256,capability.processing,capability.adapterVersion)
+        val prepared=OrdinaryRequestRegionV8PreparedRequest(construction,identity,capability,"39fe0e777608c96cba20cec491113e77eee4b8ef");var calls=0
+        val coordinator=GovernedRequestRegionV8ExecutionCoordinator(FileSystemFidelityFirstAttemptLedger(root.resolve("ledger")),
+            FileSystemRequestRegionV8ProviderStateStore(root.resolve("provider")),RequestRegionV8ProviderExchange{calls++;error("provider prohibited")})
+        val recovered=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Valid>(coordinator.recoverPersistedPostEgress(prepared))
+        assertTrue(recovered.recovered);assertEquals(0,calls);assertEquals(5,recovered.result.blocksInProviderOrder.size)
+        assertEquals("2b1fbe06ebee0b7a3fdb618159c6987fa713976d7bfd2732b9048b50f11df3a7",recovered.state.recordId)
+        assertEquals("4706c24b8b0b83675a8ded1165f316229fa61a92bff4d8fe0a16c1d7d50cfb4a",recovered.state.rawDigest)
+        assertEquals("resp_04aa0adc3e021174016a980c0c891487d09764395f58adef7b",recovered.result.providerProvenance.providerResponseId)
+        assertEquals("gpt-5.6-sol",recovered.result.providerProvenance.providerReportedModel)
+        assertEquals(listOf(1,2,3,4,5),RequestRegionV8DerivativeBinder().bind(construction.request,recovered.result).getOrThrow().blocksInParkerOrder.map{it.pageNumber})
+        assertEquals(REQUEST_REGION_V8_PROVIDER_PROFILE,requestRegionV8DerivativeProviderProfile(authorization.grant))
     }
 
     @Test fun `V8 provider state truthfully binds capability request manifest body and raw before parse`() {

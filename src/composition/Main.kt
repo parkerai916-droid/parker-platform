@@ -144,6 +144,7 @@ fun main(args: Array<String>) = runBlocking {
             createOrdinaryRegionCapabilityAcceptance = runtime::createOrdinaryRegionCapabilityAcceptanceAsOwner,
             evaluateOrdinaryRegionCapability = runtime::ordinaryRegionCapabilityStatusAsOwner,
             prepareCorrectedEvidence = runtime::prepareCorrectedEvidenceAsOwner,
+            continuePostEgress = runtime::continueOrdinaryRegionPostEgressAsOwner,
         ).also { it.start() }
     } else {
         null
