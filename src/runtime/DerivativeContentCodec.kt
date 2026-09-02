@@ -69,6 +69,7 @@ internal object DerivativeContentCodec {
     const val OCR_V2_REPRESENTATION_VERSION = 2
     const val OCR_LEGACY_REPRESENTATION_VERSION = 1
     const val REGION_TRANSCRIPTION_REPRESENTATION_VERSION = 2
+    const val REGION_TRANSCRIPTION_EXACT_ENVELOPE_REPRESENTATION_VERSION = 3
     const val REGION_TRANSCRIPTION_LEGACY_REPRESENTATION_VERSION = 1
 
     private const val FORMAT_CSV: Byte = 1
@@ -175,7 +176,7 @@ internal object DerivativeContentCodec {
                     TierADerivativePayload.Ocr(ocr)
                 }
                 FORMAT_REGION_TRANSCRIPTION -> {
-                    if (representationVersion !in setOf(REGION_TRANSCRIPTION_LEGACY_REPRESENTATION_VERSION, REGION_TRANSCRIPTION_REPRESENTATION_VERSION))
+                    if (representationVersion !in setOf(REGION_TRANSCRIPTION_LEGACY_REPRESENTATION_VERSION, REGION_TRANSCRIPTION_REPRESENTATION_VERSION, REGION_TRANSCRIPTION_EXACT_ENVELOPE_REPRESENTATION_VERSION))
                         throw UnsupportedRepresentationVersionException(representationVersion)
                     TierADerivativePayload.RegionTranscription(input.readRegionTranscription(representationVersion))
                 }
@@ -189,7 +190,7 @@ internal object DerivativeContentCodec {
     // ---- Ordinary external region-v5 transcription ------------------------------------------
 
     private fun DataOutputStream.writeRegionTranscription(r: OrdinaryRegionTranscriptionDerivative) {
-        if (r.representationVersion == REGION_TRANSCRIPTION_REPRESENTATION_VERSION) {
+        if (r.representationVersion >= REGION_TRANSCRIPTION_REPRESENTATION_VERSION) {
             writeString(r.capabilityId, MAX_SHORT_STRING_BYTES);writeString(r.capabilityDigest, MAX_SHORT_STRING_BYTES)
         }
         writeInt(r.representationVersion)
@@ -204,11 +205,15 @@ internal object DerivativeContentCodec {
             r.capabilityAcceptanceRecordIdentity, r.ownerAuthorizationIdentity, r.executionIdentity,
             r.attemptIdentity, r.reconstructedContentDigest, r.canonicalGenerationKeyDigest,
             r.admissionProvenance).forEach { writeString(it, MAX_SHORT_STRING_BYTES) }
+        if (r.representationVersion == REGION_TRANSCRIPTION_EXACT_ENVELOPE_REPRESENTATION_VERSION) {
+            listOf(r.preparationIdentity!!, r.preparationProfile!!, r.providerBodyDigest!!, r.authorizationPurpose!!).forEach { writeString(it, MAX_SHORT_STRING_BYTES) }
+            writeInt(r.preparationProfileVersion!!);writeInt(r.maximumProviderCalls!!);writeInt(r.automaticRetryLimit!!);writeBoolean(r.externalReasoningAuthorized!!)
+        }
     }
 
     private fun DataInputStream.readRegionTranscription(envelopeVersion: Int): OrdinaryRegionTranscriptionDerivative {
-        val capabilityId=if(envelopeVersion==REGION_TRANSCRIPTION_REPRESENTATION_VERSION)readString(MAX_SHORT_STRING_BYTES) else ORDINARY_REGION_CAPABILITY_ID
-        val capabilityDigest=if(envelopeVersion==REGION_TRANSCRIPTION_REPRESENTATION_VERSION)readString(MAX_SHORT_STRING_BYTES) else "historical-v5-capability-digest-not-persisted"
+        val capabilityId=if(envelopeVersion>=REGION_TRANSCRIPTION_REPRESENTATION_VERSION)readString(MAX_SHORT_STRING_BYTES) else ORDINARY_REGION_CAPABILITY_ID
+        val capabilityDigest=if(envelopeVersion>=REGION_TRANSCRIPTION_REPRESENTATION_VERSION)readString(MAX_SHORT_STRING_BYTES) else "historical-v5-capability-digest-not-persisted"
         val version = readInt();if(version!=envelopeVersion)throw MalformedRepresentationException("region transcription version mismatch")
         val evidence = readString(MAX_SHORT_STRING_BYTES); val source = readString(MAX_SHORT_STRING_BYTES)
         val pages = readStrings(); val regions = readStrings(); val blocks = readStrings(); val providerOrder = readStrings(); val parkerOrder = readStrings()
@@ -216,10 +221,13 @@ internal object DerivativeContentCodec {
         val adapterId = readString(MAX_SHORT_STRING_BYTES); val adapterVersion = readString(MAX_SHORT_STRING_BYTES)
         val profile = readString(MAX_SHORT_STRING_BYTES); val wire = readInt()
         val values = List(14) { readString(MAX_SHORT_STRING_BYTES) }
+        val extra=if(envelopeVersion==REGION_TRANSCRIPTION_EXACT_ENVELOPE_REPRESENTATION_VERSION) listOf(readString(MAX_SHORT_STRING_BYTES),readString(MAX_SHORT_STRING_BYTES),readString(MAX_SHORT_STRING_BYTES),readString(MAX_SHORT_STRING_BYTES)) else emptyList()
+        val preparationVersion=if(extra.isNotEmpty())readInt()else null;val calls=if(extra.isNotEmpty())readInt()else null;val retries=if(extra.isNotEmpty())readInt()else null;val reasoning=if(extra.isNotEmpty())readBoolean()else null
         return OrdinaryRegionTranscriptionDerivative(version, capabilityId, capabilityDigest, evidence, source, pages, regions, blocks,
             providerOrder, parkerOrder, provider, model, adapterId, adapterVersion, profile, wire,
             values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
-            values[8], values[9], values[10], values[11], values[12], values[13])
+            values[8], values[9], values[10], values[11], values[12], values[13],extra.getOrNull(0),extra.getOrNull(1),preparationVersion,
+            extra.getOrNull(2),extra.getOrNull(3),calls,retries,reasoning)
     }
 
     // ---- PDF ----------------------------------------------------------------------------------

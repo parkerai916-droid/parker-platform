@@ -17,6 +17,9 @@ const val ORDINARY_REQUEST_REGION_V8_ACCEPTANCE_EVIDENCE_ID = "acceptance-eviden
 const val ORDINARY_REQUEST_REGION_V8_ACCEPTANCE_EVIDENCE_SHA256 = "34ec3c703aacb754c45fa58ddf941d7368e2b4cc2e373cb412eb99c4de30902b"
 const val REQUEST_REGION_V8_PROVIDER_STATE_FORMAT = "request-region-v8-provider-state-v1"
 const val REQUEST_REGION_V8_PROVIDER_ASSESSMENT_FORMAT = "request-region-v8-provider-assessment-v1"
+const val REQUEST_REGION_V8_EXACT_AUTHORIZATION_FORMAT = 2
+val REQUEST_REGION_V8_AUTHORIZATION_PURPOSE = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE.value
+const val REQUEST_REGION_V8_PROVIDER_PROFILE = "openai-fidelity-first-transcription-v1"
 
 data class OrdinaryRequestRegionV8CapabilityIdentity(
     val capabilityId:String=ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID,
@@ -110,18 +113,43 @@ class OrdinaryRequestRegionV8CapabilityAcceptanceCoordinator(private val store:F
 data class OrdinaryRequestRegionV8OwnerAuthorization(
     val authorizationId:String,val evidenceArtifactId:String,val sourceSha256:String,val capabilityId:String,
     val capabilityDigest:String,val provider:String,val approvedBy:String,val approvedAt:Instant,val expiresAt:Instant,
+    val formatVersion:Int=1,val preparationIdentity:String?=null,val preparationProfile:String?=null,val preparationProfileVersion:Int?=null,
+    val requestDigest:String?=null,val providerBodyDigest:String?=null,val correlationId:String?=null,val authorizationPurpose:String?=null,
+    val providerProfile:String?=null,val model:String?=null,val maximumProviderCalls:Int?=null,val automaticRetryLimit:Int?=null,
+    val externalReasoningAuthorized:Boolean?=null,
 ) {
     init { require(authorizationId.matches(Regex("^[A-Za-z0-9_.-]{1,120}$")));require(sourceSha256.matches(Regex("^[0-9a-f]{64}$")))
-        require(capabilityId==ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID&&capabilityDigest==OrdinaryRequestRegionV8Capability().digest()&&provider==REQUEST_REGION_PROVIDER&&expiresAt.isAfter(approvedAt)) }
+        require(capabilityId==ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID&&capabilityDigest==OrdinaryRequestRegionV8Capability().digest()&&provider==REQUEST_REGION_PROVIDER&&expiresAt.isAfter(approvedAt))
+        require(formatVersion in 1..REQUEST_REGION_V8_EXACT_AUTHORIZATION_FORMAT)
+        if(formatVersion==REQUEST_REGION_V8_EXACT_AUTHORIZATION_FORMAT){
+            require(listOf(preparationIdentity,requestDigest,providerBodyDigest).all{it?.matches(Regex("^[0-9a-f]{64}$"))==true})
+            require(preparationProfile==FULL_PAGE_ACHROMATIC_PROFILE_ID&&preparationProfileVersion==FULL_PAGE_ACHROMATIC_PROFILE_VERSION)
+            require(correlationId?.matches(Regex("^[A-Za-z0-9_-]{1,120}$"))==true)
+            require(authorizationPurpose==REQUEST_REGION_V8_AUTHORIZATION_PURPOSE&&providerProfile==REQUEST_REGION_V8_PROVIDER_PROFILE&&model==REQUEST_REGION_MODEL)
+            require(maximumProviderCalls==1&&automaticRetryLimit==0&&externalReasoningAuthorized==false)
+            require(authorizationId==exactIdentity(evidenceArtifactId,sourceSha256,preparationIdentity!!,preparationProfile!!,preparationProfileVersion!!,
+                requestDigest!!,providerBodyDigest!!,correlationId!!,capabilityId,capabilityDigest,authorizationPurpose!!,provider,providerProfile!!,model!!,
+                maximumProviderCalls!!,automaticRetryLimit!!,externalReasoningAuthorized!!,approvedBy))
+        }
+    }
+    companion object {
+        fun exactIdentity(evidenceId:String,sourceSha:String,preparationId:String,preparationProfile:String,preparationVersion:Int,
+            requestDigest:String,bodyDigest:String,correlationId:String,capabilityId:String,capabilityDigest:String,purpose:String,
+            provider:String,providerProfile:String,model:String,maximumCalls:Int,retryLimit:Int,externalReasoning:Boolean,
+            approvedBy:String)=v8ExecutionDigest("parker.request-region-v8.exact-owner-authorization.v2",
+            evidenceId,sourceSha,preparationId,preparationProfile,preparationVersion,requestDigest,bodyDigest,correlationId,capabilityId,
+            capabilityDigest,purpose,provider,providerProfile,model,maximumCalls,retryLimit,externalReasoning,approvedBy)
+    }
 }
 data class OrdinaryRequestRegionV8AuthorizationSnapshot(val grant:OrdinaryRequestRegionV8OwnerAuthorization,val state:OrdinaryRegionAuthorizationState,val executionId:String?=null,val reservedAt:Instant?=null,val revokedAt:Instant?=null,val revocationPostAttempt:Boolean=false)
 class FileSystemOrdinaryRequestRegionV8AuthorizationStore(root:Path) {
     private val root=root.toAbsolutePath().normalize()
     init { require(Files.isDirectory(this.root)&&Files.isReadable(this.root)&&Files.isWritable(this.root)) }
-    fun create(g:OrdinaryRequestRegionV8OwnerAuthorization)=v8CreateOnce(base(g.authorizationId),encode(g))
-    fun loadIfPresent(id:String)=if(Files.exists(base(id)))load(id)else null
+    fun create(g:OrdinaryRequestRegionV8OwnerAuthorization)=v8CreateOnce(base(g.authorizationId,g.formatVersion),encode(g))
+    fun loadIfPresent(id:String)=when{Files.exists(base(id,2))->load(id);Files.exists(base(id,1))->load(id);else->null}
     fun load(id:String):OrdinaryRequestRegionV8AuthorizationSnapshot {
-        val g=decode(Files.readString(base(id)));val e=event(id);val events=if(Files.exists(e))Files.readAllLines(e)else emptyList()
+        val path=when{Files.exists(base(id,2))->base(id,2);Files.exists(base(id,1))->base(id,1);else->error("authorization not found")}
+        val g=decode(Files.readString(path));val e=event(id);val events=if(Files.exists(e))Files.readAllLines(e)else emptyList()
         val decoded=events.map(::decodeEvent);val reservation=decoded.filter{it[0]=="RESERVED"}.singleOrNull();val revocation=decoded.filter{it[0]=="REVOKED"}.singleOrNull()
         return OrdinaryRequestRegionV8AuthorizationSnapshot(g,if(reservation==null)OrdinaryRegionAuthorizationState.AVAILABLE else OrdinaryRegionAuthorizationState.RESERVED_FOR_EXECUTION,reservation?.get(1),reservation?.get(2)?.let(Instant::parse),revocation?.get(1)?.let(Instant::parse),revocation?.get(2)?.toBooleanStrict()?:false)
     }
@@ -130,10 +158,16 @@ class FileSystemOrdinaryRequestRegionV8AuthorizationStore(root:Path) {
         val body=listOf("RESERVED",executionId,at.toString()).joinToString("\t");FileChannel.open(event(id),StandardOpenOption.CREATE,StandardOpenOption.APPEND,StandardOpenOption.WRITE).use{c->val b=ByteBuffer.wrap("$body\t${v8ExecutionDigest(body)}\n".toByteArray());while(b.hasRemaining())c.write(b);c.force(true)};return load(id)
     }
     fun revoke(id:String,at:Instant,providerAttemptStarted:Boolean):OrdinaryRequestRegionV8AuthorizationSnapshot {val s=load(id);if(s.revokedAt!=null)return s;val body=listOf("REVOKED",at.toString(),providerAttemptStarted.toString()).joinToString("\t");FileChannel.open(event(id),StandardOpenOption.CREATE,StandardOpenOption.APPEND,StandardOpenOption.WRITE).use{c->val b=ByteBuffer.wrap("$body\t${v8ExecutionDigest(body)}\n".toByteArray());while(b.hasRemaining())c.write(b);c.force(true)};return load(id)}
-    private fun encode(g:OrdinaryRequestRegionV8OwnerAuthorization):String { val f=listOf(g.authorizationId,g.evidenceArtifactId,g.sourceSha256,g.capabilityId,g.capabilityDigest,g.provider,v8B64(g.approvedBy),g.approvedAt.toString(),g.expiresAt.toString());val b=f.joinToString("\t");return "$b\t${v8ExecutionDigest(b)}\n" }
-    private fun decode(s:String):OrdinaryRequestRegionV8OwnerAuthorization { val p=s.trimEnd().split('\t');require(p.size==10);val b=p.take(9).joinToString("\t");require(p[9]==v8ExecutionDigest(b));return OrdinaryRequestRegionV8OwnerAuthorization(p[0],p[1],p[2],p[3],p[4],p[5],v8Unb64(p[6]),Instant.parse(p[7]),Instant.parse(p[8])) }
+    private fun encode(g:OrdinaryRequestRegionV8OwnerAuthorization):String { val f=if(g.formatVersion==1)listOf(g.authorizationId,g.evidenceArtifactId,g.sourceSha256,g.capabilityId,g.capabilityDigest,g.provider,v8B64(g.approvedBy),g.approvedAt.toString(),g.expiresAt.toString()) else listOf(
+        g.authorizationId,g.evidenceArtifactId,g.sourceSha256,g.preparationIdentity!!,g.preparationProfile!!,g.preparationProfileVersion.toString(),g.requestDigest!!,g.providerBodyDigest!!,g.correlationId!!,
+        g.capabilityId,g.capabilityDigest,g.authorizationPurpose!!,g.provider,g.providerProfile!!,g.model!!,g.maximumProviderCalls.toString(),g.automaticRetryLimit.toString(),g.externalReasoningAuthorized.toString(),
+        v8B64(g.approvedBy),g.approvedAt.toString(),g.expiresAt.toString());val b=f.joinToString("\t");return "$b\t${v8ExecutionDigest(b)}\n" }
+    private fun decode(s:String):OrdinaryRequestRegionV8OwnerAuthorization { val p=s.trimEnd().split('\t');val b=p.dropLast(1).joinToString("\t");require(p.last()==v8ExecutionDigest(b));return when(p.size){
+        10->OrdinaryRequestRegionV8OwnerAuthorization(p[0],p[1],p[2],p[3],p[4],p[5],v8Unb64(p[6]),Instant.parse(p[7]),Instant.parse(p[8]))
+        22->OrdinaryRequestRegionV8OwnerAuthorization(p[0],p[1],p[2],p[9],p[10],p[12],v8Unb64(p[18]),Instant.parse(p[19]),Instant.parse(p[20]),2,p[3],p[4],p[5].toInt(),p[6],p[7],p[8],p[11],p[13],p[14],p[15].toInt(),p[16].toInt(),p[17].toBooleanStrict())
+        else->error("unsupported request-region-v8 authorization version")}}
     private fun decodeEvent(s:String):List<String>{val p=s.split('\t');val b=p.dropLast(1).joinToString("\t");require(p.last()==v8ExecutionDigest(b));return p.dropLast(1)}
-    private fun base(id:String)=root.resolve("$id.request-region-v8-owner-authorization-v1").normalize().also{require(it.parent==root)}
+    private fun base(id:String,version:Int)=root.resolve("$id.request-region-v8-owner-authorization-v$version").normalize().also{require(it.parent==root)}
     private fun event(id:String)=root.resolve("$id.request-region-v8-owner-authorization-events-v1").normalize().also{require(it.parent==root)}
 }
 
@@ -203,13 +237,35 @@ sealed interface OrdinaryRequestRegionV8PreparationOutcome {
     data class Prepared(val value:OrdinaryRequestRegionV8PreparedRequest):OrdinaryRequestRegionV8PreparationOutcome
     data class Blocked(val disposition:OrdinaryRegionDisposition,val detail:String):OrdinaryRequestRegionV8PreparationOutcome
 }
-class OrdinaryRequestRegionV8RequestPreparer(private val builder:FullPageAchromaticCanonicalRequestRegionV8Builder=FullPageAchromaticCanonicalRequestRegionV8Builder()) {
-    internal fun prepare(source:AuthoritativeAcquisitionInput,executionId:String,correlationId:String,commit:String):OrdinaryRequestRegionV8PreparationOutcome {
+class OrdinaryRequestRegionV8RequestPreparer(
+    private val store:FileSystemFullPageAchromaticPreparationStore,
+    private val builder:FullPageAchromaticCanonicalRequestRegionV8Builder=FullPageAchromaticCanonicalRequestRegionV8Builder(),
+) {
+    internal fun find(source:AuthoritativeAcquisitionInput)=store.findExact(source.evidenceArtifactId,source.sha256,FULL_PAGE_ACHROMATIC_PROFILE_ID,FULL_PAGE_ACHROMATIC_PROFILE_VERSION)
+    internal fun correlationId(source:AuthoritativeAcquisitionInput):String {
+        val input=listOf("parker.corrected-preparation.operation.v1",source.evidenceArtifactId.value,source.sha256,FULL_PAGE_ACHROMATIC_PROFILE_ID,FULL_PAGE_ACHROMATIC_PROFILE_VERSION.toString()).joinToString("\u0000")
+        return "preparation-"+v8Sha(input.toByteArray())
+    }
+    internal fun construct(source:AuthoritativeAcquisitionInput,preparationIdentity:String,correlationId:String):OrdinaryRequestRegionV8PreparationOutcome {
         val mediaType=source.mediaType
         if(mediaType!="application/pdf")return blocked(OrdinaryRegionDisposition.UNSUPPORTED_MEDIA,"request-region v8 accepts application/pdf only")
-        val c=try{builder.build(source.evidenceArtifactId,source.sha256,mediaType,source.bytes(),correlationId)}catch(e:Exception){return blocked(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,e.message?:"canonical V8 construction failed")}
+        val document=try{store.read(preparationIdentity)}catch(e:Exception){return blocked(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,e.message?:"persisted corrected preparation unavailable")}
+        if(document.preparationIdentity!=preparationIdentity||document.regions.any{it.provenance.evidenceId!=source.evidenceArtifactId||it.provenance.sourceSha256!=source.sha256})
+            return blocked(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,"persisted corrected preparation binding mismatch")
+        if(document.regions.any{it.provenance.preparationProfileId!=FULL_PAGE_ACHROMATIC_PROFILE_ID||it.provenance.preparationProfileVersion!=FULL_PAGE_ACHROMATIC_PROFILE_VERSION})
+            return blocked(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,"persisted corrected preparation profile mismatch")
+        val c=try{builder.buildPersisted(document,correlationId)}catch(e:Exception){return blocked(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,e.message?:"canonical persisted V8 construction failed")}
         if(c.request.regions.size !in 1..REQUEST_REGION_MAXIMUM)return blocked(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,"complete shaped request-region set exceeds 32")
         if(c.providerBody.toByteArray().size>REQUEST_REGION_BODY_MAXIMUM_BYTES)return blocked(OrdinaryRegionDisposition.REQUEST_BOUNDS_EXCEEDED,"exact UTF-8 request body exceeds governed bound")
+        return OrdinaryRequestRegionV8PreparationOutcome.Prepared(OrdinaryRequestRegionV8PreparedRequest(c,
+            FidelityFirstExecutionIdentity("PREAUTH",c.requestBindingSha256,correlationId,source.evidenceArtifactId.value,source.sha256,source.byteLength,
+                mediaType,"0".repeat(40),REQUEST_REGION_PROVIDER,REQUEST_REGION_MODEL,REQUEST_REGION_V8_PROFILE_ID,REQUEST_REGION_V8_INSTRUCTION_SHA256,
+                REQUEST_REGION_V8_SCHEMA_SHA256,REQUEST_REGION_V8_PROCESSING_PROFILE,REQUEST_REGION_V8_ADAPTER_VERSION),OrdinaryRequestRegionV8CapabilityIdentity(),"0".repeat(40)))
+    }
+    internal fun prepare(source:AuthoritativeAcquisitionInput,preparationIdentity:String,executionId:String,correlationId:String,commit:String):OrdinaryRequestRegionV8PreparationOutcome {
+        val outcome=construct(source,preparationIdentity,correlationId)
+        val base=outcome as? OrdinaryRequestRegionV8PreparationOutcome.Prepared?:return outcome
+        val c=base.value.construction;val mediaType=source.mediaType!!
         val cap=OrdinaryRequestRegionV8CapabilityIdentity()
         val i=FidelityFirstExecutionIdentity(executionId,c.requestBindingSha256,correlationId,source.evidenceArtifactId.value,source.sha256,source.byteLength,
             mediaType,commit,cap.provider,cap.model,cap.profile,cap.instructionSha256,cap.schemaSha256,cap.processing,cap.adapterVersion)
@@ -334,15 +390,17 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
     override suspend fun proposal(evidenceId:EvidenceArtifactId):OrdinaryRegionProposal?=verified(evidenceId)?.let{OrdinaryRegionProposal(evidenceId.value,capability.capabilityId,capabilityStatus=capabilityStatus())}
     override suspend fun authorizationStatus(evidenceId:EvidenceArtifactId):OrdinaryRegionOwnerAuthorizationView {
         if(acceptance.evaluate() !is OrdinaryRequestRegionV8AcceptanceEvaluation.Accepted)return unavailable(evidenceId,"CAPABILITY_NOT_ACCEPTED")
-        val source=verified(evidenceId)?:return unavailable(evidenceId,"SOURCE_UNAVAILABLE_OR_UNSUPPORTED");val id=authorizationIdentity(source)
+        val source=verified(evidenceId)?:return unavailable(evidenceId,"SOURCE_UNAVAILABLE_OR_UNSUPPORTED")
+        val prepared=preauthorization(source)?:return unavailable(evidenceId,"PERSISTED_PREPARATION_UNAVAILABLE_OR_INVALID");val id=authorizationIdentity(source,prepared)
         val s=try{authorizations.loadIfPresent(id)}catch(_:Exception){return unavailable(evidenceId,"AUTHORIZATION_STORE_UNAVAILABLE_OR_CORRUPT")}
         return s?.let(::view)?:OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.NOT_AUTHORISED,evidenceId.value)
     }
     override suspend fun authorize(evidenceId:EvidenceArtifactId):OrdinaryRegionOwnerAuthorizationOutcome {
         if(acceptance.evaluate() !is OrdinaryRequestRegionV8AcceptanceEvaluation.Accepted)return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(unavailable(evidenceId,"CAPABILITY_NOT_ACCEPTED"))
-        val source=verified(evidenceId)?:return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(unavailable(evidenceId,"SOURCE_UNAVAILABLE_OR_UNSUPPORTED"));val id=authorizationIdentity(source)
+        val source=verified(evidenceId)?:return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(unavailable(evidenceId,"SOURCE_UNAVAILABLE_OR_UNSUPPORTED"))
+        val prepared=preauthorization(source)?:return OrdinaryRegionOwnerAuthorizationOutcome.Blocked(unavailable(evidenceId,"PERSISTED_PREPARATION_UNAVAILABLE_OR_INVALID"));val id=authorizationIdentity(source,prepared)
         return try{guard.locked(id){authorizations.loadIfPresent(id)?.let{return@locked OrdinaryRegionOwnerAuthorizationOutcome.Existing(view(it))};val at=now();authorizations.create(
-            OrdinaryRequestRegionV8OwnerAuthorization(id,evidenceId.value,source.sha256,capability.capabilityId,capability.capabilityDigest,capability.provider,owner.value,at,at.plusSeconds(86_400)))
+            exactAuthorization(id,source,prepared,at))
             OrdinaryRegionOwnerAuthorizationOutcome.Created(view(authorizations.load(id)))}}catch(_:Exception){OrdinaryRegionOwnerAuthorizationOutcome.Blocked(unavailable(evidenceId,"AUTHORIZATION_CREATE_FAILED"))}
     }
     override fun createAuthorization(grant:OrdinaryRegionOwnerAuthorization):Nothing=error("V5_AUTHORIZATION_CANNOT_AUTHORIZE_V8")
@@ -353,7 +411,9 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
         val source=verified(evidenceId)?:return result(OrdinaryRegionDisposition.SOURCE_UNAVAILABLE)
         val snapshot=try{guard.locked(authorizationId){authorizations.load(authorizationId)}}catch(_:Exception){return result(OrdinaryRegionDisposition.OWNER_AUTHORIZATION_REQUIRED)}
         if(!bindingMatches(snapshot.grant,source)||snapshot.revokedAt!=null)return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT,"authorization binding mismatch")
-        val prepared=when(val p=preparer.prepare(source,executionId,attemptId,runtimeCommit())){is OrdinaryRequestRegionV8PreparationOutcome.Blocked->return result(p.disposition,p.detail);is OrdinaryRequestRegionV8PreparationOutcome.Prepared->p.value}
+        if(snapshot.grant.formatVersion!=REQUEST_REGION_V8_EXACT_AUTHORIZATION_FORMAT)return result(OrdinaryRegionDisposition.OWNER_AUTHORIZATION_REQUIRED,"EXACT_AUTHORIZATION_REQUIRED")
+        val prepared=when(val p=preparer.prepare(source,snapshot.grant.preparationIdentity!!,executionId,snapshot.grant.correlationId!!,runtimeCommit())){is OrdinaryRequestRegionV8PreparationOutcome.Blocked->return result(p.disposition,p.detail);is OrdinaryRequestRegionV8PreparationOutcome.Prepared->p.value}
+        if(!exactBindingMatches(snapshot.grant,prepared))return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT,"exact authorization envelope mismatch")
         try{guard.locked(authorizationId){authorizations.reserve(authorizationId,executionId,now())}}catch(e:Exception){return result(if(e.message?.contains("EXPIRED")==true)OrdinaryRegionDisposition.OWNER_AUTHORIZATION_EXPIRED_BEFORE_RESERVATION else OrdinaryRegionDisposition.OWNER_AUTHORIZATION_REQUIRED)}
         val prior=execution.prepareForGuardedAttempt(prepared)
         val outcome=if(prior!=null)prior else {val start=guard.locked(authorizationId){val s=authorizations.load(authorizationId);if(s.revokedAt!=null||s.executionId!=executionId||!bindingMatches(s.grant,source))OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,"AUTHORIZATION_CHANGED")else execution.durablyStartProviderAttempt(prepared)}
@@ -361,23 +421,43 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
         val valid=outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Valid?:return result(if((outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Invalid)?.state?.downstreamProcessingPending==true)OrdinaryRegionDisposition.PROVIDER_RESPONSE_AVAILABLE else OrdinaryRegionDisposition.VALIDATION_FAILED,(outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Invalid)?.reason?:"V8_EXECUTION_FAILED")
         val derivative=RequestRegionV8DerivativeBinder().bind(prepared.construction.request,valid.result).getOrElse{return result(OrdinaryRegionDisposition.REVIEW_REQUIRED,it.message?:"V8 reconstruction failed")}
         val key=ordinaryRegionGenerationKey(executionId,evidenceId.value,source.sha256,accepted.record.recordId,valid.state.recordId,derivative.canonicalDigest)
-        val payload=payload(source,prepared,valid,derivative,accepted.record.recordId,authorizationId,key)
+        val payload=payload(source,prepared,valid,derivative,accepted.record.recordId,snapshot.grant,key)
         return when(val a=admission.admit(payload,owner)){is OrdinaryRegionAdmissionOutcome.Conflict->result(OrdinaryRegionDisposition.ADMISSION_CONFLICT,a.reason);is OrdinaryRegionAdmissionOutcome.Admitted->{runCatching{ledger.transition(prepared.identity,FidelityFirstAttemptStage.GENERATION_ADMITTED)};runCatching{ledger.transition(prepared.identity,FidelityFirstAttemptStage.TERMINAL_SUCCESS,listOf("generationId" to a.record.derivativeGenerationId.value))};result(OrdinaryRegionDisposition.ADMITTED,if(a.recovered)"recovered existing admission" else "admitted",a.record.derivativeGenerationId.value)}}
     }
-    private fun payload(source:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest,v:OrdinaryRequestRegionV8ExecutionOutcome.Valid,d:RequestRegionV8Derivative,acceptanceId:String,authorizationId:String,key:String)=
-        OrdinaryRegionTranscriptionDerivative(representationVersion=2,capabilityId=capability.capabilityId,capabilityDigest=capability.capabilityDigest,
-            evidenceArtifactId=source.evidenceArtifactId.value,sourceSha256=source.sha256,pageBindings=p.construction.pages.map{"${it.id.value}|${it.provenance.canonicalPixelDigest.value}|${it.provenance.encodedRepresentationSha256}"},
+    private fun payload(source:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest,v:OrdinaryRequestRegionV8ExecutionOutcome.Valid,d:RequestRegionV8Derivative,acceptanceId:String,authorization:OrdinaryRequestRegionV8OwnerAuthorization,key:String)=
+        OrdinaryRegionTranscriptionDerivative(representationVersion=3,capabilityId=capability.capabilityId,capabilityDigest=capability.capabilityDigest,
+            evidenceArtifactId=source.evidenceArtifactId.value,sourceSha256=source.sha256,pageBindings=requireNotNull(p.construction.achromaticPreparation).regions.map{"${it.provenance.authoritativePageRepresentationId.value}|${it.provenance.authoritativePixelDigest.value}|${it.provenance.pageNumber}"},
             regionBindings=p.construction.request.regions.map{"${it.id.value}|${it.cropDigest.value}|${it.image.encodedSha256}|${it.constituentIds.joinToString(","){x->x.value}}"},
             transcriptionBlocks=d.blocksInParkerOrder.map{listOf(it.requestRegionId,it.pageNumber.toString(),it.literalText?:"<null>",it.status,it.uncertainties.joinToString("|"){u->"${u.category}:${u.description}:${u.alternatives.joinToString(",")}:${u.providerConfidence}"},it.warnings.joinToString("|")).joinToString("\u001f")},
             providerReturnedOrder=v.result.blocksInProviderOrder.map{it.requestRegionId.value},parkerSourceOrder=d.blocksInParkerOrder.map{it.requestRegionId},provider=capability.provider,model=capability.model,
             adapterId=capability.adapterId,adapterVersion=capability.adapterVersion,providerProfile=capability.profile,wireVersion=capability.wireVersion,schemaSha256=capability.schemaSha256,
             instructionSha256=capability.instructionSha256,processingProfile=capability.processing,requestIdentity=p.construction.request.correlationId,requestDigest=v.state.requestDigest,
-            responseIdentity=v.state.rawDigest,providerStateRecordIdentity=v.state.recordId,capabilityAcceptanceRecordIdentity=acceptanceId,ownerAuthorizationIdentity=authorizationId,
+            responseIdentity=v.state.rawDigest,providerStateRecordIdentity=v.state.recordId,capabilityAcceptanceRecordIdentity=acceptanceId,ownerAuthorizationIdentity=authorization.authorizationId,
             executionIdentity=p.identity.executionId,attemptIdentity=p.identity.attemptId,reconstructedContentDigest=d.canonicalDigest,canonicalGenerationKeyDigest=key,
-            admissionProvenance="request-region-v8-capability-acceptance-v1|request-region-v8-owner-authorization-v1|$REQUEST_REGION_V8_PROVIDER_STATE_FORMAT")
+            admissionProvenance="request-region-v8-capability-acceptance-v1|request-region-v8-owner-authorization-v2|$REQUEST_REGION_V8_PROVIDER_STATE_FORMAT",
+            preparationIdentity=authorization.preparationIdentity,preparationProfile=authorization.preparationProfile,preparationProfileVersion=authorization.preparationProfileVersion,
+            providerBodyDigest=authorization.providerBodyDigest,authorizationPurpose=authorization.authorizationPurpose,maximumProviderCalls=authorization.maximumProviderCalls,
+            automaticRetryLimit=authorization.automaticRetryLimit,externalReasoningAuthorized=authorization.externalReasoningAuthorized)
     private suspend fun verified(id:EvidenceArtifactId)=((resolver.resolve(owner,id) as? AuthoritativeAcquisitionResolution.Verified)?.input)?.takeIf{it.mediaType=="application/pdf"}
-    private fun authorizationIdentity(s:AuthoritativeAcquisitionInput)="ordinary-v8-auth-"+v8ExecutionDigest("parker.request-region-v8.owner-authorization.v1",s.evidenceArtifactId.value,s.sha256,capability.capabilityId,capability.capabilityDigest,runtimeCommit(),owner.value)
+    private fun preauthorization(s:AuthoritativeAcquisitionInput):OrdinaryRequestRegionV8PreparedRequest? {
+        val document=runCatching{preparer.find(s)}.getOrNull()?:return null
+        return (preparer.construct(s,document.preparationIdentity,preparer.correlationId(s)) as? OrdinaryRequestRegionV8PreparationOutcome.Prepared)?.value
+    }
+    private fun authorizationIdentity(s:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest)=OrdinaryRequestRegionV8OwnerAuthorization.exactIdentity(
+        s.evidenceArtifactId.value,s.sha256,requireNotNull(p.construction.achromaticPreparation).preparationIdentity,FULL_PAGE_ACHROMATIC_PROFILE_ID,FULL_PAGE_ACHROMATIC_PROFILE_VERSION,
+        p.construction.requestBindingSha256,p.construction.providerBodySha256,p.construction.request.correlationId,capability.capabilityId,capability.capabilityDigest,
+        REQUEST_REGION_V8_AUTHORIZATION_PURPOSE,capability.provider,REQUEST_REGION_V8_PROVIDER_PROFILE,capability.model,1,0,false,owner.value)
+    private fun exactAuthorization(id:String,s:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest,at:Instant)=OrdinaryRequestRegionV8OwnerAuthorization(
+        id,s.evidenceArtifactId.value,s.sha256,capability.capabilityId,capability.capabilityDigest,capability.provider,owner.value,at,at.plusSeconds(86_400),2,
+        requireNotNull(p.construction.achromaticPreparation).preparationIdentity,FULL_PAGE_ACHROMATIC_PROFILE_ID,FULL_PAGE_ACHROMATIC_PROFILE_VERSION,
+        p.construction.requestBindingSha256,p.construction.providerBodySha256,p.construction.request.correlationId,REQUEST_REGION_V8_AUTHORIZATION_PURPOSE,
+        REQUEST_REGION_V8_PROVIDER_PROFILE,capability.model,1,0,false)
     private fun bindingMatches(g:OrdinaryRequestRegionV8OwnerAuthorization,s:AuthoritativeAcquisitionInput)=g.evidenceArtifactId==s.evidenceArtifactId.value&&g.sourceSha256==s.sha256&&g.capabilityId==capability.capabilityId&&g.capabilityDigest==capability.capabilityDigest&&g.provider==capability.provider
+    private fun exactBindingMatches(g:OrdinaryRequestRegionV8OwnerAuthorization,p:OrdinaryRequestRegionV8PreparedRequest)=
+        g.preparationIdentity==p.construction.achromaticPreparation?.preparationIdentity&&g.preparationProfile==FULL_PAGE_ACHROMATIC_PROFILE_ID&&g.preparationProfileVersion==FULL_PAGE_ACHROMATIC_PROFILE_VERSION&&
+            g.requestDigest==p.construction.requestBindingSha256&&g.providerBodyDigest==p.construction.providerBodySha256&&g.correlationId==p.construction.request.correlationId&&
+            g.capabilityId==p.capability.capabilityId&&g.capabilityDigest==p.capability.capabilityDigest&&g.authorizationPurpose==REQUEST_REGION_V8_AUTHORIZATION_PURPOSE&&
+            g.provider==p.capability.provider&&g.providerProfile==REQUEST_REGION_V8_PROVIDER_PROFILE&&g.model==p.capability.model&&g.maximumProviderCalls==1&&g.automaticRetryLimit==0&&g.externalReasoningAuthorized==false
     private fun view(s:OrdinaryRequestRegionV8AuthorizationSnapshot)=OrdinaryRegionOwnerAuthorizationView(if(s.revokedAt==null&&now().isBefore(s.grant.expiresAt))OrdinaryRegionOwnerAuthorizationDisposition.AUTHORISED else OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,s.grant.evidenceArtifactId,s.grant.provider,"Selected authoritative PDF request-region crops will be transmitted to OpenAI for literal transcription.",s.grant.authorizationId,s.grant.approvedAt,s.grant.expiresAt,when{ s.revokedAt!=null->"OWNER_AUTHORIZATION_REVOKED";!now().isBefore(s.grant.expiresAt)->"OWNER_AUTHORIZATION_EXPIRED";s.executionId!=null->"OWNER_AUTHORIZATION_RESERVED";else->null},if(s.executionId==null)"NOT_STARTED" else "RESERVED")
     private fun unavailable(id:EvidenceArtifactId,detail:String)=OrdinaryRegionOwnerAuthorizationView(OrdinaryRegionOwnerAuthorizationDisposition.UNAVAILABLE,id.value,detail=detail)
     private fun legacy(s:OrdinaryRequestRegionV8AuthorizationSnapshot)=OrdinaryRegionAuthorizationSnapshot(OrdinaryRegionOwnerAuthorization(s.grant.authorizationId,s.grant.evidenceArtifactId,s.grant.sourceSha256,s.grant.capabilityDigest,s.grant.provider,"literal transcription","Selected authoritative PDF request-region crops","Selected authoritative PDF request-region crops will be transmitted to OpenAI for literal transcription.",s.grant.approvedBy,s.grant.approvedAt,s.grant.expiresAt),s.state,s.executionId,s.reservedAt,s.revokedAt,s.revocationPostAttempt)

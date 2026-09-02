@@ -10,6 +10,8 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import kotlinx.coroutines.test.runTest
+import parker.composition.OpenAiApiCredential
 import parker.core.interfaces.*
 
 class FullPageAchromaticPreparationTest {
@@ -60,6 +62,33 @@ class FullPageAchromaticPreparationTest {
         assertContentEquals(document.regions.single().image.encodedBytes(),read.regions.single().image.encodedBytes())
         val record=root.resolve("records/${document.preparationIdentity}.json");Files.writeString(record,"conflict")
         assertFails{store.persist(document)}
+    }
+
+    @Test fun `persisted preparation is the sole five-page request input and validates end to end through fake provider`()=runTest {
+        val pages=(1..5).map{number->page(number,24,32,ByteArray(24*32*3){0xff.toByte()},5)}
+        val document=prepared(pages);val root=createTempDirectory("r6a-persisted-");val store=FileSystemFullPageAchromaticPreparationStore(root)
+        store.persist(document);val exact=store.findExact(EvidenceArtifactId("evidence-r5i"),"a".repeat(64),FULL_PAGE_ACHROMATIC_PROFILE_ID,1)
+        assertEquals(document.preparationIdentity,exact?.preparationIdentity)
+        val construction=FullPageAchromaticCanonicalRequestRegionV8Builder().buildPersisted(requireNotNull(exact),"persisted-five")
+        assertTrue(construction.pages.isEmpty(),"persisted execution must not render authoritative pages again")
+        assertEquals(listOf(1,2,3,4,5),construction.request.regions.map{it.pageNumber})
+        assertEquals(document.regions.map{it.provenance.transportSha256},construction.request.regions.map{it.image.encodedSha256})
+        assertEquals(document.preparationIdentity,construction.achromaticPreparation?.preparationIdentity)
+        val cap=OrdinaryRequestRegionV8CapabilityIdentity();val identity=FidelityFirstExecutionIdentity("execution-five",construction.requestBindingSha256,
+            construction.request.correlationId,"evidence-r5i","a".repeat(64),100,"application/pdf","b".repeat(40),cap.provider,cap.model,cap.profile,
+            cap.instructionSha256,cap.schemaSha256,cap.processing,cap.adapterVersion)
+        val prepared=OrdinaryRequestRegionV8PreparedRequest(construction,identity,cap,"b".repeat(40));val state=FileSystemRequestRegionV8ProviderStateStore(createTempDirectory("r6a-five-state-"));var calls=0
+        val blocks=construction.request.regions.mapIndexed{i,r->mapOf("request_region_id" to r.id.value,"page_number" to r.pageNumber,"literal_text" to "page-$i",
+            "status" to "TRANSCRIBED","uncertainties" to emptyList<Any>(),"warnings" to emptyList<String>(),"provider_returned_ordinal" to (5-i))}.reversed()
+        val structured=mapOf("correlation_id" to construction.request.correlationId,"transcription_profile_id" to REQUEST_REGION_V8_PROFILE_ID,"schema_id" to REQUEST_REGION_V8_SCHEMA_ID,
+            "schema_version" to 8,"provider_provenance" to mapOf("provider" to REQUEST_REGION_PROVIDER,"requested_model" to REQUEST_REGION_MODEL,"provider_reported_model" to null,
+                "provider_response_id" to null,"adapter_id" to REQUEST_REGION_ADAPTER_ID,"adapter_version" to REQUEST_REGION_V8_ADAPTER_VERSION,"parser_id" to REQUEST_REGION_PARSER_ID,"parser_version" to REQUEST_REGION_V8_PARSER_VERSION),"blocks" to blocks)
+        val raw=RegionJson.encode(mapOf("id" to "resp-five","model" to REQUEST_REGION_MODEL,"output" to listOf(mapOf("type" to "message","content" to listOf(mapOf("type" to "output_text","text" to RegionJson.encode(structured))))))).toByteArray()
+        val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,OpenAiResponsesTransport{calls++;OpenAiResponsesTransportResponse(200,raw)},state)
+        val outcome=assertIs<RequestRegionV8ProviderExchangeOutcome.Valid>(exchange.exchange(prepared));assertEquals(1,calls);assertEquals(5,outcome.result.blocksInProviderOrder.size)
+        assertContentEquals(raw,state.read(outcome.state.recordId).rawBytes);assertEquals(listOf(1,2,3,4,5),RequestRegionV8DerivativeBinder().bind(construction.request,outcome.result).getOrThrow().blocksInParkerOrder.map{it.pageNumber})
+        assertNull(store.findExact(EvidenceArtifactId("other"),"a".repeat(64),FULL_PAGE_ACHROMATIC_PROFILE_ID,1))
+        assertNull(store.findExact(EvidenceArtifactId("evidence-r5i"),"b".repeat(64),FULL_PAGE_ACHROMATIC_PROFILE_ID,1))
     }
 
     @Test fun `full page request retains frozen V8 semantics and capability digest`() {

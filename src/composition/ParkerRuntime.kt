@@ -1609,7 +1609,7 @@ class ParkerRuntime(
                     owner = PrincipalId(config.ownerPrincipalId), evidenceCustodian = defaultEvidenceCustodian,
                     acceptance = parker.core.runtime.OrdinaryRequestRegionV8AcceptanceEvaluator(acceptanceStore) { buildIdentity() },
                     authorizations = authorizationStore, guard = OrdinaryRegionAuthorizationGuard(authorizationRoot), ledger = ledger,
-                    preparer = parker.core.runtime.OrdinaryRequestRegionV8RequestPreparer(),
+                    preparer = parker.core.runtime.OrdinaryRequestRegionV8RequestPreparer(correctedPreparationStore),
                     execution = parker.core.runtime.GovernedRequestRegionV8ExecutionCoordinator(ledger,providerStateStore,exchange),
                     admission = OrdinaryRegionDerivativeAdmission(derivativeGenerationStorage, derivativeContentStorage, documentIngestionAudit),
                     runtimeCommit = { embedded },

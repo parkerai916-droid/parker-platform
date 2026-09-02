@@ -112,6 +112,24 @@ class FullPageAchromaticCanonicalRequestRegionV8Builder(
         require(bodyBytes<=FULL_PAGE_ACHROMATIC_BODY_MAXIMUM&&bodyBytes<=REQUEST_REGION_BODY_MAXIMUM_BYTES){"exact UTF-8 request body exceeds governed R5I bound"}
         return CanonicalRequestRegionV8Construction(pages,graphs,request,body,codec.requestDigest(request),requestRegionV8Sha256(body.toByteArray()),prepared,imageBytes,base64Chars)
     }
+
+    /** Read-only execution construction from an already-admitted corrected preparation. */
+    fun buildPersisted(prepared:FullPageAchromaticPreparationDocument,correlationId:String):CanonicalRequestRegionV8Construction {
+        val graphs=prepared.regions.map{r->SourceRegionOrderGraph(r.provenance.authoritativePageRepresentationId,listOf(r.sourceRegion),emptySet(),SourceRegionAmbiguityState.UNAMBIGUOUS)}
+        val requestRegions=prepared.regions.map{region->
+            val source=region.sourceRegion;val bounds=source.bounds;val pageId=region.provenance.authoritativePageRepresentationId
+            val id=requestRegionIdentity(pageId,listOf(source),bounds,source.cropDigest)
+            RequestRegion(id,source.provenance.sourceEvidenceArtifactId,source.provenance.sourceSha256,pageId,source.provenance.pageNumber,
+                source.provenance.pagePixelDimensions,bounds,source.cropDigest,SourceRegionStructuralClass.MIXED,FULL_PAGE_ACHROMATIC_PROFILE_ID,1,
+                listOf(source),region.image)
+        }
+        CompleteRequestRegionSetValidator().validate(graphs,requestRegions).getOrThrow()
+        val request=RequestRegionV8Request(correlationId,requestRegions);val imageBytes=regionsImageBytes(request);val base64Chars=regionsBase64Characters(request)
+        require(imageBytes<=FULL_PAGE_ACHROMATIC_IMAGE_BINARY_MAXIMUM);require(base64Chars<=FULL_PAGE_ACHROMATIC_BASE64_MAXIMUM)
+        val body=codec.buildRequestBody(request);require(body.toByteArray(Charsets.UTF_8).size<=FULL_PAGE_ACHROMATIC_BODY_MAXIMUM)
+        return CanonicalRequestRegionV8Construction(emptyList(),graphs,request,body,codec.requestDigest(request),
+            requestRegionV8Sha256(body.toByteArray()),prepared,imageBytes,base64Chars)
+    }
 }
 
 class CanonicalRequestRegionV8Builder(

@@ -363,7 +363,10 @@ fun requestRegionProviderStateBinding(request: RequestRegionTranscriptionRequest
 )
 
 internal fun requestRegionIdentity(page:AuthoritativePageRepresentation,members:List<SourceRegion>,bounds:PixelCropBounds,digest:CanonicalPixelDigest):RequestRegionId{
-    val p=members.first().provenance;val fields=buildList{add("parker.complete-region-set-group.identity.v1");add(REQUEST_REGION_SHAPING_ID);add(page.id.value);add(p.pageNumber.toString());add(p.derivationProfileId);add(p.derivationProfileVersion.toString());add(bounds.left.toString());add(bounds.top.toString());add(bounds.rightExclusive.toString());add(bounds.bottomExclusive.toString());add(digest.value);add(members.size.toString());members.forEach{add(it.id.value)}}
+    return requestRegionIdentity(page.id,members,bounds,digest)
+}
+internal fun requestRegionIdentity(pageId:PageRepresentationId,members:List<SourceRegion>,bounds:PixelCropBounds,digest:CanonicalPixelDigest):RequestRegionId{
+    val p=members.first().provenance;val fields=buildList{add("parker.complete-region-set-group.identity.v1");add(REQUEST_REGION_SHAPING_ID);add(pageId.value);add(p.pageNumber.toString());add(p.derivationProfileId);add(p.derivationProfileVersion.toString());add(bounds.left.toString());add(bounds.top.toString());add(bounds.rightExclusive.toString());add(bounds.bottomExclusive.toString());add(digest.value);add(members.size.toString());members.forEach{add(it.id.value)}}
     val md=MessageDigest.getInstance("SHA-256");fields.forEach{v->val b=v.toByteArray();md.update(ByteBuffer.allocate(4).putInt(b.size).array());md.update(b)};return RequestRegionId(md.digest().joinToString(""){"%02x".format(it.toInt()and 255)})
 }
 internal fun unionRequestRegionBounds(b:List<PixelCropBounds>)=PixelCropBounds(b.minOf{it.left},b.minOf{it.top},b.maxOf{it.rightExclusive},b.maxOf{it.bottomExclusive})

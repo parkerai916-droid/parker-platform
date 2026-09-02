@@ -219,6 +219,17 @@ class FileSystemFullPageAchromaticPreparationStore(root:Path) {
         require(identity.matches(Regex("^[0-9a-f]{64}$")));val document=FullPageAchromaticPreparationCodec.decode(Files.readString(records.resolve("$identity.json")))
         require(document.preparationIdentity==identity);document.regions.forEach{r->require(Files.readAllBytes(images.resolve("${r.provenance.transportSha256}.png")).contentEquals(r.image.encodedBytes()))};return document
     }
+    fun findExact(evidenceId:EvidenceArtifactId,sourceSha256:String,profileId:String,profileVersion:Int):FullPageAchromaticPreparationDocument? {
+        require(sourceSha256.matches(Regex("^[0-9a-f]{64}$")))
+        val matches=Files.list(records).use { stream -> stream.filter { it.fileName.toString().endsWith(".json") }.map { path ->
+            read(path.fileName.toString().removeSuffix(".json"))
+        }.filter { document -> document.regions.all { region ->
+            region.provenance.evidenceId==evidenceId && region.provenance.sourceSha256==sourceSha256 &&
+                region.provenance.preparationProfileId==profileId && region.provenance.preparationProfileVersion==profileVersion
+        } }.toList() }
+        require(matches.size<=1) { "conflicting corrected preparations for governed execution boundary" }
+        return matches.singleOrNull()
+    }
     private fun atomicCreate(target:Path,bytes:ByteArray){if(Files.exists(target)){require(Files.readAllBytes(target).contentEquals(bytes)){"preparation identity conflict"};return};val tmp=Files.createTempFile(root,".r5i-",".tmp");try{FileChannel.open(tmp,StandardOpenOption.WRITE).use{c->val b=ByteBuffer.wrap(bytes);while(b.hasRemaining())c.write(b);c.force(true)};Files.createLink(target,tmp);Files.delete(tmp)}finally{Files.deleteIfExists(tmp)}}
 }
 

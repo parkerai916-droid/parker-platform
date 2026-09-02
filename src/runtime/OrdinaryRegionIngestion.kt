@@ -673,7 +673,7 @@ class OrdinaryRegionDerivativeAdmission(
     }
     private fun record(id: DerivativeGenerationId, p: OrdinaryRegionTranscriptionDerivative) = DerivativeGenerationRecord(id,
         EvidenceArtifactId(p.evidenceArtifactId), listOf(DerivativeParentReference.RootEvidenceArtifact(EvidenceArtifactId(p.evidenceArtifactId))),
-        if(p.capabilityId==ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID)"ordinary request-region-v8 transcription" else "ordinary region-v5 transcription", DerivativeProducerIdentity("parker-region-transcription", if(p.representationVersion==2)"2.0.0" else "1.0.0",
+        if(p.capabilityId==ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID)"ordinary request-region-v8 transcription" else "ordinary region-v5 transcription", DerivativeProducerIdentity("parker-region-transcription", when(p.representationVersion){3->"3.0.0";2->"2.0.0";else->"1.0.0"},
             p.providerProfile, p.adapterId, p.adapterVersion, p.model, p.model),
         listOf(DerivativeTransformation.PAGE_RENDERING, DerivativeTransformation.MODEL_INFERENCE,
             DerivativeTransformation.READING_ORDER_INFERENCE), now(), DerivativeContentIdentity.Digest("SHA-256", p.reconstructedContentDigest),
