@@ -20,6 +20,7 @@ Define the minimum safe governance for recording attributable human fidelity rev
 6. A corrected representation, if accepted, is new content with explicit lineage. It never replaces, edits, or hides the provider transcription.
 7. Known material discrepancy, unresolved conflict, unknown state, malformed state, or missing required authority fails closed for source-confirmed use.
 8. Review, correction, acceptance, retrieval, and downstream use are separate acts. Authority for one does not imply authority for another.
+9. **Materiality does not imply low transcription quality.** Materiality describes the consequence or significance of one difference, not its frequency, cause, document-wide accuracy, producer competence, or overall fidelity. A one-character difference may be material because it changes an identity while the remainder is highly faithful.
 
 ## 4. Existing Architecture Investigation
 
@@ -39,13 +40,15 @@ Define the minimum safe governance for recording attributable human fidelity rev
 
 ### Gaps
 
-No current concept, alone or in combination, records structured discrepancy classification and exact target, an asserted replacement value, review/correction supersession, conflict/adjudication, correction acceptance, or an effective source-confirmed representation. Existing human-verification records do not identify individual discrepancies or accepted corrections. The flat derivative review registry must not be stretched: its evidence-level key, in-memory durability, single-current-state projection and terminal transition graph are incompatible with the required exact-generation, multi-review, immutable-history semantics. The current local R6S owner-review record is integrity-preserved review evidence, but it is not yet a canonical governed production review record and must not be treated as one before a separately authorised import/recording operation.
+No current concept, alone or in combination, records structured discrepancy classification and exact target, severity independently from quality, established/hypothesised/unknown cause, repeated-pattern association, human source resolution, an asserted replacement value, review/correction supersession, conflict/adjudication, correction acceptance, or an effective source-confirmed representation. Existing human-verification records do not identify individual discrepancies or accepted corrections. The flat derivative review registry must not be stretched: its evidence-level key, in-memory durability, single-current-state projection and terminal transition graph are incompatible with the required exact-generation, multi-review, immutable-history semantics. The current local R6S owner-review record is integrity-preserved review evidence, but it is not yet a canonical governed production review record and must not be treated as one before a separately authorised import/recording operation.
 
 ## 5. R6 Fixture
 
 The immutable fixture is evidence `evidence-a51887d1-1a40-4b68-b340-c60e02e9a8d9`, source SHA-256 `5d73e6e55d3491e94aa9d6c02a0735572f9840fe8185a71546dba9f2258e237e`, preparation `85054cc742813d9b05339d07bce77d8665210b7c6e851fe9470b68a33c9bed8f`, provider generation `region-f0df253d73500fef1dd5bbca186632c6be7f0a94faf10310e07cccb8fb673bc6`, generation SHA-256 `9fb18b02db5ac55e5d446cd48ebc619de929c4596f94d2a11fba1a07da71af14`, and content SHA-256 `18a6ed08a4729350027d3140dc0f07dd49d32c04aa45f9e3e9558df5d007c4eb`.
 
-Provider execution succeeded. Human fidelity review failed: pages 1 and 5 each contain the material identity-bearing `Michael Gary Kellee` where the source reads `Michael Gary Kellec`; pages 2, 3 and 4 passed. No other substantive printed-text discrepancy, missing material text, or added/hallucinated substantive text was identified; handwriting/signature uncertainty handling was appropriate. The completed worksheet, owner record and package checksum hashes are respectively `8e7928c671cd36c7a4517dc5d9429706c46efb65c565e948684d6c3e7c8773a4`, `2d47f50e0f2915bd0e18e914eac4bd5abc879cf5419969d482b2b7f6ff6b1293`, and `7b4bd346b22976b75976970ff189eb59403ecf633577820941bf7c72eeea99e5`.
+Provider execution succeeded and the provider transcription remains immutable. The formal R6S owner fidelity verdict is `FAIL`: pages 1 and 5 each contain the material identity-bearing `Michael Gary Kellee` where the source reads `Michael Gary Kellec`; pages 2, 3 and 4 passed. These are two independently location-bound material discrepancy occurrences associated with one observed systematic pattern, `Kellec` interpreted/transcribed as `Kellee`. The owner human-resolved the source value as `Michael Gary Kellec` at both locations. The technical cause is `UNKNOWN`. Visual-character, glyph, font/rendering, rasterisation, or provider-interpretation ambiguity are possible mechanisms consistent with the observation, but none is established and none may be asserted as fact.
+
+The document-wide descriptive fidelity is “high fidelity overall with one systematic material proper-name discrepancy pattern.” That description does not change or contradict the immutable formal `FAIL` verdict: discrepancy count (2), pattern count (1), severity (material at each location), and overall fidelity are separate concepts. No other substantive printed-text discrepancy, missing material text, or added/hallucinated substantive text was identified; handwriting/signature uncertainty handling was appropriate. The completed worksheet, owner record and package checksum hashes are respectively `8e7928c671cd36c7a4517dc5d9429706c46efb65c565e948684d6c3e7c8773a4`, `2d47f50e0f2915bd0e18e914eac4bd5abc879cf5419969d482b2b7f6ff6b1293`, and `7b4bd346b22976b75976970ff189eb59403ecf633577820941bf7c72eeea99e5`.
 
 ## 6. Canonical Semantic Model
 
@@ -77,9 +80,17 @@ Execution status answers whether the governed provider operation completed. Fide
 
 ## 9. Discrepancy Model
 
-Each discrepancy is an immutable structured fact, not narrative alone. It has an opaque identity; exact review identity; classification; severity; exact source/transcription target; observed provider value; asserted source value when the reviewer can support one; optional bounded sensitive note; and reviewer provenance inherited from the review.
+Each discrepancy is an immutable structured, actor-neutral fidelity fact, not narrative alone. It has an opaque identity; exact review identity; classification; severity; exact source/representation target; observed representation value; asserted source value when the reviewer can support one; human-resolution state; optional cause assessment; optional systematic-pattern identity; optional bounded sensitive note; and reviewer provenance inherited from the review. The model applies unchanged whether the representation was produced by OpenAI, another external model, local OCR, deterministic extraction, a human transcription process, or another authorised mechanism. Producer-specific provenance remains separate and exact.
 
 Closed classifications are: `TRANSCRIPTION_DIFFERENCE`, `MISSING_SOURCE_TEXT`, `ADDED_OR_HALLUCINATED_TEXT`, `INAPPROPRIATE_CERTAINTY`, `APPROPRIATE_UNCERTAINTY`, and `OTHER_EXPLICITLY_CLASSIFIED`. Severity is `MINOR`, `MATERIAL`, or `NON_ERROR_OBSERVATION`; `APPROPRIATE_UNCERTAINTY` is a non-error observation. `OTHER_EXPLICITLY_CLASSIFIED` requires a non-blank bounded classification detail and cannot default to minor. Narrative may explain a structured fact but cannot substitute for classification, severity, or location.
+
+Cause/mechanism is optional and has three distinct semantic states: `ESTABLISHED`, `HYPOTHESISED`, and `UNKNOWN`. An established or hypothesised cause requires a bounded explicit mechanism assertion; unknown carries no fabricated mechanism. A hypothesised mechanism is never presented as established. No component may infer cause from character difference, repetition, provider identity, or severity. Cause is not required to detect, human-resolve, correct, accept, or present a discrepancy.
+
+Human source resolution is independent of cause. A discrepancy is either detected but source-unresolved, or resolved against an exact reviewed source location with an asserted source value. Parker may know what the source says without knowing why a representation differed. The R6 occurrences are human-resolved to `Kellec` while their technical cause remains unknown.
+
+An optional immutable systematic-pattern record may associate two or more independently identified discrepancies that exhibit the same observed relationship. It binds its own opaque identity, exact member discrepancy IDs, bounded observed-pattern description, occurrence count, and reviewer/review provenance. It does not establish technical cause, create corrections, weaken each member's exact location binding, or authorise replacement. Pattern membership is descriptive; global replacement remains prohibited. R6 has one observed `Kellec` → `Kellee` pattern with two members, on pages 1 and 5.
+
+Formal page/document verdict, descriptive fidelity assessment, discrepancy count, pattern count, and discrepancy severity are independent recorded/projection concepts. Severity must never be converted into an accuracy rate or document-wide quality conclusion. A presentation may truthfully show both `formal verdict: FAIL` and `descriptive fidelity: high overall fidelity with one systematic material discrepancy pattern`.
 
 ## 10. Source Location Binding
 
@@ -93,7 +104,7 @@ Every correctable discrepancy must bind all of:
 - a half-open range measured in Unicode code points in the exact unnormalised transcription block;
 - exact original provider substring and its SHA-256.
 
-Source geometry is optional supporting provenance when canonically available; it is not fabricated. A source assertion also records the reviewed source-page representation identity/hash. A correction target must resolve uniquely and reproduce the original substring. Global replacement, fuzzy matching, normalization-dependent matching and implicit all-occurrence replacement are prohibited. The page-1 and page-5 `Kellee` occurrences are two discrepancy/correction facts even though their values match.
+Source geometry is optional supporting provenance when canonically available; it is not fabricated. A source assertion also records the reviewed source-page representation identity/hash. A correction target must resolve uniquely and reproduce the original substring. Global replacement, fuzzy matching, normalization-dependent matching and implicit all-occurrence replacement are prohibited. The page-1 and page-5 `Kellee` occurrences are two discrepancy/correction facts even though their values match or share one pattern identity.
 
 ## 11. Reviewer Identity and Provenance
 
@@ -108,6 +119,8 @@ Provider transcription, completed review, discrepancy, correction proposal, corr
 Decision: reject mutation (option A) and annotation-only as the final consumable form (option B). Adopt **a separate corrected derivative/representation (option C)**, supported by immutable structured correction annotations.
 
 An accepted correction set may produce one new derivative generation of a distinct truthful kind, conceptually `HUMAN_CORRECTED_REGION_TRANSCRIPTION`, whose parent is the exact provider generation. Parker's correction coordinator is the mechanical producer; the human reviewer/proposer and accepting authority are recorded separately. Its canonical content is a full deterministic region-transcription representation produced by applying only accepted, location-bound corrections to the parent, copying all unaffected blocks exactly. It carries parent generation/content digest, review/discrepancy/correction/acceptance IDs and digests, reviewer/acceptor principals, source/preparation bindings and correction schema version. It is never labelled provider output.
+
+An exact material discrepancy that is human-resolved against source does not permanently taint faithful unaffected content. Once each exact correction is separately governed and accepted, the corrected representation may become source-confirmed under Sections 15, 16 and 19. Neither a complete retranscription, provider retry, nor whole-document rejection is inherently required merely because the original representation contains a local material discrepancy. Technical-cause resolution is not a precondition.
 
 ## 14. Correction Granularity
 
@@ -139,17 +152,17 @@ Eligibility is purpose-specific and returns the exact representation identity pl
 - A full-scope `HUMAN_REVIEWED_PASS` provider transcription may be eligible as source-confirmed text for an authorised local downstream purpose.
 - A provider transcription with only explicitly accepted minor discrepancies may be eligible under Section 16's acceptance rule, with discrepancies disclosed.
 - A provider transcription with unresolved material discrepancy is not source-confirmed. Presentation remains permitted with prominent status.
-- A separately admitted, accepted corrected representation may be source-confirmed for an authorised purpose; correction provenance must travel with it.
+- A separately admitted, accepted corrected representation may be source-confirmed for an authorised purpose without a new provider transcription; correction provenance and its own assurance state must travel with it.
 - `HUMAN_REVIEW_CONFLICT`, unknown/malformed review state, missing correction acceptance or ambiguous effective representation is ineligible.
 
-Current explicit acknowledgement for unverified external transcription is preserved as a limited analysis gate; it does not become source confirmation. No representation becomes eligible for Memory/Knowledge promotion or external reasoning merely through this scope lock.
+The immutable provider transcription remains `HUMAN_REVIEWED_WITH_DISCREPANCY` after corrected-representation admission; correction never upgrades or relabels it. Current explicit acknowledgement for unverified external transcription is preserved as a limited analysis gate; it does not become source confirmation. No representation becomes eligible for Memory/Knowledge promotion or external reasoning merely through this scope lock.
 
 ## 20. Retrieval and Presentation
 
 Canonical retrieval must support distinct views without conflation:
 
 1. provider view: exact immutable provider transcription and provider provenance;
-2. review view: coverage, state, review identities, reviewer attribution and structured discrepancies;
+2. review view: coverage, state, formal verdict, descriptive fidelity, review identities, reviewer attribution, structured discrepancies, cause confidence, human source-resolution state and systematic-pattern associations;
 3. correction view: proposals, acceptances, corrected generation/content and supersession/conflict state;
 4. eligibility view: representation selected for a named authorised purpose, or an explicit blocked reason.
 
@@ -180,7 +193,7 @@ Correction proposal may be carried within the first purpose; it has no effective
 
 ## 25. Audit Requirements
 
-Future audit must record structured facts for review creation, discrepancy creation, correction proposal, correction acceptance, corrected-generation admission, review/correction supersession, conflict adjudication and effective-representation selection. Each record minimally binds operation/correlation identity, stage/outcome, requesting/reviewer/accepting principal as applicable, timestamp, Authorization Purpose, source/generation/content identities and affected review/discrepancy/correction/representation IDs. Audit records contain bounded identifiers/classifications/digests, not transcription text, source excerpts, credentials or generated narrative. Follow the narrow append-only ingestion-audit precedent; do not extend deletion audit or incidentally implement general `AuditService`. A success disposition is not returned until required durable audit ordering completes.
+Future audit must record structured facts for review creation, discrepancy creation, cause assertion/change by superseding record, human source resolution, pattern association, correction proposal, correction acceptance, corrected-generation admission, review/correction supersession, conflict adjudication and effective-representation selection. Each record minimally binds operation/correlation identity, stage/outcome, requesting/reviewer/accepting principal as applicable, timestamp, Authorization Purpose, source/generation/content identities and affected review/discrepancy/pattern/correction/representation IDs. Audit records contain bounded identifiers/classifications/digests, not transcription text, source excerpts, credentials or generated narrative. Follow the narrow append-only ingestion-audit precedent; do not extend deletion audit or incidentally implement general `AuditService`. A success disposition is not returned until required durable audit ordering completes.
 
 ## 26. R6 Fixture Future State
 
@@ -189,7 +202,15 @@ After minimum capability implementation and a separately authorised recording op
 - source: `Michael Gary Kellec` at the two reviewed source locations;
 - provider transcription: `Michael Gary Kellee`, immutable;
 - provider execution: `SUCCESS`;
+- formal owner fidelity verdict: `FAIL`, immutable;
+- descriptive overall fidelity: high fidelity with one systematic material proper-name discrepancy pattern;
 - effective human review: `HUMAN_REVIEWED_WITH_DISCREPANCY`, with two `MATERIAL` identity-bearing discrepancies;
+- systematic observed pattern: `Kellec` → `Kellee`;
+- pattern occurrence count: 2, independently bound to page 1 and page 5;
+- materiality: `MATERIAL` because the value is an identity-bearing proper name, not because document-wide fidelity is low;
+- technical cause: `UNKNOWN`;
+- possible mechanism: visual-character/glyph/font/rendering/rasterisation/provider-interpretation ambiguity, explicitly hypothesised only and not established;
+- human source resolution: `Kellec` confirmed at both exact locations independently of technical-cause resolution;
 - page 1 correction proposal: exact local `Kellee` → `Kellec`;
 - page 5 correction proposal: separate exact local `Kellee` → `Kellec`;
 - original provider generation: immutable and historically retrievable;
@@ -197,7 +218,7 @@ After minimum capability implementation and a separately authorised recording op
 - corrected/source-confirmed representation: absent until a separate exact correction acceptance and admission;
 - source-confirmed downstream eligibility: blocked until that governed resolution.
 
-This fixture is the required acceptance fixture. Implementation, offline verification and later acceptance use the preserved source, provider derivative and human-review artifacts. No new provider call, authorization, execution or attempt is required. Historical budget remains one authorised, one consumed, zero retries.
+This fixture is the required acceptance fixture. Implementation, offline verification and later acceptance use the preserved source, provider derivative and human-review artifacts. No new provider call, retranscription, evidence-specific provider authorization, execution or attempt is required merely because of this discrepancy. Historical budget remains one authorised, one consumed, zero retries.
 
 ## 27. Scope Exclusions
 
@@ -239,7 +260,7 @@ Creation of the corrected representation itself may proceed as the immediately f
 
 ## 30. Acceptance Criteria
 
-Owner acceptance of this draft freezes the semantic decisions only. A future implementation is acceptable only when it proves: four-layer separation; independent execution/review dimensions; exact-generation/source/content/reviewer binding; structured page-local discrepancies; immutable/write-once history; separate correction acceptance; exact-span deterministic materialisation; explicit non-temporal supersession/adjudication; conflict failure; purpose-specific downstream eligibility; distinct retrieval views; conservative historical default; unknown/malformed failure; complete narrow audit; two distinct Authorization Purposes; R6 fixture behavior; zero provider calls; and no mutation of source, preparation or provider derivative.
+Owner acceptance of this draft freezes the semantic decisions only. A future implementation is acceptable only when it proves: four-layer separation; independent execution/review dimensions; independent observed discrepancy/severity/cause/pattern/human-resolution/overall-fidelity dimensions; actor-neutral discrepancy semantics; exact-generation/source/content/reviewer binding; structured page-local discrepancies; immutable pattern association without replacement authority; immutable/write-once history; separate correction acceptance; exact-span deterministic materialisation; correction without required retranscription; explicit non-temporal supersession/adjudication; conflict failure; purpose-specific downstream eligibility; distinct retrieval views; conservative historical default; unknown/malformed failure; complete narrow audit; two distinct Authorization Purposes; R6 fixture behavior; zero provider calls; and no mutation of source, preparation or provider derivative.
 
 ## 31. Frozen Decisions
 
@@ -248,24 +269,31 @@ Pending explicit owner acceptance, the proposed frozen decisions are:
 1. Four distinct provenance layers; no historical rewrite.
 2. Review state is `UNREVIEWED`, `HUMAN_REVIEWED_PASS`, `HUMAN_REVIEWED_WITH_DISCREPANCY`, or `HUMAN_REVIEW_CONFLICT`; partiality is coverage.
 3. Provider execution and fidelity verdict are independent.
-4. Discrepancies are structured, classified, severity-bearing, attributable facts.
-5. Correctable locations bind exact source/generation/page/region/block/code-point span/original value; no global/fuzzy replacement.
-6. `PrincipalId`, exact identities/digests and review-artifact digest supply reviewer provenance.
-7. Reviews, discrepancies, proposals, acceptances, adjudications and corrected representations are immutable/additive.
-8. Correction uses a separate corrected representation with the provider generation as parent; provider output is never mutated.
-9. Correction is exact text-span granular; faithful content is copied unchanged.
-10. Proposal and acceptance are separate permissioned acts; no implicit acceptance.
-11. Minor discrepancies may permit source-confirmed use only under the explicit Section 16 acceptance; unresolved material discrepancies block it.
-12. Supersession is explicit, single-predecessor and acyclic; timestamps never win.
-13. Unresolved material review conflict blocks source-confirmed use and requires authorised adjudication.
-14. Downstream eligibility is purpose-specific and returns exact representation plus assurance/provenance.
-15. Retrieval keeps provider, review, correction and effective-eligibility views distinct.
-16. Historical derivatives require no rewrite and default to unreviewed absent valid exact-generation review.
-17. Unknown, malformed, contradictory or ambiguous state fails closed.
-18. Audit is narrow, durable, append-only and fact-based.
-19. Two distinct future Authorization Purposes are required; Gap #54 is not reopened.
-20. External reasoning remains unauthorised and may never receive stripped correction provenance.
-21. The R6 fixture remains immutable, material, unresolved and source-confirmed-ineligible until separately governed resolution.
-22. R6 remains open until canonical review/discrepancy recording and fail-closed downstream enforcement are implemented and verified; correction admission may remain a separately governed immediate follow-on.
+4. Discrepancies are structured, classified, severity-bearing, attributable facts; materiality is independent of frequency and overall transcription quality.
+5. Cause is an optional independent dimension—established, hypothesised or unknown—and no component infers it from an observed difference.
+6. Unknown technical cause does not prevent human resolution of what an exact source location says.
+7. Discrepancy semantics are producer/actor-neutral; producer-specific provenance remains separate.
+8. Repeated exact discrepancies may share an immutable systematic-pattern identity, but pattern association establishes no cause and authorises no global replacement.
+9. Correctable locations bind exact source/generation/page/region/block/code-point span/original value; no global/fuzzy replacement.
+10. `PrincipalId`, exact identities/digests and review-artifact digest supply reviewer provenance.
+11. Reviews, discrepancies, patterns, proposals, acceptances, adjudications and corrected representations are immutable/additive.
+12. Correction uses a separate corrected representation with the provider generation as parent; provider output is never mutated.
+13. Correction is exact text-span granular; faithful content is copied unchanged.
+14. Proposal and acceptance are separate permissioned acts; no implicit acceptance.
+15. Minor discrepancies may permit source-confirmed use only under the explicit Section 16 acceptance; unresolved material discrepancies block it.
+16. Exact accepted human correction may restore source-confirmed eligibility without retranscription or provider retry; source resolution and technical-cause resolution remain separate.
+17. The provider transcription remains historically unchanged and reviewed-with-discrepancy after any corrected representation is admitted.
+18. Formal verdict, descriptive fidelity, discrepancy count, pattern count and severity are distinct; R6 remains formally `FAIL` while truthfully describable as high fidelity overall.
+19. Supersession is explicit, single-predecessor and acyclic; timestamps never win.
+20. Unresolved material review conflict blocks source-confirmed use and requires authorised adjudication.
+21. Downstream eligibility is purpose-specific and returns exact representation plus assurance/provenance.
+22. Retrieval keeps provider, review, correction and effective-eligibility views distinct.
+23. Historical derivatives require no rewrite and default to unreviewed absent valid exact-generation review.
+24. Unknown, malformed, contradictory or ambiguous state fails closed.
+25. Audit is narrow, durable, append-only and fact-based.
+26. Two distinct future Authorization Purposes are required; Gap #54 is not reopened.
+27. External reasoning remains unauthorised and may never receive stripped correction provenance.
+28. The R6 fixture remains immutable, material, human-resolved as to source, technically cause-unknown, and source-confirmed-ineligible until separately governed correction acceptance/admission.
+29. R6 remains open until canonical review/discrepancy recording and fail-closed downstream enforcement are implemented and verified; correction admission may remain a separately governed immediate follow-on.
 
 **Scope-lock verdict: A — GOVERNED HUMAN FIDELITY REVIEW AND CORRECTION STATUS SCOPE LOCK DRAFTED FOR OWNER ACCEPTANCE.**
