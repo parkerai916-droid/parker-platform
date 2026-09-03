@@ -2,9 +2,15 @@
 
 ## 1. Status
 
-**DRAFT — PENDING OWNER ACCEPTANCE**
+**ACCEPTED — CANONICAL — FROZEN**
 
-This document is an architectural and governance scope lock only. It is not accepted, canonical, frozen, or implementation-authorising. It creates no production capability, type, schema, codec, API, policy, Authorization Purpose, audit event, or store.
+Owner: **Steven Francis McTague**
+
+Accepted: **3 September 2026**
+
+Acceptance applies to this Scope Lock as amended through **OI11R6T-A**.
+
+This document remains an architectural and governance scope lock only and is not implementation-authorising. Its acceptance freezes the decisions already recorded below; it creates no production capability, type, schema, codec, API, policy, Authorization Purpose, audit event, or store.
 
 ## 2. Purpose
 
