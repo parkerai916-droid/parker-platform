@@ -370,7 +370,7 @@ class OwnerUiEvidenceRuntimeAdapter(
         is TierADocumentRoutingResult.Admitted ->
             TierAProcessingOutcome.Admitted(
                 formatLabel(result.format),
-                toOwnerContent(result.payload),
+                toOwnerContent(result.payload, result.record),
                 result.record.derivativeGenerationId,
             )
         is TierADocumentRoutingResult.RequiresTierB -> TierAProcessingOutcome.RequiresTierB
@@ -397,7 +397,10 @@ class OwnerUiEvidenceRuntimeAdapter(
      * CSV rows are bounded for display only ([OwnerTierAContent.CSV_PREVIEW_ROW_LIMIT])
      * with the real total count always disclosed, never silently truncated.
      */
-    private fun toOwnerContent(payload: TierADerivativePayload): OwnerTierAContent = when (payload) {
+    private fun toOwnerContent(
+        payload: TierADerivativePayload,
+        record: DerivativeGenerationRecord,
+    ): OwnerTierAContent = when (payload) {
         is TierADerivativePayload.Pdf -> payload.value.let { r ->
             OwnerTierAContent.Pdf(
                 documentText = r.documentText,
@@ -459,9 +462,44 @@ class OwnerUiEvidenceRuntimeAdapter(
             "TierADerivativePayload.Ocr is never routed through Tier A content presentation -- " +
                 "it is retrieved exclusively via retrieveTierBOcrContent/toOwnerOcrContent",
         )
-        is TierADerivativePayload.RegionTranscription -> error(
-            "Ordinary region transcription uses its governed owner-result projection, not historical Tier A presentation",
-        )
+        is TierADerivativePayload.RegionTranscription -> payload.value.let { value ->
+            val digest = record.contentIdentity as? DerivativeContentIdentity.Digest
+            OwnerTierAContent.RegionTranscription(
+                derivativeGenerationId = record.derivativeGenerationId.value,
+                derivativeKind = record.derivativeKind,
+                contentIdentityAlgorithm = digest?.algorithm,
+                contentIdentityDigest = digest?.digest,
+                evidenceArtifactId = value.evidenceArtifactId,
+                sourceSha256 = value.sourceSha256,
+                representationVersion = value.representationVersion,
+                capabilityId = value.capabilityId,
+                capabilityDigest = value.capabilityDigest,
+                pageBindings = value.pageBindings,
+                regionBindings = value.regionBindings,
+                transcriptionBlocks = value.transcriptionBlocks,
+                providerReturnedOrder = value.providerReturnedOrder,
+                parkerSourceOrder = value.parkerSourceOrder,
+                provider = value.provider,
+                providerProfile = value.providerProfile,
+                model = value.model,
+                responseIdentity = value.responseIdentity,
+                providerStateRecordIdentity = value.providerStateRecordIdentity,
+                ownerAuthorizationIdentity = value.ownerAuthorizationIdentity,
+                executionIdentity = value.executionIdentity,
+                attemptIdentity = value.attemptIdentity,
+                requestIdentity = value.requestIdentity,
+                requestDigest = value.requestDigest,
+                preparationIdentity = value.preparationIdentity,
+                preparationProfile = value.preparationProfile,
+                preparationProfileVersion = value.preparationProfileVersion,
+                authorizationPurpose = value.authorizationPurpose,
+                processingProfile = value.processingProfile,
+                producer = record.producerIdentity.toSummary(),
+                transformationHistory = record.transformationHistory.map { it.name },
+                completenessState = record.completenessState.name,
+                warnings = record.warnings,
+            )
+        }
     }
 
     private fun DerivativeProducerIdentity.toSummary(): OwnerDerivativeProducerSummary = OwnerDerivativeProducerSummary(
@@ -479,7 +517,8 @@ class OwnerUiEvidenceRuntimeAdapter(
         derivativeGenerationId: DerivativeGenerationId,
     ): TierAContentRetrievalResult =
         when (val outcome = retrieveTierAExtractedContentAsOwner(evidenceArtifactId, derivativeGenerationId)) {
-            is TierAContentRetrievalOutcome.Retrieved -> TierAContentRetrievalResult.Retrieved(toOwnerContent(outcome.payload))
+            is TierAContentRetrievalOutcome.Retrieved ->
+                TierAContentRetrievalResult.Retrieved(toOwnerContent(outcome.payload, outcome.record))
             is TierAContentRetrievalOutcome.UnknownGeneration -> TierAContentRetrievalResult.UnknownGeneration
             is TierAContentRetrievalOutcome.SourceMismatch -> TierAContentRetrievalResult.SourceMismatch
             is TierAContentRetrievalOutcome.ContentMissing -> TierAContentRetrievalResult.ContentMissing

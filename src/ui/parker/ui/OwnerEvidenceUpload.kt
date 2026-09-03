@@ -286,6 +286,47 @@ sealed interface OwnerTierAContent {
         val warnings: List<String>,
     ) : OwnerTierAContent
 
+    /**
+     * Read-only presentation of an already-admitted ordinary-region transcription.
+     * The fields are copied from the canonical generation record and durable payload;
+     * presentation never reparses, regenerates, or reasons over transcription content.
+     */
+    data class RegionTranscription(
+        val derivativeGenerationId: String,
+        val derivativeKind: String,
+        val contentIdentityAlgorithm: String?,
+        val contentIdentityDigest: String?,
+        val evidenceArtifactId: String,
+        val sourceSha256: String,
+        val representationVersion: Int,
+        val capabilityId: String,
+        val capabilityDigest: String,
+        val pageBindings: List<String>,
+        val regionBindings: List<String>,
+        val transcriptionBlocks: List<String>,
+        val providerReturnedOrder: List<String>,
+        val parkerSourceOrder: List<String>,
+        val provider: String,
+        val providerProfile: String,
+        val model: String,
+        val responseIdentity: String,
+        val providerStateRecordIdentity: String,
+        val ownerAuthorizationIdentity: String,
+        val executionIdentity: String,
+        val attemptIdentity: String,
+        val requestIdentity: String,
+        val requestDigest: String,
+        val preparationIdentity: String?,
+        val preparationProfile: String?,
+        val preparationProfileVersion: Int?,
+        val authorizationPurpose: String?,
+        val processingProfile: String,
+        val producer: OwnerDerivativeProducerSummary,
+        val transformationHistory: List<String>,
+        val completenessState: String,
+        val warnings: List<String>,
+    ) : OwnerTierAContent
+
     companion object {
         /** Owner-facing CSV row display bound only -- never applied to extraction; [Csv.totalRowCount] always discloses the real count. */
         const val CSV_PREVIEW_ROW_LIMIT: Int = 500

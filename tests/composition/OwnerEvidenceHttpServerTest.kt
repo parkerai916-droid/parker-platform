@@ -113,6 +113,7 @@ class OwnerEvidenceHttpServerTest {
         },
         ordinaryExecute: suspend (EvidenceArtifactId, String, String, String) -> OrdinaryRegionOwnerResult =
             { _, _, _, _ -> OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED, "disabled") },
+        retrieveTierA: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome)? = null,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -126,7 +127,7 @@ class OwnerEvidenceHttpServerTest {
             importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
-            retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
+            retrieveTierAExtractedContentAsOwner = retrieveTierA ?: runtime::retrieveTierAExtractedContentAsOwner,
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
             retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
             analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
@@ -936,6 +937,70 @@ class OwnerEvidenceHttpServerTest {
         } finally {
             harness.shutdown()
         }
+    }
+
+    @Test
+    fun `the canonical content endpoint presents ordinary request-region transcription without mutation or provider access`() = runTest {
+        val evidence = EvidenceArtifactId("evidence-region-http-readback")
+        val generation = DerivativeGenerationId("region-http-readback")
+        val producer = DerivativeProducerIdentity(
+            "parker-region-transcription", "3.0.0", "openai-fidelity-first-transcription-v1",
+            "openai-responses-request-region-transcription-adapter", "7.0.0", "gpt-5.6-sol", "gpt-5.6-sol",
+        )
+        val record = DerivativeGenerationRecord(
+            generation, evidence, listOf(DerivativeParentReference.RootEvidenceArtifact(evidence)),
+            "ordinary request-region-v8 transcription", producer,
+            listOf(DerivativeTransformation.PAGE_RENDERING, DerivativeTransformation.MODEL_INFERENCE, DerivativeTransformation.READING_ORDER_INFERENCE),
+            Instant.EPOCH, DerivativeContentIdentity.Digest("SHA-256", "1".repeat(64)),
+            DerivativeCompletenessState.ACCOUNTED_FOR, DerivativeOperationalOutcome.USABLE,
+        )
+        val order = (1..5).map { "region-$it" }
+        val blocks = (1..5).map { "literal \\\"quoted\\\" transcription $it\nline" }
+        val payload = OrdinaryRegionTranscriptionDerivative(
+            representationVersion = 3, capabilityId = ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID,
+            capabilityDigest = "2".repeat(64), evidenceArtifactId = evidence.value, sourceSha256 = "3".repeat(64),
+            pageBindings = (1..5).map { "page-$it" }, regionBindings = order, transcriptionBlocks = blocks,
+            providerReturnedOrder = order.reversed(), parkerSourceOrder = order, provider = "OpenAI", model = "gpt-5.6-sol",
+            adapterId = "openai-responses-request-region-transcription-adapter", adapterVersion = "7.0.0",
+            providerProfile = "openai-fidelity-first-transcription-v1", wireVersion = 8,
+            schemaSha256 = "4".repeat(64), instructionSha256 = "5".repeat(64),
+            processingProfile = "request-region-fidelity-acquisition-v4", requestIdentity = "request",
+            requestDigest = "6".repeat(64), responseIdentity = "response", providerStateRecordIdentity = "provider-state",
+            capabilityAcceptanceRecordIdentity = "acceptance", ownerAuthorizationIdentity = "authorization",
+            executionIdentity = "execution", attemptIdentity = "attempt", reconstructedContentDigest = "7".repeat(64),
+            canonicalGenerationKeyDigest = "8".repeat(64), admissionProvenance = "persisted-state",
+            preparationIdentity = "9".repeat(64), preparationProfile = "full-page-achromatic-png-preparation-v1",
+            preparationProfileVersion = 1, providerBodyDigest = "a".repeat(64),
+            authorizationPurpose = "evidence-intelligence.external-transcription", maximumProviderCalls = 1,
+            automaticRetryLimit = 0, externalReasoningAuthorized = false,
+        )
+        var retrievals = 0
+        val harness = startHarness("", retrieveTierA = { actualEvidence, actualGeneration ->
+            retrievals++
+            assertEquals(evidence, actualEvidence)
+            assertEquals(generation, actualGeneration)
+            TierAContentRetrievalOutcome.Retrieved(record, TierADerivativePayload.RegionTranscription(payload))
+        })
+        try {
+            repeat(2) {
+                val response = get(harness, "/owner/evidence/${evidence.value}/content/${generation.value}")
+                assertEquals(200, response.statusCode())
+                val body = response.body()
+                assertEquals("RETRIEVED", extractField(body, "status"))
+                assertEquals("REGION_TRANSCRIPTION", extractField(body, "kind"))
+                assertEquals(generation.value, extractField(body, "derivativeGenerationId"))
+                assertEquals(evidence.value, extractField(body, "evidenceArtifactId"))
+                assertEquals("openai-fidelity-first-transcription-v1", extractField(body, "providerProfile"))
+                assertEquals("full-page-achromatic-png-preparation-v1", extractField(body, "preparationProfile"))
+                assertEquals("request-region-fidelity-acquisition-v4", extractField(body, "processingProfile"))
+                assertEquals(order, extractAllFields(body, "parkerSourceOrder").ifEmpty {
+                    Regex(""""parkerSourceOrder":\[(.*?)]""").find(body)!!.groupValues[1]
+                        .split(',').map { it.trim().removeSurrounding("\"") }
+                })
+                blocks.forEach { assertTrue(body.contains(it.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n"))) }
+            }
+            assertEquals(2, retrievals)
+        } finally { harness.shutdown() }
     }
 
     @Test
