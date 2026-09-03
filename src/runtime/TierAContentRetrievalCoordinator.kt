@@ -1,11 +1,17 @@
 package parker.core.runtime
 
+import java.security.MessageDigest
 import parker.core.interfaces.DerivativeContentStorage
 import parker.core.interfaces.DerivativeContentStorageException
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationStorage
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.TierAContentRetrievalOutcome
+import parker.core.interfaces.EffectiveHumanFidelityReviewProjector
+import parker.core.interfaces.HumanFidelityEligibilityUse
+import parker.core.interfaces.HumanFidelityReviewTarget
+import parker.core.interfaces.OcrSha256Digest
+import parker.core.interfaces.TierADerivativePayload
 
 /**
  * Document Ingestion, Owner-Facing Tier A Derivative Content Retrieval
@@ -23,6 +29,7 @@ import parker.core.interfaces.TierAContentRetrievalOutcome
 class TierAContentRetrievalCoordinator(
     private val generationStorage: DerivativeGenerationStorage,
     private val contentStorage: DerivativeContentStorage,
+    private val humanFidelityProjector: EffectiveHumanFidelityReviewProjector? = null,
 ) {
     suspend fun retrieve(
         evidenceArtifactId: EvidenceArtifactId,
@@ -44,6 +51,22 @@ class TierAContentRetrievalCoordinator(
         }
         entry ?: return TierAContentRetrievalOutcome.ContentMissing(derivativeGenerationId)
 
-        return TierAContentRetrievalOutcome.Retrieved(record, entry.payload)
+        val projection = when (val payload = entry.payload) {
+            is TierADerivativePayload.RegionTranscription -> payload.value.preparationIdentity?.let { preparationIdentity ->
+                humanFidelityProjector?.project(HumanFidelityReviewTarget(
+                    evidenceArtifactId = record.rootSourceEvidenceArtifactId,
+                    sourceSha256 = OcrSha256Digest(payload.value.sourceSha256),
+                    preparationIdentity = OcrSha256Digest(preparationIdentity),
+                    derivativeGenerationId = record.derivativeGenerationId,
+                    derivativeGenerationSha256 = OcrSha256Digest(sha256(DerivativeGenerationRecordCodec.encode(record))),
+                    derivativeContentSha256 = OcrSha256Digest(sha256(DerivativeContentCodec.encode(entry))),
+                ), HumanFidelityEligibilityUse.SOURCE_CONFIRMED_WHOLE_GENERATION)
+            }
+            else -> null
+        }
+        return TierAContentRetrievalOutcome.Retrieved(record, entry.payload, projection)
     }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }

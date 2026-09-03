@@ -1236,6 +1236,15 @@ class OwnerEvidenceHttpServer(
             "transformationHistory" to jsonArray(content.transformationHistory),
             "completenessState" to content.completenessState,
             "warnings" to jsonArray(content.warnings),
+            "humanFidelityStatus" to jsonObject(
+                "effectiveReviewState" to content.humanFidelityStatus.effectiveReviewState,
+                "coverage" to content.humanFidelityStatus.coverage,
+                "materialDiscrepancyCount" to content.humanFidelityStatus.materialDiscrepancyCount,
+                "systematicPatternCount" to content.humanFidelityStatus.systematicPatternCount,
+                "unresolvedConflict" to content.humanFidelityStatus.unresolvedConflict,
+                "sourceConfirmedEligibility" to content.humanFidelityStatus.sourceConfirmedEligibility,
+                "sourceConfirmedDenialReason" to content.humanFidelityStatus.sourceConfirmedDenialReason,
+            ),
         )
     }
 

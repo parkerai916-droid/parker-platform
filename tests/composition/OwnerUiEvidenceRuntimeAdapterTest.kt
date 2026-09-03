@@ -608,6 +608,9 @@ class OwnerUiEvidenceRuntimeAdapterTest {
             assertEquals("execution", content.executionIdentity)
             assertEquals("SHA-256", content.contentIdentityAlgorithm)
             assertEquals("1".repeat(64), content.contentIdentityDigest)
+            assertEquals(null, content.humanFidelityStatus.effectiveReviewState)
+            assertEquals("DENIED", content.humanFidelityStatus.sourceConfirmedEligibility)
+            assertEquals("MALFORMED_OR_UNSUPPORTED_STATE", content.humanFidelityStatus.sourceConfirmedDenialReason)
         }
         assertEquals(2, reads)
         runtime.shutdown()

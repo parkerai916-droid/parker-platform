@@ -979,7 +979,11 @@ class OwnerEvidenceHttpServerTest {
             retrievals++
             assertEquals(evidence, actualEvidence)
             assertEquals(generation, actualGeneration)
-            TierAContentRetrievalOutcome.Retrieved(record, TierADerivativePayload.RegionTranscription(payload))
+            TierAContentRetrievalOutcome.Retrieved(
+                record,
+                TierADerivativePayload.RegionTranscription(payload),
+                materialProjection(evidence, generation),
+            )
         })
         try {
             repeat(2) {
@@ -998,9 +1002,40 @@ class OwnerEvidenceHttpServerTest {
                         .split(',').map { it.trim().removeSurrounding("\"") }
                 })
                 blocks.forEach { assertTrue(body.contains(it.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n"))) }
+                assertEquals("HUMAN_REVIEWED_WITH_DISCREPANCY", extractField(body, "effectiveReviewState"))
+                assertEquals("FULL_GENERATION", extractField(body, "coverage"))
+                assertEquals("DENIED", extractField(body, "sourceConfirmedEligibility"))
+                assertEquals("MATERIAL_DISCREPANCY", extractField(body, "sourceConfirmedDenialReason"))
+                assertTrue(body.contains("\"materialDiscrepancyCount\":2"))
+                assertTrue(body.contains("\"systematicPatternCount\":1"))
             }
             assertEquals(2, retrievals)
         } finally { harness.shutdown() }
+    }
+
+    private fun materialProjection(
+        evidence: EvidenceArtifactId,
+        generation: DerivativeGenerationId,
+    ): EffectiveHumanFidelityReviewProjectionOutcome {
+        val target = HumanFidelityReviewTarget(
+            evidence, OcrSha256Digest("3".repeat(64)), OcrSha256Digest("9".repeat(64)), generation,
+            OcrSha256Digest("b".repeat(64)), OcrSha256Digest("c".repeat(64)),
+        )
+        val reviewId = HumanFidelityReviewId("review-${"d".repeat(64)}")
+        val discrepancyIds = setOf(
+            FidelityDiscrepancyId("discrepancy-${"e".repeat(64)}"),
+            FidelityDiscrepancyId("discrepancy-${"f".repeat(64)}"),
+        )
+        return EffectiveHumanFidelityReviewProjectionOutcome.Projected(EffectiveHumanFidelityReviewSummary(
+            HumanFidelityEligibilityUse.SOURCE_CONFIRMED_WHOLE_GENERATION,
+            EffectiveHumanFidelityReviewProjection(
+                target, HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY,
+                HumanFidelityReviewCoverage(HumanFidelityCoverageKind.FULL_GENERATION, (1..5).toList()),
+                setOf(reviewId), discrepancyIds,
+                SourceConfirmedEligibility(SourceConfirmedEligibilityState.DENIED, SourceConfirmedDenialReason.MATERIAL_DISCREPANCY),
+            ),
+            2, 1, false,
+        ))
     }
 
     @Test

@@ -1178,7 +1178,11 @@ class ParkerRuntime(
         }
         val tierADocumentIngestionRouter = TierADocumentIngestionComposition.create(derivativeGenerationStorage, documentIngestionAudit, derivativeContentStorage)
         tierAOwnerInvocationCoordinator = TierAOwnerInvocationCoordinator(defaultEvidenceCustodian, tierADocumentIngestionRouter)
-        tierAContentRetrievalCoordinator = TierAContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
+        tierAContentRetrievalCoordinator = TierAContentRetrievalCoordinator(
+            derivativeGenerationStorage,
+            derivativeContentStorage,
+            effectiveHumanFidelityReviewProjector,
+        )
 
         val deliverTool = stage("Local Text Channel deliver Tool construction") {
             LocalTextChannelDeliverTool(onOwnerNotified = ownerNotificationSink::notify)

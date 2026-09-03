@@ -13,7 +13,11 @@ package parker.core.interfaces
 sealed class TierAContentRetrievalOutcome {
 
     /** Both the [DerivativeGenerationRecord] and its content were found, and the record's own root matched the supplied [EvidenceArtifactId]. */
-    data class Retrieved(val record: DerivativeGenerationRecord, val payload: TierADerivativePayload) : TierAContentRetrievalOutcome()
+    data class Retrieved(
+        val record: DerivativeGenerationRecord,
+        val payload: TierADerivativePayload,
+        val humanFidelityProjection: EffectiveHumanFidelityReviewProjectionOutcome? = null,
+    ) : TierAContentRetrievalOutcome()
 
     /** No [DerivativeGenerationRecord] exists for the supplied [DerivativeGenerationId]. */
     data class UnknownGeneration(val derivativeGenerationId: DerivativeGenerationId) : TierAContentRetrievalOutcome()

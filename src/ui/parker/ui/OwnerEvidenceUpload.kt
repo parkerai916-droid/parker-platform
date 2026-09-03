@@ -325,6 +325,7 @@ sealed interface OwnerTierAContent {
         val transformationHistory: List<String>,
         val completenessState: String,
         val warnings: List<String>,
+        val humanFidelityStatus: OwnerHumanFidelityStatus,
     ) : OwnerTierAContent
 
     companion object {
@@ -383,6 +384,17 @@ sealed interface TierAContentRetrievalResult {
     data class UnsupportedRepresentationVersion(val version: Int) : TierAContentRetrievalResult
     data class Failed(val safeMessage: String) : TierAContentRetrievalResult
 }
+
+/** Review/eligibility facts presented beside, never merged into, immutable provider text. */
+data class OwnerHumanFidelityStatus(
+    val effectiveReviewState: String?,
+    val coverage: String?,
+    val materialDiscrepancyCount: Int,
+    val systematicPatternCount: Int,
+    val unresolvedConflict: Boolean,
+    val sourceConfirmedEligibility: String,
+    val sourceConfirmedDenialReason: String?,
+)
 
 /**
  * Owner Tier B Durable OCR Content Presentation. The smallest safe,

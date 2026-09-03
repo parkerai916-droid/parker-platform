@@ -26,6 +26,7 @@ import parker.core.interfaces.TierBOcrOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.OcrModelSnapshot
 import parker.core.interfaces.HumanVerificationRecord
+import parker.core.interfaces.EffectiveHumanFidelityReviewProjectionOutcome
 import parker.core.runtime.ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID
 import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
@@ -44,6 +45,7 @@ import parker.ui.OwnerSaveAnalysisOutcome
 import parker.ui.OwnerSavedAnalysisPresentation
 import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
+import parker.ui.OwnerHumanFidelityStatus
 import parker.ui.OwnerTierBOcrContent
 import parker.ui.transcriptionFidelityLabel
 import parker.ui.TierAContentRetrievalResult
@@ -400,6 +402,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     private fun toOwnerContent(
         payload: TierADerivativePayload,
         record: DerivativeGenerationRecord,
+        humanFidelityProjection: EffectiveHumanFidelityReviewProjectionOutcome? = null,
     ): OwnerTierAContent = when (payload) {
         is TierADerivativePayload.Pdf -> payload.value.let { r ->
             OwnerTierAContent.Pdf(
@@ -498,9 +501,28 @@ class OwnerUiEvidenceRuntimeAdapter(
                 transformationHistory = record.transformationHistory.map { it.name },
                 completenessState = record.completenessState.name,
                 warnings = record.warnings,
+                humanFidelityStatus = humanFidelityStatus(humanFidelityProjection),
             )
         }
     }
+
+    private fun humanFidelityStatus(outcome: EffectiveHumanFidelityReviewProjectionOutcome?): OwnerHumanFidelityStatus =
+        when (outcome) {
+            is EffectiveHumanFidelityReviewProjectionOutcome.Projected -> outcome.summary.let { summary ->
+                OwnerHumanFidelityStatus(
+                    summary.projection.effectiveState.name,
+                    summary.projection.coverage?.kind?.name,
+                    summary.materialDiscrepancyCount,
+                    summary.systematicPatternCount,
+                    summary.unresolvedConflict,
+                    summary.projection.eligibility.state.name,
+                    summary.projection.eligibility.denialReason?.name,
+                )
+            }
+            is EffectiveHumanFidelityReviewProjectionOutcome.FailedClosed, null -> OwnerHumanFidelityStatus(
+                null, null, 0, 0, false, "DENIED", "MALFORMED_OR_UNSUPPORTED_STATE",
+            )
+        }
 
     private fun DerivativeProducerIdentity.toSummary(): OwnerDerivativeProducerSummary = OwnerDerivativeProducerSummary(
         pluginIdentity = pluginIdentity,
@@ -518,7 +540,9 @@ class OwnerUiEvidenceRuntimeAdapter(
     ): TierAContentRetrievalResult =
         when (val outcome = retrieveTierAExtractedContentAsOwner(evidenceArtifactId, derivativeGenerationId)) {
             is TierAContentRetrievalOutcome.Retrieved ->
-                TierAContentRetrievalResult.Retrieved(toOwnerContent(outcome.payload, outcome.record))
+                TierAContentRetrievalResult.Retrieved(
+                    toOwnerContent(outcome.payload, outcome.record, outcome.humanFidelityProjection),
+                )
             is TierAContentRetrievalOutcome.UnknownGeneration -> TierAContentRetrievalResult.UnknownGeneration
             is TierAContentRetrievalOutcome.SourceMismatch -> TierAContentRetrievalResult.SourceMismatch
             is TierAContentRetrievalOutcome.ContentMissing -> TierAContentRetrievalResult.ContentMissing
