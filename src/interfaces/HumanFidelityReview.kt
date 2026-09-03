@@ -235,6 +235,29 @@ class FidelityDiscrepancyLocation private constructor(
                 expectedOriginalProviderSubstring, expectedOriginalProviderSubstringSha256,
             )
         }
+
+        /** A2 codec boundary: reconstructs only already-persisted exact facts; all constructor invariants still run. */
+        internal fun fromPersistedFacts(
+            evidenceArtifactId: EvidenceArtifactId,
+            sourceSha256: OcrSha256Digest,
+            pageNumber: Int,
+            preparationIdentity: OcrSha256Digest,
+            preparationRegionId: SourceRegionId,
+            derivativeGenerationId: DerivativeGenerationId,
+            derivativeGenerationSha256: OcrSha256Digest,
+            derivativeContentSha256: OcrSha256Digest,
+            derivativeRegionId: SourceRegionId,
+            transcriptionBlockIndex: Int,
+            startCodePointInclusive: Int,
+            endCodePointExclusive: Int,
+            originalProviderSubstring: String,
+            originalProviderSubstringSha256: OcrSha256Digest,
+        ) = FidelityDiscrepancyLocation(
+            evidenceArtifactId, sourceSha256, pageNumber, preparationIdentity, preparationRegionId,
+            derivativeGenerationId, derivativeGenerationSha256, derivativeContentSha256, derivativeRegionId,
+            transcriptionBlockIndex, startCodePointInclusive, endCodePointExclusive,
+            originalProviderSubstring, originalProviderSubstringSha256,
+        )
     }
 }
 
