@@ -353,9 +353,17 @@ class GovernedRequestRegionV8ExecutionCoordinator(
         bindingMismatch(prepared)?.let{return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,it)}
         val durable=providerState.readFor(prepared.construction,prepared.capability,prepared.identity.executionId)
             ?:return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,"DURABLE_PROVIDER_STATE_REQUIRED")
-        val attemptStarted=runCatching{ledger.open(prepared.identity).providerAttemptStarted}.getOrDefault(false)
-        if(!attemptStarted)return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(durable,"DURABLE_PROVIDER_ATTEMPT_REQUIRED")
-        return recover(prepared,durable,true)
+        val historical=try{ledger.readExisting(prepared.identity.executionId)}catch(_:Exception){
+            return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(durable,"HISTORICAL_ATTEMPT_INVALID")
+        }?:return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(durable,"DURABLE_PROVIDER_ATTEMPT_REQUIRED")
+        if(!historical.providerAttemptStarted)return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(durable,"DURABLE_PROVIDER_ATTEMPT_REQUIRED")
+        val expectedHistoricalIdentity=prepared.identity.copy(repositoryCommit=historical.identity.repositoryCommit)
+        if(historical.identity!=expectedHistoricalIdentity)
+            return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(durable,"HISTORICAL_ATTEMPT_IDENTITY_MISMATCH")
+        if(durable.implementationCommit!=historical.identity.repositoryCommit)
+            return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(durable,"HISTORICAL_PROVIDER_STATE_IMPLEMENTATION_MISMATCH")
+        val historicalPrepared=prepared.copy(identity=historical.identity,implementationCommit=historical.identity.repositoryCommit)
+        return recover(historicalPrepared,durable,true)
     }
     fun durablyStartProviderAttempt(prepared:OrdinaryRequestRegionV8PreparedRequest):OrdinaryRequestRegionV8ExecutionOutcome? {
         bindingMismatch(prepared)?.let{return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,it)}
@@ -370,7 +378,10 @@ class GovernedRequestRegionV8ExecutionCoordinator(
         return when(outcome){is RequestRegionV8ProviderExchangeOutcome.Valid->OrdinaryRequestRegionV8ExecutionOutcome.Valid(outcome.state,outcome.result,false);is RequestRegionV8ProviderExchangeOutcome.Invalid->OrdinaryRequestRegionV8ExecutionOutcome.Invalid(outcome.state,outcome.reason)}
     }
     private fun recover(p:OrdinaryRequestRegionV8PreparedRequest,s:RecoveredRequestRegionV8ProviderState,recovered:Boolean):OrdinaryRequestRegionV8ExecutionOutcome {
-        if(s.capabilityId!=p.capability.capabilityId||s.capabilityDigest!=p.capability.capabilityDigest||s.requestDigest!=p.construction.requestBindingSha256||s.providerBodyDigest!=p.construction.providerBodySha256)return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(s,"RECOVERED_BINDING_MISMATCH")
+        if(s.capabilityId!=p.capability.capabilityId||s.capabilityDigest!=p.capability.capabilityDigest||s.implementationCommit!=p.implementationCommit||
+            s.evidenceArtifactId!=p.identity.evidenceArtifactId||s.sourceSha256!=p.identity.sourceSha256||s.executionId!=p.identity.executionId||
+            s.correlationId!=p.identity.attemptId||s.requestDigest!=p.construction.requestBindingSha256||s.providerBodyDigest!=p.construction.providerBodySha256)
+            return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(s,"RECOVERED_BINDING_MISMATCH")
         val structured=s.exactStructuredState?:return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(s,if(s.downstreamProcessingPending)"RAW_RESPONSE_RECOVERED" else s.outcomeCode?:"PARSE_FAILURE")
         val valid=RequestRegionV8StructuredValidator().validate(p.construction.request,structured) as? RequestRegionV8ValidationOutcome.Valid
             ?:return OrdinaryRequestRegionV8ExecutionOutcome.Invalid(s,"VALIDATION_FAILURE_RECOVERED")
@@ -428,7 +439,7 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
         val outcome=if(prior!=null)prior else {val start=guard.locked(authorizationId){val s=authorizations.load(authorizationId);if(s.revokedAt!=null||s.executionId!=executionId||!bindingMatches(s.grant,source))OrdinaryRequestRegionV8ExecutionOutcome.Invalid(null,"AUTHORIZATION_CHANGED")else execution.durablyStartProviderAttempt(prepared)}
             start?:execution.transportAfterGuardRelease(prepared)}
         val valid=outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Valid?:return result(if((outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Invalid)?.state?.downstreamProcessingPending==true)OrdinaryRegionDisposition.PROVIDER_RESPONSE_AVAILABLE else OrdinaryRegionDisposition.VALIDATION_FAILED,(outcome as? OrdinaryRequestRegionV8ExecutionOutcome.Invalid)?.reason?:"V8_EXECUTION_FAILED")
-        return admitValidated(source,prepared,valid,accepted.record.recordId,snapshot.grant)
+        return admitValidated(source,prepared,valid,accepted.record.recordId,snapshot.grant,true)
     }
     override suspend fun continuePostEgress(evidenceId:EvidenceArtifactId,authorizationId:String,executionId:String,providerStateId:String):OrdinaryRegionOwnerResult {
         val accepted=acceptance.evaluate() as? OrdinaryRequestRegionV8AcceptanceEvaluation.Accepted?:return result(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED)
@@ -445,14 +456,16 @@ class OrdinaryRequestRegionV8IngestionWorkflow(
         val valid=recovered as? OrdinaryRequestRegionV8ExecutionOutcome.Valid
             ?:return result(OrdinaryRegionDisposition.VALIDATION_FAILED,(recovered as OrdinaryRequestRegionV8ExecutionOutcome.Invalid).reason)
         if(!valid.recovered||valid.state.recordId!=providerStateId)return result(OrdinaryRegionDisposition.EXECUTION_CONFLICT,"provider-state binding mismatch")
-        return admitValidated(source,prepared,valid,accepted.record.recordId,snapshot.grant)
+        return admitValidated(source,prepared,valid,accepted.record.recordId,snapshot.grant,false)
     }
     private suspend fun admitValidated(source:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest,v:OrdinaryRequestRegionV8ExecutionOutcome.Valid,
-        acceptanceId:String,authorization:OrdinaryRequestRegionV8OwnerAuthorization):OrdinaryRegionOwnerResult {
+        acceptanceId:String,authorization:OrdinaryRequestRegionV8OwnerAuthorization,transitionAttempt:Boolean):OrdinaryRegionOwnerResult {
         val derivative=RequestRegionV8DerivativeBinder().bind(p.construction.request,v.result).getOrElse{return result(OrdinaryRegionDisposition.REVIEW_REQUIRED,it.message?:"V8 reconstruction failed")}
         val key=ordinaryRegionGenerationKey(p.identity.executionId,source.evidenceArtifactId.value,source.sha256,acceptanceId,v.state.recordId,derivative.canonicalDigest)
         val payload=payload(source,p,v,derivative,acceptanceId,authorization,key)
-        return when(val a=admission.admit(payload,owner)){is OrdinaryRegionAdmissionOutcome.Conflict->result(OrdinaryRegionDisposition.ADMISSION_CONFLICT,a.reason);is OrdinaryRegionAdmissionOutcome.Admitted->{runCatching{ledger.transition(p.identity,FidelityFirstAttemptStage.GENERATION_ADMITTED)};runCatching{ledger.transition(p.identity,FidelityFirstAttemptStage.TERMINAL_SUCCESS,listOf("generationId" to a.record.derivativeGenerationId.value))};result(OrdinaryRegionDisposition.ADMITTED,if(a.recovered)"recovered existing admission" else "admitted",a.record.derivativeGenerationId.value)}}
+        return when(val a=admission.admit(payload,owner)){is OrdinaryRegionAdmissionOutcome.Conflict->result(OrdinaryRegionDisposition.ADMISSION_CONFLICT,a.reason);is OrdinaryRegionAdmissionOutcome.Admitted->{
+            if(transitionAttempt){runCatching{ledger.transition(p.identity,FidelityFirstAttemptStage.GENERATION_ADMITTED)};runCatching{ledger.transition(p.identity,FidelityFirstAttemptStage.TERMINAL_SUCCESS,listOf("generationId" to a.record.derivativeGenerationId.value))}}
+            result(OrdinaryRegionDisposition.ADMITTED,if(a.recovered)"recovered existing admission" else "admitted",a.record.derivativeGenerationId.value)}}
     }
     private fun payload(source:AuthoritativeAcquisitionInput,p:OrdinaryRequestRegionV8PreparedRequest,v:OrdinaryRequestRegionV8ExecutionOutcome.Valid,d:RequestRegionV8Derivative,acceptanceId:String,authorization:OrdinaryRequestRegionV8OwnerAuthorization,key:String)=
         OrdinaryRegionTranscriptionDerivative(representationVersion=3,capabilityId=capability.capabilityId,capabilityDigest=capability.capabilityDigest,

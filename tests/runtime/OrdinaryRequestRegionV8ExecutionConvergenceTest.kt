@@ -112,6 +112,74 @@ class OrdinaryRequestRegionV8ExecutionConvergenceTest {
         assertTrue(ledger.open(prepared.identity).providerAttemptStarted)
     }
 
+    @Test fun `continuation reconstructs immutable historical attempt implementation separately from current runtime`()=runTest {
+        val c=construction();val historicalCommit="b".repeat(40);val currentCommit="c".repeat(40)
+        val historical=prepared(c).let{it.copy(identity=it.identity.copy(repositoryCommit=historicalCommit),implementationCommit=historicalCommit)}
+        val state=FileSystemRequestRegionV8ProviderStateStore(dir("historical-implementation-state"))
+        val ledgerRoot=dir("historical-implementation-ledger");val ledger=FileSystemFidelityFirstAttemptLedger(ledgerRoot);var calls=0
+        val exchange=OpenAiRequestRegionV8ProviderExchange(OpenAiApiCredential.fromEnvironment("SYNTHETIC_V8_KEY")!!,
+            OpenAiResponsesTransport{calls++;OpenAiResponsesTransportResponse(200,envelope(wire(c.request,c.request.regions.indices.map{it+1},false)).toByteArray())},state)
+        val coordinator=GovernedRequestRegionV8ExecutionCoordinator(ledger,state,exchange)
+        assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Valid>(coordinator.execute(historical));assertEquals(1,calls)
+        val ledgerBefore=Files.readAllBytes(ledgerRoot.resolve("${historical.identity.safeExecutionId}.fidelity-attempt-ledger"))
+        val current=historical.copy(identity=historical.identity.copy(repositoryCommit=currentCommit),implementationCommit=currentCommit)
+        val recovered=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Valid>(coordinator.recoverPersistedPostEgress(current))
+        assertTrue(recovered.recovered);assertEquals(historicalCommit,recovered.state.implementationCommit);assertEquals(1,calls)
+        assertContentEquals(ledgerBefore,Files.readAllBytes(ledgerRoot.resolve("${historical.identity.safeExecutionId}.fidelity-attempt-ledger")))
+        assertEquals(1,Files.list(ledgerRoot).use{it.filter{p->p.fileName.toString().endsWith(".fidelity-attempt-ledger")}.count()})
+    }
+
+    @Test fun `historical attempt and provider implementation contradictions fail closed`()=runTest {
+        val c=construction();val historicalCommit="b".repeat(40);val providerCommit="d".repeat(40)
+        val current=prepared(c).let{it.copy(identity=it.identity.copy(repositoryCommit="c".repeat(40)),implementationCommit="c".repeat(40))}
+        val state=FileSystemRequestRegionV8ProviderStateStore(dir("historical-provider-conflict-state"))
+        state.persistReceived(c,current.capability,providerCommit,current.identity.executionId,200,"application/json","{}".toByteArray())
+        val ledger=FileSystemFidelityFirstAttemptLedger(dir("historical-provider-conflict-ledger"));val historical=current.identity.copy(repositoryCommit=historicalCommit)
+        ledger.open(historical);ledger.transition(historical,FidelityFirstAttemptStage.PREFLIGHT_PASSED)
+        ledger.transition(historical,FidelityFirstAttemptStage.SOURCE_RETRIEVED);ledger.transition(historical,FidelityFirstAttemptStage.REQUEST_PREPARED)
+        ledger.transition(historical,FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED)
+        val coordinator=GovernedRequestRegionV8ExecutionCoordinator(ledger,state,RequestRegionV8ProviderExchange{error("provider prohibited")})
+        val invalid=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Invalid>(coordinator.recoverPersistedPostEgress(current))
+        assertEquals("HISTORICAL_PROVIDER_STATE_IMPLEMENTATION_MISMATCH",invalid.reason)
+    }
+
+    @Test fun `historical execution identity contradiction is never repaired from current runtime`()=runTest {
+        val c=construction();val current=prepared(c).let{it.copy(identity=it.identity.copy(repositoryCommit="c".repeat(40)),implementationCommit="c".repeat(40))}
+        val state=FileSystemRequestRegionV8ProviderStateStore(dir("historical-attempt-conflict-state"))
+        state.persistReceived(c,current.capability,"b".repeat(40),current.identity.executionId,200,"application/json","{}".toByteArray())
+        val ledger=FileSystemFidelityFirstAttemptLedger(dir("historical-attempt-conflict-ledger"))
+        val contradictory=current.identity.copy(repositoryCommit="b".repeat(40),sourceByteLength=current.identity.sourceByteLength+1)
+        ledger.open(contradictory);ledger.transition(contradictory,FidelityFirstAttemptStage.PREFLIGHT_PASSED)
+        ledger.transition(contradictory,FidelityFirstAttemptStage.SOURCE_RETRIEVED);ledger.transition(contradictory,FidelityFirstAttemptStage.REQUEST_PREPARED)
+        ledger.transition(contradictory,FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED)
+        val coordinator=GovernedRequestRegionV8ExecutionCoordinator(ledger,state,RequestRegionV8ProviderExchange{error("provider prohibited")})
+        val invalid=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Invalid>(coordinator.recoverPersistedPostEgress(current))
+        assertEquals("HISTORICAL_ATTEMPT_IDENTITY_MISMATCH",invalid.reason)
+    }
+
+    @Test fun `malformed historical attempt fails closed without provider invocation`()=runTest {
+        val c=construction();val current=prepared(c).let{it.copy(identity=it.identity.copy(repositoryCommit="c".repeat(40)),implementationCommit="c".repeat(40))}
+        val state=FileSystemRequestRegionV8ProviderStateStore(dir("malformed-historical-attempt-state"))
+        state.persistReceived(c,current.capability,"b".repeat(40),current.identity.executionId,200,"application/json","{}".toByteArray())
+        val ledgerRoot=dir("malformed-historical-attempt-ledger");val ledger=FileSystemFidelityFirstAttemptLedger(ledgerRoot)
+        Files.writeString(ledgerRoot.resolve("${current.identity.safeExecutionId}.fidelity-attempt-ledger"),"malformed")
+        var calls=0;val coordinator=GovernedRequestRegionV8ExecutionCoordinator(ledger,state,RequestRegionV8ProviderExchange{calls++;error("provider prohibited")})
+        val invalid=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Invalid>(coordinator.recoverPersistedPostEgress(current))
+        assertEquals("HISTORICAL_ATTEMPT_INVALID",invalid.reason);assertEquals(0,calls)
+    }
+
+    @Test fun `current continuation implementation requires its own current V8 acceptance`() {
+        val historicalCommit="b".repeat(40);val currentCommit="c".repeat(40);val root=dir("current-continuation-acceptance")
+        val store=FileSystemOrdinaryRequestRegionV8CapabilityAcceptanceStore(root)
+        val historical=OrdinaryRequestRegionV8CapabilityAcceptanceCoordinator(store,{historicalCommit},"owner",{now})
+        assertIs<OrdinaryRegionCapabilityPromotionOutcome.V8Created>(historical.create(OrdinaryRegionCapabilityPromotionRequest(ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID,historicalCommit)))
+        assertEquals(OrdinaryRequestRegionV8AcceptanceEvaluation.NotAccepted,OrdinaryRequestRegionV8AcceptanceEvaluator(store){currentCommit}.evaluate())
+        val current=OrdinaryRequestRegionV8CapabilityAcceptanceCoordinator(store,{currentCommit},"owner",{now.plusSeconds(1)})
+        assertIs<OrdinaryRegionCapabilityPromotionOutcome.V8Created>(current.create(OrdinaryRegionCapabilityPromotionRequest(ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID,currentCommit)))
+        val accepted=assertIs<OrdinaryRequestRegionV8AcceptanceEvaluation.Accepted>(OrdinaryRequestRegionV8AcceptanceEvaluator(store){currentCommit}.evaluate())
+        assertEquals(currentCommit,accepted.record.implementationCommit)
+    }
+
     @Test fun `post-egress recovery fails closed without raw state or durable started attempt`()=runTest {
         val c=construction();val prepared=prepared(c);val state=FileSystemRequestRegionV8ProviderStateStore(dir("missing-continuation-state"))
         val ledger=FileSystemFidelityFirstAttemptLedger(dir("missing-continuation-ledger"));var calls=0
@@ -135,11 +203,13 @@ class OrdinaryRequestRegionV8ExecutionConvergenceTest {
         val identity=FidelityFirstExecutionIdentity(executionId,construction.requestBindingSha256,construction.request.correlationId,
             authorization.grant.evidenceArtifactId,authorization.grant.sourceSha256,1_887_733,"application/pdf","39fe0e777608c96cba20cec491113e77eee4b8ef",
             capability.provider,capability.model,capability.profile,capability.instructionSha256,capability.schemaSha256,capability.processing,capability.adapterVersion)
-        val prepared=OrdinaryRequestRegionV8PreparedRequest(construction,identity,capability,"39fe0e777608c96cba20cec491113e77eee4b8ef");var calls=0
+        val currentCommit="e3fec3fac857e7b0e610375d066d524646a1375f"
+        val prepared=OrdinaryRequestRegionV8PreparedRequest(construction,identity.copy(repositoryCommit=currentCommit),capability,currentCommit);var calls=0
         val coordinator=GovernedRequestRegionV8ExecutionCoordinator(FileSystemFidelityFirstAttemptLedger(root.resolve("ledger")),
             FileSystemRequestRegionV8ProviderStateStore(root.resolve("provider")),RequestRegionV8ProviderExchange{calls++;error("provider prohibited")})
         val recovered=assertIs<OrdinaryRequestRegionV8ExecutionOutcome.Valid>(coordinator.recoverPersistedPostEgress(prepared))
         assertTrue(recovered.recovered);assertEquals(0,calls);assertEquals(5,recovered.result.blocksInProviderOrder.size)
+        assertEquals("39fe0e777608c96cba20cec491113e77eee4b8ef",recovered.state.implementationCommit)
         assertEquals("2b1fbe06ebee0b7a3fdb618159c6987fa713976d7bfd2732b9048b50f11df3a7",recovered.state.recordId)
         assertEquals("4706c24b8b0b83675a8ded1165f316229fa61a92bff4d8fe0a16c1d7d50cfb4a",recovered.state.rawDigest)
         assertEquals("resp_04aa0adc3e021174016a980c0c891487d09764395f58adef7b",recovered.result.providerProvenance.providerResponseId)
