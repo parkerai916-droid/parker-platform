@@ -38,6 +38,20 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
             service.record(GovernedHumanFidelityReviewRecordingRequest(review, authority)),
         )
         assertEquals(3, service.audit().listForReview(review.reviewId).size)
+        val projected = assertIs<EffectiveHumanFidelityReviewProjectionOutcome.Projected>(
+            first.projector().project(
+                review.target,
+                HumanFidelityEligibilityUse.SOURCE_CONFIRMED_WHOLE_GENERATION,
+            ),
+        ).summary
+        assertEquals(HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY, projected.projection.effectiveState)
+        assertEquals(
+            SourceConfirmedEligibility(
+                SourceConfirmedEligibilityState.DENIED,
+                SourceConfirmedDenialReason.MATERIAL_DISCREPANCY,
+            ),
+            projected.projection.eligibility,
+        )
         first.shutdown()
 
         val second = runtime(roots)
@@ -176,6 +190,9 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
 
     private fun ParkerRuntime.registrar(): HumanFidelityReviewExactTargetRegistrar =
         requireNotNull(privateField("humanFidelityReviewExactTargetRegistrar"))
+
+    private fun ParkerRuntime.projector(): EffectiveHumanFidelityReviewProjector =
+        requireNotNull(privateField("effectiveHumanFidelityReviewProjector"))
 
     private fun ParkerRuntime.purposeRegistry(): AuthorizationPurposeRegistry =
         permissionPolicy().privateField("authorizationPurposeRegistry")

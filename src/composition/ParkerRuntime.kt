@@ -32,6 +32,7 @@ import parker.core.interfaces.ExternalTranscriptionRequest
 import parker.core.interfaces.HumanVerificationRecord
 import parker.core.interfaces.HumanVerificationStorage
 import parker.core.interfaces.GovernedHumanFidelityReviewRecordingService
+import parker.core.interfaces.EffectiveHumanFidelityReviewProjector
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeSubmission
@@ -111,6 +112,7 @@ import parker.core.runtime.FileSystemHumanVerificationStorage
 import parker.core.runtime.FileSystemHumanFidelityGovernanceAudit
 import parker.core.runtime.FileSystemHumanFidelityReviewStorage
 import parker.core.runtime.DefaultGovernedHumanFidelityReviewRecordingService
+import parker.core.runtime.DefaultEffectiveHumanFidelityReviewProjector
 import parker.core.runtime.HumanFidelityReviewRecordingPermissionPolicy
 import parker.core.runtime.PendingAnalysisCache
 import parker.core.runtime.SavedAnalysisCoordinator
@@ -386,6 +388,8 @@ class ParkerRuntime(
     // OI11R6V-A5: internally composed only. No HTTP/UI/public recording entry point exists.
     private var humanFidelityReviewRecordingService: GovernedHumanFidelityReviewRecordingService? = null
     private var humanFidelityReviewExactTargetRegistrar: HumanFidelityReviewExactTargetRegistrar? = null
+    // OI11R6V-A8A: read-only internal projection seam. It cannot mutate a review or derivative.
+    private var effectiveHumanFidelityReviewProjector: EffectiveHumanFidelityReviewProjector? = null
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -1037,6 +1041,9 @@ class ParkerRuntime(
             )
             humanFidelityReviewRecordingService = DefaultGovernedHumanFidelityReviewRecordingService(
                 humanFidelityPermission,
+                humanFidelityStorage,
+            )
+            effectiveHumanFidelityReviewProjector = DefaultEffectiveHumanFidelityReviewProjector(
                 humanFidelityStorage,
             )
             humanFidelityReviewExactTargetRegistrar = HumanFidelityReviewExactTargetRegistrar(
