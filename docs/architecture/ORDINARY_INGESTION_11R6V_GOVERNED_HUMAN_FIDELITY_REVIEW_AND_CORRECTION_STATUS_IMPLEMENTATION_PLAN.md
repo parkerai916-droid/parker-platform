@@ -2,7 +2,10 @@
 
 ## 1. Status
 
-**DRAFT — PENDING OWNER ACCEPTANCE**
+**ACCEPTED — CANONICAL — FROZEN**
+
+Owner: Steven Francis McTague
+Accepted: 3 September 2026
 
 This document is an implementation plan only. It creates no production contract, authority, policy, record, corrected representation, or deployment approval. Owner acceptance of this plan cannot itself authorize implementation or governed-data mutation.
 
@@ -465,4 +468,4 @@ If this draft is accepted, implementation is bounded as follows:
 11. Artifact acceptance, deployment, policy activation, governed review recording, and closure remain separate owner-governed gates.
 12. No unit requires or permits a provider call, retry, external egress, or external reasoning.
 
-The plan remains **DRAFT — PENDING OWNER ACCEPTANCE**.
+The plan is **ACCEPTED — CANONICAL — FROZEN**.
