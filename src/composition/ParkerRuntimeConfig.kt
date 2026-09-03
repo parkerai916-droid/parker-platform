@@ -294,6 +294,8 @@ data class ParkerRuntimeConfig(
     val deployedImmutableImageId: String? = null,
     val sourceCommit: String? = null,
     val productionCommit: String? = null,
+    val humanFidelityReviewStorageRootPath: String? = null,
+    val humanFidelityGovernanceAuditStorageRootPath: String? = null,
 )
 
 /**
@@ -356,6 +358,8 @@ object ParkerRuntimeConfigLoader {
     const val KEY_DEPLOYED_IMMUTABLE_IMAGE_ID = "PARKER_DEPLOYED_IMMUTABLE_IMAGE_ID"
     const val KEY_SOURCE_COMMIT = "PARKER_SOURCE_COMMIT"
     const val KEY_PRODUCTION_COMMIT = "PARKER_PRODUCTION_COMMIT"
+    const val KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT = "PARKER_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT"
+    const val KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT = "PARKER_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -574,6 +578,9 @@ object ParkerRuntimeConfigLoader {
             deployedImmutableImageId = deployedImmutableImageId,
             sourceCommit = sourceCommit,
             productionCommit = productionCommit,
+            humanFidelityReviewStorageRootPath = requireKey(environment, KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT),
+            humanFidelityGovernanceAuditStorageRootPath =
+                requireKey(environment, KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT),
         )
     }
 

@@ -31,6 +31,7 @@ import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionRequest
 import parker.core.interfaces.HumanVerificationRecord
 import parker.core.interfaces.HumanVerificationStorage
+import parker.core.interfaces.GovernedHumanFidelityReviewRecordingService
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeSubmission
@@ -107,6 +108,10 @@ import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.DocumentAnalysisCoordinator
 import parker.core.runtime.FileSystemSavedAnalysisStorage
 import parker.core.runtime.FileSystemHumanVerificationStorage
+import parker.core.runtime.FileSystemHumanFidelityGovernanceAudit
+import parker.core.runtime.FileSystemHumanFidelityReviewStorage
+import parker.core.runtime.DefaultGovernedHumanFidelityReviewRecordingService
+import parker.core.runtime.HumanFidelityReviewRecordingPermissionPolicy
 import parker.core.runtime.PendingAnalysisCache
 import parker.core.runtime.SavedAnalysisCoordinator
 import parker.core.runtime.DurableMemoryCore
@@ -378,6 +383,10 @@ class ParkerRuntime(
     private lateinit var savedAnalysisCoordinator: SavedAnalysisCoordinator
     private lateinit var humanVerificationStorage: HumanVerificationStorage
 
+    // OI11R6V-A5: internally composed only. No HTTP/UI/public recording entry point exists.
+    private var humanFidelityReviewRecordingService: GovernedHumanFidelityReviewRecordingService? = null
+    private var humanFidelityReviewExactTargetRegistrar: HumanFidelityReviewExactTargetRegistrar? = null
+
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
     // constructed in buildAndRegisterRuntimeGraph ever receives a reference to it. Unlike
@@ -531,6 +540,16 @@ class ParkerRuntime(
         val resourceRegistry = InMemoryResourceRegistry()
         val vocabulary = InMemoryActionVocabulary()
         val actionMapper = ActionMapper(vocabulary)
+        val humanFidelityReviewConfigured = when {
+            config.humanFidelityReviewStorageRootPath == null &&
+                config.humanFidelityGovernanceAuditStorageRootPath == null -> false
+            config.humanFidelityReviewStorageRootPath != null &&
+                config.humanFidelityGovernanceAuditStorageRootPath != null -> true
+            else -> throw ParkerRuntimeException.InvalidConfiguration(
+                ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT,
+                "human fidelity review and governance audit roots must be configured together",
+            )
+        }
         // Authorization Purpose Implementation Plan, Unit 5 ("Composition Wiring"): constructed at
         // the same composition stage as resourceRegistry/vocabulary above (Scope Lock §2.3 --
         // "composition-time registration... at the same composition stage ActionVocabulary/
@@ -545,6 +564,9 @@ class ParkerRuntime(
             authorizationPurposeRegistry.register(EVIDENCE_INTELLIGENCE_INPUT_RESOLUTION_PURPOSE)
             authorizationPurposeRegistry.register(REASONING_CONTEXT_RETRIEVAL_PURPOSE)
             authorizationPurposeRegistry.register(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE)
+            if (humanFidelityReviewConfigured) {
+                HumanFidelityReviewRecordingPermissionPolicy.registerPurpose(authorizationPurposeRegistry)
+            }
         }
         val toolRegistry = InMemoryToolRegistry(resourceRegistry)
         val moduleRegistry = InMemoryModuleRegistry(toolRegistry, resourceRegistry)
@@ -674,6 +696,14 @@ class ParkerRuntime(
                     mappings = setOf(ActionResourceMapping(PermissionAction.NOTIFY, ResourceType.TOOL)),
                 ),
             )
+            if (humanFidelityReviewConfigured) {
+                vocabulary.register(
+                    ActionVocabularyEntry(
+                        verbPhrase = HumanFidelityReviewRecordingPermissionPolicy.RECORD_ACTION_NAME,
+                        mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
+                    ),
+                )
+            }
             // Controlled Agent Run Submission (Scope Lock Section 3.1): the one production
             // ActionVocabulary entry backing the new run-initiation permission check.
             vocabulary.register(
@@ -968,9 +998,53 @@ class ParkerRuntime(
                     authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
                     proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
                 ),
-            ),
+            ) + if (humanFidelityReviewConfigured) listOf(
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = HumanFidelityReviewRecordingPermissionPolicy.RECORD_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.HIGH_ASSURANCE,
+                    authorizationPurpose = parker.core.interfaces.HUMAN_FIDELITY_REVIEW_RECORDING_PURPOSE,
+                    proposedAction = HumanFidelityReviewRecordingPermissionPolicy.RECORD_ACTION_NAME,
+                ),
+            ) else emptyList(),
         )
         permissionEngine = DefaultPermissionEngine(identityService, permissionPolicy)
+
+        if (humanFidelityReviewConfigured) {
+            val humanFidelityAudit = stage("Human fidelity governance audit construction") {
+                FileSystemHumanFidelityGovernanceAudit(
+                    Path.of(requireNotNull(config.humanFidelityGovernanceAuditStorageRootPath)),
+                )
+            }
+            val humanFidelityStorage = stage("Human fidelity review storage construction") {
+                FileSystemHumanFidelityReviewStorage(
+                    Path.of(requireNotNull(config.humanFidelityReviewStorageRootPath)),
+                    humanFidelityAudit,
+                )
+            }
+            val humanFidelityPermission = HumanFidelityReviewRecordingPermissionPolicy(
+                PrincipalId(config.ownerPrincipalId),
+                authorizationPurposeRegistry,
+                permissionEngine,
+            )
+            humanFidelityReviewRecordingService = DefaultGovernedHumanFidelityReviewRecordingService(
+                humanFidelityPermission,
+                humanFidelityStorage,
+            )
+            humanFidelityReviewExactTargetRegistrar = HumanFidelityReviewExactTargetRegistrar(
+                resourceRegistry,
+                PrincipalId(config.ownerPrincipalId),
+                clock,
+            )
+        }
         val executionPipeline = DefaultExecutionPipeline(
             resourceRegistry,
             actionMapper,

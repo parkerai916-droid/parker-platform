@@ -40,6 +40,10 @@ class ParkerRuntimeConfigLoaderTest {
                 Files.createTempDirectory("config-loader-test-memory-core").resolve("memory-core.log").toString(),
             ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH to
                 Files.createTempDirectory("config-loader-test-knowledge-items").resolve("knowledge-items.log").toString(),
+            ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT to
+                Files.createTempDirectory("config-loader-test-human-fidelity-reviews").toString(),
+            ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT to
+                Files.createTempDirectory("config-loader-test-human-fidelity-audit").toString(),
         )
         val merged = base.toMutableMap()
         overrides.forEach { (key, value) ->
@@ -92,6 +96,31 @@ class ParkerRuntimeConfigLoaderTest {
             environment[ParkerRuntimeConfigLoader.KEY_KNOWLEDGE_ITEM_DURABILITY_LOG_PATH],
             config.knowledgeItemDurabilityLogPath,
         )
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT],
+            config.humanFidelityReviewStorageRootPath,
+        )
+        assertEquals(
+            environment[ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT],
+            config.humanFidelityGovernanceAuditStorageRootPath,
+        )
+    }
+
+    @Test
+    fun `human fidelity roots are explicit required production configuration`() {
+        val missingReview = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
+                ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT to null,
+            )))
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT, missingReview.key)
+
+        val missingAudit = assertFailsWith<ParkerRuntimeException.MissingConfiguration> {
+            ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
+                ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT to null,
+            )))
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT, missingAudit.key)
     }
 
     @Test
