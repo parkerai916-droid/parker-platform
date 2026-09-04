@@ -142,10 +142,14 @@ class OwnerEvidenceHttpServerTest {
             executeOrdinaryRegionAsOwner = ordinaryExecute,
             executeGovernedAsOwner = { id, expected -> projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected)) },
         )
+        val authentication = OwnerUiAuthentication(
+            Files.createTempDirectory("owner-ui-auth"),
+            PrincipalId("owner-${"1".repeat(64)}"),
+        )
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
             port = 0,
-            token = tokenOverride,
+            authentication = authentication,
             operations = adapter,
             logger = serverLogger,
             invokeFidelityFirstAcceptance = invokeAcceptance,

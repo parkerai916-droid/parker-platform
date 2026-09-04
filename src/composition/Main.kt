@@ -6,6 +6,21 @@ import kotlin.system.exitProcess
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
 
+private fun runOwnerUiPairingAdmin(args: List<String>, environment: Map<String, String>) {
+    val root = environment[ParkerRuntimeConfigLoader.KEY_OWNER_UI_AUTHENTICATION_ROOT]
+        ?: error("PARKER_OWNER_UI_AUTHENTICATION_ROOT is required")
+    val principal = environment[ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID]
+        ?: error("PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID is required")
+    val authentication = OwnerUiAuthentication(java.nio.file.Path.of(root), PrincipalId(principal))
+    when (args.firstOrNull()) {
+        "pair" -> println(authentication.initiatePairing()) // explicit authenticated host action only
+        "list" -> authentication.listDeviceIds().forEach(::println)
+        "revoke" -> check(args.getOrNull(1)?.let(authentication::revoke) == true) { "unknown device" }
+        "revoke-all" -> authentication.revokeAll()
+        else -> error("usage: --owner-ui-pairing-admin pair|list|revoke <opaque-device-id>|revoke-all")
+    }
+}
+
 /**
  * Parker Runtime's own OS process entry point --
  * `docs/architecture/IMPLEMENTATION_GAPS.md`'s own disclosed "no live
@@ -52,6 +67,10 @@ fun main(args: Array<String>) = runBlocking {
     // a config-load failure, which always logs at ERROR (always shown regardless of threshold).
     val bootstrapLogger = ConsoleParkerLogger("main")
     val environment = System.getenv()
+    if (args.firstOrNull() == "--owner-ui-pairing-admin") {
+        runOwnerUiPairingAdmin(args.drop(1), environment)
+        return@runBlocking
+    }
     val interactive = "--interactive" in args
 
     val config = try {
@@ -108,7 +127,7 @@ fun main(args: Array<String>) = runBlocking {
     // PARKER_OWNER_HTTP_TOKEN are set (ParkerRuntimeConfigLoader enforces they are set together
     // or not at all). Reuses the exact same OwnerEvidenceOperations seam the Compose Desktop
     // owner UI already drives -- this is a transport, never a second evidence-ingress mechanism.
-    val ownerHttpServer = if (config.ownerHttpPort != null && config.ownerHttpToken != null) {
+    val ownerHttpServer = if (config.ownerHttpPort != null) {
         val adapter = OwnerUiEvidenceRuntimeAdapter(
             ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
             listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
@@ -137,7 +156,10 @@ fun main(args: Array<String>) = runBlocking {
         OwnerEvidenceHttpServer(
             bindAddress = config.ownerHttpBindAddress,
             port = config.ownerHttpPort,
-            token = config.ownerHttpToken,
+            authentication = OwnerUiAuthentication(
+                java.nio.file.Path.of(requireNotNull(config.ownerUiAuthenticationRootPath)),
+                PrincipalId(requireNotNull(config.ownerHighAuthorityPrincipalId)),
+            ),
             operations = adapter,
             logger = ConsoleParkerLogger("owner-http", minLevel = effectiveLogLevel),
             invokeFidelityFirstAcceptance = runtime::invokeFidelityFirstAcceptanceAsOwner,

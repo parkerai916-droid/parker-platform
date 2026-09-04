@@ -86,7 +86,7 @@ import parker.core.runtime.OrdinaryRegionCapabilityStatus
 class OwnerEvidenceHttpServer(
     private val bindAddress: String,
     private val port: Int,
-    private val token: String,
+    private val authentication: OwnerUiAuthentication,
     private val operations: OwnerEvidenceOperations,
     private val logger: ParkerLogger,
     private val invokeFidelityFirstAcceptance: suspend (String) -> FidelityFirstAcceptanceOutcome = {
@@ -115,6 +115,8 @@ class OwnerEvidenceHttpServer(
         val fixedThreadPool = Executors.newFixedThreadPool(8)
         httpServer.executor = fixedThreadPool
         httpServer.createContext("/", RootPageHandler())
+        httpServer.createContext("/owner/pair", PairingHandler())
+        httpServer.createContext("/owner/logout", LogoutHandler())
         httpServer.createContext("/owner/evidence", EvidenceHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
@@ -155,14 +157,18 @@ class OwnerEvidenceHttpServer(
     // ---- authentication -----------------------------------------------------------------
 
     private fun isAuthorised(exchange: HttpExchange): Boolean {
-        val header = exchange.requestHeaders.getFirst("Authorization") ?: return false
-        val prefix = "Bearer "
-        if (!header.startsWith(prefix)) return false
-        return constantTimeEquals(header.substring(prefix.length), token)
+        val cookies = cookies(exchange)
+        if (authentication.authenticate(cookies[SESSION_COOKIE]) != null) return true
+        val session = authentication.establishSession(cookies[DEVICE_ID_COOKIE], cookies[DEVICE_CREDENTIAL_COOKIE]) ?: return false
+        setCookie(exchange, SESSION_COOKIE, session, 8 * 60 * 60)
+        return authentication.authenticate(session) != null
     }
 
-    private fun constantTimeEquals(a: String, b: String): Boolean =
-        MessageDigest.isEqual(a.toByteArray(StandardCharsets.UTF_8), b.toByteArray(StandardCharsets.UTF_8))
+    private fun cookies(exchange: HttpExchange): Map<String, String> = exchange.requestHeaders["Cookie"].orEmpty()
+        .flatMap { it.split(';') }.mapNotNull { part -> part.trim().split('=', limit=2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }.toMap()
+    private fun setCookie(exchange: HttpExchange, name: String, value: String, maxAge: Int) {
+        exchange.responseHeaders.add("Set-Cookie", "$name=$value; Path=/; Max-Age=$maxAge; HttpOnly; SameSite=Strict")
+    }
 
     private fun rejectUnauthorised(exchange: HttpExchange) {
         // Drain and discard the body without ever parsing it, per Phase 3's "reject missing/invalid
@@ -301,7 +307,8 @@ class OwnerEvidenceHttpServer(
                     writeJson(exchange, 404, jsonObject("error" to "not found"))
                     return
                 }
-                val bytes = OWNER_EVIDENCE_PAGE_HTML.toByteArray(StandardCharsets.UTF_8)
+                val bytes = (if (isAuthorised(exchange)) OWNER_EVIDENCE_PAGE_HTML else OWNER_PAIRING_PAGE_HTML)
+                    .toByteArray(StandardCharsets.UTF_8)
                 exchange.responseHeaders.set("Content-Type", "text/html; charset=utf-8")
                 exchange.sendResponseHeaders(200, bytes.size.toLong())
                 exchange.responseBody.use { it.write(bytes) }
@@ -310,6 +317,33 @@ class OwnerEvidenceHttpServer(
             } finally {
                 exchange.close()
             }
+        }
+    }
+
+    private inner class PairingHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (exchange.requestMethod != "POST") { writeJson(exchange, 404, jsonObject("error" to "not found")); return }
+                val code = String(readBounded(exchange.requestBody, 1024), StandardCharsets.UTF_8).trim()
+                val paired = authentication.pair(code)
+                if (paired == null) { writeJson(exchange, 401, jsonObject("error" to "pairing denied")); return }
+                setCookie(exchange, DEVICE_ID_COOKIE, paired.deviceId, 365 * 24 * 60 * 60)
+                setCookie(exchange, DEVICE_CREDENTIAL_COOKIE, paired.deviceCredential, 365 * 24 * 60 * 60)
+                setCookie(exchange, SESSION_COOKIE, paired.sessionId, 8 * 60 * 60)
+                writeJson(exchange, 200, jsonObject("status" to "PAIRED", "deviceId" to paired.deviceId))
+            } catch (_: Exception) { runCatching { writeJson(exchange, 401, jsonObject("error" to "pairing denied")) } }
+            finally { exchange.close() }
+        }
+    }
+
+    private inner class LogoutHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (exchange.requestMethod != "POST" || !isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                authentication.logout(cookies(exchange)[SESSION_COOKIE])
+                setCookie(exchange, SESSION_COOKIE, "", 0)
+                writeJson(exchange, 200, jsonObject("status" to "LOGGED_OUT"))
+            } finally { exchange.close() }
         }
     }
 
@@ -1335,6 +1369,9 @@ class OwnerEvidenceHttpServer(
     }
 
     companion object {
+        const val SESSION_COOKIE = "ParkerOwnerSession"
+        const val DEVICE_ID_COOKIE = "ParkerOwnerDeviceId"
+        const val DEVICE_CREDENTIAL_COOKIE = "ParkerOwnerDeviceCredential"
         private val SAFE_ROUTE_ID = Regex("^[A-Za-z0-9._-]{1,1024}$")
         /** Mirrors `OwnerLocalFileIngressCoordinator.MAX_SOURCE_BYTES` -- the same 64 MiB ingress bound, enforced here during streaming so an oversized upload never even reaches a temp file in full. */
         const val MAX_PART_BYTES: Long = 64L * 1024L * 1024L
@@ -1853,6 +1890,21 @@ private fun copyUntilDelimiter(input: InputStream, delimiter: ByteArray, sink: O
     }
 }
 
+private val OWNER_PAIRING_PAGE_HTML = """
+<!doctype html><html><head><meta charset="utf-8"><title>Pair Parker Owner Device</title></head>
+<body><h1>Pair this owner device</h1>
+<p>Initiate a one-time pairing code from the authenticated Parker host, then enter it here within five minutes.</p>
+<input id="pairingCode" type="password" autocomplete="one-time-code"><button id="pairButton">Pair device</button>
+<p id="pairStatus"></p><script>
+document.getElementById('pairButton').onclick = async () => {
+ const code = document.getElementById('pairingCode').value;
+ const response = await fetch('/owner/pair', {method:'POST', credentials:'same-origin', body:code});
+ document.getElementById('pairingCode').value = '';
+ if (response.ok) location.reload(); else document.getElementById('pairStatus').textContent='Pairing denied or expired.';
+};
+</script></body></html>
+""".trimIndent()
+
 /** The minimum useful owner-facing browser page: select files, upload, process, run OCR. */
 private val OWNER_EVIDENCE_PAGE_HTML = """
 <!doctype html>
@@ -1879,11 +1931,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 </head>
 <body>
 <h1>Parker Owner Evidence Upload</h1>
-<p>
-  Owner token: <input type="password" id="token" placeholder="paste owner token">
-  <label><input type="checkbox" id="rememberToken"> Remember token on this device</label>
-</p>
-<p class="note">Use only on a trusted device. Anyone with access to this browser profile could read a remembered token.</p>
+<p><button id="logoutButton">Log out</button></p>
 <p><button id="checkEnhancedReadinessButton">Check enhanced transcription readiness</button> <span id="enhancedReadinessStatus" class="note"></span></p>
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
 <p><button id="refreshEvidenceButton">Refresh existing evidence</button></p>
@@ -1910,49 +1958,10 @@ let rows = [];
 let expandedIndex = null;
 let enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription readiness has not been loaded.' };
 
-// Remember Owner Token On This Device -- a browser convenience only. Never sent to or read back
-// from the server: this key exists solely in this browser origin's own localStorage. The token
-// itself never appears in generated HTML, a URL, a query parameter, or a console.log call.
-const TOKEN_STORAGE_KEY = 'parker.ownerHttpToken';
-
-function restoreRememberedToken() {
-  try {
-    const remembered = localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (remembered !== null) {
-      document.getElementById('token').value = remembered;
-      document.getElementById('rememberToken').checked = true;
-    }
-  } catch (e) {
-    // localStorage unavailable (private browsing, blocked site data, etc.) -- remembering is
-    // best-effort only; the token field simply starts empty, exactly as before this feature existed.
-  }
-}
-
-function onRememberToggled() {
-  try {
-    if (document.getElementById('rememberToken').checked) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, document.getElementById('token').value);
-    } else {
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
-    }
-  } catch (e) {
-    // best-effort only, see restoreRememberedToken
-  }
-}
-
-function onTokenFieldInput() {
-  if (document.getElementById('rememberToken').checked) {
-    try {
-      localStorage.setItem(TOKEN_STORAGE_KEY, document.getElementById('token').value);
-    } catch (e) {
-      // best-effort only, see restoreRememberedToken
-    }
-  }
-}
-
-restoreRememberedToken();
-document.getElementById('rememberToken').onchange = onRememberToggled;
-document.getElementById('token').addEventListener('input', onTokenFieldInput);
+document.getElementById('logoutButton').onclick = async () => {
+  await fetch('/owner/logout', { method: 'POST', credentials: 'same-origin' });
+  location.reload();
+};
 
 function render() {
   document.getElementById('enhancedReadinessStatus').textContent = enhancedReadiness.message;
@@ -2300,7 +2309,7 @@ function buildOcrContentPanel(content, derivativeGenerationId) {
 }
 
 function authHeaders() {
-  return { 'Authorization': 'Bearer ' + document.getElementById('token').value };
+  return {};
 }
 
 document.getElementById('uploadButton').onclick = async () => {
@@ -2317,7 +2326,7 @@ document.getElementById('uploadButton').onclick = async () => {
   document.getElementById('status').textContent = '';
   try {
     const resp = await fetch('/owner/evidence', { method: 'POST', headers: authHeaders(), body: formData });
-    if (resp.status === 401) { document.getElementById('status').textContent = 'Unauthorised: check owner token.'; return; }
+    if (resp.status === 401) { document.getElementById('status').textContent = 'Owner session expired or unavailable.'; return; }
     const results = await resp.json();
     const startIndex = rows.length - selected.length;
     results.forEach((result, i) => {
@@ -2697,7 +2706,7 @@ async function analyseSelected() {
       body: JSON.stringify({ selections, instruction }),
     });
     if (resp.status === 401) {
-      showAnalysisNote('Unauthorised: check owner token.');
+      showAnalysisNote('Owner session expired or unavailable.');
       return;
     }
     const result = await resp.json();
@@ -2790,7 +2799,7 @@ async function saveCurrentAnalysis() {
       body: JSON.stringify({ pendingAnalysisId: currentPendingAnalysisId }),
     });
     if (resp.status === 401) {
-      if (statusEl) statusEl.textContent = 'Unauthorised: check owner token.';
+      if (statusEl) statusEl.textContent = 'Owner session expired or unavailable.';
       return;
     }
     const result = await resp.json();
@@ -2849,7 +2858,7 @@ async function viewSavedAnalysis(savedAnalysisId) {
     if (resp.status === 401) {
       const p = document.createElement('p');
       p.className = 'note';
-      p.textContent = 'Unauthorised: check owner token.';
+      p.textContent = 'Owner session expired or unavailable.';
       detail.appendChild(p);
       return;
     }

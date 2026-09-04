@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import parker.composition.ConsoleParkerLogger
 import parker.composition.LogLevel
 import parker.composition.OwnerEvidenceHttpServer
+import parker.composition.OwnerUiAuthentication
 import parker.composition.OwnerUiEvidenceRuntimeAdapter
 import parker.composition.ParkerRuntime
 import parker.composition.ParkerRuntimeConfig
@@ -139,7 +140,10 @@ class OwnerEvidenceHttpEndToEndLiveAcceptanceTest {
         val server = OwnerEvidenceHttpServer(
             bindAddress = "127.0.0.1",
             port = 0,
-            token = token,
+            authentication = OwnerUiAuthentication(
+                Files.createTempDirectory("owner-ui-live-auth"),
+                PrincipalId("owner-${"2".repeat(64)}"),
+            ),
             operations = adapter,
             logger = ConsoleParkerLogger(component = "evidence-http-e2e-live-server", minLevel = LogLevel.ERROR),
         )

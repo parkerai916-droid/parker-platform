@@ -110,7 +110,7 @@ services:
       # mapping below publishes", never wider than that.
       PARKER_OWNER_HTTP_BIND_ADDRESS: "${PARKER_OWNER_HTTP_BIND_ADDRESS:-0.0.0.0}"
       PARKER_OWNER_HTTP_PORT: "${PARKER_OWNER_HTTP_PORT:-}"
-      PARKER_OWNER_HTTP_TOKEN: "${PARKER_OWNER_HTTP_TOKEN:-}"
+      PARKER_OWNER_UI_AUTHENTICATION_ROOT: "/data/owner-ui-authentication"
     ports:
       # Always published so `docker compose up` never fails on an empty
       # port spec; harmless while the feature above is disabled (nothing
@@ -128,6 +128,7 @@ services:
       - /mnt/parker-data/parker/derivative-generations:/data/derivative-generations
       - /mnt/parker-data/parker/derivative-content:/data/derivative-content
       - /mnt/parker-data/parker/corrected-preparations:/data/corrected-preparations
+      - /mnt/parker-data/parker/owner-ui-authentication:/data/owner-ui-authentication
       - /mnt/parker-data/parker/human-fidelity-reviews:/data/human-fidelity-reviews
       - /mnt/parker-data/parker/human-fidelity-review-audit:/data/human-fidelity-review-audit
       - /mnt/parker-data/parker/human-corrected-representations:/data/human-corrected-representations

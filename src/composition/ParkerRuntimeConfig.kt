@@ -280,6 +280,7 @@ data class ParkerRuntimeConfig(
     val ownerHttpBindAddress: String = "0.0.0.0",
     val ownerHttpPort: Int? = null,
     val ownerHttpToken: String? = null,
+    val ownerUiAuthenticationRootPath: String? = null,
     val openAiExternalTranscriptionEnabled: Boolean = false,
     val openAiExternalTranscriptionProviderProfilePath: String? = null,
     val openAiApiCredential: OpenAiApiCredential? = null,
@@ -348,6 +349,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OWNER_HTTP_BIND_ADDRESS = "PARKER_OWNER_HTTP_BIND_ADDRESS"
     const val KEY_OWNER_HTTP_PORT = "PARKER_OWNER_HTTP_PORT"
     const val KEY_OWNER_HTTP_TOKEN = "PARKER_OWNER_HTTP_TOKEN"
+    const val KEY_OWNER_UI_AUTHENTICATION_ROOT = "PARKER_OWNER_UI_AUTHENTICATION_ROOT"
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED"
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH"
     const val KEY_OPENAI_API_KEY = "PARKER_OPENAI_API_KEY"
@@ -471,11 +473,11 @@ object ParkerRuntimeConfigLoader {
                 )
         }
         val ownerHttpToken = environment[KEY_OWNER_HTTP_TOKEN]?.takeIf { it.isNotBlank() }
-        if ((ownerHttpPort == null) != (ownerHttpToken == null)) {
+        val ownerUiAuthenticationRoot = environment[KEY_OWNER_UI_AUTHENTICATION_ROOT]?.takeIf { it.isNotBlank() }
+        if (ownerHttpPort != null && ownerUiAuthenticationRoot == null) {
             throw ParkerRuntimeException.InvalidConfiguration(
-                if (ownerHttpPort == null) KEY_OWNER_HTTP_PORT else KEY_OWNER_HTTP_TOKEN,
-                "$KEY_OWNER_HTTP_PORT and $KEY_OWNER_HTTP_TOKEN must be set together or not at all " +
-                    "-- an owner HTTP port with no token would be an anonymous LAN file drop",
+                KEY_OWNER_UI_AUTHENTICATION_ROOT,
+                "owner HTTP requires protected pairing/device authentication storage",
             )
         }
 
@@ -571,6 +573,7 @@ object ParkerRuntimeConfigLoader {
             ownerHttpBindAddress = ownerHttpBindAddress,
             ownerHttpPort = ownerHttpPort,
             ownerHttpToken = ownerHttpToken,
+            ownerUiAuthenticationRootPath = ownerUiAuthenticationRoot,
             openAiExternalTranscriptionEnabled = externalTranscriptionEnabled,
             openAiExternalTranscriptionProviderProfilePath =
                 environment[KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH]?.takeIf { it.isNotBlank() },
