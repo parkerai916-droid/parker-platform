@@ -73,6 +73,7 @@ import parker.core.runtime.OrdinaryRegionOwnerResult
 import parker.core.runtime.OrdinaryRegionDisposition
 import parker.ui.OwnerOrdinaryRegionAuthorizationView
 import parker.ui.OwnerOrdinaryRegionExecutionView
+import parker.ui.OwnerExternalTranscriptionAuthorizationView
 import parker.ui.OwnerRegisteredEvidenceView
 import parker.core.runtime.OwnerRegisteredEvidence
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
@@ -218,6 +219,20 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val executeGovernedAsOwner: suspend (EvidenceArtifactId, String) -> OwnerAcquisitionExecutionView = { _, _ ->
         OwnerAcquisitionExecutionView.Failed("SELECTED_CAPABILITY_UNAVAILABLE")
     },
+    // UI-INGESTION-5: exact-target enhanced-transcription owner authorization. Defaults preserve
+    // "lane not configured" for every existing caller unless explicitly wired.
+    private val externalTranscriptionAuthorizationStatusAsOwner: suspend (EvidenceArtifactId) -> parker.core.runtime.ExternalTranscriptionAuthorizationView = {
+        parker.core.runtime.ExternalTranscriptionAuthorizationView(
+            parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, it.value,
+            detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+        )
+    },
+    private val authorizeExternalTranscriptionAsOwner: suspend (EvidenceArtifactId, String?) -> parker.core.runtime.ExternalTranscriptionAuthorizationView = { id, _ ->
+        parker.core.runtime.ExternalTranscriptionAuthorizationView(
+            parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, id.value,
+            detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+        )
+    },
 ) : OwnerEvidenceOperations {
 
     override suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> =
@@ -319,6 +334,22 @@ class OwnerUiEvidenceRuntimeAdapter(
             is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed -> EnhancedTranscriptionOutcome.Failed("The validated transcription could not be durably admitted.")
         }
     }
+
+    override suspend fun externalTranscriptionAuthorizationStatus(evidenceArtifactId: EvidenceArtifactId): OwnerExternalTranscriptionAuthorizationView =
+        toOwnerExternalTranscriptionAuthorizationView(externalTranscriptionAuthorizationStatusAsOwner(evidenceArtifactId))
+
+    override suspend fun authorizeExternalTranscription(
+        evidenceArtifactId: EvidenceArtifactId,
+        verificationCredential: String?,
+    ): OwnerExternalTranscriptionAuthorizationView =
+        toOwnerExternalTranscriptionAuthorizationView(authorizeExternalTranscriptionAsOwner(evidenceArtifactId, verificationCredential))
+
+    private fun toOwnerExternalTranscriptionAuthorizationView(
+        view: parker.core.runtime.ExternalTranscriptionAuthorizationView,
+    ) = OwnerExternalTranscriptionAuthorizationView(
+        view.disposition.name, view.evidenceArtifactId, view.provider, view.purpose, view.disclosure,
+        view.approvedAt?.toString(), view.detail,
+    )
 
     private fun safeExternalFailure(reason: String): String = when (reason) {
         "PROVIDER_AUTHENTICATION_FAILURE" -> "The transcription provider rejected authentication."

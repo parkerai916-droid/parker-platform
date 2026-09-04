@@ -97,6 +97,8 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         executeGovernedAsOwner = { id, expected ->
             projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
         },
+        externalTranscriptionAuthorizationStatusAsOwner = runtime::externalTranscriptionAuthorizationStatusAsOwner,
+        authorizeExternalTranscriptionAsOwner = runtime::authorizeExternalTranscriptionAsOwner,
     )
     return OwnerUiRuntimeSession(
         startRuntime = runtime::start,

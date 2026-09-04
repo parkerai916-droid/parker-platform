@@ -44,6 +44,7 @@ import parker.ui.OwnerAcquisitionDecisionView
 import parker.ui.OwnerAcquisitionExecutionView
 import parker.ui.OwnerAcquisitionSourceFacts
 import parker.ui.OwnerAcquisitionCapabilityView
+import parker.ui.OwnerExternalTranscriptionAuthorizationView
 import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
@@ -381,6 +382,10 @@ class OwnerEvidenceHttpServer(
                         handleExternalTranscription(exchange, segments[0])
                     segments.size == 1 && segments[0] == "transcription-readiness" && method == "GET" ->
                         handleExternalReadiness(exchange)
+                    segments.size == 2 && segments[1] == "authorize-enhanced-transcription" && method == "GET" ->
+                        handleExternalTranscriptionAuthorizationStatus(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "authorize-enhanced-transcription" && method == "POST" ->
+                        handleExternalTranscriptionAuthorization(exchange, segments[0])
                     segments.size == 2 && segments[0] == "acceptance-executions" && method == "POST" ->
                         handleAcceptanceExecution(exchange, segments[1])
                     segments.size == 3 && segments[1] == "content" && method == "GET" ->
@@ -712,6 +717,31 @@ class OwnerEvidenceHttpServer(
                 is EnhancedTranscriptionOutcome.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
             }
             writeJson(exchange, 200, body)
+        }
+
+        /** Read-only, exact-target enhanced-transcription authorization status. Never invokes a provider. */
+        private fun handleExternalTranscriptionAuthorizationStatus(exchange: HttpExchange, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val id = parseEvidenceId(exchange, rawId) ?: return
+            writeJson(exchange, 200, externalTranscriptionAuthorizationJson(runBlocking { operations.externalTranscriptionAuthorizationStatus(id) }))
+        }
+
+        /**
+         * Explicit owner confirmation. The request body is exactly the raw presented high-authority
+         * verification credential -- mirroring [PairingHandler]'s own identical raw-body convention
+         * -- never a JSON envelope, never the owner's legal name. Creates the durable authorization
+         * only; never invokes a provider.
+         */
+        private fun handleExternalTranscriptionAuthorization(exchange: HttpExchange, rawId: String) {
+            val id = parseEvidenceId(exchange, rawId) ?: return
+            val credential = try {
+                String(readBounded(exchange.requestBody, 4096), StandardCharsets.UTF_8)
+            } catch (_: RequestBodyTooLargeException) {
+                writeJson(exchange, 413, jsonObject("error" to "request body too large")); return
+            }
+            val view = runBlocking { operations.authorizeExternalTranscription(id, credential) }
+            val status = if (view.status == "AUTHORISED") 200 else if (view.status == "UNAVAILABLE") 409 else 403
+            writeJson(exchange, status, externalTranscriptionAuthorizationJson(view))
         }
 
         private fun handleAcceptanceExecution(exchange: HttpExchange, authorityId: String) {
@@ -1113,6 +1143,11 @@ class OwnerEvidenceHttpServer(
         EnhancedTranscriptionReadiness.MissingCredential -> jsonObject("status" to "MISSING_CREDENTIAL", "message" to "Enhanced transcription credential is not configured.")
         EnhancedTranscriptionReadiness.Ready -> jsonObject("status" to "READY", "message" to "Enhanced transcription is available.")
     }
+
+    private fun externalTranscriptionAuthorizationJson(view: OwnerExternalTranscriptionAuthorizationView): JsonObject = jsonObject(
+        "status" to view.status, "evidenceArtifactId" to view.evidenceArtifactId, "provider" to view.provider,
+        "purpose" to view.purpose, "disclosure" to view.disclosure, "approvedAt" to view.approvedAt, "detail" to view.detail,
+    )
 
     private fun acquisitionDecisionJson(decision: OwnerAcquisitionDecisionView): JsonObject = when (decision) {
         is OwnerAcquisitionDecisionView.Selected -> jsonObject(
@@ -2072,9 +2107,12 @@ function render() {
     if (row.evidenceArtifactId && !row.externalResultRow) {
       const external = document.createElement('button');
       external.textContent = row.externalProcessing ? 'Enhanced transcription processing…' : 'Run enhanced transcription';
-      external.dataset.classification = 'legacy-manual-compatibility';
-      external.disabled = true;
-      external.title = enhancedReadiness.status === 'READY' ? 'Explicitly submit this evidence for enhanced transcription' : enhancedReadiness.message;
+      const authorized = row.externalTranscriptionAuthorization && row.externalTranscriptionAuthorization.status === 'AUTHORISED';
+      const ready = enhancedReadiness.status === 'READY';
+      external.disabled = !(ready && authorized) || row.externalProcessing;
+      external.title = !ready ? enhancedReadiness.message
+        : !authorized ? 'Click "Process document" and authorize enhanced transcription for this document first.'
+        : 'Explicitly submit this evidence for enhanced transcription';
       external.onclick = () => transcribeExternalRow(index);
       actions.appendChild(external);
     }
@@ -2551,6 +2589,9 @@ function buildAcquisitionPanel(row, index) {
     appendField(panel, 'Routing reasons', (d.capability.selectionReasons || []).join(', '));
   }
   if (d.reasons) appendField(panel, 'Why execution is unavailable', d.reasons.join(', '));
+  if (d.status === 'NO_ELIGIBLE_CAPABILITY' && (d.reasons || []).includes('EXTERNAL_EGRESS_NOT_AUTHORISED')) {
+    appendEnhancedTranscriptionAuthorizationSection(panel, row, index, d);
+  }
   if (d.capabilityIds) appendField(panel, 'Equally suitable capabilities', d.capabilityIds.join(', '));
   if (d.derivativeGenerationId) {
     appendField(panel, 'Derivative generation', d.derivativeGenerationId);
@@ -2600,7 +2641,74 @@ async function loadAcquisitionDecision(index, preserveExecutionError = false) {
       }
     }
   } catch (e) { row.acquisitionError = 'Acquisition decision request failed safely.'; }
+  await loadExternalTranscriptionAuthorization(index);
   render();
+}
+
+async function loadExternalTranscriptionAuthorization(index) {
+  const row = rows[index];
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/authorize-enhanced-transcription`, { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) return;
+    row.externalTranscriptionAuthorization = await resp.json();
+  } catch (e) { /* leave prior state; the panel already fails closed on missing authorization */ }
+}
+
+// UI-INGESTION-5: human-readable presentation plus the "Authorize enhanced transcription" /
+// "Run enhanced transcription" two-step flow. Raw internal reason codes remain available above
+// via 'Why execution is unavailable' -- this section only supplements them.
+function appendEnhancedTranscriptionAuthorizationSection(panel, row, index, decision) {
+  const msg = document.createElement('p');
+  msg.textContent = 'This document needs enhanced transcription. External transcription has not yet been authorised.';
+  panel.appendChild(msg);
+  const authorization = row.externalTranscriptionAuthorization;
+  if (authorization && authorization.status === 'AUTHORISED') {
+    appendField(panel, 'Authorization', 'Authorised. "Run enhanced transcription" is now available for this document.');
+    return;
+  }
+  if (enhancedReadiness.status !== 'READY') {
+    appendField(panel, 'Authorization', 'Enhanced transcription is not yet available in this runtime: ' + enhancedReadiness.message);
+    return;
+  }
+  if (!row.showAuthorizeForm) {
+    const authorize = document.createElement('button');
+    authorize.textContent = 'Authorize enhanced transcription';
+    authorize.onclick = () => { row.showAuthorizeForm = true; render(); };
+    panel.appendChild(authorize);
+    return;
+  }
+  appendField(panel, 'Document', row.name || documentName(row));
+  appendField(panel, 'Evidence ID', row.evidenceArtifactId);
+  appendField(panel, 'Media type', (decision.source && decision.source.mediaType) || 'application/pdf');
+  appendField(panel, 'Provider / purpose', 'OpenAI / evidence-intelligence.external-transcription');
+  appendField(panel, 'Disclosure', 'This document will be sent to the configured external transcription provider only if "Run enhanced transcription" is separately triggered afterward. Authorizing now does not transmit or execute anything.');
+  const credentialInput = document.createElement('input');
+  credentialInput.type = 'password';
+  credentialInput.autocomplete = 'off';
+  credentialInput.placeholder = 'Owner high-authority verification credential';
+  panel.appendChild(credentialInput);
+  const confirmBtn = document.createElement('button');
+  confirmBtn.textContent = 'Confirm authorization';
+  confirmBtn.onclick = () => authorizeEnhancedTranscription(index, credentialInput.value);
+  panel.appendChild(confirmBtn);
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => { row.showAuthorizeForm = false; render(); };
+  panel.appendChild(cancelBtn);
+}
+
+async function authorizeEnhancedTranscription(index, credential) {
+  const row = rows[index];
+  row.showAuthorizeForm = false;
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/authorize-enhanced-transcription`, {
+      method: 'POST', headers: authHeaders(), body: credential || '',
+    });
+    const result = await resp.json();
+    row.externalTranscriptionAuthorization = result;
+    if (!resp.ok) row.acquisitionError = result.detail || 'Authorization was not created.';
+    await loadAcquisitionDecision(index, true);
+  } catch (e) { row.acquisitionError = 'Authorization request failed safely.'; render(); }
 }
 
 async function authorizeRegionTranscription(index, decision) {
@@ -2752,7 +2860,8 @@ document.getElementById('checkEnhancedReadinessButton').onclick = loadEnhancedRe
 
 async function transcribeExternalRow(index) {
   const source = rows[index];
-  if (source.externalProcessing || enhancedReadiness.status !== 'READY') return;
+  const authorized = source.externalTranscriptionAuthorization && source.externalTranscriptionAuthorization.status === 'AUTHORISED';
+  if (source.externalProcessing || enhancedReadiness.status !== 'READY' || !authorized) return;
   source.externalProcessing = true;
   render();
   try {

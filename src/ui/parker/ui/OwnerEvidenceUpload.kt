@@ -55,6 +55,27 @@ interface OwnerEvidenceOperations {
     suspend fun transcribeExternal(evidenceArtifactId: EvidenceArtifactId): EnhancedTranscriptionOutcome =
         EnhancedTranscriptionOutcome.NotReady(EnhancedTranscriptionReadiness.Disabled)
 
+    /** Read-only, exact-target enhanced-transcription authorization status; never invokes a provider. */
+    suspend fun externalTranscriptionAuthorizationStatus(evidenceArtifactId: EvidenceArtifactId): OwnerExternalTranscriptionAuthorizationView =
+        OwnerExternalTranscriptionAuthorizationView(
+            "UNAVAILABLE", evidenceArtifactId.value, "OpenAI",
+            "evidence-intelligence.external-transcription", "", null, "AUTHORIZATION_LANE_NOT_CONFIGURED",
+        )
+
+    /**
+     * Explicit owner confirmation, gated by the existing high-authority verification boundary.
+     * Creates the durable per-target authorization only -- never invokes a provider.
+     * [verificationCredential] is the raw presented secret only, never the owner's legal name.
+     */
+    suspend fun authorizeExternalTranscription(
+        evidenceArtifactId: EvidenceArtifactId,
+        verificationCredential: String?,
+    ): OwnerExternalTranscriptionAuthorizationView =
+        OwnerExternalTranscriptionAuthorizationView(
+            "UNAVAILABLE", evidenceArtifactId.value, "OpenAI",
+            "evidence-intelligence.external-transcription", "", null, "AUTHORIZATION_LANE_NOT_CONFIGURED",
+        )
+
     /**
      * Imports one already-local file (an absolute path the owner's own
      * client resolved -- a native file-picker dialog result, never a string
@@ -194,6 +215,17 @@ data class OwnerOrdinaryRegionAuthorizationView(
     val detail: String?,
     val authorizationId: String?,
     val expiresAt: String?,
+)
+
+/** UI-INGESTION-5: exact-target owner authorization status/outcome for enhanced transcription. */
+data class OwnerExternalTranscriptionAuthorizationView(
+    val status: String,
+    val evidenceArtifactId: String,
+    val provider: String,
+    val purpose: String,
+    val disclosure: String,
+    val approvedAt: String?,
+    val detail: String?,
 )
 
 /** The truthful result of one [OwnerEvidenceOperations.importFile] call. */

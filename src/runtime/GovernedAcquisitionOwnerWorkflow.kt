@@ -26,6 +26,12 @@ internal class GovernedAcquisitionOwnerWorkflow(
     private val registry: GovernedAcquisitionCapabilityRegistry,
     private val router: DeterministicEvidenceAcquisitionRouter,
     private val executionCoordinator: GovernedAcquisitionExecutionCoordinator,
+    /**
+     * UI-INGESTION-5: exact-target external-egress authorization, reused from
+     * [ExternalTranscriptionOwnerAuthorizationCoordinator.isAuthorized]. Defaults to "never
+     * authorised," preserving every existing caller's behavior unchanged.
+     */
+    private val externalEgressAuthorised: suspend (EvidenceArtifactId) -> Boolean = { false },
 ) {
     private val authoritativeSourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
     private val pdfCharacteristicsInspector = PdfSourceCharacteristicsInspector()
@@ -40,9 +46,12 @@ internal class GovernedAcquisitionOwnerWorkflow(
         val source = projectTechnicalFacts(manifest)
             ?: return unavailable(evidenceArtifactId, "SOURCE_MEDIA_TYPE_UNKNOWN")
         return GovernedAcquisitionOwnerEvaluation.Evaluated(
-            source, router.route(source, registry.capabilities(), ExternalEgressAuthorisation.NOT_AUTHORISED),
+            source, router.route(source, registry.capabilities(), egressAuthorisation(evidenceArtifactId)),
         )
     }
+
+    private suspend fun egressAuthorisation(evidenceArtifactId: EvidenceArtifactId): ExternalEgressAuthorisation =
+        if (externalEgressAuthorised(evidenceArtifactId)) ExternalEgressAuthorisation.AUTHORISED else ExternalEgressAuthorisation.NOT_AUTHORISED
 
     suspend fun execute(
         evidenceArtifactId: EvidenceArtifactId,
@@ -59,7 +68,7 @@ internal class GovernedAcquisitionOwnerWorkflow(
         return GovernedAcquisitionOwnerExecution.Executed(
             evaluated.source,
             selected.decision,
-            executionCoordinator.execute(ownerPrincipalId, evaluated.source, ExternalEgressAuthorisation.NOT_AUTHORISED),
+            executionCoordinator.execute(ownerPrincipalId, evaluated.source, egressAuthorisation(evidenceArtifactId)),
         )
     }
 

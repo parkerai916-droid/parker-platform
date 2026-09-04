@@ -51,20 +51,34 @@ fun interface OwnerHighAuthorityVerification {
                presented: OwnerVerificationCredential?): Boolean
 }
 
-class ExternalFileOwnerHighAuthorityVerification private constructor(private val expected: ByteArray) : OwnerHighAuthorityVerification {
+/**
+ * [allowedPurposes] defaults to exactly [HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE] alone, preserving
+ * every existing caller's behavior unchanged. UI-INGESTION-5 reuses this same class -- the same
+ * secret file, the same constant-time comparison, the same loading discipline -- for a second,
+ * explicitly named purpose (evidence-intelligence.external-transcription) rather than inventing a
+ * parallel high-authority mechanism; a shared secret still authorizes only the closed set of
+ * purposes its loader was explicitly given, never an arbitrary or future one.
+ */
+class ExternalFileOwnerHighAuthorityVerification private constructor(
+    private val expected: ByteArray,
+    private val allowedPurposes: Set<AuthorizationPurposeId>,
+) : OwnerHighAuthorityVerification {
     override fun verify(principalId: PrincipalId, purpose: AuthorizationPurposeId, target: ResourceId,
                         presented: OwnerVerificationCredential?): Boolean =
-        principalId.value.isNotBlank() && purpose == HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE &&
+        principalId.value.isNotBlank() && purpose in allowedPurposes &&
             target.value.isNotBlank() && presented != null && presented.constantTimeEquals(expected)
 
     companion object {
-        fun load(path: java.nio.file.Path): ExternalFileOwnerHighAuthorityVerification {
+        fun load(
+            path: java.nio.file.Path,
+            allowedPurposes: Set<AuthorizationPurposeId> = setOf(HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE),
+        ): ExternalFileOwnerHighAuthorityVerification {
             require(java.nio.file.Files.isRegularFile(path) && !java.nio.file.Files.isSymbolicLink(path))
             val bytes = java.nio.file.Files.readAllBytes(path).let { raw ->
                 raw.toString(Charsets.UTF_8).trimEnd('\r', '\n').toByteArray(Charsets.UTF_8)
             }
             require(bytes.size in 32..4096)
-            return ExternalFileOwnerHighAuthorityVerification(bytes)
+            return ExternalFileOwnerHighAuthorityVerification(bytes, allowedPurposes)
         }
     }
 }

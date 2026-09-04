@@ -301,6 +301,7 @@ data class ParkerRuntimeConfig(
     val humanCorrectionAuditStorageRootPath: String? = null,
     val ownerHighAuthorityVerificationCredentialFilePath: String? = null,
     val ownerHighAuthorityPrincipalId: String? = null,
+    val externalTranscriptionAuthorizationStorageRootPath: String? = null,
 )
 
 /**
@@ -370,6 +371,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT = "PARKER_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT"
     const val KEY_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE = "PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE"
     const val KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID = "PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID"
+    const val KEY_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT = "PARKER_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -600,6 +602,8 @@ object ParkerRuntimeConfigLoader {
                 environment[KEY_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE]?.takeIf { it.isNotBlank() },
             ownerHighAuthorityPrincipalId =
                 environment[KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID]?.takeIf { it.isNotBlank() },
+            externalTranscriptionAuthorizationStorageRootPath =
+                environment[KEY_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
         )
     }
 

@@ -123,6 +123,68 @@ class GovernedAcquisitionOwnerPresentationTest {
         assertEquals(0, invocations)
     }
 
+    // UI-INGESTION-5: GovernedAcquisitionOwnerWorkflow.evaluate now threads a dynamic, per-evidence-
+    // artifact externalEgressAuthorised check instead of always ExternalEgressAuthorisation.NOT_AUTHORISED.
+    @Test fun `external egress authorization is dynamic and bound to the exact evidence artifact -- not a blanket grant`() = runTest {
+        val authorisedId = EvidenceArtifactId("authorised-image")
+        val otherId = EvidenceArtifactId("other-image")
+        fun custodianFor(id: EvidenceArtifactId) = object : EvidenceCustodian {
+            override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact) = EvidenceAcceptanceResult.Rejected("unused")
+            override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = error("not used")
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
+                EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(id, "a".repeat(64), 10L, "image/jpeg"))
+        }
+        val externalImageCapability = EvidenceAcquisitionCapability(
+            "external-image", EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION, setOf("image/jpeg"), setOf(IMAGE_ONLY),
+            AcquisitionFidelityCapabilities(true, false, true, true, true, true, true, true, true, true),
+            setOf(AUTHORITATIVE), AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+            AcquisitionProviderConfiguration("provider", "fixed-model", "profile", "config", "b".repeat(64), "c".repeat(64), "adapter", "1", "external-transcription.direct-byte-exact-v1"),
+            AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
+        )
+        val registry = GovernedAcquisitionCapabilityRegistry(listOf(externalImageCapability))
+        val router = DeterministicEvidenceAcquisitionRouter()
+        val executionCoordinator = GovernedAcquisitionExecutionCoordinator(registry, router, custodianFor(authorisedId), emptyList())
+
+        fun workflowFor(id: EvidenceArtifactId) = GovernedAcquisitionOwnerWorkflow(
+            PrincipalId("owner"), custodianFor(id), registry, router, executionCoordinator,
+            externalEgressAuthorised = { it == authorisedId },
+        )
+
+        val authorisedResult = workflowFor(authorisedId).evaluate(authorisedId)
+        val evaluated = assertIs<GovernedAcquisitionOwnerEvaluation.Evaluated>(authorisedResult)
+        assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(evaluated.routing)
+
+        val otherResult = workflowFor(otherId).evaluate(otherId)
+        val otherEvaluated = assertIs<GovernedAcquisitionOwnerEvaluation.Evaluated>(otherResult)
+        val notSelected = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(otherEvaluated.routing)
+        assertTrue(notSelected.reasons.contains(AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED))
+    }
+
+    @Test fun `omitting externalEgressAuthorised preserves the prior always-NOT_AUTHORISED default`() = runTest {
+        val custodian = object : EvidenceCustodian {
+            override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact) = EvidenceAcceptanceResult.Rejected("unused")
+            override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = error("not used")
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
+                EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(id, "a".repeat(64), 10L, "image/jpeg"))
+        }
+        val externalImageCapability = EvidenceAcquisitionCapability(
+            "external-image", EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION, setOf("image/jpeg"), setOf(IMAGE_ONLY),
+            AcquisitionFidelityCapabilities(true, false, true, true, true, true, true, true, true, true),
+            setOf(AUTHORITATIVE), AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+            AcquisitionProviderConfiguration("provider", "fixed-model", "profile", "config", "b".repeat(64), "c".repeat(64), "adapter", "1", "external-transcription.direct-byte-exact-v1"),
+            AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
+        )
+        val registry = GovernedAcquisitionCapabilityRegistry(listOf(externalImageCapability))
+        val router = DeterministicEvidenceAcquisitionRouter()
+        val workflow = GovernedAcquisitionOwnerWorkflow(
+            PrincipalId("owner"), custodian, registry, router,
+            GovernedAcquisitionExecutionCoordinator(registry, router, custodian, emptyList()),
+        )
+        val evaluated = assertIs<GovernedAcquisitionOwnerEvaluation.Evaluated>(workflow.evaluate(id))
+        val notSelected = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(evaluated.routing)
+        assertTrue(notSelected.reasons.contains(AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED))
+    }
+
     @Test fun `presentation and bounded results leak no sentinel content credential body or header`() {
         val rendered = decision(sourceFacts, listOf(local())).toString()
         listOf("secret-sentinel", "Authorization", "Bearer", "Base64", "%PDF-source-content").forEach {
@@ -151,7 +213,7 @@ class GovernedAcquisitionOwnerPresentationTest {
     )
     private fun external(availability: AcquisitionAvailability = AcquisitionAvailability.Available, id: String = "external") = EvidenceAcquisitionCapability(
         id, EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION, setOf("application/pdf"), setOf(IMAGE_ONLY),
-        AcquisitionFidelityCapabilities(true, false, true, true, false, false, true, false, true, true),
+        AcquisitionFidelityCapabilities(true, false, true, true, true, true, true, true, true, true),
         setOf(AUTHORITATIVE), AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
         AcquisitionProviderConfiguration("provider", "fixed-model", "profile", "config-$id", "b".repeat(64), "c".repeat(64), "adapter", "1", "external-transcription.direct-byte-exact-v1"),
         availability, AcquisitionOperationalLimits(),

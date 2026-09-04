@@ -153,6 +153,8 @@ fun main(args: Array<String>) = runBlocking {
             executeGovernedAsOwner = { id, expected ->
                 projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
             },
+            externalTranscriptionAuthorizationStatusAsOwner = runtime::externalTranscriptionAuthorizationStatusAsOwner,
+            authorizeExternalTranscriptionAsOwner = runtime::authorizeExternalTranscriptionAsOwner,
         )
         OwnerEvidenceHttpServer(
             bindAddress = config.ownerHttpBindAddress,

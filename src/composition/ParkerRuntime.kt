@@ -55,6 +55,7 @@ import parker.core.interfaces.SavedAnalysisId
 import parker.core.interfaces.SavedAnalysisSummary
 import parker.core.interfaces.OwnerEvidenceDeletionAuthority
 import parker.core.interfaces.OwnerLocalFileIngressOutcome
+import parker.core.interfaces.OwnerVerificationCredential
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
@@ -384,6 +385,11 @@ class ParkerRuntime(
     private var ordinaryRegionCapabilityAcceptanceCoordinator: parker.core.runtime.OrdinaryRegionCapabilityPromotionPort? = null
     private var legacyOrdinaryRegionAcceptanceEvaluator: parker.core.runtime.OrdinaryRegionCapabilityAcceptanceEvaluator? = null
     private lateinit var governedAcquisitionOwnerWorkflow: GovernedAcquisitionOwnerWorkflow
+    // UI-INGESTION-5: exact-target owner authorization for the existing enhanced-transcription
+    // capability. Optional/additive -- null (feature absent) unless
+    // PARKER_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT is configured, preserving prior
+    // behavior exactly for every deployment that does not yet opt in.
+    private var externalTranscriptionAuthorizationCoordinator: parker.core.runtime.ExternalTranscriptionOwnerAuthorizationCoordinator? = null
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
     // narrow class, mirroring tierBOcrContentRetrievalCoordinator's own isolation -- no other
@@ -1630,6 +1636,27 @@ class ParkerRuntime(
             validator = OcrStructuredResultValidator(),
             durableAdmission = tierBDerivativeGenerationCoordinator,
         )
+        // UI-INGESTION-5: optional/additive -- absent unless the new storage root is configured,
+        // in which case it also requires the already-mandatory high-authority verification
+        // credential/principal this deployment already supplies for human correction.
+        val externalTranscriptionAuthorizationRoot = config.externalTranscriptionAuthorizationStorageRootPath
+        externalTranscriptionAuthorizationCoordinator = if (
+            externalTranscriptionAuthorizationRoot != null &&
+            config.ownerHighAuthorityVerificationCredentialFilePath != null &&
+            config.ownerHighAuthorityPrincipalId != null
+        ) {
+            parker.core.runtime.ExternalTranscriptionOwnerAuthorizationCoordinator(
+                ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+                evidenceCustodian = defaultEvidenceCustodian,
+                purposes = authorizationPurposeRegistry,
+                permissions = permissionEngine,
+                ownerVerification = ExternalFileOwnerHighAuthorityVerification.load(
+                    Path.of(config.ownerHighAuthorityVerificationCredentialFilePath),
+                    allowedPurposes = setOf(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE),
+                ),
+                store = parker.core.runtime.FileSystemExternalTranscriptionAuthorizationStore(Path.of(externalTranscriptionAuthorizationRoot)),
+            )
+        } else null
         // A separately persisted authority is the only bridge from ACCEPTANCE_PENDING to the raw
         // provider adapter. The ordinary coordinator above remains bound to the disabled mechanism
         // until global ACCEPTED. Merely configuring these roots grants no execution authority.
@@ -1831,6 +1858,7 @@ class ParkerRuntime(
                     ),
                 ),
             ),
+            externalEgressAuthorised = { id -> externalTranscriptionAuthorizationCoordinator?.isAuthorized(id) == true },
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
 
@@ -2435,12 +2463,54 @@ class ParkerRuntime(
     /**
      * Explicit owner-only external transcription backend boundary. No caller principal, provider
      * selection, fallback, durable publication, analysis, or UI exposure exists in this unit.
+     *
+     * UI-INGESTION-5: when [externalTranscriptionAuthorizationCoordinator] is configured, this
+     * exact evidence target must already carry a durable owner authorization
+     * ([parker.core.runtime.ExternalTranscriptionOwnerAuthorizationCoordinator.isAuthorized])
+     * before [ExternalTranscriptionOwnerInvocationCoordinator.invoke] -- and therefore the
+     * provider -- is ever reached. [ExternalTranscriptionOwnerInvocationCoordinator] itself is
+     * unchanged; this check runs only at this one call site. When the coordinator is not
+     * configured, behavior is unchanged from before this unit.
      */
     suspend fun invokeExternalTranscriptionAsOwner(
         evidenceArtifactId: EvidenceArtifactId,
     ): ExternalTranscriptionOwnerInvocationOutcome {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val authorization = externalTranscriptionAuthorizationCoordinator
+        if (authorization != null && !authorization.isAuthorized(evidenceArtifactId)) {
+            return ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised
+        }
         return externalTranscriptionOwnerInvocationCoordinator.invoke(evidenceArtifactId)
+    }
+
+    /** Read-only, exact-target owner authorization status. Never invokes a provider. */
+    suspend fun externalTranscriptionAuthorizationStatusAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+    ): parker.core.runtime.ExternalTranscriptionAuthorizationView {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return externalTranscriptionAuthorizationCoordinator?.status(evidenceArtifactId)
+            ?: parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
+                detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+            )
+    }
+
+    /**
+     * Explicit owner confirmation, gated by the existing opaque owner high-authority verification
+     * boundary. Creates the durable per-target grant only; never invokes a provider. [credential]
+     * is the raw presented verification secret only -- never the owner's legal name, never logged.
+     */
+    suspend fun authorizeExternalTranscriptionAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        credential: String?,
+    ): parker.core.runtime.ExternalTranscriptionAuthorizationView {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val coordinator = externalTranscriptionAuthorizationCoordinator
+            ?: return parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
+                detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+            )
+        return coordinator.authorize(evidenceArtifactId, OwnerVerificationCredential.presented(credential))
     }
 
     /** Exact-authority administrative acceptance command; never accepts source or configuration overrides. */
