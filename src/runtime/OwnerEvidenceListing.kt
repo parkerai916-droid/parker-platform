@@ -3,6 +3,7 @@ package parker.core.runtime
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.time.Instant
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceRetrievalResult
@@ -14,6 +15,7 @@ data class OwnerRegisteredEvidence(
     val byteLength: Long,
     val mediaType: String?,
     val originalFileName: String?,
+    val registeredAt: Instant = Instant.EPOCH,
 )
 
 /**
@@ -54,8 +56,9 @@ class FileSystemOwnerEvidenceListing(
             require(found.evidenceArtifactId == id)
             require(found.content.size.toLong() == manifest.byteLength) { "durable evidence byte length mismatch" }
             require(sha256(found.content) == manifest.sha256) { "durable evidence digest mismatch" }
+            val registeredAt = Files.getLastModifiedTime(root.resolve("${id.value}$SUFFIX")).toInstant()
             OwnerRegisteredEvidence(id, manifest.sha256, manifest.byteLength,
-                manifest.receivedMediaType, manifest.originalFileName)
+                manifest.receivedMediaType, manifest.originalFileName, registeredAt)
         }
     }
 

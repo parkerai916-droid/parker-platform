@@ -410,6 +410,7 @@ class OwnerEvidenceHttpServer(
                     "byteLength" to item.byteLength,
                     "mediaType" to item.mediaType,
                     "originalFileName" to item.originalFileName,
+                    "registeredAt" to item.registeredAt,
                 )
             })))
         }
@@ -435,7 +436,9 @@ class OwnerEvidenceHttpServer(
             try {
                 val importedResults = fileParts.map { part ->
                     try {
-                        val importOutcome = runBlocking { operations.importFile(part.tempPath.toString(), part.declaredContentType) }
+                        val importOutcome = runBlocking {
+                            operations.importUploadedFile(part.tempPath.toString(), part.declaredContentType, part.originalFileName)
+                        }
                         when (importOutcome) {
                             is EvidenceImportOutcome.Imported -> jsonObject(
                                 "originalFileName" to part.originalFileName,
@@ -1927,6 +1930,10 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   .content-panel .note { color: #fd8; }
   .extracted-text { max-height: 24rem; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #000; padding: 0.5rem; font-size: 0.8rem; }
   .content-panel table { margin-top: 0.5rem; }
+  .library-controls { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+  .document-name { font-weight: 650; }
+  .technical-id { color: #aaa; font-size: 0.75rem; margin-top: 0.2rem; }
+  .status-label { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -1936,8 +1943,13 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
 <p><button id="refreshEvidenceButton">Refresh existing evidence</button></p>
 <p id="status"></p>
+<div class="library-controls">
+  <label>Search <input id="evidenceSearch" type="search" placeholder="Filename or Evidence ID"></label>
+  <label>Sort <select id="evidenceSort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="filename">Filename A–Z</option><option value="status">Status</option></select></label>
+  <label>Filter <select id="evidenceFilter"><option value="all">All</option><option value="needs-processing">Needs processing</option><option value="processed">Processed</option><option value="human-reviewed">Human reviewed</option><option value="corrected">Corrected</option></select></label>
+</div>
 <table>
-  <thead><tr><th>File</th><th>Size</th><th>Status</th><th>Evidence ID</th><th>Result</th><th>Analyse</th><th>Actions</th></tr></thead>
+  <thead><tr><th>Document</th><th>Uploaded / Imported</th><th>Status</th><th>Pages</th><th>Size</th><th>Analyse</th><th>Actions</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 <h2>Analyse Selected Documents</h2>
@@ -1956,6 +1968,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <script>
 let rows = [];
 let expandedIndex = null;
+const detailsExpanded = new Set();
 let enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription readiness has not been loaded.' };
 
 document.getElementById('logoutButton').onclick = async () => {
@@ -1963,29 +1976,80 @@ document.getElementById('logoutButton').onclick = async () => {
   location.reload();
 };
 
+function isInternalUploadName(name) {
+  return /^owner-upload-[A-Za-z0-9_-]+\.part$/i.test((name || '').trim());
+}
+
+function documentName(row) {
+  const name = (row.originalFileName || '').trim();
+  return name && !isInternalUploadName(name) ? name : 'Unnamed evidence';
+}
+
+function shortEvidenceId(id) {
+  if (!id) return '';
+  return id.length <= 20 ? id : id.slice(0, 12) + '…' + id.slice(-8);
+}
+
+function humanStatus(row) {
+  if (row.correctedRepresentation || row.correctedRepresentationAvailable) return 'Corrected representation available';
+  const review = row.humanFidelityStatus || row.humanFidelityReview;
+  if (review && review.effectiveReviewState === 'HUMAN_REVIEWED_WITH_DISCREPANCY') return 'Human reviewed — discrepancies found';
+  if (review && review.effectiveReviewState === 'HUMAN_REVIEWED_PASS') return 'Human reviewed';
+  return ({UPLOADING:'Uploading', IMPORTED:'Registered', READY_TO_PROCESS:'Ready to process', PROCESSING:'Processing',
+    TIER_A_COMPLETE:'Processed', TIER_B_DURABLE_COMPLETE:'Processed', COMPLETE:'Processed', REQUIRES_OCR:'Enhanced transcription available',
+    OCR_PROCESSING:'Processing', IMPORT_FAILED:'Failed closed', FAILED:'Failed closed'})[row.status] || (row.status || 'Unknown');
+}
+
+function isProcessed(row) { return ['TIER_A_COMPLETE','TIER_B_DURABLE_COMPLETE','COMPLETE'].includes(row.status); }
+function filterMatches(row, filter) {
+  if (filter === 'needs-processing') return ['IMPORTED','READY_TO_PROCESS','REQUIRES_OCR'].includes(row.status);
+  if (filter === 'processed') return isProcessed(row);
+  if (filter === 'human-reviewed') return !!(row.humanFidelityStatus || row.humanFidelityReview);
+  if (filter === 'corrected') return !!(row.correctedRepresentation || row.correctedRepresentationAvailable);
+  return true;
+}
+
+function visibleRows() {
+  const query = document.getElementById('evidenceSearch').value.trim().toLocaleLowerCase();
+  const filter = document.getElementById('evidenceFilter').value;
+  const sort = document.getElementById('evidenceSort').value;
+  const result = rows.map((row, index) => ({row, index})).filter(({row}) =>
+    filterMatches(row, filter) && (!query || documentName(row).toLocaleLowerCase().includes(query) ||
+      (row.evidenceArtifactId || '').toLocaleLowerCase().includes(query)));
+  result.sort((a, b) => {
+    if (sort === 'filename') return documentName(a.row).localeCompare(documentName(b.row));
+    if (sort === 'status') return humanStatus(a.row).localeCompare(humanStatus(b.row));
+    const left = Date.parse(a.row.registeredAt || '') || 0;
+    const right = Date.parse(b.row.registeredAt || '') || 0;
+    return sort === 'oldest' ? left - right : right - left;
+  });
+  return result;
+}
+
+function appendTextCell(tr, value, className) {
+  const td = document.createElement('td');
+  if (className) td.className = className;
+  td.textContent = value;
+  tr.appendChild(td);
+  return td;
+}
+
 function render() {
   document.getElementById('enhancedReadinessStatus').textContent = enhancedReadiness.message;
   const tbody = document.getElementById('rows');
   tbody.innerHTML = '';
-  rows.forEach((row, index) => {
+  visibleRows().forEach(({row, index}) => {
     const tr = document.createElement('tr');
     const actions = document.createElement('td');
     actions.className = 'row-actions';
     if (row.evidenceArtifactId && !row.externalResultRow) {
       const acquire = document.createElement('button');
-      acquire.textContent = 'Acquire machine-readable representation';
+      acquire.textContent = 'Process document';
       acquire.title = 'Show Parker’s governed acquisition selection; this does not process the document.';
       acquire.onclick = () => loadAcquisitionDecision(index);
       actions.appendChild(acquire);
     }
-    if (row.status === 'IMPORTED' || row.status === 'READY_TO_PROCESS') {
-      const b = document.createElement('button');
-      b.textContent = 'Process';
-      b.title = 'Legacy/manual compatibility control; ordinary acquisition uses the governed action.';
-      b.disabled = true;
-      b.onclick = () => processRow(index);
-      actions.appendChild(b);
-    } else if (row.status === 'REQUIRES_OCR') {
+    if (row.status === 'REQUIRES_OCR') {
       const b = document.createElement('button');
       b.textContent = 'Run local OCR';
       b.title = 'Legacy/manual compatibility control; this is not a fallback from governed acquisition.';
@@ -2026,7 +2090,22 @@ function render() {
       b.onclick = () => viewOcrContent(index);
       actions.appendChild(b);
     }
-    tr.innerHTML = `<td>${'$'}{escapeHtml(row.originalFileName)}</td><td>${'$'}{row.byteLength}</td><td>${'$'}{row.status}</td><td>${'$'}{row.evidenceArtifactId || ''}</td><td>${'$'}{row.message || ''}</td>`;
+    const documentTd = document.createElement('td');
+    const name = document.createElement('div');
+    name.className = 'document-name';
+    name.textContent = documentName(row);
+    documentTd.appendChild(name);
+    if (row.evidenceArtifactId) {
+      const id = document.createElement('div');
+      id.className = 'technical-id';
+      id.textContent = 'Evidence: ' + shortEvidenceId(row.evidenceArtifactId);
+      documentTd.appendChild(id);
+    }
+    tr.appendChild(documentTd);
+    appendTextCell(tr, row.registeredAt ? new Date(row.registeredAt).toLocaleString() : 'Unknown');
+    appendTextCell(tr, humanStatus(row), 'status-label');
+    appendTextCell(tr, row.pageCount == null ? '—' : String(row.pageCount));
+    appendTextCell(tr, formatBytes(row.byteLength));
 
     // Minimum Production Document Pipeline -- a row is selectable for analysis once it carries a
     // durable derivative generation identity (Tier A or Tier B durable OCR) the owner can already
@@ -2036,6 +2115,7 @@ function render() {
         (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId)) {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
+      cb.setAttribute('aria-label', 'Select ' + documentName(row) + ' for analysis');
       cb.checked = !!row.selectedForAnalysis;
       cb.onchange = () => {
         row.selectedForAnalysis = cb.checked;
@@ -2055,9 +2135,26 @@ function render() {
         analyseTd.appendChild(acknowledgement);
       }
     }
+    const details = document.createElement('button');
+    details.textContent = detailsExpanded.has(row.evidenceArtifactId || index) ? 'Hide details' : 'Details';
+    details.onclick = () => {
+      const key = row.evidenceArtifactId || index;
+      if (detailsExpanded.has(key)) detailsExpanded.delete(key); else detailsExpanded.add(key);
+      render();
+    };
+    actions.appendChild(details);
     tr.appendChild(analyseTd);
     tr.appendChild(actions);
     tbody.appendChild(tr);
+
+    if (detailsExpanded.has(row.evidenceArtifactId || index)) {
+      const detailsTr = document.createElement('tr');
+      const detailsTd = document.createElement('td');
+      detailsTd.colSpan = 7;
+      detailsTd.appendChild(buildEvidenceDetails(row));
+      detailsTr.appendChild(detailsTd);
+      tbody.appendChild(detailsTr);
+    }
 
     if (row.acquisitionDecision || row.acquisitionError || row.acquisitionResult) {
       const decisionTr = document.createElement('tr');
@@ -2099,6 +2196,40 @@ function render() {
       tbody.appendChild(detailTr);
     }
   });
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(Number(value))) return 'Unknown';
+  const bytes = Number(value);
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function buildEvidenceDetails(row) {
+  const panel = document.createElement('div');
+  panel.className = 'content-panel';
+  appendField(panel, 'Evidence ID', row.evidenceArtifactId || 'Not registered');
+  appendField(panel, 'Original/source filename', documentName(row));
+  if (isInternalUploadName(row.originalFileName)) appendField(panel, 'Raw storage name', row.originalFileName);
+  if (row.sha256) appendField(panel, 'Content SHA-256', row.sha256);
+  appendField(panel, 'Byte size', String(row.byteLength));
+  if (row.mediaType) appendField(panel, 'Media type', row.mediaType);
+  if (row.registeredAt) appendField(panel, 'Uploaded / imported', row.registeredAt);
+  appendField(panel, 'Internal processing state', row.status || 'UNKNOWN');
+  if (row.derivativeGenerationId) appendField(panel, 'Representation', 'Tier A — ' + row.derivativeGenerationId);
+  if (row.ocrDerivativeGenerationId) appendField(panel, 'Representation', 'Durable OCR — ' + row.ocrDerivativeGenerationId);
+  if (row.pageCount != null) appendField(panel, 'Page count', String(row.pageCount));
+  const fidelity = row.humanFidelityStatus || row.humanFidelityReview;
+  if (fidelity) {
+    appendField(panel, 'Human fidelity review', fidelity.effectiveReviewState || fidelity.reviewState || 'Available');
+    if (fidelity.materialDiscrepancyCount != null) appendField(panel, 'Material discrepancies', String(fidelity.materialDiscrepancyCount));
+    if (fidelity.systematicPatternCount != null) appendField(panel, 'Systematic patterns', String(fidelity.systematicPatternCount));
+    if (fidelity.sourceConfirmedEligibility) appendField(panel, 'Source-confirmed eligibility', fidelity.sourceConfirmedEligibility);
+  }
+  if (row.correctedRepresentation || row.correctedRepresentationAvailable) appendField(panel, 'Corrected representation', 'Available');
+  if (row.message) appendField(panel, 'Result', row.message);
+  return panel;
 }
 
 function escapeHtml(s) {
@@ -2335,13 +2466,18 @@ document.getElementById('uploadButton').onclick = async () => {
       target.evidenceArtifactId = result.evidenceArtifactId;
       target.message = result.message;
     });
-    render();
+    const registered = results.filter(result => result.status === 'IMPORTED').length;
+    if (registered) {
+      await loadExistingEvidence('Registered ' + registered + (registered === 1 ? ' document.' : ' documents.'));
+    } else {
+      render();
+    }
   } catch (e) {
     document.getElementById('status').textContent = 'Upload failed: ' + e;
   }
 };
 
-async function loadExistingEvidence() {
+async function loadExistingEvidence(successMessage) {
   const status = document.getElementById('status');
   try {
     const resp = await fetch('/owner/evidence', { method: 'GET', headers: authHeaders() });
@@ -2350,20 +2486,24 @@ async function loadExistingEvidence() {
     if (!resp.ok) { status.textContent = result.error || 'Existing evidence list unavailable.'; return; }
     const existingById = new Map(rows.filter(r => r.evidenceArtifactId).map(r => [r.evidenceArtifactId, r]));
     rows = (result.evidence || []).map(item => Object.assign({
-      originalFileName: item.originalFileName || item.evidenceArtifactId,
+      originalFileName: item.originalFileName,
       byteLength: item.byteLength,
       status: 'READY_TO_PROCESS',
       evidenceArtifactId: item.evidenceArtifactId,
       message: 'Durably registered evidence',
       sha256: item.sha256,
       mediaType: item.mediaType,
+      registeredAt: item.registeredAt,
     }, existingById.get(item.evidenceArtifactId) || {}));
-    status.textContent = '';
+    status.textContent = successMessage || '';
     render();
   } catch (e) { status.textContent = 'Existing evidence list request failed safely.'; }
 }
 
-document.getElementById('refreshEvidenceButton').onclick = loadExistingEvidence;
+document.getElementById('refreshEvidenceButton').onclick = () => loadExistingEvidence();
+document.getElementById('evidenceSearch').oninput = render;
+document.getElementById('evidenceSort').onchange = render;
+document.getElementById('evidenceFilter').onchange = render;
 
 function buildAcquisitionPanel(row, index) {
   const panel = document.createElement('div');
@@ -2558,6 +2698,9 @@ async function viewContent(index) {
     const result = await resp.json();
     if (result.status === 'RETRIEVED') {
       row.content = result.content;
+      row.pageCount = result.content.pageCount;
+      row.humanFidelityStatus = result.content.humanFidelityStatus;
+      row.correctedRepresentation = result.content.humanCorrectedRepresentation;
     } else {
       row.contentError = result.status + (result.message ? (': ' + result.message) : '');
     }

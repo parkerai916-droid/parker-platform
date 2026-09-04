@@ -66,6 +66,13 @@ interface OwnerEvidenceOperations {
      */
     suspend fun importFile(absolutePath: String, declaredMediaType: String?): EvidenceImportOutcome
 
+    /** Preserves a safely parsed browser-upload basename as declarative manifest provenance. */
+    suspend fun importUploadedFile(
+        absolutePath: String,
+        declaredMediaType: String?,
+        originalFileName: String,
+    ): EvidenceImportOutcome = importFile(absolutePath, declaredMediaType)
+
     /** Explicit, owner-triggered Tier A routing for one already-custodied artefact. */
     suspend fun processTierA(evidenceArtifactId: EvidenceArtifactId): TierAProcessingOutcome
 
@@ -176,6 +183,7 @@ data class OwnerRegisteredEvidenceView(
     val byteLength: Long,
     val mediaType: String?,
     val originalFileName: String?,
+    val registeredAt: String? = null,
 )
 
 data class OwnerOrdinaryRegionAuthorizationView(

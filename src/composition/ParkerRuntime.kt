@@ -2788,6 +2788,19 @@ class ParkerRuntime(
         )
     }
 
+    /** Browser-upload ingress retaining its safe client basename instead of the staging name. */
+    suspend fun importUploadedEvidenceFileAsOwner(
+        absolutePath: String,
+        receivedMediaType: String?,
+        originalFileName: String,
+    ): OwnerLocalFileIngressOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        logger.info("Uploaded file evidence ingress invoked by owner")
+        return ownerLocalFileIngressCoordinator.invoke(
+            PrincipalId(config.ownerPrincipalId), absolutePath, receivedMediaType, originalFileName,
+        )
+    }
+
     /**
      * Document Ingestion, Derivative-to-Memory-Core Registration. The one production entry point
      * through which an already-admitted Tier A derivative may be registered into Memory Core --

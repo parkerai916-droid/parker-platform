@@ -340,6 +340,28 @@ class OwnerLocalFileIngressCoordinatorTest {
     }
 
     @Test
+    fun `declared upload basename replaces only staging-name provenance and leaves content identity unchanged`() = runTest {
+        val content = "stable bytes".toByteArray()
+        val stagingPath = tempFile(content, name = "owner-upload-random.part")
+        val custodian = realCustodian()
+        val coordinator = OwnerLocalFileIngressCoordinator(approving(), custodian)
+
+        val outcome = coordinator.invoke(
+            ownerPrincipalId, stagingPath.toString(), "application/pdf", "Example Human Readable Document.pdf",
+        )
+
+        val accepted = assertIs<OwnerLocalFileIngressOutcome.Accepted>(outcome)
+        val manifest = assertIs<EvidenceManifestRetrievalResult.Found>(
+            custodian.retrieveManifest(ownerPrincipalId, accepted.acceptedEvidenceArtifact.evidenceArtifactId),
+        ).manifest
+        assertEquals("Example Human Readable Document.pdf", manifest.originalFileName)
+        assertEquals(content.size.toLong(), manifest.byteLength)
+        assertContentEquals(content, assertIs<parker.core.interfaces.EvidenceRetrievalResult.Found>(
+            custodian.retrieve(ownerPrincipalId, accepted.acceptedEvidenceArtifact.evidenceArtifactId),
+        ).content)
+    }
+
+    @Test
     fun `a hostile-looking basename remains inert metadata, never interpreted`() = runTest {
         val content = "content".toByteArray()
         val hostileName = "'; DROP TABLE evidence;--.pdf"

@@ -63,6 +63,7 @@ class OwnerLocalFileIngressCoordinator(
         ownerPrincipalId: PrincipalId,
         absolutePath: String,
         receivedMediaType: String?,
+        declaredOriginalFileName: String? = null,
     ): OwnerLocalFileIngressOutcome {
         val decision = permissionEngine.evaluate(
             ExecutionRequest(
@@ -148,7 +149,7 @@ class OwnerLocalFileIngressCoordinator(
             return OwnerLocalFileIngressOutcome.SourceReadFailure("source read failed")
         }
 
-        val originalFileName = path.fileName?.toString()
+        val originalFileName = declaredOriginalFileName ?: path.fileName?.toString()
         val candidate = CandidateEvidenceArtifact(
             content = content,
             receivedMediaType = receivedMediaType,

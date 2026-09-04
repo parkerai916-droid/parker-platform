@@ -183,6 +183,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val ownerPrincipalId: PrincipalId,
     private val listRegisteredEvidenceAsOwner: suspend () -> List<OwnerRegisteredEvidence> = { emptyList() },
     private val importEvidenceFileAsOwner: suspend (String, String?) -> OwnerLocalFileIngressOutcome,
+    private val importUploadedEvidenceFileAsOwner: (suspend (String, String?, String) -> OwnerLocalFileIngressOutcome)? = null,
     private val invokeTierAIngestionAsOwner: suspend (EvidenceArtifactId) -> TierAOwnerInvocationOutcome,
     private val analyseEvidence: suspend (PrincipalId, EvidenceAnalysisRequest) -> EvidenceIntelligenceInvocationOutcome,
     private val retrieveTierAExtractedContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome,
@@ -222,7 +223,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     override suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> =
         listRegisteredEvidenceAsOwner().map {
             OwnerRegisteredEvidenceView(it.evidenceArtifactId.value, it.sha256, it.byteLength,
-                it.mediaType, it.originalFileName)
+                it.mediaType, it.originalFileName, it.registeredAt.toString())
         }
 
     override suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView {
@@ -351,6 +352,27 @@ class OwnerUiEvidenceRuntimeAdapter(
             is OwnerLocalFileIngressOutcome.EvidenceCustodianRejected ->
                 EvidenceImportOutcome.Rejected("Evidence custody did not accept this file.")
         }
+
+    override suspend fun importUploadedFile(
+        absolutePath: String,
+        declaredMediaType: String?,
+        originalFileName: String,
+    ): EvidenceImportOutcome = mapImportOutcome(
+        importUploadedEvidenceFileAsOwner?.invoke(absolutePath, declaredMediaType, originalFileName)
+            ?: importEvidenceFileAsOwner(absolutePath, declaredMediaType),
+    )
+
+    private fun mapImportOutcome(outcome: OwnerLocalFileIngressOutcome): EvidenceImportOutcome = when (outcome) {
+        is OwnerLocalFileIngressOutcome.Accepted -> EvidenceImportOutcome.Imported(outcome.acceptedEvidenceArtifact.evidenceArtifactId)
+        is OwnerLocalFileIngressOutcome.AuthorizationRejected -> EvidenceImportOutcome.Rejected("Import was not authorised.")
+        OwnerLocalFileIngressOutcome.InvalidPath -> EvidenceImportOutcome.Rejected("The selected file could not be read.")
+        OwnerLocalFileIngressOutcome.PathNotFound -> EvidenceImportOutcome.Rejected("The selected file no longer exists.")
+        OwnerLocalFileIngressOutcome.SymlinkProhibited -> EvidenceImportOutcome.Rejected("Symlinked files are not accepted.")
+        OwnerLocalFileIngressOutcome.NotARegularFile -> EvidenceImportOutcome.Rejected("Only regular files are accepted.")
+        is OwnerLocalFileIngressOutcome.SourceTooLarge -> EvidenceImportOutcome.Rejected("The selected file exceeds the maximum accepted size.")
+        is OwnerLocalFileIngressOutcome.SourceReadFailure -> EvidenceImportOutcome.Failed("The selected file could not be read.")
+        is OwnerLocalFileIngressOutcome.EvidenceCustodianRejected -> EvidenceImportOutcome.Rejected("Evidence custody did not accept this file.")
+    }
 
     override suspend fun processTierA(evidenceArtifactId: EvidenceArtifactId): TierAProcessingOutcome =
         when (val outcome = invokeTierAIngestionAsOwner(evidenceArtifactId)) {

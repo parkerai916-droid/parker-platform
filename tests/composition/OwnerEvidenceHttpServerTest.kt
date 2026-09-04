@@ -84,6 +84,7 @@ class OwnerEvidenceHttpServerTest {
     private class Harness(
         val runtime: ParkerRuntime,
         val server: OwnerEvidenceHttpServer,
+        val authentication: OwnerUiAuthentication,
         val runtimeLogger: RecordingParkerLogger,
         val serverLogger: RecordingParkerLogger,
     ) {
@@ -125,6 +126,7 @@ class OwnerEvidenceHttpServerTest {
             ownerPrincipalId = PrincipalId(ownerPrincipalId),
             listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
             importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
+            importUploadedEvidenceFileAsOwner = runtime::importUploadedEvidenceFileAsOwner,
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
             retrieveTierAExtractedContentAsOwner = retrieveTierA ?: runtime::retrieveTierAExtractedContentAsOwner,
@@ -158,7 +160,12 @@ class OwnerEvidenceHttpServerTest {
             prepareCorrectedEvidence = prepareCorrected,
         )
         server.start()
-        return Harness(runtime, server, runtimeLogger, serverLogger)
+        return Harness(runtime, server, authentication, runtimeLogger, serverLogger)
+    }
+
+    private fun pairedCookie(harness: Harness): String {
+        val paired = requireNotNull(harness.authentication.pair(harness.authentication.initiatePairing()))
+        return "ParkerOwnerDeviceId=${paired.deviceId}; ParkerOwnerDeviceCredential=${paired.deviceCredential}; ParkerOwnerSession=${paired.sessionId}"
     }
 
     @Test
@@ -655,6 +662,28 @@ class OwnerEvidenceHttpServerTest {
         } finally {
             harness.shutdown()
         }
+    }
+
+    @Test
+    fun `uploaded human filename survives random server staging and is returned by durable listing`() = runTest {
+        val harness = startHarness("")
+        try {
+            val cookie = pairedCookie(harness)
+            val humanName = "Example Human Readable Document.pdf"
+            val boundary = "OwnerEvidenceHumanNameBoundary"
+            val upload = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence"))
+                .header("Cookie", cookie).header("Content-Type", "multipart/form-data; boundary=$boundary")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody(boundary,
+                    listOf(UploadPart("files", humanName, "application/pdf", "%PDF fixture".toByteArray()))))).build())
+            assertEquals(200, upload.statusCode())
+            val evidenceId = requireNotNull(extractField(upload.body(), "evidenceArtifactId"))
+            val listing = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence"))
+                .header("Cookie", cookie).GET().build())
+            assertEquals(200, listing.statusCode())
+            assertEquals(humanName, extractField(listing.body(), "originalFileName"))
+            assertEquals(evidenceId, extractField(listing.body(), "evidenceArtifactId"))
+            assertFalse(listing.body().contains("owner-upload-"))
+        } finally { harness.shutdown() }
     }
 
     // ================= Tier A / Tier B endpoints =================
@@ -1194,6 +1223,28 @@ class OwnerEvidenceHttpServerTest {
                 "provider region transcription must not become analysis-selectable through unsupported Tier A analysis")
             assertTrue("OWNER_HIGH_AUTHORITY" !in body && "owner-high-authority-verification" !in body,
                 "the high-authority correction credential must never reach browser HTML or JavaScript")
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `human readable evidence library offers neutral fallback search sorting details and governed process label`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("<th>Document</th>"))
+            assertTrue(body.contains("Filename or Evidence ID"))
+            assertTrue(body.contains("Newest first"))
+            assertTrue(body.contains("Filename A–Z"))
+            assertTrue(body.contains("function isInternalUploadName"))
+            assertTrue(body.contains("return name && !isInternalUploadName(name) ? name : 'Unnamed evidence'"))
+            assertTrue(body.contains("'Evidence: ' + shortEvidenceId"))
+            assertTrue(body.contains("acquire.textContent = 'Process document'"))
+            assertTrue(body.contains("acquire.onclick = () => loadAcquisitionDecision(index)"))
+            assertTrue(body.contains("details.textContent"))
+            assertTrue(body.contains("Content SHA-256"))
+            assertTrue(body.contains("Select ' + documentName(row) + ' for analysis"))
+            assertTrue(body.contains("toLocaleLowerCase().includes(query)"))
         } finally { harness.shutdown() }
     }
 
