@@ -172,6 +172,8 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
         humanFidelityGovernanceAuditStorageRootPath = roots.audit.toString(),
         humanCorrectedRepresentationStorageRootPath = roots.corrected.toString(),
         humanCorrectionAuditStorageRootPath = roots.correctionAudit.toString(),
+        ownerHighAuthorityVerificationCredentialFilePath = roots.ownerVerificationSecret.toString(),
+        ownerHighAuthorityPrincipalId = "owner-" + "a".repeat(64),
     )
 
     private fun loaderEnvironment(): Map<String, String> {
@@ -239,6 +241,7 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
         val audit: Path,
         val corrected: Path,
         val correctionAudit: Path,
+        val ownerVerificationSecret: Path,
     ) {
         fun directory(name: String): Path = base.resolve(name).also(Files::createDirectories)
         fun reviewFacts(): Long = Files.list(reviews).use { paths -> paths.filter(Files::isRegularFile).count() }
@@ -253,6 +256,9 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
                     base.resolve("audit").also(Files::createDirectories),
                     base.resolve("corrected").also(Files::createDirectories),
                     base.resolve("correction-audit").also(Files::createDirectories),
+                    base.resolve("owner-verification.secret").also {
+                        Files.writeString(it, "opaque-test-verification-credential-0001")
+                    },
                 )
             }
         }

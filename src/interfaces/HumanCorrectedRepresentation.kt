@@ -139,10 +139,28 @@ data class HumanCorrectionAuthorityScope(
     val authorizationPurpose: AuthorizationPurposeId?,
     val target: HumanFidelityReviewTarget,
     val reviewId: HumanFidelityReviewId,
+    val verificationCredential: OwnerVerificationCredential? = null,
 )
 
+/** Ephemeral verification input: deliberately non-serializable and redacted when rendered. */
+class OwnerVerificationCredential private constructor(private val secretBytes: ByteArray) {
+    internal fun constantTimeEquals(expected: ByteArray): Boolean = MessageDigest.isEqual(expected, secretBytes)
+    override fun toString(): String = "OwnerVerificationCredential([REDACTED])"
+    companion object {
+        fun presented(value: String?): OwnerVerificationCredential? = value?.takeIf { it.isNotBlank() }
+            ?.let { OwnerVerificationCredential(it.toByteArray(StandardCharsets.UTF_8)) }
+    }
+}
+
+enum class GovernedPrincipalRole { OWNER }
+
+data class OpaqueOwnerPrincipal(val principalId: PrincipalId, val role: GovernedPrincipalRole = GovernedPrincipalRole.OWNER) {
+    init { require(principalId.value.matches(Regex("^owner-[0-9a-f]{64}$"))) }
+}
+
 enum class HumanCorrectionDenialReason {
-    WRONG_PRINCIPAL, MISSING_OR_WRONG_PURPOSE, PURPOSE_NOT_ACTIVE, TARGET_MISMATCH, PERMISSION_POLICY_DENIED,
+    WRONG_PRINCIPAL, MISSING_OR_WRONG_PURPOSE, PURPOSE_NOT_ACTIVE, TARGET_MISMATCH,
+    MISSING_OR_INVALID_VERIFICATION_CREDENTIAL, PERMISSION_POLICY_DENIED,
 }
 
 sealed interface HumanCorrectionPermissionResult {

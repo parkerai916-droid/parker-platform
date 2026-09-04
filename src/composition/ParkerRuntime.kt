@@ -37,6 +37,7 @@ import parker.core.interfaces.EffectiveHumanFidelityReviewProjector
 import parker.core.interfaces.GovernedHumanCorrectionService
 import parker.core.interfaces.HumanCorrectedRepresentationStorage
 import parker.core.interfaces.HumanCorrectionAudit
+import parker.core.interfaces.OpaqueOwnerPrincipal
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeSubmission
@@ -119,6 +120,7 @@ import parker.core.runtime.DefaultGovernedHumanFidelityReviewRecordingService
 import parker.core.runtime.DefaultEffectiveHumanFidelityReviewProjector
 import parker.core.runtime.HumanFidelityReviewRecordingPermissionPolicy
 import parker.core.runtime.HumanCorrectionPermissionPolicy
+import parker.core.runtime.ExternalFileOwnerHighAuthorityVerification
 import parker.core.runtime.DefaultGovernedHumanCorrectionService
 import parker.core.runtime.FileSystemHumanCorrectedRepresentationStorage
 import parker.core.runtime.FileSystemHumanCorrectionAudit
@@ -1235,7 +1237,15 @@ class ParkerRuntime(
                 )
             }
             val correctionPermission = HumanCorrectionPermissionPolicy(
-                PrincipalId(config.ownerPrincipalId), authorizationPurposeRegistry, permissionEngine,
+                OpaqueOwnerPrincipal(PrincipalId(requireNotNull(config.ownerHighAuthorityPrincipalId
+                    ?: throw ParkerRuntimeException.MissingConfiguration(
+                        ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID)))),
+                authorizationPurposeRegistry, permissionEngine,
+                ExternalFileOwnerHighAuthorityVerification.load(Path.of(requireNotNull(
+                    config.ownerHighAuthorityVerificationCredentialFilePath
+                        ?: throw ParkerRuntimeException.MissingConfiguration(
+                            ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE),
+                ))),
             )
             governedHumanCorrectionService = DefaultGovernedHumanCorrectionService(
                 correctionPermission,

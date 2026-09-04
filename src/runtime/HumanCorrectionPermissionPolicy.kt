@@ -6,17 +6,21 @@ import java.util.UUID
 import parker.core.interfaces.*
 
 class HumanCorrectionPermissionPolicy(
-    private val owner: PrincipalId,
+    private val owner: OpaqueOwnerPrincipal,
     private val purposes: AuthorizationPurposeRegistry,
     private val permissions: PermissionEngine,
+    private val ownerVerification: OwnerHighAuthorityVerification,
     private val clock: Clock = Clock.systemUTC(),
 ) : HumanCorrectionPermissionEvaluator {
     override suspend fun evaluate(authority: HumanCorrectionAuthorityScope, target: HumanFidelityReviewTarget,
                                   reviewId: HumanFidelityReviewId): HumanCorrectionPermissionResult {
-        if (authority.principalId != owner) return denied(HumanCorrectionDenialReason.WRONG_PRINCIPAL)
+        if (authority.principalId != owner.principalId) return denied(HumanCorrectionDenialReason.WRONG_PRINCIPAL)
         if (authority.authorizationPurpose != HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE) return denied(HumanCorrectionDenialReason.MISSING_OR_WRONG_PURPOSE)
         if (!purposes.isActive(HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE)) return denied(HumanCorrectionDenialReason.PURPOSE_NOT_ACTIVE)
         if (authority.target != target || authority.reviewId != reviewId) return denied(HumanCorrectionDenialReason.TARGET_MISMATCH)
+        if (!ownerVerification.verify(authority.principalId, HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE,
+                resourceIdFor(target, reviewId), authority.verificationCredential))
+            return denied(HumanCorrectionDenialReason.MISSING_OR_INVALID_VERIFICATION_CREDENTIAL)
         val now = clock.instant(); val correlation = "human-correction-${UUID.randomUUID()}"
         val decision = permissions.evaluate(ExecutionRequest(
             requestId = RequestId(correlation), principalId = authority.principalId,
@@ -39,5 +43,28 @@ class HumanCorrectionPermissionPolicy(
             return ResourceId("human-correction-target-$hash")
         }
         suspend fun registerPurpose(registry: AuthorizationPurposeRegistry) = registry.register(HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE)
+    }
+}
+
+fun interface OwnerHighAuthorityVerification {
+    fun verify(principalId: PrincipalId, purpose: AuthorizationPurposeId, target: ResourceId,
+               presented: OwnerVerificationCredential?): Boolean
+}
+
+class ExternalFileOwnerHighAuthorityVerification private constructor(private val expected: ByteArray) : OwnerHighAuthorityVerification {
+    override fun verify(principalId: PrincipalId, purpose: AuthorizationPurposeId, target: ResourceId,
+                        presented: OwnerVerificationCredential?): Boolean =
+        principalId.value.isNotBlank() && purpose == HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE &&
+            target.value.isNotBlank() && presented != null && presented.constantTimeEquals(expected)
+
+    companion object {
+        fun load(path: java.nio.file.Path): ExternalFileOwnerHighAuthorityVerification {
+            require(java.nio.file.Files.isRegularFile(path) && !java.nio.file.Files.isSymbolicLink(path))
+            val bytes = java.nio.file.Files.readAllBytes(path).let { raw ->
+                raw.toString(Charsets.UTF_8).trimEnd('\r', '\n').toByteArray(Charsets.UTF_8)
+            }
+            require(bytes.size in 32..4096)
+            return ExternalFileOwnerHighAuthorityVerification(bytes)
+        }
     }
 }
