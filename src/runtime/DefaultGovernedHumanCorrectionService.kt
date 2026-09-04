@@ -49,10 +49,20 @@ class DefaultGovernedHumanCorrectionService(
                 return failed(GovernedHumanCorrectionFailureReason.INVALID_CORRECTION)
             applications += discrepancy to proposal
         }
+        val literalRegionBlocks = try {
+            require(provider.regionBindings.size == provider.transcriptionBlocks.size)
+            provider.transcriptionBlocks.mapIndexed { index, block ->
+                V8LiteralRegionBlock.decode(block).also {
+                    require(provider.regionBindings[index].substringBefore('|') == it.regionId)
+                }
+            }
+        } catch (_: Exception) { return failed(GovernedHumanCorrectionFailureReason.INVALID_CORRECTION) }
         val resolvedApplications = try { applications.map { (discrepancy, proposal) ->
-            val regionIndex = provider.regionBindings.indexOf(discrepancy.location.derivativeRegionId.value)
-            require(regionIndex >= 0 && discrepancy.location.transcriptionBlockIndex == 0)
-            Triple(regionIndex, discrepancy, proposal)
+            require(discrepancy.location.transcriptionBlockIndex == 0)
+            val matching = literalRegionBlocks.withIndex()
+                .filter { it.value.regionId == discrepancy.location.derivativeRegionId.value }
+            require(matching.size == 1 && matching.single().value.pageNumber == discrepancy.location.pageNumber)
+            Triple(matching.single().index, discrepancy, proposal)
         } } catch (_: Exception) { return failed(GovernedHumanCorrectionFailureReason.INVALID_CORRECTION) }
         val overlap = resolvedApplications.groupBy { it.first }.values.any { items ->
             val sorted = items.sortedBy { it.second.location.startCodePointInclusive }
@@ -60,21 +70,23 @@ class DefaultGovernedHumanCorrectionService(
         }
         if (overlap) return failed(GovernedHumanCorrectionFailureReason.INVALID_CORRECTION)
 
-        val blocks = provider.transcriptionBlocks.toMutableList()
+        val blocks = literalRegionBlocks.toMutableList()
         try {
             resolvedApplications.sortedWith(compareByDescending<Triple<Int, FidelityDiscrepancyOccurrence, HumanTranscriptionCorrectionProposal>> { it.first }
                 .thenByDescending { it.second.location.startCodePointInclusive }).forEach { (blockIndex, d, p) ->
                 val l = d.location; val block = blocks[blockIndex]
-                val start = block.offsetByCodePoints(0, l.startCodePointInclusive); val end = block.offsetByCodePoints(0, l.endCodePointExclusive)
-                require(block.substring(start, end) == p.providerValue)
-                blocks[blockIndex] = block.substring(0, start) + p.acceptedSourceValue + block.substring(end)
+                blocks[blockIndex] = block.copy(literalText = replaceExactCodePointRange(
+                    block.literalText, l.startCodePointInclusive, l.endCodePointExclusive,
+                    p.providerValue, p.acceptedSourceValue,
+                ))
             }
         } catch (_: Exception) { return failed(GovernedHumanCorrectionFailureReason.INVALID_CORRECTION) }
+        val encodedBlocks = blocks.map(V8LiteralRegionBlock::encode)
 
-        val digest = HumanCorrectedRegionTranscription.contentDigest(blocks)
+        val digest = HumanCorrectedRegionTranscription.contentDigest(encodedBlocks)
         val id = HumanCorrectedRegionTranscription.deriveGenerationId(request.target, request.reviewId, request.acceptance, digest)
         val representation = try { HumanCorrectedRegionTranscription(1, id, target=request.target, reviewId=request.reviewId,
-            proposals=request.proposals, acceptance=request.acceptance, correctedTranscriptionBlocks=blocks,
+            proposals=request.proposals, acceptance=request.acceptance, correctedTranscriptionBlocks=encodedBlocks,
             correctedContentSha256=digest, createdAt=request.acceptance.acceptedAt) }
         catch (_: Exception) { return failed(GovernedHumanCorrectionFailureReason.INVALID_CORRECTION) }
 
@@ -105,6 +117,48 @@ class DefaultGovernedHumanCorrectionService(
             r.derivativeGenerationId, r.target, r.reviewId, r.acceptance.acceptanceId, r.correctedContentSha256)
     }
     private fun failed(r: GovernedHumanCorrectionFailureReason) = GovernedHumanCorrectionResult.Failed(r)
+}
+
+private const val V8_BLOCK_FIELD_SEPARATOR = '\u001f'
+
+private data class V8LiteralRegionBlock(
+    val regionId: String,
+    val pageNumber: Int,
+    val literalText: String,
+    val status: String,
+    val uncertainties: String,
+    val warnings: String,
+) {
+    init {
+        require(regionId.isNotBlank() && pageNumber > 0)
+        require(listOf(regionId, literalText, status, uncertainties, warnings).none { V8_BLOCK_FIELD_SEPARATOR in it })
+    }
+
+    fun encode(): String = listOf(regionId, pageNumber.toString(), literalText, status, uncertainties, warnings)
+        .joinToString(V8_BLOCK_FIELD_SEPARATOR.toString())
+
+    companion object {
+        fun decode(encoded: String): V8LiteralRegionBlock {
+            val fields = encoded.split(V8_BLOCK_FIELD_SEPARATOR, limit = 6)
+            require(fields.size == 6)
+            return V8LiteralRegionBlock(fields[0], fields[1].toInt(), fields[2], fields[3], fields[4], fields[5])
+        }
+    }
+}
+
+internal fun replaceExactCodePointRange(
+    literalText: String,
+    startCodePointInclusive: Int,
+    endCodePointExclusive: Int,
+    expectedProviderValue: String,
+    acceptedSourceValue: String,
+): String {
+    require(startCodePointInclusive >= 0 && endCodePointExclusive > startCodePointInclusive)
+    require(endCodePointExclusive <= literalText.codePointCount(0, literalText.length))
+    val start = literalText.offsetByCodePoints(0, startCodePointInclusive)
+    val end = literalText.offsetByCodePoints(0, endCodePointExclusive)
+    require(literalText.substring(start, end) == expectedProviderValue)
+    return literalText.substring(0, start) + acceptedSourceValue + literalText.substring(end)
 }
 
 class StoredHumanCorrectionProviderResolver(
