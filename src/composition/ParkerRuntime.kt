@@ -1274,6 +1274,7 @@ class ParkerRuntime(
             derivativeGenerationStorage,
             derivativeContentStorage,
             effectiveHumanFidelityReviewProjector,
+            humanCorrectedRepresentationRetrievalService,
         )
 
         val deliverTool = stage("Local Text Channel deliver Tool construction") {

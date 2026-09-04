@@ -183,6 +183,9 @@ interface HumanCorrectedRepresentationStorage {
     suspend fun prepare(representation: HumanCorrectedRegionTranscription): HumanCorrectedRepresentationPrepareResult
     suspend fun publishPrepared(id: DerivativeGenerationId)
     suspend fun retrieve(id: DerivativeGenerationId): HumanCorrectedRegionTranscription?
+
+    /** Exact provenance lookup only; ordering carries no precedence or winner semantics. */
+    suspend fun listForExactTarget(target: HumanFidelityReviewTarget): List<HumanCorrectedRegionTranscription> = emptyList()
 }
 
 enum class HumanCorrectionAuditEventType { CORRECTED_REPRESENTATION_PREPARED, CORRECTED_REPRESENTATION_PUBLISHED }

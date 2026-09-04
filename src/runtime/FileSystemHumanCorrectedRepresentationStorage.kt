@@ -24,6 +24,15 @@ class FileSystemHumanCorrectedRepresentationStorage(private val root: Path) : Hu
     override suspend fun retrieve(id: DerivativeGenerationId) = mutex.withLock {
         val path = published(id); if (!Files.exists(path)) null else HumanCorrectedRepresentationCodec.decode(Files.readAllBytes(path)).also { require(it.derivativeGenerationId == id) }
     }
+    override suspend fun listForExactTarget(target: HumanFidelityReviewTarget) = mutex.withLock {
+        Files.list(root).use { paths ->
+            paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".human-corrected-v1") }
+                .map { HumanCorrectedRepresentationCodec.decode(Files.readAllBytes(it)) }
+                .filter { it.target == target }
+                .sorted(compareBy { it.derivativeGenerationId.value })
+                .toList()
+        }
+    }
     private fun published(id: DerivativeGenerationId) = safe(id).let { root.resolve("${it.value}.human-corrected-v1") }
     private fun staged(id: DerivativeGenerationId) = safe(id).let { prepared.resolve("${it.value}.human-corrected-v1") }
     private fun safe(id: DerivativeGenerationId) = id.also { require(it.value.matches(Regex("^human-corrected-[0-9a-f]{64}$"))) }

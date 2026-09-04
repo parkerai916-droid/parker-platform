@@ -1245,6 +1245,16 @@ class OwnerEvidenceHttpServer(
                 "sourceConfirmedEligibility" to content.humanFidelityStatus.sourceConfirmedEligibility,
                 "sourceConfirmedDenialReason" to content.humanFidelityStatus.sourceConfirmedDenialReason,
             ),
+            "humanCorrectedRepresentation" to content.humanCorrectedRepresentation?.let { corrected -> jsonObject(
+                "derivativeGenerationId" to corrected.derivativeGenerationId,
+                "representationKind" to corrected.representationKind,
+                "reviewId" to corrected.reviewId,
+                "correctedTranscriptionBlocks" to jsonArray(corrected.correctedTranscriptionBlocks),
+                "correctedContentSha256" to corrected.correctedContentSha256,
+                "correctionCount" to corrected.correctionCount,
+                "sourceConfirmedEligibility" to corrected.sourceConfirmedEligibility,
+                "sourceConfirmedDenialReason" to corrected.sourceConfirmedDenialReason,
+            ) },
         )
     }
 
@@ -2013,7 +2023,7 @@ function render() {
     // durable derivative generation identity (Tier A or Tier B durable OCR) the owner can already
     // retrieve content for -- never for a row that has not reached that state yet.
     const analyseTd = document.createElement('td');
-    if ((row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) ||
+    if ((row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId && !row.providerRegionTranscription) ||
         (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId)) {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
@@ -2200,6 +2210,47 @@ function buildContentPanel(content) {
       tlabel.textContent = 'Tables (' + content.tables.length + '):';
       container.appendChild(tlabel);
       content.tables.forEach(t => appendTable(container, null, t));
+    }
+  } else if (content.kind === 'REGION_TRANSCRIPTION') {
+    const providerHeading = document.createElement('h3');
+    providerHeading.textContent = 'Raw provider representation';
+    container.appendChild(providerHeading);
+    appendField(container, 'Representation', 'REGION_TRANSCRIPTION / immutable provider output');
+    appendField(container, 'Derivative generation', content.derivativeGenerationId);
+    appendField(container, 'Source evidence', content.evidenceArtifactId);
+    appendField(container, 'Provider', content.provider);
+    appendField(container, 'Model', content.model);
+    appendField(container, 'Parker source order', (content.parkerSourceOrder || []).join(', '));
+    (content.transcriptionBlocks || []).forEach((text, i) =>
+      appendExtractedText(container, 'Provider region ' + (i + 1) + ':', text));
+
+    const review = content.humanFidelityStatus;
+    const reviewHeading = document.createElement('h3');
+    reviewHeading.textContent = 'Human fidelity review status';
+    container.appendChild(reviewHeading);
+    appendField(container, 'Review state', review.effectiveReviewState || 'UNREVIEWED');
+    appendField(container, 'Coverage', review.coverage || 'NONE');
+    appendField(container, 'Material discrepancies', String(review.materialDiscrepancyCount));
+    appendField(container, 'Systematic patterns', String(review.systematicPatternCount));
+    appendField(container, 'Unresolved conflict', String(review.unresolvedConflict));
+    appendField(container, 'Provider source-confirmed eligibility', review.sourceConfirmedEligibility);
+    if (review.sourceConfirmedDenialReason) appendField(container, 'Denial reason', review.sourceConfirmedDenialReason);
+
+    const corrected = content.humanCorrectedRepresentation;
+    const correctedHeading = document.createElement('h3');
+    correctedHeading.textContent = 'Human-corrected representation';
+    container.appendChild(correctedHeading);
+    if (!corrected) {
+      appendField(container, 'Availability', 'NOT AVAILABLE');
+    } else {
+      appendField(container, 'Representation', corrected.representationKind + ' / separate immutable representation');
+      appendField(container, 'Derivative generation', corrected.derivativeGenerationId);
+      appendField(container, 'Canonical human review', corrected.reviewId);
+      appendField(container, 'Corrections applied', String(corrected.correctionCount));
+      appendField(container, 'Source-confirmed eligibility', corrected.sourceConfirmedEligibility);
+      if (corrected.sourceConfirmedDenialReason) appendField(container, 'Denial reason', corrected.sourceConfirmedDenialReason);
+      (corrected.correctedTranscriptionBlocks || []).forEach((text, i) =>
+        appendExtractedText(container, 'Human-corrected region ' + (i + 1) + ':', text));
     }
   }
   return container;
@@ -2389,7 +2440,16 @@ async function loadAcquisitionDecision(index, preserveExecutionError = false) {
     const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, { method: 'GET', headers: authHeaders() });
     const result = await resp.json();
     if (!resp.ok) row.acquisitionError = result.error || 'Acquisition decision unavailable.';
-    else row.acquisitionDecision = result;
+    else {
+      row.acquisitionDecision = result;
+      if (result.derivativeGenerationId) {
+        row.derivativeGenerationId = result.derivativeGenerationId;
+        row.status = 'TIER_A_COMPLETE';
+        row.tierAFormat = 'REGION_TRANSCRIPTION';
+        row.providerRegionTranscription = true;
+        row.message = 'Governed transcription available';
+      }
+    }
   } catch (e) { row.acquisitionError = 'Acquisition decision request failed safely.'; }
   render();
 }
@@ -2424,7 +2484,16 @@ async function executeAcquisition(index, expectedCapabilityId) {
       row.acquisitionDecision = result.currentDecision;
       row.acquisitionError = 'The acquisition decision changed. Review the current decision before executing.';
     } else if (!resp.ok) row.acquisitionError = result.reason || result.error || 'Acquisition failed safely.';
-    else { row.acquisitionResult = result; row.acquisitionError = null; }
+    else {
+      row.acquisitionResult = result; row.acquisitionError = null;
+      if (result.derivativeGenerationId) {
+        row.derivativeGenerationId = result.derivativeGenerationId;
+        row.status = 'TIER_A_COMPLETE';
+        row.tierAFormat = 'REGION_TRANSCRIPTION';
+        row.providerRegionTranscription = true;
+        row.message = 'Governed transcription available';
+      }
+    }
   } catch (e) { row.acquisitionError = 'Acquisition request failed safely.'; }
   render();
 }

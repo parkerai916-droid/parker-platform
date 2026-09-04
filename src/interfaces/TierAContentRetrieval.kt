@@ -17,6 +17,7 @@ sealed class TierAContentRetrievalOutcome {
         val record: DerivativeGenerationRecord,
         val payload: TierADerivativePayload,
         val humanFidelityProjection: EffectiveHumanFidelityReviewProjectionOutcome? = null,
+        val humanCorrectedRepresentation: HumanCorrectedRepresentationPresentation? = null,
     ) : TierAContentRetrievalOutcome()
 
     /** No [DerivativeGenerationRecord] exists for the supplied [DerivativeGenerationId]. */

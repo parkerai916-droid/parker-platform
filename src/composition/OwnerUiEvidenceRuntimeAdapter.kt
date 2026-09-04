@@ -46,6 +46,7 @@ import parker.ui.OwnerSavedAnalysisPresentation
 import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
 import parker.ui.OwnerHumanFidelityStatus
+import parker.ui.OwnerHumanCorrectedRepresentation
 import parker.ui.OwnerTierBOcrContent
 import parker.ui.transcriptionFidelityLabel
 import parker.ui.TierAContentRetrievalResult
@@ -403,6 +404,7 @@ class OwnerUiEvidenceRuntimeAdapter(
         payload: TierADerivativePayload,
         record: DerivativeGenerationRecord,
         humanFidelityProjection: EffectiveHumanFidelityReviewProjectionOutcome? = null,
+        corrected: parker.core.interfaces.HumanCorrectedRepresentationPresentation? = null,
     ): OwnerTierAContent = when (payload) {
         is TierADerivativePayload.Pdf -> payload.value.let { r ->
             OwnerTierAContent.Pdf(
@@ -502,6 +504,15 @@ class OwnerUiEvidenceRuntimeAdapter(
                 completenessState = record.completenessState.name,
                 warnings = record.warnings,
                 humanFidelityStatus = humanFidelityStatus(humanFidelityProjection),
+                humanCorrectedRepresentation = corrected?.let { presentation ->
+                    val representation = presentation.representation
+                    OwnerHumanCorrectedRepresentation(
+                        representation.derivativeGenerationId.value, representation.representationKind, representation.reviewId.value,
+                        representation.correctedTranscriptionBlocks, representation.correctedContentSha256.value,
+                        representation.proposals.size, presentation.sourceConfirmedEligibility.state.name,
+                        presentation.sourceConfirmedEligibility.denialReason?.name,
+                    )
+                },
             )
         }
     }
@@ -541,7 +552,7 @@ class OwnerUiEvidenceRuntimeAdapter(
         when (val outcome = retrieveTierAExtractedContentAsOwner(evidenceArtifactId, derivativeGenerationId)) {
             is TierAContentRetrievalOutcome.Retrieved ->
                 TierAContentRetrievalResult.Retrieved(
-                    toOwnerContent(outcome.payload, outcome.record, outcome.humanFidelityProjection),
+                    toOwnerContent(outcome.payload, outcome.record, outcome.humanFidelityProjection, outcome.humanCorrectedRepresentation),
                 )
             is TierAContentRetrievalOutcome.UnknownGeneration -> TierAContentRetrievalResult.UnknownGeneration
             is TierAContentRetrievalOutcome.SourceMismatch -> TierAContentRetrievalResult.SourceMismatch

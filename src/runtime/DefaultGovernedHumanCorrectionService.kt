@@ -211,4 +211,12 @@ class HumanCorrectedRepresentationRetrievalService(
 ) {
     suspend fun retrieve(id: DerivativeGenerationId): HumanCorrectedRepresentationPresentation? =
         storage.retrieve(id)?.let { HumanCorrectedRepresentationPresentation(it, eligibility.evaluate(it)) }
+
+    /** Fail closed on conflicting corrected representations for one immutable target. */
+    suspend fun retrieveForExactTarget(target: HumanFidelityReviewTarget): HumanCorrectedRepresentationPresentation? {
+        val matches = storage.listForExactTarget(target)
+        if (matches.isEmpty()) return null
+        require(matches.size == 1) { "Ambiguous corrected representations for exact target" }
+        return matches.single().let { HumanCorrectedRepresentationPresentation(it, eligibility.evaluate(it)) }
+    }
 }

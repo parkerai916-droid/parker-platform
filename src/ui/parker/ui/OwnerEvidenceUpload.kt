@@ -326,6 +326,7 @@ sealed interface OwnerTierAContent {
         val completenessState: String,
         val warnings: List<String>,
         val humanFidelityStatus: OwnerHumanFidelityStatus,
+        val humanCorrectedRepresentation: OwnerHumanCorrectedRepresentation? = null,
     ) : OwnerTierAContent
 
     companion object {
@@ -392,6 +393,18 @@ data class OwnerHumanFidelityStatus(
     val materialDiscrepancyCount: Int,
     val systematicPatternCount: Int,
     val unresolvedConflict: Boolean,
+    val sourceConfirmedEligibility: String,
+    val sourceConfirmedDenialReason: String?,
+)
+
+/** A separately labelled, read-only human-corrected representation; never substituted for provider output. */
+data class OwnerHumanCorrectedRepresentation(
+    val derivativeGenerationId: String,
+    val representationKind: String,
+    val reviewId: String,
+    val correctedTranscriptionBlocks: List<String>,
+    val correctedContentSha256: String,
+    val correctionCount: Int,
     val sourceConfirmedEligibility: String,
     val sourceConfirmedDenialReason: String?,
 )

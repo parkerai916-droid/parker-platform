@@ -33,6 +33,10 @@ class HumanCorrectedRepresentationDurabilityTest {
         storage.publishPrepared(value.derivativeGenerationId)
         assertEquals(HumanCorrectedRepresentationPrepareResult.AlreadyPublished, storage.prepare(value))
         assertEquals(value, FileSystemHumanCorrectedRepresentationStorage(root).retrieve(value.derivativeGenerationId))
+        assertEquals(listOf(value), FileSystemHumanCorrectedRepresentationStorage(root).listForExactTarget(value.target))
+        assertTrue(FileSystemHumanCorrectedRepresentationStorage(root).listForExactTarget(
+            value.target.copy(sourceSha256 = OcrSha256Digest("f".repeat(64))),
+        ).isEmpty())
 
         val audit = FileSystemHumanCorrectionAudit(auditRoot)
         val event = audit(value, HumanCorrectionAuditEventType.CORRECTED_REPRESENTATION_PUBLISHED)

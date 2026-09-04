@@ -1175,6 +1175,25 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
+    fun `governed acquisition result becomes viewable and presents provenance layers separately`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            assertTrue(body.contains("row.derivativeGenerationId = result.derivativeGenerationId"))
+            assertTrue(body.contains("row.message = 'Governed transcription available'"))
+            assertTrue(body.contains("Raw provider representation"))
+            assertTrue(body.contains("Human fidelity review status"))
+            assertTrue(body.contains("Human-corrected representation"))
+            assertTrue(body.contains("Provider source-confirmed eligibility"))
+            assertTrue(body.contains("corrected.correctedTranscriptionBlocks"))
+            assertTrue(body.contains("!row.providerRegionTranscription"),
+                "provider region transcription must not become analysis-selectable through unsupported Tier A analysis")
+            assertTrue("OWNER_HIGH_AUTHORITY" !in body && "owner-high-authority-verification" !in body,
+                "the high-authority correction credential must never reach browser HTML or JavaScript")
+        } finally { harness.shutdown() }
+    }
+
+    @Test
     fun `the served page never renders extracted text or metadata via innerHTML -- only textContent, closing off HTML or script injection`() = runTest {
         val harness = startHarness("")
         try {
