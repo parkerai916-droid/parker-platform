@@ -31,6 +31,8 @@ services:
       PARKER_CORRECTED_PREPARATION_STORAGE_ROOT: /data/corrected-preparations
       PARKER_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT: /data/human-fidelity-reviews
       PARKER_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT: /data/human-fidelity-review-audit
+      PARKER_HUMAN_CORRECTED_REPRESENTATION_STORAGE_ROOT: /data/human-corrected-representations
+      PARKER_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT: /data/human-correction-audit
       # Reviewed Analysis Result — Explicit Owner Save. A wholly separate storage root from every
       # other store above, never nested inside any of them -- a saved analysis is never Evidence,
       # a derivative, Memory, or Knowledge.
@@ -126,6 +128,8 @@ services:
       - /mnt/parker-data/parker/corrected-preparations:/data/corrected-preparations
       - /mnt/parker-data/parker/human-fidelity-reviews:/data/human-fidelity-reviews
       - /mnt/parker-data/parker/human-fidelity-review-audit:/data/human-fidelity-review-audit
+      - /mnt/parker-data/parker/human-corrected-representations:/data/human-corrected-representations
+      - /mnt/parker-data/parker/human-correction-audit:/data/human-correction-audit
       - /mnt/parker-data/parker/saved-analyses:/data/saved-analyses
       - /mnt/parker-data/parker/document-ingestion-audit:/data/document-ingestion-audit
       # QMD Docker-Runtime Enablement. The Parker host's own

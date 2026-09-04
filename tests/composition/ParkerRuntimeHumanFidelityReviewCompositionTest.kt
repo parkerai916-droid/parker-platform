@@ -137,6 +137,21 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
         })
     }
 
+    @Test
+    fun `human correction purpose stores service and retrieval are production composed without public write route`() = runTest {
+        val roots = Roots.create()
+        val runtime = runtime(roots)
+        runtime.start()
+        assertTrue(runtime.purposeRegistry().isActive(HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE))
+        assertNotNull(runtime.privateField<GovernedHumanCorrectionService?>("governedHumanCorrectionService"))
+        assertNotNull(runtime.privateField<HumanCorrectedRepresentationStorage?>("humanCorrectedRepresentationStorage"))
+        assertNotNull(runtime.privateField<HumanCorrectionAudit?>("humanCorrectionAudit"))
+        assertNotNull(runtime.privateField<HumanCorrectedRepresentationRetrievalService?>("humanCorrectedRepresentationRetrievalService"))
+        assertNotNull(runtime.privateField<HumanCorrectionExactTargetRegistrar?>("humanCorrectionExactTargetRegistrar"))
+        assertFalse(ParkerRuntime::class.java.methods.any { it.name.contains("Correction", ignoreCase = true) })
+        runtime.shutdown()
+    }
+
     private fun runtime(roots: Roots) = ParkerRuntime(config(roots), RecordingParkerLogger())
 
     private fun config(roots: Roots) = ParkerRuntimeConfig(
@@ -155,6 +170,8 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
         knowledgeItemDurabilityLogPath = roots.directory("knowledge").resolve("knowledge.log").toString(),
         humanFidelityReviewStorageRootPath = roots.reviews.toString(),
         humanFidelityGovernanceAuditStorageRootPath = roots.audit.toString(),
+        humanCorrectedRepresentationStorageRootPath = roots.corrected.toString(),
+        humanCorrectionAuditStorageRootPath = roots.correctionAudit.toString(),
     )
 
     private fun loaderEnvironment(): Map<String, String> {
@@ -216,7 +233,13 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
         return field.get(this) as T
     }
 
-    private data class Roots(val base: Path, val reviews: Path, val audit: Path) {
+    private data class Roots(
+        val base: Path,
+        val reviews: Path,
+        val audit: Path,
+        val corrected: Path,
+        val correctionAudit: Path,
+    ) {
         fun directory(name: String): Path = base.resolve(name).also(Files::createDirectories)
         fun reviewFacts(): Long = Files.list(reviews).use { paths -> paths.filter(Files::isRegularFile).count() }
         fun auditFacts(): Long = Files.list(audit).use { paths -> paths.filter(Files::isRegularFile).count() }
@@ -224,8 +247,13 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
         companion object {
             fun create(): Roots {
                 val base = Files.createTempDirectory("a5-human-fidelity-composition")
-                return Roots(base, base.resolve("reviews").also(Files::createDirectories),
-                    base.resolve("audit").also(Files::createDirectories))
+                return Roots(
+                    base,
+                    base.resolve("reviews").also(Files::createDirectories),
+                    base.resolve("audit").also(Files::createDirectories),
+                    base.resolve("corrected").also(Files::createDirectories),
+                    base.resolve("correction-audit").also(Files::createDirectories),
+                )
             }
         }
     }

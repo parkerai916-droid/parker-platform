@@ -296,6 +296,8 @@ data class ParkerRuntimeConfig(
     val productionCommit: String? = null,
     val humanFidelityReviewStorageRootPath: String? = null,
     val humanFidelityGovernanceAuditStorageRootPath: String? = null,
+    val humanCorrectedRepresentationStorageRootPath: String? = null,
+    val humanCorrectionAuditStorageRootPath: String? = null,
 )
 
 /**
@@ -360,6 +362,8 @@ object ParkerRuntimeConfigLoader {
     const val KEY_PRODUCTION_COMMIT = "PARKER_PRODUCTION_COMMIT"
     const val KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT = "PARKER_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT"
     const val KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT = "PARKER_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT"
+    const val KEY_HUMAN_CORRECTED_REPRESENTATION_STORAGE_ROOT = "PARKER_HUMAN_CORRECTED_REPRESENTATION_STORAGE_ROOT"
+    const val KEY_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT = "PARKER_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -581,6 +585,10 @@ object ParkerRuntimeConfigLoader {
             humanFidelityReviewStorageRootPath = requireKey(environment, KEY_HUMAN_FIDELITY_REVIEW_STORAGE_ROOT),
             humanFidelityGovernanceAuditStorageRootPath =
                 requireKey(environment, KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT),
+            humanCorrectedRepresentationStorageRootPath =
+                environment[KEY_HUMAN_CORRECTED_REPRESENTATION_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
+            humanCorrectionAuditStorageRootPath =
+                environment[KEY_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
         )
     }
 

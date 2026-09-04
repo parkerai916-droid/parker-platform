@@ -31,8 +31,12 @@ import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionRequest
 import parker.core.interfaces.HumanVerificationRecord
 import parker.core.interfaces.HumanVerificationStorage
+import parker.core.interfaces.HumanFidelityReviewStorage
 import parker.core.interfaces.GovernedHumanFidelityReviewRecordingService
 import parker.core.interfaces.EffectiveHumanFidelityReviewProjector
+import parker.core.interfaces.GovernedHumanCorrectionService
+import parker.core.interfaces.HumanCorrectedRepresentationStorage
+import parker.core.interfaces.HumanCorrectionAudit
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeRetrieval
 import parker.core.interfaces.KnowledgeSubmission
@@ -114,6 +118,13 @@ import parker.core.runtime.FileSystemHumanFidelityReviewStorage
 import parker.core.runtime.DefaultGovernedHumanFidelityReviewRecordingService
 import parker.core.runtime.DefaultEffectiveHumanFidelityReviewProjector
 import parker.core.runtime.HumanFidelityReviewRecordingPermissionPolicy
+import parker.core.runtime.HumanCorrectionPermissionPolicy
+import parker.core.runtime.DefaultGovernedHumanCorrectionService
+import parker.core.runtime.FileSystemHumanCorrectedRepresentationStorage
+import parker.core.runtime.FileSystemHumanCorrectionAudit
+import parker.core.runtime.HumanCorrectedRepresentationRetrievalService
+import parker.core.runtime.DefaultHumanCorrectedRepresentationEligibilityEvaluator
+import parker.core.runtime.StoredHumanCorrectionProviderResolver
 import parker.core.runtime.PendingAnalysisCache
 import parker.core.runtime.SavedAnalysisCoordinator
 import parker.core.runtime.DurableMemoryCore
@@ -390,6 +401,11 @@ class ParkerRuntime(
     private var humanFidelityReviewExactTargetRegistrar: HumanFidelityReviewExactTargetRegistrar? = null
     // OI11R6V-A8A: read-only internal projection seam. It cannot mutate a review or derivative.
     private var effectiveHumanFidelityReviewProjector: EffectiveHumanFidelityReviewProjector? = null
+    private var governedHumanCorrectionService: GovernedHumanCorrectionService? = null
+    private var humanCorrectedRepresentationStorage: HumanCorrectedRepresentationStorage? = null
+    private var humanCorrectionAudit: HumanCorrectionAudit? = null
+    private var humanCorrectionExactTargetRegistrar: HumanCorrectionExactTargetRegistrar? = null
+    private var humanCorrectedRepresentationRetrievalService: HumanCorrectedRepresentationRetrievalService? = null
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -554,6 +570,14 @@ class ParkerRuntime(
                 "human fidelity review and governance audit roots must be configured together",
             )
         }
+        val humanCorrectionConfigured = when {
+            config.humanCorrectedRepresentationStorageRootPath == null && config.humanCorrectionAuditStorageRootPath == null -> false
+            config.humanCorrectedRepresentationStorageRootPath != null && config.humanCorrectionAuditStorageRootPath != null && humanFidelityReviewConfigured -> true
+            else -> throw ParkerRuntimeException.InvalidConfiguration(
+                ParkerRuntimeConfigLoader.KEY_HUMAN_CORRECTED_REPRESENTATION_STORAGE_ROOT,
+                "human-corrected representation and correction-audit roots require each other and human-fidelity storage",
+            )
+        }
         // Authorization Purpose Implementation Plan, Unit 5 ("Composition Wiring"): constructed at
         // the same composition stage as resourceRegistry/vocabulary above (Scope Lock §2.3 --
         // "composition-time registration... at the same composition stage ActionVocabulary/
@@ -571,6 +595,7 @@ class ParkerRuntime(
             if (humanFidelityReviewConfigured) {
                 HumanFidelityReviewRecordingPermissionPolicy.registerPurpose(authorizationPurposeRegistry)
             }
+            if (humanCorrectionConfigured) HumanCorrectionPermissionPolicy.registerPurpose(authorizationPurposeRegistry)
         }
         val toolRegistry = InMemoryToolRegistry(resourceRegistry)
         val moduleRegistry = InMemoryModuleRegistry(toolRegistry, resourceRegistry)
@@ -707,6 +732,12 @@ class ParkerRuntime(
                         mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
                     ),
                 )
+            }
+            if (humanCorrectionConfigured) {
+                vocabulary.register(ActionVocabularyEntry(
+                    verbPhrase = HumanCorrectionPermissionPolicy.CORRECT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
+                ))
             }
             // Controlled Agent Run Submission (Scope Lock Section 3.1): the one production
             // ActionVocabulary entry backing the new run-initiation permission check.
@@ -1002,7 +1033,7 @@ class ParkerRuntime(
                     authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
                     proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
                 ),
-            ) + if (humanFidelityReviewConfigured) listOf(
+            ) + (if (humanFidelityReviewConfigured) listOf(
                 PermissionPolicyRule(
                     action = PermissionAction.WRITE,
                     resourceType = ResourceType.DOCUMENT,
@@ -1018,10 +1049,27 @@ class ParkerRuntime(
                     authorizationPurpose = parker.core.interfaces.HUMAN_FIDELITY_REVIEW_RECORDING_PURPOSE,
                     proposedAction = HumanFidelityReviewRecordingPermissionPolicy.RECORD_ACTION_NAME,
                 ),
-            ) else emptyList(),
+            ) else emptyList()) + (if (humanCorrectionConfigured) listOf(
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = HumanCorrectionPermissionPolicy.CORRECT_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.HIGH_ASSURANCE,
+                    authorizationPurpose = parker.core.interfaces.HUMAN_TRANSCRIPTION_CORRECTION_PURPOSE,
+                    proposedAction = HumanCorrectionPermissionPolicy.CORRECT_ACTION_NAME,
+                ),
+            ) else emptyList()),
         )
         permissionEngine = DefaultPermissionEngine(identityService, permissionPolicy)
 
+        var composedHumanFidelityStorage: HumanFidelityReviewStorage? = null
         if (humanFidelityReviewConfigured) {
             val humanFidelityAudit = stage("Human fidelity governance audit construction") {
                 FileSystemHumanFidelityGovernanceAudit(
@@ -1034,6 +1082,7 @@ class ParkerRuntime(
                     humanFidelityAudit,
                 )
             }
+            composedHumanFidelityStorage = humanFidelityStorage
             val humanFidelityPermission = HumanFidelityReviewRecordingPermissionPolicy(
                 PrincipalId(config.ownerPrincipalId),
                 authorizationPurposeRegistry,
@@ -1175,6 +1224,39 @@ class ParkerRuntime(
         // own file extension (`.content`), never nested inside it (Scope Lock §4).
         val derivativeContentStorage = stage("Document Ingestion derivative content storage construction") {
             FileSystemDerivativeContentStorage(Path.of(config.derivativeContentStorageRootPath))
+        }
+        if (humanCorrectionConfigured) {
+            val correctionAudit = stage("Human correction audit construction") {
+                FileSystemHumanCorrectionAudit(Path.of(requireNotNull(config.humanCorrectionAuditStorageRootPath)))
+            }
+            val correctionStorage = stage("Human-corrected representation storage construction") {
+                FileSystemHumanCorrectedRepresentationStorage(
+                    Path.of(requireNotNull(config.humanCorrectedRepresentationStorageRootPath)),
+                )
+            }
+            val correctionPermission = HumanCorrectionPermissionPolicy(
+                PrincipalId(config.ownerPrincipalId), authorizationPurposeRegistry, permissionEngine,
+            )
+            governedHumanCorrectionService = DefaultGovernedHumanCorrectionService(
+                correctionPermission,
+                requireNotNull(composedHumanFidelityStorage),
+                requireNotNull(effectiveHumanFidelityReviewProjector),
+                StoredHumanCorrectionProviderResolver(derivativeGenerationStorage, derivativeContentStorage),
+                correctionStorage,
+                correctionAudit,
+            )
+            humanCorrectedRepresentationStorage = correctionStorage
+            humanCorrectionAudit = correctionAudit
+            humanCorrectedRepresentationRetrievalService = HumanCorrectedRepresentationRetrievalService(
+                correctionStorage,
+                DefaultHumanCorrectedRepresentationEligibilityEvaluator(
+                    requireNotNull(composedHumanFidelityStorage),
+                    requireNotNull(effectiveHumanFidelityReviewProjector),
+                ),
+            )
+            humanCorrectionExactTargetRegistrar = HumanCorrectionExactTargetRegistrar(
+                resourceRegistry, PrincipalId(config.ownerPrincipalId), clock,
+            )
         }
         val tierADocumentIngestionRouter = TierADocumentIngestionComposition.create(derivativeGenerationStorage, documentIngestionAudit, derivativeContentStorage)
         tierAOwnerInvocationCoordinator = TierAOwnerInvocationCoordinator(defaultEvidenceCustodian, tierADocumentIngestionRouter)
