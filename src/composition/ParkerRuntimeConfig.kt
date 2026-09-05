@@ -302,6 +302,12 @@ data class ParkerRuntimeConfig(
     val ownerHighAuthorityVerificationCredentialFilePath: String? = null,
     val ownerHighAuthorityPrincipalId: String? = null,
     val externalTranscriptionAuthorizationStorageRootPath: String? = null,
+    // CASE-1: all three co-required (present together or absent together), mirroring
+    // humanFidelityReviewStorageRootPath's own co-requirement discipline -- optional so a
+    // deployment that has not yet provisioned the new storage roots is unaffected.
+    val caseStorageRootPath: String? = null,
+    val caseAssignmentStorageRootPath: String? = null,
+    val caseGovernanceAuditLogPath: String? = null,
 )
 
 /**
@@ -372,6 +378,9 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE = "PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE"
     const val KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID = "PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID"
     const val KEY_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT = "PARKER_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT"
+    const val KEY_CASE_STORAGE_ROOT = "PARKER_CASE_STORAGE_ROOT"
+    const val KEY_CASE_ASSIGNMENT_STORAGE_ROOT = "PARKER_CASE_ASSIGNMENT_STORAGE_ROOT"
+    const val KEY_CASE_GOVERNANCE_AUDIT_LOG_PATH = "PARKER_CASE_GOVERNANCE_AUDIT_LOG_PATH"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -604,6 +613,9 @@ object ParkerRuntimeConfigLoader {
                 environment[KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID]?.takeIf { it.isNotBlank() },
             externalTranscriptionAuthorizationStorageRootPath =
                 environment[KEY_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
+            caseStorageRootPath = environment[KEY_CASE_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
+            caseAssignmentStorageRootPath = environment[KEY_CASE_ASSIGNMENT_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
+            caseGovernanceAuditLogPath = environment[KEY_CASE_GOVERNANCE_AUDIT_LOG_PATH]?.takeIf { it.isNotBlank() },
         )
     }
 

@@ -104,6 +104,10 @@ internal fun buildOwnerHttpAdapter(runtime: ParkerRuntime, config: ParkerRuntime
         discoverOcrDerivativeGenerationsAsOwner = runtime::discoverOcrDerivativeGenerationsAsOwner,
         recordHumanFidelityReviewAsOwner = runtime::recordHumanFidelityReviewAsOwner,
         projectEffectiveHumanFidelityReviewAsOwner = runtime::projectEffectiveHumanFidelityReviewAsOwner,
+        createCaseAsOwner = runtime::createCaseAsOwner,
+        listCasesAsOwner = runtime::listCasesAsOwner,
+        currentCaseAssignmentAsOwner = runtime::currentCaseAssignmentAsOwner,
+        assignEvidenceToCaseAsOwner = runtime::assignEvidenceToCaseAsOwner,
     )
 
 fun main(args: Array<String>) = runBlocking {

@@ -102,6 +102,10 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         discoverOcrDerivativeGenerationsAsOwner = runtime::discoverOcrDerivativeGenerationsAsOwner,
         recordHumanFidelityReviewAsOwner = runtime::recordHumanFidelityReviewAsOwner,
         projectEffectiveHumanFidelityReviewAsOwner = runtime::projectEffectiveHumanFidelityReviewAsOwner,
+        createCaseAsOwner = runtime::createCaseAsOwner,
+        listCasesAsOwner = runtime::listCasesAsOwner,
+        currentCaseAssignmentAsOwner = runtime::currentCaseAssignmentAsOwner,
+        assignEvidenceToCaseAsOwner = runtime::assignEvidenceToCaseAsOwner,
     )
     return OwnerUiRuntimeSession(
         startRuntime = runtime::start,

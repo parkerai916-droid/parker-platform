@@ -70,6 +70,9 @@ class OwnerEvidenceHttpServerTest {
         doclingPythonExecutablePath = syntheticBridgeShellExecutable(),
         doclingBridgeScriptPath = doclingBridgeScriptPath,
         doclingTimeoutMillis = 30_000L,
+        caseStorageRootPath = Files.createTempDirectory("evidence-http-cases").toString(),
+        caseAssignmentStorageRootPath = Files.createTempDirectory("evidence-http-case-assignments").toString(),
+        caseGovernanceAuditLogPath = Files.createTempDirectory("evidence-http-case-audit").resolve("case-audit.log").toString(),
     )
 
     private fun writeFakeBridgeScript(directory: Path, exitCode: Int, stdout: String): Path {
@@ -140,6 +143,10 @@ class OwnerEvidenceHttpServerTest {
             discoverOcrDerivativeGenerationsAsOwner = discoverOcrDerivativeGenerations ?: runtime::discoverOcrDerivativeGenerationsAsOwner,
             listHumanVerificationRecordsAsOwner = humanVerificationRecords ?: runtime::listHumanVerificationRecordsAsOwner,
             projectEffectiveHumanFidelityReviewAsOwner = projectEffectiveHumanFidelityReview,
+            createCaseAsOwner = runtime::createCaseAsOwner,
+            listCasesAsOwner = runtime::listCasesAsOwner,
+            currentCaseAssignmentAsOwner = runtime::currentCaseAssignmentAsOwner,
+            assignEvidenceToCaseAsOwner = runtime::assignEvidenceToCaseAsOwner,
             analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
             saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
             retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
@@ -950,6 +957,13 @@ class OwnerEvidenceHttpServerTest {
      */
     private fun getPaired(harness: Harness, path: String): HttpResponse<String> = send(
         HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path")).header("Cookie", pairedCookie(harness)).GET().build(),
+    )
+
+    /** CASE-1: a genuinely authenticated (paired-cookie, never the stale Bearer-token scheme) POST, mirroring [getPaired]'s own real-authentication discipline. */
+    private fun postPaired(harness: Harness, path: String, body: String): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
+            .header("Cookie", pairedCookie(harness)).header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build(),
     )
 
     private fun postJson(harness: Harness, path: String, body: String, authToken: String? = token): HttpResponse<String> {
@@ -2361,6 +2375,165 @@ class OwnerEvidenceHttpServerTest {
             // the evidence or generation identity itself.
             assertFalse(section.contains("input.value = evidenceArtifactId"))
             assertFalse(section.contains("input.value = derivativeGenerationId"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // CASE-1 — Owner Case / Matter Classification for Evidence.
+
+    @Test
+    fun `GET owner-cases requires authentication`() {
+        val harness = startHarness("")
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/cases")).GET().build())
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `POST owner-cases (case creation) requires authentication`() {
+        val harness = startHarness("")
+        try {
+            val response = send(
+                HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/cases"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"caseName\":\"Unauthorised attempt\"}")).build(),
+            )
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `POST owner-evidence case assignment requires authentication`() {
+        val harness = startHarness("")
+        try {
+            val response = send(
+                HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/evidence-1/case"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"caseId\":\"case-1\"}")).build(),
+            )
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `case metadata is never exposed through an unauthenticated GET owner-cases response`() {
+        val harness = startHarness("")
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/cases")).GET().build())
+            assertEquals(401, response.statusCode())
+            assertFalse(response.body().contains("caseName"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `an authenticated case creation and listing round-trip works over real HTTP`() {
+        val harness = startHarness("")
+        try {
+            val created = postPaired(harness, "/owner/cases", "{\"caseName\":\"Parker Development / Test Evidence\"}")
+            assertEquals(200, created.statusCode())
+            assertEquals("CREATED", extractField(created.body(), "status"))
+
+            val listed = getPaired(harness, "/owner/cases")
+            assertEquals(200, listed.statusCode())
+            assertTrue(listed.body().contains("Parker Development / Test Evidence"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `case creation with a blank case name fails closed over real HTTP`() {
+        val harness = startHarness("")
+        try {
+            val response = postPaired(harness, "/owner/cases", "{\"caseName\":\"   \"}")
+            assertEquals(400, response.statusCode())
+            assertEquals("INVALID_CASE_NAME", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `assigning a nonexistent evidence artefact to a real case fails closed over real HTTP`() {
+        val harness = startHarness("")
+        try {
+            val created = postPaired(harness, "/owner/cases", "{\"caseName\":\"A real case\"}")
+            val caseId = extractField(created.body(), "caseId") ?: error("expected a caseId in the creation response")
+
+            val response = postPaired(harness, "/owner/evidence/evidence-never-registered/case", "{\"caseId\":\"$caseId\"}")
+            assertEquals(404, response.statusCode())
+            assertEquals("UNKNOWN_EVIDENCE", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the served page exposes a Case filter with All cases and Unassigned choices, defaulting to All`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            assertTrue(body.contains("id=\"caseFilter\""))
+            assertTrue(body.contains("<option value=\"all\">All cases</option>"))
+            assertTrue(body.contains("<option value=\"unassigned\">Unassigned</option>"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the case filter narrows the existing evidence library before the existing filename-Evidence-ID search applies, never adding document-content search`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val start = body.indexOf("function visibleRows")
+            val visibleRowsBody = body.substring(start, body.indexOf("\nfunction ", start + 1))
+            assertTrue(visibleRowsBody.contains("caseMatches"))
+            // The existing filename/Evidence-ID search is unchanged -- documentName and
+            // evidenceArtifactId are still exactly what is matched, never derivative/OCR text.
+            assertTrue(visibleRowsBody.contains("documentName(row).toLocaleLowerCase().includes(query)"))
+            assertTrue(visibleRowsBody.contains("(row.evidenceArtifactId || '').toLocaleLowerCase().includes(query)"))
+            assertFalse(visibleRowsBody.contains("recognisedText"))
+            assertFalse(visibleRowsBody.contains("transcri", ignoreCase = true))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the case assignment panel offers a case selector and case creation, never a free-text CaseId field`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val start = body.indexOf("function buildCaseAssignmentPanel")
+            assertTrue(start >= 0, "buildCaseAssignmentPanel must be present in the served page")
+            val panelBody = body.substring(start, body.indexOf("\nfunction ", start + 1))
+            assertTrue(panelBody.contains("createElement('select')"))
+            assertTrue(panelBody.contains("Create a new case"))
+            assertTrue(panelBody.contains("/owner/cases"))
+            assertTrue(panelBody.contains("/case"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `each evidence row displays its Case classification alongside the existing columns`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            assertTrue(body.contains("<th>Case</th>"))
+            assertTrue(body.contains("'Case: ' + (row.caseName || 'Unassigned')"))
         } finally {
             harness.shutdown()
         }

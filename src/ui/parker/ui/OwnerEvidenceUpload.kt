@@ -195,6 +195,26 @@ interface OwnerEvidenceOperations {
     ): OwnerHumanFidelityStatus = OwnerHumanFidelityStatus(null, null, 0, 0, false, "DENIED", "MALFORMED_OR_UNSUPPORTED_STATE")
 
     /**
+     * CASE-1 — Owner Case / Matter Classification for Evidence. Creates one new case/matter with
+     * an owner-supplied, human-readable [caseName]. The resulting [CaseId] is server-minted --
+     * the owner never supplies or types one. Never touches evidence, derivatives, or HFR.
+     */
+    suspend fun createCase(caseName: String): OwnerCaseCreationOutcome =
+        OwnerCaseCreationOutcome.Failed("Case classification is not configured in this deployment")
+
+    /** CASE-1. Every defined case, for the Owner UI's case filter/selector -- never an evidence listing. */
+    suspend fun listCases(): List<OwnerCaseView> = emptyList()
+
+    /**
+     * CASE-1. Assigns or explicitly reassigns [evidenceArtifactId] to [caseId] ([caseId] `null`
+     * deliberately returns it to Unassigned). Fails closed if either the evidence or the case does
+     * not exist. Never mutates evidence identity, bytes, source hashes, derivative records, or HFR
+     * records; never invokes a provider.
+     */
+    suspend fun assignEvidenceToCase(evidenceArtifactId: EvidenceArtifactId, caseId: String?): OwnerCaseAssignmentOutcome =
+        OwnerCaseAssignmentOutcome.Failed("Case classification is not configured in this deployment")
+
+    /**
      * Minimum Production Document Pipeline — Local Reasoning Implementation.
      * Submits one or more already-admitted evidence derivative generations
      * ([selections] -- identities the caller already possesses from a prior
@@ -248,7 +268,36 @@ data class OwnerRegisteredEvidenceView(
     val mediaType: String?,
     val originalFileName: String?,
     val registeredAt: String? = null,
+    // CASE-1: the current case classification for this exact evidence artefact -- both null means
+    // Unassigned. Never editable through this view; assignment happens only through
+    // OwnerEvidenceOperations.assignEvidenceToCase.
+    val caseId: String? = null,
+    val caseName: String? = null,
 )
+
+/** CASE-1. One owner-defined case/matter, for display and for the Owner UI's case filter/selector. */
+data class OwnerCaseView(
+    val caseId: String,
+    val caseName: String,
+    val createdAt: String,
+)
+
+/** The truthful result of one [OwnerEvidenceOperations.createCase] call. */
+sealed interface OwnerCaseCreationOutcome {
+    data class Created(val case: OwnerCaseView) : OwnerCaseCreationOutcome
+    data class InvalidCaseName(val reason: String) : OwnerCaseCreationOutcome
+    data class Failed(val reason: String) : OwnerCaseCreationOutcome
+}
+
+/** The truthful result of one [OwnerEvidenceOperations.assignEvidenceToCase] call. */
+sealed interface OwnerCaseAssignmentOutcome {
+    data class Assigned(val caseId: String) : OwnerCaseAssignmentOutcome
+    data class Reassigned(val caseId: String?, val previousCaseId: String) : OwnerCaseAssignmentOutcome
+    data object NoChange : OwnerCaseAssignmentOutcome
+    data object UnknownEvidence : OwnerCaseAssignmentOutcome
+    data object UnknownCase : OwnerCaseAssignmentOutcome
+    data class Failed(val reason: String) : OwnerCaseAssignmentOutcome
+}
 
 data class OwnerOrdinaryRegionAuthorizationView(
     val status: String,

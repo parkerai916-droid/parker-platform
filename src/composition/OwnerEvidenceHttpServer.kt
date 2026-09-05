@@ -120,6 +120,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/pair", PairingHandler())
         httpServer.createContext("/owner/logout", LogoutHandler())
         httpServer.createContext("/owner/evidence", EvidenceHandler())
+        httpServer.createContext("/owner/cases", CasesHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
@@ -399,6 +400,8 @@ class OwnerEvidenceHttpServer(
                         handleGetHumanFidelityReview(exchange, segments[0], segments[2])
                     segments.size == 3 && segments[1] == "human-fidelity-review" && method == "POST" ->
                         handleRecordHumanFidelityReview(exchange, segments[0], segments[2])
+                    segments.size == 2 && segments[1] == "case" && method == "POST" ->
+                        handleAssignEvidenceToCase(exchange, segments[0])
                     else -> {
                         runCatching { exchange.requestBody.use { it.readBytes() } }
                         writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -423,6 +426,8 @@ class OwnerEvidenceHttpServer(
                     "mediaType" to item.mediaType,
                     "originalFileName" to item.originalFileName,
                     "registeredAt" to item.registeredAt,
+                    "caseId" to item.caseId,
+                    "caseName" to item.caseName,
                 )
             })))
         }
@@ -930,6 +935,106 @@ class OwnerEvidenceHttpServer(
                     500 to jsonObject("status" to "FAILED", "reason" to outcome.reason)
                 parker.ui.OwnerHumanFidelityReviewRecordingOutcome.NotConfigured ->
                     409 to jsonObject("status" to "NOT_CONFIGURED")
+            }
+            writeJson(exchange, status, body)
+        }
+
+        /**
+         * CASE-1. Assigns or explicitly reassigns one exact evidence artefact to a case (or, when
+         * the request body's `caseId` is absent/blank, deliberately returns it to Unassigned).
+         * Never accepts a caller-supplied case name here -- only an already-known [CaseId] the
+         * owner obtained from a prior [handleListCases]/[handleCreateCase] response.
+         */
+        private fun handleAssignEvidenceToCase(exchange: HttpExchange, rawEvidenceArtifactId: String) {
+            val evidenceArtifactId = try {
+                EvidenceArtifactId(rawEvidenceArtifactId)
+            } catch (e: IllegalArgumentException) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val bodyBytes = try {
+                exchange.requestBody.use { readBounded(it, MAX_CASE_ASSIGNMENT_REQUEST_BODY_BYTES) }
+            } catch (e: RequestBodyTooLargeException) {
+                writeJson(exchange, 400, jsonObject("error" to "request body too large"))
+                return
+            }
+            val caseId = try {
+                parseCaseAssignmentRequestBody(bodyBytes)
+            } catch (e: JsonParseException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                return
+            }
+            val outcome = runBlocking { operations.assignEvidenceToCase(evidenceArtifactId, caseId) }
+            val (status, body) = when (outcome) {
+                is parker.ui.OwnerCaseAssignmentOutcome.Assigned -> 200 to jsonObject("status" to "ASSIGNED", "caseId" to outcome.caseId)
+                is parker.ui.OwnerCaseAssignmentOutcome.Reassigned ->
+                    200 to jsonObject("status" to "REASSIGNED", "caseId" to outcome.caseId, "previousCaseId" to outcome.previousCaseId)
+                parker.ui.OwnerCaseAssignmentOutcome.NoChange -> 200 to jsonObject("status" to "NO_CHANGE")
+                parker.ui.OwnerCaseAssignmentOutcome.UnknownEvidence -> 404 to jsonObject("status" to "UNKNOWN_EVIDENCE")
+                parker.ui.OwnerCaseAssignmentOutcome.UnknownCase -> 404 to jsonObject("status" to "UNKNOWN_CASE")
+                is parker.ui.OwnerCaseAssignmentOutcome.Failed -> 500 to jsonObject("status" to "FAILED", "reason" to outcome.reason)
+            }
+            writeJson(exchange, status, body)
+        }
+    }
+
+    // ---- /owner/cases ----------------------------------------------------------------------
+
+    private inner class CasesHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) {
+                    rejectUnauthorised(exchange)
+                    return
+                }
+                when (exchange.requestMethod) {
+                    "GET" -> handleListCases(exchange)
+                    "POST" -> handleCreateCase(exchange)
+                    else -> {
+                        runCatching { exchange.requestBody.use { it.readBytes() } }
+                        writeJson(exchange, 404, jsonObject("error" to "not found"))
+                    }
+                }
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: unexpected failure handling ${exchange.requestURI}", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally {
+                exchange.close()
+            }
+        }
+
+        /** CASE-1. Every defined case -- for the Owner UI's case filter/selector. Never an evidence listing. */
+        private fun handleListCases(exchange: HttpExchange) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val cases = runBlocking { operations.listCases() }
+            writeJson(exchange, 200, jsonObject("cases" to jsonArray(cases.map {
+                jsonObject("caseId" to it.caseId, "caseName" to it.caseName, "createdAt" to it.createdAt)
+            })))
+        }
+
+        /** CASE-1. Creates one new case/matter from an owner-supplied case name. The resulting CaseId is server-minted. */
+        private fun handleCreateCase(exchange: HttpExchange) {
+            val bodyBytes = try {
+                exchange.requestBody.use { readBounded(it, MAX_CASE_CREATION_REQUEST_BODY_BYTES) }
+            } catch (e: RequestBodyTooLargeException) {
+                writeJson(exchange, 400, jsonObject("error" to "request body too large"))
+                return
+            }
+            val caseName = try {
+                parseCaseCreationRequestBody(bodyBytes)
+            } catch (e: JsonParseException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                return
+            }
+            val outcome = runBlocking { operations.createCase(caseName) }
+            val (status, body) = when (outcome) {
+                is parker.ui.OwnerCaseCreationOutcome.Created -> 200 to jsonObject(
+                    "status" to "CREATED",
+                    "case" to jsonObject("caseId" to outcome.case.caseId, "caseName" to outcome.case.caseName, "createdAt" to outcome.case.createdAt),
+                )
+                is parker.ui.OwnerCaseCreationOutcome.InvalidCaseName -> 400 to jsonObject("status" to "INVALID_CASE_NAME", "reason" to outcome.reason)
+                is parker.ui.OwnerCaseCreationOutcome.Failed -> 500 to jsonObject("status" to "FAILED", "reason" to outcome.reason)
             }
             writeJson(exchange, status, body)
         }
@@ -1590,6 +1695,12 @@ class OwnerEvidenceHttpServer(
          * structure/escaping overhead.
          */
         const val MAX_HUMAN_FIDELITY_REVIEW_REQUEST_BODY_BYTES: Long = 64L * 1024L
+
+        /** CASE-1. `POST /owner/cases`'s own tiny single-field body -- just the owner-supplied case name. */
+        const val MAX_CASE_CREATION_REQUEST_BODY_BYTES: Long = 4L * 1024L
+
+        /** CASE-1. `POST /owner/evidence/{id}/case`'s own tiny single-field body -- just an already-known CaseId, or none for Unassigned. */
+        const val MAX_CASE_ASSIGNMENT_REQUEST_BODY_BYTES: Long = 4L * 1024L
     }
 }
 
@@ -1713,6 +1824,25 @@ private fun parsePostEgressContinuationRequest(bodyBytes:ByteArray):PostEgressCo
  * `profileVersion` handling -- [SimpleJsonReader] parses only objects, arrays, and strings, never
  * raw JSON numbers or booleans.
  */
+/** CASE-1. Parses `POST /owner/cases`'s `{"caseName": "..."}` body into the owner-supplied case name. */
+private fun parseCaseCreationRequestBody(bodyBytes: ByteArray): String {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    return obj["caseName"] as? String ?: throw JsonParseException("expected a 'caseName' string")
+}
+
+/**
+ * CASE-1. Parses `POST /owner/evidence/{id}/case`'s `{"caseId": "..."}` body into an already-known
+ * [parker.core.interfaces.CaseId], or `null` (Unassigned) when the field is absent or blank --
+ * the owner never types a CaseId; this value always comes back verbatim from a prior
+ * `/owner/cases` response or from "Unassigned" being explicitly chosen.
+ */
+private fun parseCaseAssignmentRequestBody(bodyBytes: ByteArray): String? {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    return (obj["caseId"] as? String)?.takeIf { it.isNotBlank() }
+}
+
 private fun parseHumanFidelityReviewSubmissionRequestBody(bodyBytes: ByteArray): parker.ui.OwnerHumanFidelityReviewSubmission {
     val text = String(bodyBytes, StandardCharsets.UTF_8)
     val root = SimpleJsonReader(text).parseRootValue()
@@ -2170,12 +2300,13 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <p><button id="refreshEvidenceButton">Refresh existing evidence</button></p>
 <p id="status"></p>
 <div class="library-controls">
+  <label>Case <select id="caseFilter"><option value="all">All cases</option><option value="unassigned">Unassigned</option></select></label>
   <label>Search <input id="evidenceSearch" type="search" placeholder="Filename or Evidence ID"></label>
   <label>Sort <select id="evidenceSort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="filename">Filename A–Z</option><option value="status">Status</option></select></label>
   <label>Filter <select id="evidenceFilter"><option value="all">All</option><option value="needs-processing">Needs processing</option><option value="processed">Processed</option><option value="human-reviewed">Human reviewed</option><option value="corrected">Corrected</option></select></label>
 </div>
 <table>
-  <thead><tr><th>Document</th><th>Uploaded / Imported</th><th>Status</th><th>Pages</th><th>Size</th><th>Analyse</th><th>Actions</th></tr></thead>
+  <thead><tr><th>Document</th><th>Uploaded / Imported</th><th>Status</th><th>Pages</th><th>Case</th><th>Size</th><th>Analyse</th><th>Actions</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 <h2>Analyse Selected Documents</h2>
@@ -2196,6 +2327,42 @@ let rows = [];
 let expandedIndex = null;
 const detailsExpanded = new Set();
 let enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription readiness has not been loaded.' };
+// CASE-1: every defined case, for the case filter and the per-row assign/change-case panel.
+let casesList = [];
+
+async function loadCases() {
+  try {
+    const resp = await fetch('/owner/cases', { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) { casesList = []; render(); return; }
+    const result = await resp.json();
+    casesList = result.cases || [];
+    render();
+  } catch (e) { /* Case list request failed safely; the prior list (if any) is kept. */ }
+}
+
+function renderCaseFilterOptions() {
+  const select = document.getElementById('caseFilter');
+  const previous = select.value;
+  select.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = 'all'; allOpt.textContent = 'All cases';
+  select.appendChild(allOpt);
+  const unassignedOpt = document.createElement('option');
+  unassignedOpt.value = 'unassigned'; unassignedOpt.textContent = 'Unassigned';
+  select.appendChild(unassignedOpt);
+  casesList.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.caseId; opt.textContent = c.caseName;
+    select.appendChild(opt);
+  });
+  if ([...select.options].some(o => o.value === previous)) select.value = previous;
+}
+
+function caseMatches(row, caseFilterValue) {
+  if (caseFilterValue === 'all') return true;
+  if (caseFilterValue === 'unassigned') return !row.caseId;
+  return row.caseId === caseFilterValue;
+}
 
 document.getElementById('logoutButton').onclick = async () => {
   await fetch('/owner/logout', { method: 'POST', credentials: 'same-origin' });
@@ -2239,8 +2406,11 @@ function visibleRows() {
   const query = document.getElementById('evidenceSearch').value.trim().toLocaleLowerCase();
   const filter = document.getElementById('evidenceFilter').value;
   const sort = document.getElementById('evidenceSort').value;
+  const caseFilterValue = document.getElementById('caseFilter').value;
+  // CASE-1: case filter narrows the set first, then the existing filename/Evidence-ID search
+  // applies within that narrowed set -- both are plain AND-ed conditions of the same filter pass.
   const result = rows.map((row, index) => ({row, index})).filter(({row}) =>
-    filterMatches(row, filter) && (!query || documentName(row).toLocaleLowerCase().includes(query) ||
+    caseMatches(row, caseFilterValue) && filterMatches(row, filter) && (!query || documentName(row).toLocaleLowerCase().includes(query) ||
       (row.evidenceArtifactId || '').toLocaleLowerCase().includes(query)));
   result.sort((a, b) => {
     if (sort === 'filename') return documentName(a.row).localeCompare(documentName(b.row));
@@ -2262,6 +2432,7 @@ function appendTextCell(tr, value, className) {
 
 function render() {
   document.getElementById('enhancedReadinessStatus').textContent = enhancedReadiness.message;
+  renderCaseFilterOptions();
   const tbody = document.getElementById('rows');
   tbody.innerHTML = '';
   visibleRows().forEach(({row, index}) => {
@@ -2353,6 +2524,20 @@ function render() {
     appendTextCell(tr, row.registeredAt ? new Date(row.registeredAt).toLocaleString() : 'Unknown');
     appendTextCell(tr, humanStatus(row), 'status-label');
     appendTextCell(tr, row.pageCount == null ? '—' : String(row.pageCount));
+    // CASE-1: the row's own current case classification, never owner-editable inline -- "Assign
+    // case"/"Change case" opens the exact-target assignment panel below, the only place a change
+    // is ever made.
+    const caseTd = document.createElement('td');
+    const caseLabel = document.createElement('div');
+    caseLabel.textContent = 'Case: ' + (row.caseName || 'Unassigned');
+    caseTd.appendChild(caseLabel);
+    if (row.evidenceArtifactId) {
+      const caseButton = document.createElement('button');
+      caseButton.textContent = row.caseAssignmentExpanded ? 'Hide' : (row.caseId ? 'Change case' : 'Assign case');
+      caseButton.onclick = () => { row.caseAssignmentExpanded = !row.caseAssignmentExpanded; render(); };
+      caseTd.appendChild(caseButton);
+    }
+    tr.appendChild(caseTd);
     appendTextCell(tr, formatBytes(row.byteLength));
 
     // Minimum Production Document Pipeline -- a row is selectable for analysis once it carries a
@@ -2398,16 +2583,25 @@ function render() {
     if (detailsExpanded.has(row.evidenceArtifactId || index)) {
       const detailsTr = document.createElement('tr');
       const detailsTd = document.createElement('td');
-      detailsTd.colSpan = 7;
+      detailsTd.colSpan = 8;
       detailsTd.appendChild(buildEvidenceDetails(row));
       detailsTr.appendChild(detailsTd);
       tbody.appendChild(detailsTr);
     }
 
+    if (row.caseAssignmentExpanded) {
+      const caseAssignTr = document.createElement('tr');
+      const caseAssignTd = document.createElement('td');
+      caseAssignTd.colSpan = 8;
+      caseAssignTd.appendChild(buildCaseAssignmentPanel(row));
+      caseAssignTr.appendChild(caseAssignTd);
+      tbody.appendChild(caseAssignTr);
+    }
+
     if (row.acquisitionDecision || row.acquisitionError || row.acquisitionResult) {
       const decisionTr = document.createElement('tr');
       const decisionTd = document.createElement('td');
-      decisionTd.colSpan = 7;
+      decisionTd.colSpan = 8;
       decisionTd.appendChild(buildAcquisitionPanel(row, index));
       decisionTr.appendChild(decisionTd);
       tbody.appendChild(decisionTr);
@@ -2416,7 +2610,7 @@ function render() {
     if (row.discoveryExpanded && row.ocrDerivativeGenerations) {
       const discoveryTr = document.createElement('tr');
       const discoveryTd = document.createElement('td');
-      discoveryTd.colSpan = 7;
+      discoveryTd.colSpan = 8;
       discoveryTd.appendChild(buildOcrDerivativeGenerationDiscoveryPanel(row, index));
       discoveryTr.appendChild(discoveryTd);
       tbody.appendChild(discoveryTr);
@@ -2425,7 +2619,7 @@ function render() {
     if (expandedIndex === index && (row.content || row.contentError)) {
       const detailTr = document.createElement('tr');
       const detailTd = document.createElement('td');
-      detailTd.colSpan = 7;
+      detailTd.colSpan = 8;
       if (row.content) {
         detailTd.appendChild(buildContentPanel(row.content));
       } else {
@@ -2440,7 +2634,7 @@ function render() {
     if (expandedIndex === index && (row.ocrContent || row.ocrContentError)) {
       const detailTr = document.createElement('tr');
       const detailTd = document.createElement('td');
-      detailTd.colSpan = 7;
+      detailTd.colSpan = 8;
       if (row.ocrContent) {
         detailTd.appendChild(buildOcrContentPanel(row.ocrContent, row.ocrDerivativeGenerationId, row.evidenceArtifactId));
       } else {
@@ -2461,6 +2655,107 @@ function formatBytes(value) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// CASE-1: the exact-target assignment panel for one evidence row -- the owner selects an
+// already-defined case from a dropdown (never types a CaseId) or creates a new case inline, then
+// explicitly clicks Save. The owner-typed case name is only ever sent to POST /owner/cases; the
+// assignment request itself only ever carries an already-known CaseId (or none, for Unassigned).
+function buildCaseAssignmentPanel(row) {
+  const container = document.createElement('div');
+  container.className = 'content-panel';
+  appendField(container, 'Evidence', row.evidenceArtifactId);
+  appendField(container, 'Current case', row.caseName || 'Unassigned');
+
+  const selectLabel = document.createElement('label');
+  selectLabel.textContent = 'Assign to: ';
+  const select = document.createElement('select');
+  const unassignedOpt = document.createElement('option');
+  unassignedOpt.value = ''; unassignedOpt.textContent = 'Unassigned';
+  select.appendChild(unassignedOpt);
+  casesList.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.caseId; opt.textContent = c.caseName;
+    select.appendChild(opt);
+  });
+  const preSelected = row.pendingCaseSelection || row.caseId || '';
+  if ([...select.options].some(o => o.value === preSelected)) select.value = preSelected;
+  selectLabel.appendChild(select);
+  container.appendChild(selectLabel);
+
+  const resultP = document.createElement('p');
+  resultP.className = 'note';
+
+  const saveButton = document.createElement('button');
+  saveButton.textContent = 'Save';
+  saveButton.onclick = async () => {
+    resultP.textContent = '';
+    saveButton.disabled = true;
+    try {
+      const resp = await fetch(
+        `/owner/evidence/${'$'}{row.evidenceArtifactId}/case`,
+        { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ caseId: select.value || undefined }) },
+      );
+      const result = await resp.json();
+      if (result.status === 'ASSIGNED' || result.status === 'REASSIGNED') {
+        row.caseId = result.caseId || null;
+        row.caseName = row.caseId ? ((casesList.find(c => c.caseId === row.caseId) || {}).caseName || null) : null;
+        row.caseAssignmentExpanded = false;
+        row.pendingCaseSelection = null;
+        render();
+      } else if (result.status === 'NO_CHANGE') {
+        row.caseAssignmentExpanded = false;
+        render();
+      } else {
+        resultP.textContent = result.status + (result.reason ? (': ' + result.reason) : '');
+      }
+    } catch (e) {
+      resultP.textContent = 'Case assignment request failed safely.';
+    } finally {
+      saveButton.disabled = false;
+    }
+  };
+  container.appendChild(saveButton);
+  container.appendChild(resultP);
+
+  const newCaseHeading = document.createElement('h4');
+  newCaseHeading.textContent = 'Create a new case';
+  container.appendChild(newCaseHeading);
+  const newCaseInput = document.createElement('input');
+  newCaseInput.type = 'text';
+  newCaseInput.placeholder = 'New case name';
+  const newCaseButton = document.createElement('button');
+  newCaseButton.textContent = 'Create case';
+  const newCaseResult = document.createElement('p');
+  newCaseResult.className = 'note';
+  newCaseButton.onclick = async () => {
+    newCaseResult.textContent = '';
+    const name = newCaseInput.value.trim();
+    if (!name) { newCaseResult.textContent = 'Enter a case name.'; return; }
+    newCaseButton.disabled = true;
+    try {
+      const resp = await fetch(
+        '/owner/cases',
+        { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ caseName: name }) },
+      );
+      const result = await resp.json();
+      if (result.status === 'CREATED') {
+        row.pendingCaseSelection = result.case.caseId;
+        await loadCases();
+      } else {
+        newCaseResult.textContent = result.status + (result.reason ? (': ' + result.reason) : '');
+      }
+    } catch (e) {
+      newCaseResult.textContent = 'Case creation request failed safely.';
+    } finally {
+      newCaseButton.disabled = false;
+    }
+  };
+  container.appendChild(newCaseInput);
+  container.appendChild(newCaseButton);
+  container.appendChild(newCaseResult);
+
+  return container;
 }
 
 function buildEvidenceDetails(row) {
@@ -3072,16 +3367,24 @@ async function loadExistingEvidence(successMessage) {
     const result = await resp.json();
     if (!resp.ok) { status.textContent = result.error || 'Existing evidence list unavailable.'; return; }
     const existingById = new Map(rows.filter(r => r.evidenceArtifactId).map(r => [r.evidenceArtifactId, r]));
-    rows = (result.evidence || []).map(item => Object.assign({
-      originalFileName: item.originalFileName,
-      byteLength: item.byteLength,
-      status: 'READY_TO_PROCESS',
-      evidenceArtifactId: item.evidenceArtifactId,
-      message: 'Durably registered evidence',
-      sha256: item.sha256,
-      mediaType: item.mediaType,
-      registeredAt: item.registeredAt,
-    }, existingById.get(item.evidenceArtifactId) || {}));
+    rows = (result.evidence || []).map(item => {
+      const merged = Object.assign({
+        originalFileName: item.originalFileName,
+        byteLength: item.byteLength,
+        status: 'READY_TO_PROCESS',
+        evidenceArtifactId: item.evidenceArtifactId,
+        message: 'Durably registered evidence',
+        sha256: item.sha256,
+        mediaType: item.mediaType,
+        registeredAt: item.registeredAt,
+      }, existingById.get(item.evidenceArtifactId) || {});
+      // CASE-1: the case classification can change between refreshes (reassignment) -- unlike the
+      // other fields above, it must always come from this exact fresh response, never from a
+      // possibly-stale cached row.
+      merged.caseId = item.caseId || null;
+      merged.caseName = item.caseName || null;
+      return merged;
+    });
     status.textContent = successMessage || '';
     render();
   } catch (e) { status.textContent = 'Existing evidence list request failed safely.'; }
@@ -3091,6 +3394,7 @@ document.getElementById('refreshEvidenceButton').onclick = () => loadExistingEvi
 document.getElementById('evidenceSearch').oninput = render;
 document.getElementById('evidenceSort').onchange = render;
 document.getElementById('evidenceFilter').onchange = render;
+document.getElementById('caseFilter').onchange = render;
 
 function buildAcquisitionPanel(row, index) {
   const panel = document.createElement('div');
@@ -3826,6 +4130,7 @@ async function viewSavedAnalysis(savedAnalysisId) {
 
 document.getElementById('refreshSavedAnalysesButton').onclick = refreshSavedAnalyses;
 loadExistingEvidence();
+loadCases();
 refreshSavedAnalyses();
 </script>
 </body>

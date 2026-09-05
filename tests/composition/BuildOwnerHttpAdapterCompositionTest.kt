@@ -59,6 +59,9 @@ class BuildOwnerHttpAdapterCompositionTest {
         doclingTimeoutMillis = 30_000L,
         humanFidelityReviewStorageRootPath = Files.createTempDirectory("build-owner-http-adapter-hfr-reviews").toString(),
         humanFidelityGovernanceAuditStorageRootPath = Files.createTempDirectory("build-owner-http-adapter-hfr-audit").toString(),
+        caseStorageRootPath = Files.createTempDirectory("build-owner-http-adapter-cases").toString(),
+        caseAssignmentStorageRootPath = Files.createTempDirectory("build-owner-http-adapter-case-assignments").toString(),
+        caseGovernanceAuditLogPath = Files.createTempDirectory("build-owner-http-adapter-case-audit").resolve("case-audit.log").toString(),
     )
 
     private fun minimalPngBytes(): ByteArray = ByteArrayOutputStream().also {
@@ -132,6 +135,20 @@ class BuildOwnerHttpAdapterCompositionTest {
     private suspend fun registerImage(runtime: ParkerRuntime): EvidenceArtifactId {
         val registered = assertIs<EvidenceRegistrationOutcome.Registered>(
             runtime.submitEvidence(PrincipalId(ownerPrincipalId), CandidateEvidenceArtifact(minimalPngBytes(), receivedMediaType = "image/png"), candidateProvenance(), "test-document"),
+        )
+        return registered.acceptedEvidenceArtifact.evidenceArtifactId
+    }
+
+    /** CASE-1: a distinct pixel colour yields distinct content bytes, hence a distinct [EvidenceArtifactId], unlike [registerImage]'s own fixed single-pixel image. */
+    private fun markedPngBytes(rgb: Int): ByteArray = ByteArrayOutputStream().also {
+        val image = BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB)
+        image.setRGB(0, 0, rgb)
+        ImageIO.write(image, "png", it)
+    }.toByteArray()
+
+    private suspend fun registerDistinctImage(runtime: ParkerRuntime, rgb: Int): EvidenceArtifactId {
+        val registered = assertIs<EvidenceRegistrationOutcome.Registered>(
+            runtime.submitEvidence(PrincipalId(ownerPrincipalId), CandidateEvidenceArtifact(markedPngBytes(rgb), receivedMediaType = "image/png"), candidateProvenance(), "test-document"),
         )
         return registered.acceptedEvidenceArtifact.evidenceArtifactId
     }
@@ -361,6 +378,40 @@ class BuildOwnerHttpAdapterCompositionTest {
     }
 
     @Test
+    fun `evidence listing displays the assigned case name and Unassigned, preserving existing row order, without mutating derivative or HFR state`() = runTest {
+        val scriptDir = Files.createTempDirectory("build-owner-http-adapter-scripts-case-ui")
+        val cfg = config(writeFakeBridgeScript(scriptDir, successJson()).toString())
+        val runtime = ParkerRuntime(cfg, RecordingParkerLogger())
+        runtime.start()
+        try {
+            val evidenceA = registerDistinctImage(runtime, 0xFF0000)
+            val evidenceB = registerDistinctImage(runtime, 0x00FF00)
+            val adapter = buildOwnerHttpAdapter(runtime, cfg)
+
+            val created = assertIs<parker.ui.OwnerCaseCreationOutcome.Created>(adapter.createCase("Parker Development / Test Evidence"))
+            assertIs<parker.ui.OwnerCaseAssignmentOutcome.Assigned>(adapter.assignEvidenceToCase(evidenceA, created.case.caseId))
+
+            // Case-1's own join must never reorder the existing evidence listing.
+            val rawOrder = runtime.listRegisteredEvidenceAsOwner().map { it.evidenceArtifactId.value }
+            val listed = adapter.listRegisteredEvidence()
+            assertEquals(rawOrder, listed.map { it.evidenceArtifactId })
+
+            val rowA = listed.single { it.evidenceArtifactId == evidenceA.value }
+            val rowB = listed.single { it.evidenceArtifactId == evidenceB.value }
+            assertEquals(created.case.caseId, rowA.caseId)
+            assertEquals("Parker Development / Test Evidence", rowA.caseName)
+            assertEquals(null, rowB.caseId)
+            assertEquals(null, rowB.caseName)
+
+            // No derivative was ever created, and no HFR record exists, for either evidence artefact.
+            assertEquals(emptyList(), adapter.discoverOcrDerivativeGenerations(evidenceA))
+            assertEquals(emptyList(), adapter.discoverOcrDerivativeGenerations(evidenceB))
+        } finally {
+            runtime.shutdown()
+        }
+    }
+
+    @Test
     fun `dual-composition parity -- both Main-kt and OwnerUiRuntimeComposition-kt supply the same real discovery dependency`() {
         // UI-INGESTION-8C's root cause was these two independent, deliberately-separate
         // OwnerUiEvidenceRuntimeAdapter(...) constructions (see
@@ -395,6 +446,28 @@ class BuildOwnerHttpAdapterCompositionTest {
         val compositionSource = Path.of("src/composition/OwnerUiRuntimeComposition.kt").toFile().readText()
 
         listOf("recordHumanFidelityReviewAsOwner", "projectEffectiveHumanFidelityReviewAsOwner").forEach { member ->
+            assertTrue(
+                mainSource.contains("$member = runtime::$member"),
+                "Main.kt (the real production entry point) must wire $member",
+            )
+            assertTrue(
+                compositionSource.contains("$member = runtime::$member"),
+                "OwnerUiRuntimeComposition.kt must also wire $member",
+            )
+        }
+    }
+
+    @Test
+    fun `dual-composition parity -- both Main-kt and OwnerUiRuntimeComposition-kt supply the same real CASE-1 dependencies`() {
+        // CASE-1's own explicit composition warning: a previous derivative-discovery
+        // implementation passed tests but failed in production because only one of the two owner
+        // adapter composition roots was wired. CaseAssignmentCoordinator introduces four new
+        // runtime dependencies into OwnerUiEvidenceRuntimeAdapter; both roots must independently
+        // wire all four.
+        val mainSource = Path.of("src/composition/Main.kt").toFile().readText()
+        val compositionSource = Path.of("src/composition/OwnerUiRuntimeComposition.kt").toFile().readText()
+
+        listOf("createCaseAsOwner", "listCasesAsOwner", "currentCaseAssignmentAsOwner", "assignEvidenceToCaseAsOwner").forEach { member ->
             assertTrue(
                 mainSource.contains("$member = runtime::$member"),
                 "Main.kt (the real production entry point) must wire $member",

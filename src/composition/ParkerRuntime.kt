@@ -217,6 +217,14 @@ import parker.core.runtime.TierBOcrContentRetrievalCoordinator
 import parker.core.runtime.TierBOcrDerivativeGenerationDiscoveryCoordinator
 import parker.core.runtime.TierBOcrOwnerInvocationCoordinator
 import parker.core.runtime.TierBOcrHumanFidelityReviewCoordinator
+import parker.core.runtime.CaseAssignmentCoordinator
+import parker.core.runtime.CaseAssignmentOutcome
+import parker.core.runtime.CaseCreationOutcome
+import parker.core.runtime.FileSystemCaseAssignmentStorage
+import parker.core.runtime.FileSystemCaseGovernanceAudit
+import parker.core.runtime.FileSystemCaseStorage
+import parker.core.interfaces.CaseId
+import parker.core.interfaces.CaseRecord
 import parker.core.runtime.TierBHumanFidelityReviewSubmission
 import parker.core.runtime.TierBFidelityDiscrepancySubmission
 import parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome
@@ -440,6 +448,9 @@ class ParkerRuntime(
     // existing (unmodified) HFR recording service/storage/projector above -- null unless
     // humanFidelityReviewConfigured, mirroring every other optional collaborator in this file.
     private var tierBOcrHumanFidelityReviewCoordinator: TierBOcrHumanFidelityReviewCoordinator? = null
+    // CASE-1: null unless caseStorageRootPath/caseAssignmentStorageRootPath/caseGovernanceAuditLogPath
+    // are all configured together, mirroring every other optional collaborator in this file.
+    private var caseAssignmentCoordinator: CaseAssignmentCoordinator? = null
     private var governedHumanCorrectionService: GovernedHumanCorrectionService? = null
     private var humanCorrectedRepresentationStorage: HumanCorrectedRepresentationStorage? = null
     private var humanCorrectionAudit: HumanCorrectionAudit? = null
@@ -615,6 +626,16 @@ class ParkerRuntime(
             else -> throw ParkerRuntimeException.InvalidConfiguration(
                 ParkerRuntimeConfigLoader.KEY_HUMAN_CORRECTED_REPRESENTATION_STORAGE_ROOT,
                 "human-corrected representation and correction-audit roots require each other and human-fidelity storage",
+            )
+        }
+        // CASE-1: all three roots (case records, evidence-to-case assignments, governance audit)
+        // are co-required, mirroring humanFidelityReviewConfigured's own all-or-nothing discipline.
+        val caseClassificationConfigured = when {
+            config.caseStorageRootPath == null && config.caseAssignmentStorageRootPath == null && config.caseGovernanceAuditLogPath == null -> false
+            config.caseStorageRootPath != null && config.caseAssignmentStorageRootPath != null && config.caseGovernanceAuditLogPath != null -> true
+            else -> throw ParkerRuntimeException.InvalidConfiguration(
+                ParkerRuntimeConfigLoader.KEY_CASE_STORAGE_ROOT,
+                "case, case-assignment, and case-governance-audit roots must be configured together",
             )
         }
         // Authorization Purpose Implementation Plan, Unit 5 ("Composition Wiring"): constructed at
@@ -1905,6 +1926,25 @@ class ParkerRuntime(
                 clock,
             )
         }
+        if (caseClassificationConfigured) {
+            val caseStorage = stage("Case storage construction") {
+                FileSystemCaseStorage(Path.of(requireNotNull(config.caseStorageRootPath)))
+            }
+            val caseAssignmentStorage = stage("Case assignment storage construction") {
+                FileSystemCaseAssignmentStorage(Path.of(requireNotNull(config.caseAssignmentStorageRootPath)))
+            }
+            val caseGovernanceAudit = stage("Case governance audit construction") {
+                FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath)))
+            }
+            caseAssignmentCoordinator = CaseAssignmentCoordinator(
+                caseStorage,
+                caseAssignmentStorage,
+                caseGovernanceAudit,
+                evidenceCustodian,
+                PrincipalId(config.ownerPrincipalId),
+                clock,
+            )
+        }
 
         // Construct the parent saved-analysis store before its separately governed review
         // sub-store; both validate their roots during construction.
@@ -2887,6 +2927,45 @@ class ParkerRuntime(
         val coordinator = tierBOcrHumanFidelityReviewCoordinator
             ?: return TierBEffectiveHumanFidelityReviewOutcome.FailedClosed
         return coordinator.projectEffectiveReview(evidenceArtifactId, derivativeGenerationId)
+    }
+
+    /**
+     * CASE-1 — Owner Case / Matter Classification for Evidence. Creates one new case/matter with
+     * an owner-supplied [caseName] -- **explicit, individually-authorized owner invocation only**,
+     * mirroring every other owner-only method in this file: no `requestingPrincipalId` parameter.
+     * Mints a fresh [CaseId] the owner never supplies. No provider involvement of any kind.
+     */
+    suspend fun createCaseAsOwner(caseName: String): CaseCreationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val coordinator = caseAssignmentCoordinator ?: return CaseCreationOutcome.Failure("Case classification is not configured in this deployment")
+        return coordinator.createCase(caseName)
+    }
+
+    /** CASE-1. Every defined case, for the Owner UI's case filter/selector. Read-only; performs no evidence enumeration. */
+    suspend fun listCasesAsOwner(): List<CaseRecord> {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return caseAssignmentCoordinator?.listCases() ?: emptyList()
+    }
+
+    /** CASE-1. The current case assignment for one exact [evidenceArtifactId], or `null` if Unassigned or if case classification is not configured. */
+    suspend fun currentCaseAssignmentAsOwner(evidenceArtifactId: EvidenceArtifactId): CaseId? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return caseAssignmentCoordinator?.currentAssignment(evidenceArtifactId)
+    }
+
+    /**
+     * CASE-1. Assigns or explicitly reassigns [evidenceArtifactId] to [caseId] ([caseId] `null`
+     * deliberately returns it to Unassigned) -- **explicit, individually-authorized owner
+     * invocation only**. Validates both [evidenceArtifactId] (already exists in governed evidence
+     * custody, via the existing, unmodified [EvidenceCustodian.retrieve] boundary) and [caseId]
+     * (already exists) before ever writing anything; fails closed otherwise. No provider
+     * involvement of any kind; never mutates evidence bytes, source hashes, derivative records, or
+     * HFR records.
+     */
+    suspend fun assignEvidenceToCaseAsOwner(evidenceArtifactId: EvidenceArtifactId, caseId: CaseId?): CaseAssignmentOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val coordinator = caseAssignmentCoordinator ?: return CaseAssignmentOutcome.Failure("Case classification is not configured in this deployment")
+        return coordinator.assign(evidenceArtifactId, caseId)
     }
 
     /** Exact-pair, metadata-only human-review records; ordering conveys no precedence. */

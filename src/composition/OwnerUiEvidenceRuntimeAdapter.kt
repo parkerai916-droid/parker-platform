@@ -249,13 +249,73 @@ class OwnerUiEvidenceRuntimeAdapter(
         EvidenceArtifactId,
         DerivativeGenerationId,
     ) -> parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome)? = null,
+    // CASE-1: null defaults preserve "not configured" for every existing caller unless explicitly
+    // wired -- mirroring the HFR lambda parameters immediately above.
+    private val createCaseAsOwner: (suspend (String) -> parker.core.runtime.CaseCreationOutcome)? = null,
+    private val listCasesAsOwner: (suspend () -> List<parker.core.interfaces.CaseRecord>)? = null,
+    private val currentCaseAssignmentAsOwner: (suspend (EvidenceArtifactId) -> parker.core.interfaces.CaseId?)? = null,
+    private val assignEvidenceToCaseAsOwner: (suspend (EvidenceArtifactId, parker.core.interfaces.CaseId?) -> parker.core.runtime.CaseAssignmentOutcome)? = null,
 ) : OwnerEvidenceOperations {
 
-    override suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> =
-        listRegisteredEvidenceAsOwner().map {
-            OwnerRegisteredEvidenceView(it.evidenceArtifactId.value, it.sha256, it.byteLength,
-                it.mediaType, it.originalFileName, it.registeredAt.toString())
+    override suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> {
+        val evidence = listRegisteredEvidenceAsOwner()
+        val currentAssignment = currentCaseAssignmentAsOwner
+        if (currentAssignment == null) {
+            return evidence.map {
+                OwnerRegisteredEvidenceView(it.evidenceArtifactId.value, it.sha256, it.byteLength,
+                    it.mediaType, it.originalFileName, it.registeredAt.toString())
+            }
         }
+        // CASE-1: one map of every defined case, built once per listing call, so each row's join is
+        // a plain lookup -- never a per-row case-listing call. Never an evidence enumeration of its
+        // own: the evidence identities themselves come entirely from listRegisteredEvidenceAsOwner.
+        val caseNamesById = (listCasesAsOwner?.invoke() ?: emptyList()).associate { it.caseId.value to it.caseName }
+        return evidence.map { item ->
+            val caseId = currentAssignment(item.evidenceArtifactId)
+            OwnerRegisteredEvidenceView(
+                item.evidenceArtifactId.value, item.sha256, item.byteLength,
+                item.mediaType, item.originalFileName, item.registeredAt.toString(),
+                caseId = caseId?.value,
+                caseName = caseId?.let { caseNamesById[it.value] },
+            )
+        }
+    }
+
+    override suspend fun createCase(caseName: String): parker.ui.OwnerCaseCreationOutcome {
+        val create = createCaseAsOwner
+            ?: return parker.ui.OwnerCaseCreationOutcome.Failed("Case classification is not configured in this deployment")
+        return when (val outcome = create(caseName)) {
+            is parker.core.runtime.CaseCreationOutcome.Created -> parker.ui.OwnerCaseCreationOutcome.Created(
+                parker.ui.OwnerCaseView(outcome.case.caseId.value, outcome.case.caseName, outcome.case.createdAt.toString()),
+            )
+            is parker.core.runtime.CaseCreationOutcome.InvalidCaseName -> parker.ui.OwnerCaseCreationOutcome.InvalidCaseName(outcome.reason)
+            is parker.core.runtime.CaseCreationOutcome.Failure -> parker.ui.OwnerCaseCreationOutcome.Failed(outcome.reason)
+        }
+    }
+
+    override suspend fun listCases(): List<parker.ui.OwnerCaseView> =
+        (listCasesAsOwner?.invoke() ?: emptyList()).map {
+            parker.ui.OwnerCaseView(it.caseId.value, it.caseName, it.createdAt.toString())
+        }
+
+    override suspend fun assignEvidenceToCase(evidenceArtifactId: EvidenceArtifactId, caseId: String?): parker.ui.OwnerCaseAssignmentOutcome {
+        val assign = assignEvidenceToCaseAsOwner
+            ?: return parker.ui.OwnerCaseAssignmentOutcome.Failed("Case classification is not configured in this deployment")
+        val typedCaseId = try {
+            caseId?.let { parker.core.interfaces.CaseId(it) }
+        } catch (e: IllegalArgumentException) {
+            return parker.ui.OwnerCaseAssignmentOutcome.UnknownCase
+        }
+        return when (val outcome = assign(evidenceArtifactId, typedCaseId)) {
+            is parker.core.runtime.CaseAssignmentOutcome.Assigned -> parker.ui.OwnerCaseAssignmentOutcome.Assigned(requireNotNull(outcome.record.caseId).value)
+            is parker.core.runtime.CaseAssignmentOutcome.Reassigned ->
+                parker.ui.OwnerCaseAssignmentOutcome.Reassigned(outcome.record.caseId?.value, outcome.previousCaseId.value)
+            parker.core.runtime.CaseAssignmentOutcome.NoChange -> parker.ui.OwnerCaseAssignmentOutcome.NoChange
+            parker.core.runtime.CaseAssignmentOutcome.UnknownEvidence -> parker.ui.OwnerCaseAssignmentOutcome.UnknownEvidence
+            parker.core.runtime.CaseAssignmentOutcome.UnknownCase -> parker.ui.OwnerCaseAssignmentOutcome.UnknownCase
+            is parker.core.runtime.CaseAssignmentOutcome.Failure -> parker.ui.OwnerCaseAssignmentOutcome.Failed(outcome.reason)
+        }
+    }
 
     override suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView {
         val governed = governedDecisionAsOwner(evidenceArtifactId)
