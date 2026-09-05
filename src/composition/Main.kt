@@ -61,6 +61,49 @@ private fun runOwnerUiPairingAdmin(args: List<String>, environment: Map<String, 
  * status -- so EOF exits through this same graceful path and yields exit
  * code `0`, never a second, independent shutdown implementation.
  */
+
+/**
+ * UI-INGESTION-8D: the exact [OwnerUiEvidenceRuntimeAdapter] construction the real production
+ * entry point ([main], below) uses to wire [OwnerEvidenceHttpServer]'s `operations:` seam.
+ * Pulled out to its own top-level, `internal`-visible function purely so a test can call this
+ * *exact* construction site directly and assert every [ParkerRuntime] capability it wires is the
+ * real method reference, not an adapter default -- [main] itself remains untestable as a whole
+ * (it starts a real runtime, binds a real port, blocks on a shutdown signal), so this is the
+ * narrowest seam that makes the actual production wiring path itself verifiable. Behaviourally
+ * unchanged from the inline construction this replaces: same adapter type, same arguments, same
+ * order.
+ */
+internal fun buildOwnerHttpAdapter(runtime: ParkerRuntime, config: ParkerRuntimeConfig): OwnerUiEvidenceRuntimeAdapter =
+    OwnerUiEvidenceRuntimeAdapter(
+        ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
+        listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
+        importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
+        importUploadedEvidenceFileAsOwner = runtime::importUploadedEvidenceFileAsOwner,
+        invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
+        analyseEvidence = runtime::analyseEvidence,
+        retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
+        invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
+        retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
+        analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
+        saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
+        retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
+        listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
+        externalReadiness = runtime::ownerEnhancedTranscriptionReadiness,
+        invokeExternalTranscriptionAsOwner = runtime::invokeExternalTranscriptionAsOwner,
+        listHumanVerificationRecordsAsOwner = runtime::listHumanVerificationRecordsAsOwner,
+        governedDecisionAsOwner = { projectGovernedDecision(runtime.evaluateGovernedAcquisitionAsOwner(it)) },
+        ordinaryRegionProposalAsOwner = runtime::proposeOrdinaryRegionIngestionAsOwner,
+        ordinaryRegionAuthorizationStatusAsOwner = runtime::ordinaryRegionAuthorizationStatusAsOwner,
+        authorizeOrdinaryRegionAsOwner = runtime::authorizeOrdinaryRegionIngestionAsOwner,
+        executeOrdinaryRegionAsOwner = runtime::executeOrdinaryRegionIngestionAsOwner,
+        executeGovernedAsOwner = { id, expected ->
+            projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
+        },
+        externalTranscriptionAuthorizationStatusAsOwner = runtime::externalTranscriptionAuthorizationStatusAsOwner,
+        authorizeExternalTranscriptionAsOwner = runtime::authorizeExternalTranscriptionAsOwner,
+        discoverOcrDerivativeGenerationsAsOwner = runtime::discoverOcrDerivativeGenerationsAsOwner,
+    )
+
 fun main(args: Array<String>) = runBlocking {
     // Config hasn't loaded yet, so its own logLevel isn't known -- this bootstrap logger uses
     // ConsoleParkerLogger's own default (LogLevel.INFO) and is used for nothing beyond reporting
@@ -128,34 +171,7 @@ fun main(args: Array<String>) = runBlocking {
     // or not at all). Reuses the exact same OwnerEvidenceOperations seam the Compose Desktop
     // owner UI already drives -- this is a transport, never a second evidence-ingress mechanism.
     val ownerHttpServer = if (config.ownerHttpPort != null) {
-        val adapter = OwnerUiEvidenceRuntimeAdapter(
-            ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
-            listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
-            importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
-            importUploadedEvidenceFileAsOwner = runtime::importUploadedEvidenceFileAsOwner,
-            invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
-            analyseEvidence = runtime::analyseEvidence,
-            retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
-            invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
-            retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
-            analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
-            saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
-            retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
-            listSavedAnalysesAsOwner = runtime::listSavedAnalysesAsOwner,
-            externalReadiness = runtime::ownerEnhancedTranscriptionReadiness,
-            invokeExternalTranscriptionAsOwner = runtime::invokeExternalTranscriptionAsOwner,
-            listHumanVerificationRecordsAsOwner = runtime::listHumanVerificationRecordsAsOwner,
-            governedDecisionAsOwner = { projectGovernedDecision(runtime.evaluateGovernedAcquisitionAsOwner(it)) },
-            ordinaryRegionProposalAsOwner = runtime::proposeOrdinaryRegionIngestionAsOwner,
-            ordinaryRegionAuthorizationStatusAsOwner = runtime::ordinaryRegionAuthorizationStatusAsOwner,
-            authorizeOrdinaryRegionAsOwner = runtime::authorizeOrdinaryRegionIngestionAsOwner,
-            executeOrdinaryRegionAsOwner = runtime::executeOrdinaryRegionIngestionAsOwner,
-            executeGovernedAsOwner = { id, expected ->
-                projectGovernedExecution(runtime.executeGovernedAcquisitionAsOwner(id, expected))
-            },
-            externalTranscriptionAuthorizationStatusAsOwner = runtime::externalTranscriptionAuthorizationStatusAsOwner,
-            authorizeExternalTranscriptionAsOwner = runtime::authorizeExternalTranscriptionAsOwner,
-        )
+        val adapter = buildOwnerHttpAdapter(runtime, config)
         OwnerEvidenceHttpServer(
             bindAddress = config.ownerHttpBindAddress,
             port = config.ownerHttpPort,
