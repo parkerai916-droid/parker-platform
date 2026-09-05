@@ -62,6 +62,31 @@ class FidelityFirstExternalTranscriptionTest {
         }
     }
 
+    // UI-INGESTION-6 regression: reproduces the exact reported production defect --
+    // OpenAiResponsesExternalTranscriptionAdapter.buildRequestBody's own binding requirement,
+    // exercised before transport, for the fidelity-first profile. Neither existing adapter test
+    // file previously exercised this profile with a null or mismatched binding.
+    @Test fun `missing execution binding fails closed before transport for the fidelity-first profile`() = runTest {
+        val transport = FakeTransport(envelope(payload()))
+        val requestWithoutBinding = request().let {
+            ExternalTranscriptionRequest(it.processingRepresentation, it.maximumPageCount, it.expectedPageCount, executionBinding = null)
+        }
+        assertFailsWith<IllegalArgumentException> { adapter(transport).transcribe(requestWithoutBinding) }
+        assertEquals(0, transport.calls, "a missing binding must fail before any provider call")
+    }
+
+    @Test fun `execution binding whose profileId does not match the accepted profile fails closed before transport`() = runTest {
+        val transport = FakeTransport(envelope(payload()))
+        val mismatched = request().let {
+            ExternalTranscriptionRequest(
+                it.processingRepresentation, it.maximumPageCount, it.expectedPageCount,
+                executionBinding = ExternalTranscriptionExecutionBinding("request-1", "attempt-1", "some-other-profile-id"),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> { adapter(transport).transcribe(mismatched) }
+        assertEquals(0, transport.calls, "a mismatched profileId must fail before any provider call")
+    }
+
     @Test fun `frozen instruction and schema identities are deterministic`() {
         assertEquals(FIDELITY_FIRST_INSTRUCTION_SHA256, sha256Hex(FIDELITY_FIRST_INSTRUCTION.toByteArray()))
         assertEquals(FIDELITY_FIRST_SCHEMA_SHA256, sha256Hex(FIDELITY_FIRST_SCHEMA_CANONICAL.toByteArray()))

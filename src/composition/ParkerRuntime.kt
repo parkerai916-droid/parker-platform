@@ -25,6 +25,8 @@ import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceDeletionResult
 import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceManifestRetrievalResult
+import parker.core.interfaces.ExternalTranscriptionExecutionBinding
 import parker.core.interfaces.ExternalTranscriptionMechanism
 import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
 import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
@@ -143,6 +145,7 @@ import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.runtime.FidelityFirstEffectiveConfiguration
 import parker.core.runtime.FileSystemFidelityFirstAcceptanceAuthorityStorage
 import parker.core.runtime.FileSystemFidelityFirstAttemptLedger
+import parker.core.runtime.toExecutionBinding
 import parker.core.runtime.FileSystemRegionProviderStateStore
 import parker.core.runtime.GovernedRegionTranscriptionExecutionCoordinator
 import parker.core.runtime.JdkOpenAiResponsesTransport
@@ -390,6 +393,21 @@ class ParkerRuntime(
     // PARKER_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT is configured, preserving prior
     // behavior exactly for every deployment that does not yet opt in.
     private var externalTranscriptionAuthorizationCoordinator: parker.core.runtime.ExternalTranscriptionOwnerAuthorizationCoordinator? = null
+    // UI-INGESTION-6: promoted from a buildAndRegisterRuntimeGraph-local val to a field so
+    // invokeExternalTranscriptionAsOwner (a separate, later-invoked method) can reuse the exact
+    // same transport instance already shared by the acceptance/region adapters, rather than
+    // constructing a new one per owner click.
+    private lateinit var openAiTransport: JdkOpenAiResponsesTransport
+    // UI-INGESTION-6: the same fidelity-first attempt ledger the (bootstrap-only)
+    // FidelityFirstAcceptanceCoordinator already uses -- reused, not duplicated, so every
+    // fidelity-first provider attempt (acceptance or ordinary owner-triggered) is tracked in one
+    // place. Optional/additive: null unless PARKER_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT is
+    // configured, in which case ordinary enhanced-transcription execution fails closed rather than
+    // proceeding without call-budget enforcement.
+    private var fidelityFirstAttemptLedger: parker.core.runtime.FileSystemFidelityFirstAttemptLedger? = null
+    // UI-INGESTION-6: promoted alongside openAiTransport for the same reason -- needed by
+    // invokeExternalTranscriptionAsOwner's fresh-per-call coordinator construction.
+    private lateinit var tierBDerivativeGenerationCoordinator: DerivativeGenerationCoordinator
 
     // Minimum Production Document Pipeline — Local Reasoning Implementation. Held as its own
     // narrow class, mirroring tierBOcrContentRetrievalCoordinator's own isolation -- no other
@@ -1603,7 +1621,7 @@ class ParkerRuntime(
         // own required (non-nullable) constructor parameter -- a fresh ApacheCommonsCsvExtractor is
         // supplied purely to satisfy it; this Tier B instance never calls ingestCsv/ingestEml/
         // ingestDocx/ingestPdf, only the new ingestOcr.
-        val tierBDerivativeGenerationCoordinator = DerivativeGenerationCoordinator(
+        tierBDerivativeGenerationCoordinator = DerivativeGenerationCoordinator(
             csvExtractor = ApacheCommonsCsvExtractor(),
             storage = derivativeGenerationStorage,
             audit = documentIngestionAudit,
@@ -1611,7 +1629,7 @@ class ParkerRuntime(
         )
         // One transport implementation is shared by the ordinary (currently disabled while the
         // profile is ACCEPTANCE_PENDING) and region-bound adapters. Construction performs no I/O.
-        val openAiTransport = JdkOpenAiResponsesTransport()
+        openAiTransport = JdkOpenAiResponsesTransport()
         val externalTranscriptionMechanism: ExternalTranscriptionMechanism =
             when (openAiExternalTranscriptionBackendReadiness) {
                 OpenAiExternalTranscriptionBackendReadiness.Ready ->
@@ -1667,6 +1685,7 @@ class ParkerRuntime(
         val credential = config.openAiApiCredential
         val embeddedCommit = buildIdentity()
         val acceptanceAttemptLedger = attemptRoot?.let { FileSystemFidelityFirstAttemptLedger(Path.of(it)) }
+        fidelityFirstAttemptLedger = acceptanceAttemptLedger
         val readinessDiagnostic = RuntimeReadinessDiagnostic.fromEvaluated(
             config, embeddedCommit, openAiExternalTranscriptionReadiness,
         )
@@ -2480,7 +2499,88 @@ class ParkerRuntime(
         if (authorization != null && !authorization.isAuthorized(evidenceArtifactId)) {
             return ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised
         }
-        return externalTranscriptionOwnerInvocationCoordinator.invoke(evidenceArtifactId)
+        return invokeExternalTranscriptionWithFreshBinding(evidenceArtifactId)
+    }
+
+    /**
+     * UI-INGESTION-6: the fidelity-first adapter requires a non-null [ExternalTranscriptionExecutionBinding]
+     * whose profileId matches the accepted profile (`OpenAiResponsesExternalTranscriptionAdapter.buildRequestBody`).
+     * [externalTranscriptionOwnerInvocationCoordinator] was built once at startup with no binding, so it fails
+     * that requirement before transport.execute(...) -- exactly the reported defect, and never a provider call.
+     *
+     * This mirrors [FidelityFirstAcceptanceCoordinator.invoke]'s own existing, governed pattern exactly: resolve
+     * the exact source once, construct one fresh [FidelityFirstExecutionIdentity] and one fresh
+     * [ExternalTranscriptionOwnerInvocationCoordinator] bound to it, and track the attempt through the same
+     * [FileSystemFidelityFirstAttemptLedger] the acceptance-bootstrap path already uses -- never a second,
+     * parallel ledger. Unlike that bootstrap path, no pre-issued [FidelityFirstAcceptanceAuthority] is required
+     * or constructed here: that authority/lifecycle-pending gate is specific to the one-time acceptance proof,
+     * not to ordinary post-acceptance execution. requestId/attemptId/executionId are freshly server-generated
+     * per call (never owner/browser-supplied, never reused across evidence artifacts or separate attempts);
+     * profileId is read directly from the currently loaded, accepted profile. If the ledger is not configured,
+     * this fails closed rather than proceeding without call-budget enforcement.
+     */
+    private suspend fun invokeExternalTranscriptionWithFreshBinding(
+        evidenceArtifactId: EvidenceArtifactId,
+    ): ExternalTranscriptionOwnerInvocationOutcome {
+        val readyProfile = openAiExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready
+            ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
+        val ledger = fidelityFirstAttemptLedger
+            ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
+        val credential = config.openAiApiCredential
+            ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
+        val ownerPrincipalId = PrincipalId(config.ownerPrincipalId)
+        val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
+            is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
+            is EvidenceManifestRetrievalResult.NotFound -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestNotFound(evidenceArtifactId)
+            is EvidenceManifestRetrievalResult.Rejected -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected(evidenceArtifactId)
+        }
+        if (manifest.evidenceArtifactId != evidenceArtifactId) return ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected(evidenceArtifactId)
+        val mediaType = manifest.receivedMediaType
+            ?: return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
+        val profile = readyProfile.profile
+        val identity = try {
+            parker.core.runtime.OrdinaryFidelityFirstExecutionIdentity.create(
+                evidenceArtifactId = evidenceArtifactId.value,
+                sourceSha256 = manifest.sha256,
+                sourceByteLength = manifest.byteLength,
+                sourceMediaType = mediaType,
+                repositoryCommit = requireNotNull(buildIdentity()),
+                modelSelectionRule = profile.modelSelectionRule,
+                transcriptionProfileId = profile.transcriptionProfileId,
+                instructionSha256 = requireNotNull(profile.instructionSha256),
+                structuredSchemaSha256 = requireNotNull(profile.structuredSchemaSha256),
+                processingProfileIdentity = profile.processingProfileIdentity,
+            )
+        } catch (_: Exception) {
+            return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
+        }
+        val tracker = parker.core.runtime.FidelityFirstAttemptTracker(ledger, identity)
+        try {
+            tracker.authorised()
+            tracker.preflightPassed()
+        } catch (_: Exception) {
+            return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
+        }
+        val binding = identity.toExecutionBinding()
+        val mechanism = OpenAiResponsesExternalTranscriptionAdapter(
+            readiness = readyProfile, credential = credential, transport = openAiTransport, transportLifecycleObserver = tracker,
+        )
+        val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(
+            ownerPrincipalId, permissionEngine, evidenceCustodian, mechanism,
+            OcrStructuredResultValidator(), tierBDerivativeGenerationCoordinator,
+            invocationObserver = tracker, executionBinding = binding,
+        )
+        return try {
+            when (val outcome = coordinator.invoke(evidenceArtifactId)) {
+                is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> {
+                    tracker.terminalSuccess(outcome.record.derivativeGenerationId.value); outcome
+                }
+                else -> { runCatching { tracker.terminalFailure() }; outcome }
+            }
+        } catch (e: Exception) {
+            runCatching { tracker.terminalFailure() }
+            throw e
+        }
     }
 
     /** Read-only, exact-target owner authorization status. Never invokes a provider. */
