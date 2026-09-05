@@ -731,7 +731,7 @@ class OwnerUiEvidenceRuntimeAdapter(
             val severity = runCatching { parker.core.interfaces.FidelityDiscrepancySeverity.valueOf(d.severity) }
                 .getOrElse { return parker.ui.OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission("Unknown discrepancy severity '${d.severity}'") }
             parker.core.runtime.TierBFidelityDiscrepancySubmission(
-                d.pageNumber, d.startCodePointInclusive, d.endCodePointExclusive,
+                d.pageNumber, d.exactText,
                 classification, severity, d.reason, d.explicitClassificationDetail,
             )
         }

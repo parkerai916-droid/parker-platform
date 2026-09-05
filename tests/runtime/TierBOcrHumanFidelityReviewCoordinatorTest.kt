@@ -125,7 +125,7 @@ class TierBOcrHumanFidelityReviewCoordinatorTest {
     private fun discrepancySubmission(text: String, pages: List<Int> = listOf(1)) = TierBHumanFidelityReviewSubmission(
         HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY, pages, "One material discrepancy against the source.",
         listOf(TierBFidelityDiscrepancySubmission(
-            1, 0, text.codePointCount(0, text.length).coerceAtMost(3),
+            1, text.take(3),
             FidelityDiscrepancyClassification.TRANSCRIPTION_DIFFERENCE, FidelityDiscrepancySeverity.MATERIAL,
             "Name misspelled relative to the source",
         )),
@@ -283,7 +283,7 @@ class TierBOcrHumanFidelityReviewCoordinatorTest {
 
         val passWithDiscrepancy = TierBHumanFidelityReviewSubmission(
             HumanFidelityReviewState.HUMAN_REVIEWED_PASS, listOf(1), "n/a",
-            listOf(TierBFidelityDiscrepancySubmission(1, 0, 1, FidelityDiscrepancyClassification.TRANSCRIPTION_DIFFERENCE, FidelityDiscrepancySeverity.MINOR, "x")),
+            listOf(TierBFidelityDiscrepancySubmission(1, "x", FidelityDiscrepancyClassification.TRANSCRIPTION_DIFFERENCE, FidelityDiscrepancySeverity.MINOR, "x")),
         )
         assertIs<TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission>(
             fixture.coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, passWithDiscrepancy),
@@ -293,5 +293,177 @@ class TierBOcrHumanFidelityReviewCoordinatorTest {
             fixture.coordinator.projectEffectiveReview(evidenceArtifactId, derivativeGenerationId),
         )
         assertTrue(fixture.reviewStorage.listForExactTarget(projected.summary.projection.target).isEmpty())
+    }
+
+    // HFR Owner UI acceptance defect fix: the owner-facing form no longer requires the owner to
+    // construct Parker's internal pipe-delimited discrepancy encoding or a Unicode code-point
+    // range -- these tests exercise the coordinator's own new "locate the exact text" behaviour
+    // directly (the owner-facing JS layer is covered separately, in OwnerEvidenceHttpServerTest).
+
+    @Test
+    fun `a pass is recorded with ordinary understandable fields and no discrepancy encoding of any kind`(@org.junit.jupiter.api.io.TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "pass-no-discrepancy-encoding")
+        val evidenceArtifactId = EvidenceArtifactId("evidence-tierb-hfr-pass-plain")
+        val derivativeGenerationId = DerivativeGenerationId("generation-tierb-hfr-pass-plain")
+        admit(fixture, derivativeGenerationId, evidenceArtifactId)
+
+        // No discrepancy list, no code-point range, no pipe-delimited string -- just outcome,
+        // reviewed pages, and a plain descriptive note.
+        val submission = TierBHumanFidelityReviewSubmission(
+            HumanFidelityReviewState.HUMAN_REVIEWED_PASS, listOf(1),
+            "Faithful and accurate representation of the source.",
+        )
+        val outcome = assertIs<TierBHumanFidelityReviewRecordingOutcome.Recorded>(
+            fixture.coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, submission),
+        )
+        val canonical = assertNotNull(fixture.reviewStorage.retrieve(outcome.reviewId))
+        assertTrue(canonical.discrepancyOccurrences.isEmpty())
+    }
+
+    @Test
+    fun `the owner-supplied exact text is located server-side and mapped to the correct code-point span`(@org.junit.jupiter.api.io.TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "exact-text-mapping")
+        val evidenceArtifactId = EvidenceArtifactId("evidence-tierb-hfr-mapping")
+        val derivativeGenerationId = DerivativeGenerationId("generation-tierb-hfr-mapping")
+        admit(fixture, derivativeGenerationId, evidenceArtifactId, text = "The witness Kellec signed the document.")
+
+        val submission = TierBHumanFidelityReviewSubmission(
+            HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY, listOf(1), "One discrepancy found.",
+            listOf(TierBFidelityDiscrepancySubmission(
+                1, "Kellec", FidelityDiscrepancyClassification.TRANSCRIPTION_DIFFERENCE,
+                FidelityDiscrepancySeverity.MATERIAL, "Name misspelled relative to the source",
+            )),
+        )
+        val outcome = assertIs<TierBHumanFidelityReviewRecordingOutcome.Recorded>(
+            fixture.coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, submission),
+        )
+        val canonical = assertNotNull(fixture.reviewStorage.retrieve(outcome.reviewId))
+        val occurrence = canonical.discrepancyOccurrences.single()
+        assertEquals("Kellec", occurrence.location.originalProviderSubstring)
+        assertEquals("The witness Kellec signed the document.".indexOf("Kellec"), occurrence.location.startCodePointInclusive)
+        assertEquals(6, occurrence.location.codePointLength)
+    }
+
+    @Test
+    fun `MISSING_SOURCE_TEXT records a zero-width insertion point immediately after the given anchor text`(@org.junit.jupiter.api.io.TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "missing-source-text")
+        val evidenceArtifactId = EvidenceArtifactId("evidence-tierb-hfr-missing")
+        val derivativeGenerationId = DerivativeGenerationId("generation-tierb-hfr-missing")
+        admit(fixture, derivativeGenerationId, evidenceArtifactId, text = "Signed by the witness.")
+
+        val submission = TierBHumanFidelityReviewSubmission(
+            HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY, listOf(1), "A name is missing.",
+            listOf(TierBFidelityDiscrepancySubmission(
+                1, "Signed by the witness.", FidelityDiscrepancyClassification.MISSING_SOURCE_TEXT,
+                FidelityDiscrepancySeverity.MATERIAL, "The witness's name is present in the source but missing here",
+            )),
+        )
+        val outcome = assertIs<TierBHumanFidelityReviewRecordingOutcome.Recorded>(
+            fixture.coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, submission),
+        )
+        val canonical = assertNotNull(fixture.reviewStorage.retrieve(outcome.reviewId))
+        val occurrence = canonical.discrepancyOccurrences.single()
+        assertEquals("", occurrence.location.originalProviderSubstring)
+        assertEquals(0, occurrence.location.codePointLength)
+        assertEquals("Signed by the witness.".length, occurrence.location.startCodePointInclusive)
+    }
+
+    @Test
+    fun `exact text not found on the page fails closed without recording, never guessing a location`(@org.junit.jupiter.api.io.TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "text-not-found")
+        val evidenceArtifactId = EvidenceArtifactId("evidence-tierb-hfr-not-found")
+        val derivativeGenerationId = DerivativeGenerationId("generation-tierb-hfr-not-found")
+        admit(fixture, derivativeGenerationId, evidenceArtifactId, text = "The witness Kellec signed the document.")
+
+        val submission = TierBHumanFidelityReviewSubmission(
+            HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY, listOf(1), "One discrepancy found.",
+            listOf(TierBFidelityDiscrepancySubmission(
+                1, "Zephyrine", FidelityDiscrepancyClassification.TRANSCRIPTION_DIFFERENCE,
+                FidelityDiscrepancySeverity.MATERIAL, "text does not appear on this page",
+            )),
+        )
+        val outcome = assertIs<TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission>(
+            fixture.coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, submission),
+        )
+        assertTrue(outcome.reason.contains("not found"), outcome.reason)
+        val projected = assertIs<TierBEffectiveHumanFidelityReviewOutcome.Projected>(
+            fixture.coordinator.projectEffectiveReview(evidenceArtifactId, derivativeGenerationId),
+        )
+        assertTrue(fixture.reviewStorage.listForExactTarget(projected.summary.projection.target).isEmpty())
+    }
+
+    @Test
+    fun `exact text appearing more than once on the page fails closed rather than guessing which occurrence was meant`(@org.junit.jupiter.api.io.TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "text-not-unique")
+        val evidenceArtifactId = EvidenceArtifactId("evidence-tierb-hfr-ambiguous")
+        val derivativeGenerationId = DerivativeGenerationId("generation-tierb-hfr-ambiguous")
+        admit(fixture, derivativeGenerationId, evidenceArtifactId, text = "Kellec met Kellec at the courthouse.")
+
+        val submission = TierBHumanFidelityReviewSubmission(
+            HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY, listOf(1), "One discrepancy found.",
+            listOf(TierBFidelityDiscrepancySubmission(
+                1, "Kellec", FidelityDiscrepancyClassification.TRANSCRIPTION_DIFFERENCE,
+                FidelityDiscrepancySeverity.MATERIAL, "Name misspelled",
+            )),
+        )
+        val outcome = assertIs<TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission>(
+            fixture.coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, submission),
+        )
+        assertTrue(outcome.reason.contains("more than once"), outcome.reason)
+        val projected = assertIs<TierBEffectiveHumanFidelityReviewOutcome.Projected>(
+            fixture.coordinator.projectEffectiveReview(evidenceArtifactId, derivativeGenerationId),
+        )
+        assertTrue(fixture.reviewStorage.listForExactTarget(projected.summary.projection.target).isEmpty())
+    }
+
+    @Test
+    fun `a faithfully preserved source qualification does not automatically become a discrepancy`(@org.junit.jupiter.api.io.TempDir directory: Path) = runTest {
+        // Mirrors the real acceptance case: a visibly truncated footer URL is a source limitation
+        // faithfully preserved by the transcription (an admitted page-level qualification/
+        // uncertainty span), not a machine-transcription error -- recording a PASS with zero
+        // discrepancies must succeed exactly as for any other faithful transcription.
+        val fixture = fixture(directory, "source-qualification")
+        val evidenceArtifactId = EvidenceArtifactId("evidence-tierb-hfr-qualification")
+        val derivativeGenerationId = DerivativeGenerationId("generation-tierb-hfr-qualification")
+        val pageText = "Visit example.com/foo... [truncated]"
+        val qualifiedExtracted = OcrDerivativeExtractedResult(
+            pageText, TranscriptionFidelity.VERBATIM, OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED,
+            "footer URL truncated in source", listOf("footer URL truncated in source"),
+            listOf(OcrRecognitionSegment(pageText, TranscriptionFidelity.VERBATIM, 1)),
+            producer(), listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE),
+            DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
+            OcrPageAccounting(
+                OcrPageScope(listOf(1)), OcrPageScope(listOf(1)), OcrPageScope(listOf(1)),
+                listOf(OcrPageOutcome(
+                    1, OcrPageOutcomeKind.TRANSCRIBED_WITH_QUALIFICATIONS,
+                    OcrPageOutcomeReason("SOURCE_TRUNCATED", "footer URL is truncated in the source itself"),
+                    listOf("footer URL truncated in source"),
+                    listOf(OcrUncertaintySpan(1, 6, pageText.length, OcrUncertaintyKind.UNCERTAIN, "footer URL truncated in source")),
+                )),
+            ),
+            processing(evidenceArtifactId), provider(), Instant.EPOCH,
+        )
+        val record = DerivativeGenerationRecord(
+            derivativeGenerationId, evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(evidenceArtifactId)),
+            "External transcription recognised text", producer(), qualifiedExtracted.transformationHistory, Instant.EPOCH,
+            DerivativeContentIdentity.NoCanonicalSerialization, qualifiedExtracted.completenessState, DerivativeOperationalOutcome.USABLE,
+        )
+        fixture.contentStorage.prepare(DerivativeContentEntry(derivativeGenerationId, evidenceArtifactId, TierADerivativePayload.Ocr(qualifiedExtracted)))
+        fixture.contentStorage.publishPrepared(derivativeGenerationId)
+        fixture.generationStorage.prepare(record)
+        fixture.generationStorage.publishPrepared(derivativeGenerationId)
+
+        val outcome = assertIs<TierBHumanFidelityReviewRecordingOutcome.Recorded>(
+            fixture.coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, passSubmission()),
+        )
+        val canonical = assertNotNull(fixture.reviewStorage.retrieve(outcome.reviewId))
+        assertEquals(HumanFidelityReviewState.HUMAN_REVIEWED_PASS, canonical.reviewState)
+        assertTrue(canonical.discrepancyOccurrences.isEmpty())
+
+        val projected = assertIs<TierBEffectiveHumanFidelityReviewOutcome.Projected>(
+            fixture.coordinator.projectEffectiveReview(evidenceArtifactId, derivativeGenerationId),
+        )
+        assertEquals(HumanFidelityReviewState.HUMAN_REVIEWED_PASS, projected.summary.projection.effectiveState)
+        assertEquals(0, projected.summary.materialDiscrepancyCount)
     }
 }

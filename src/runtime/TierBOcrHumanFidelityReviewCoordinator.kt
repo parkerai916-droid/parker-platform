@@ -129,15 +129,36 @@ internal class TierBOcrHumanFidelityReviewCoordinator(
         for (spec in submission.discrepancies) {
             val segmentText = segments.firstOrNull { it.pageNumber == spec.pageNumber }?.text
                 ?: return TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission("no admitted segment for page ${spec.pageNumber}")
-            val codePointCount = segmentText.codePointCount(0, segmentText.length)
-            if (spec.startCodePointInclusive < 0 || spec.endCodePointExclusive < spec.startCodePointInclusive ||
-                spec.endCodePointExclusive > codePointCount
-            ) {
-                return TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission("discrepancy span out of range for page ${spec.pageNumber}")
+            val isMissingSourceText = spec.classification == FidelityDiscrepancyClassification.MISSING_SOURCE_TEXT
+            // Owner-facing input is the exact text itself, never a code-point range: this coordinator
+            // locates it within the exact admitted page text server-side, and fails closed (never
+            // guesses) if it isn't found or isn't unique -- the owner never needs to understand or
+            // construct Parker's internal Unicode code-point encoding to record a discrepancy.
+            if (!isMissingSourceText && spec.exactText.isBlank()) {
+                return TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission(
+                    "the exact incorrect text is required for page ${spec.pageNumber}",
+                )
             }
-            val startChar = segmentText.offsetByCodePoints(0, spec.startCodePointInclusive)
-            val endChar = segmentText.offsetByCodePoints(0, spec.endCodePointExclusive)
-            val exactSubstring = segmentText.substring(startChar, endChar)
+            // MISSING_SOURCE_TEXT alone may target a zero-width insertion point (R6T's own factory
+            // permits start == end): an empty exactText means "missing at the very start of the page";
+            // otherwise exactText is read as the text immediately before the missing content.
+            val charIndex = if (isMissingSourceText && spec.exactText.isEmpty()) 0 else segmentText.indexOf(spec.exactText)
+            if (charIndex < 0) {
+                return TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission(
+                    "the text \"${spec.exactText}\" was not found on page ${spec.pageNumber}; it must match the transcription exactly",
+                )
+            }
+            if (spec.exactText.isNotEmpty() && segmentText.lastIndexOf(spec.exactText) != charIndex) {
+                return TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission(
+                    "the text \"${spec.exactText}\" appears more than once on page ${spec.pageNumber}; " +
+                        "include more surrounding text to identify the exact location",
+                )
+            }
+            val startChar = if (isMissingSourceText) charIndex + spec.exactText.length else charIndex
+            val endChar = charIndex + spec.exactText.length
+            val startCodePoint = segmentText.codePointCount(0, startChar)
+            val endCodePoint = if (isMissingSourceText) startCodePoint else segmentText.codePointCount(0, endChar)
+            val exactSubstring = if (isMissingSourceText) "" else spec.exactText
             val regionId = wholePageRegionId(target, spec.pageNumber)
             val location = try {
                 FidelityDiscrepancyLocation.fromProviderBlock(
@@ -152,8 +173,8 @@ internal class TierBOcrHumanFidelityReviewCoordinator(
                     derivativeRegionId = regionId,
                     transcriptionBlockIndex = 0,
                     providerBlock = segmentText,
-                    startCodePointInclusive = spec.startCodePointInclusive,
-                    endCodePointExclusive = spec.endCodePointExclusive,
+                    startCodePointInclusive = startCodePoint,
+                    endCodePointExclusive = endCodePoint,
                     expectedOriginalProviderSubstring = exactSubstring,
                 )
             } catch (e: IllegalArgumentException) {
@@ -232,7 +253,7 @@ internal class TierBOcrHumanFidelityReviewCoordinator(
         reviewedAt.toString(),
         submission.discrepancies.joinToString(";") { d ->
             listOf(
-                d.pageNumber, d.startCodePointInclusive, d.endCodePointExclusive, d.classification.name,
+                d.pageNumber, d.exactText, d.classification.name,
                 d.severity.name, d.reason, d.explicitClassificationDetail ?: "",
             ).joinToString(",")
         },
@@ -266,11 +287,23 @@ data class TierBHumanFidelityReviewSubmission(
     val discrepancies: List<TierBFidelityDiscrepancySubmission> = emptyList(),
 )
 
-/** See [TierBOcrHumanFidelityReviewCoordinator]'s class KDoc for why source resolution is not offered here. */
+/**
+ * HFR Owner UI acceptance defect fix: [exactText] is the owner-facing identification of the
+ * discrepancy location -- never a Unicode code-point range, which [recordReview] computes
+ * internally by locating [exactText] within the exact admitted page text (failing closed if it is
+ * absent or not unique on that page). For every classification except [FidelityDiscrepancyClassification.MISSING_SOURCE_TEXT],
+ * [exactText] is the exact wrong/hallucinated/uncertain text as it appears in the transcription.
+ * For [FidelityDiscrepancyClassification.MISSING_SOURCE_TEXT] alone, [exactText] is the text
+ * immediately *before* the missing content (or blank, meaning "missing at the very start of the
+ * page") -- the existing frozen [FidelityDiscrepancyLocation.fromProviderBlock] factory's own
+ * zero-width-insertion-point allowance, reused unchanged.
+ *
+ * See [TierBOcrHumanFidelityReviewCoordinator]'s class KDoc for why source resolution is not
+ * offered here.
+ */
 data class TierBFidelityDiscrepancySubmission(
     val pageNumber: Int,
-    val startCodePointInclusive: Int,
-    val endCodePointExclusive: Int,
+    val exactText: String,
     val classification: FidelityDiscrepancyClassification,
     val severity: FidelityDiscrepancySeverity,
     val reason: String,

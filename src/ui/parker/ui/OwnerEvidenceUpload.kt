@@ -584,11 +584,17 @@ data class OwnerHumanFidelityReviewSubmission(
     val discrepancies: List<OwnerFidelityDiscrepancySubmission> = emptyList(),
 )
 
-/** One structured discrepancy within an [OwnerHumanFidelityReviewSubmission]. */
+/**
+ * One structured discrepancy within an [OwnerHumanFidelityReviewSubmission]. [exactText] is the
+ * exact wrong/hallucinated/uncertain text as it appears in the machine transcription -- the owner
+ * identifies a discrepancy by the text itself, never by a Unicode code-point range; the server
+ * locates it within the exact admitted page text and fails closed if it is absent or not unique.
+ * For classification `"MISSING_SOURCE_TEXT"` alone, [exactText] is instead the text immediately
+ * before the missing content (blank meaning "missing at the very start of the page").
+ */
 data class OwnerFidelityDiscrepancySubmission(
     val pageNumber: Int,
-    val startCodePointInclusive: Int,
-    val endCodePointExclusive: Int,
+    val exactText: String,
     val classification: String,
     val severity: String,
     val reason: String,

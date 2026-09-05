@@ -1729,8 +1729,7 @@ private fun parseHumanFidelityReviewSubmissionRequestBody(bodyBytes: ByteArray):
         fun stringField(name: String) = itemObj[name] as? String ?: throw JsonParseException("expected a '$name' string")
         parker.ui.OwnerFidelityDiscrepancySubmission(
             pageNumber = intField("pageNumber"),
-            startCodePointInclusive = intField("startCodePointInclusive"),
-            endCodePointExclusive = intField("endCodePointExclusive"),
+            exactText = itemObj["exactText"] as? String ?: throw JsonParseException("expected an 'exactText' string"),
             classification = stringField("classification"),
             severity = stringField("severity"),
             reason = stringField("reason"),
@@ -2558,7 +2557,8 @@ function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivat
   const heading = document.createElement('h4');
   heading.textContent = 'Human Fidelity Review';
   section.appendChild(heading);
-  appendField(section, 'Exact generation under review', 'evidence=' + evidenceArtifactId + ' generation=' + derivativeGenerationId);
+  appendField(section, 'Evidence ID', evidenceArtifactId);
+  appendField(section, 'Generation ID', derivativeGenerationId);
 
   const statusP = document.createElement('p');
   statusP.textContent = 'Effective review status: loading…';
@@ -2582,39 +2582,160 @@ function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivat
   const form = document.createElement('div');
   form.className = 'human-fidelity-review-form';
 
+  const intro = document.createElement('p');
+  intro.className = 'note';
+  intro.textContent = 'Record whether the machine transcription faithfully represents the source. ' +
+    'A source that is itself obscured, truncated, illegible, or uncertain -- and is faithfully carried through as such by the transcription -- is a source limitation, not a discrepancy. ' +
+    'Only an actual difference between the transcription and what the source shows is a discrepancy.';
+  form.appendChild(intro);
+
   const outcomeLabel = document.createElement('label');
   outcomeLabel.textContent = 'Review outcome: ';
   const outcomeSelect = document.createElement('select');
-  ['HUMAN_REVIEWED_PASS', 'HUMAN_REVIEWED_WITH_DISCREPANCY'].forEach(v => {
+  [['HUMAN_REVIEWED_PASS', 'Pass -- faithful and accurate'], ['HUMAN_REVIEWED_WITH_DISCREPANCY', 'Discrepancy found']].forEach(pair => {
     const opt = document.createElement('option');
-    opt.value = v; opt.textContent = v;
+    opt.value = pair[0]; opt.textContent = pair[1];
     outcomeSelect.appendChild(opt);
   });
   outcomeLabel.appendChild(outcomeSelect);
   form.appendChild(outcomeLabel);
 
   const pagesLabel = document.createElement('label');
-  pagesLabel.textContent = 'Reviewed pages (comma-separated): ';
+  pagesLabel.textContent = 'Pages you reviewed (e.g. 1,2): ';
   const pagesInput = document.createElement('input');
   pagesInput.type = 'text';
-  pagesInput.placeholder = 'e.g. 1,2,3';
+  pagesInput.placeholder = 'e.g. 1,2';
   pagesLabel.appendChild(pagesInput);
   form.appendChild(pagesLabel);
 
   const fidelityLabel = document.createElement('label');
-  fidelityLabel.textContent = 'Descriptive fidelity: ';
+  fidelityLabel.textContent = 'Note: ';
   const fidelityInput = document.createElement('textarea');
   fidelityInput.rows = 2;
+  fidelityInput.value = 'Faithful and accurate representation of the source.';
   fidelityLabel.appendChild(fidelityInput);
   form.appendChild(fidelityLabel);
 
-  const discrepanciesLabel = document.createElement('label');
-  discrepanciesLabel.textContent = 'Discrepancies (one per line: page|startCodePoint|endCodePoint|classification|severity|reason[|detail]): ';
-  const discrepanciesInput = document.createElement('textarea');
-  discrepanciesInput.rows = 4;
-  discrepanciesInput.placeholder = '1|0|5|TRANSCRIPTION_DIFFERENCE|MATERIAL|Name misspelled';
-  discrepanciesLabel.appendChild(discrepanciesInput);
-  form.appendChild(discrepanciesLabel);
+  const passNote = document.createElement('p');
+  passNote.className = 'note';
+  passNote.textContent = 'No discrepancy entry is required for a pass.';
+  form.appendChild(passNote);
+
+  // Discrepancy entry -- hidden entirely for a pass. Every field is a labelled, understandable
+  // owner input; the pipe-delimited internal request encoding is constructed here, in script,
+  // and is never shown to or typed by the owner.
+  const classificationOptions = [
+    ['TRANSCRIPTION_DIFFERENCE', 'Text differs from the source'],
+    ['MISSING_SOURCE_TEXT', 'Source text is missing from the transcription'],
+    ['ADDED_OR_HALLUCINATED_TEXT', 'Transcription includes text not present in the source'],
+    ['INAPPROPRIATE_CERTAINTY', 'Transcription asserts certainty the source does not support'],
+    ['APPROPRIATE_UNCERTAINTY', "Transcription correctly flags its own uncertainty (not an error)"],
+    ['OTHER_EXPLICITLY_CLASSIFIED', 'Other (describe below)'],
+  ];
+  const severityOptions = [['MINOR', 'Minor'], ['MATERIAL', 'Material'], ['NON_ERROR_OBSERVATION', 'Non-error observation']];
+
+  const discrepancyRows = [];
+  const rowsContainer = document.createElement('div');
+
+  function addDiscrepancyRow() {
+    const row = document.createElement('div');
+    row.className = 'discrepancy-row';
+
+    const pageInput = document.createElement('input');
+    pageInput.type = 'number'; pageInput.min = '1'; pageInput.style.width = '4em';
+    const pageLabel = document.createElement('label');
+    pageLabel.textContent = 'Page: '; pageLabel.appendChild(pageInput);
+
+    const textLabelSpan = document.createElement('span');
+    textLabelSpan.textContent = 'Exact text from the transcription: ';
+    const textInput = document.createElement('input');
+    textInput.type = 'text'; textInput.size = 40;
+    textInput.placeholder = 'Paste or type the exact wrong text';
+    const textLabel = document.createElement('label');
+    textLabel.appendChild(textLabelSpan); textLabel.appendChild(textInput);
+
+    const classificationSelect = document.createElement('select');
+    classificationOptions.forEach(pair => {
+      const opt = document.createElement('option'); opt.value = pair[0]; opt.textContent = pair[1];
+      classificationSelect.appendChild(opt);
+    });
+    const classificationLabel = document.createElement('label');
+    classificationLabel.textContent = 'What kind of discrepancy: '; classificationLabel.appendChild(classificationSelect);
+
+    const severitySelect = document.createElement('select');
+    severityOptions.forEach(pair => {
+      const opt = document.createElement('option'); opt.value = pair[0]; opt.textContent = pair[1];
+      severitySelect.appendChild(opt);
+    });
+    const severityLabel = document.createElement('label');
+    severityLabel.textContent = 'Severity: '; severityLabel.appendChild(severitySelect);
+
+    const reasonInput = document.createElement('input');
+    reasonInput.type = 'text'; reasonInput.size = 30;
+    reasonInput.placeholder = 'Why this is a discrepancy';
+    const reasonLabel = document.createElement('label');
+    reasonLabel.textContent = 'Reason: '; reasonLabel.appendChild(reasonInput);
+
+    const detailInput = document.createElement('input');
+    detailInput.type = 'text'; detailInput.size = 30;
+    const detailLabel = document.createElement('label');
+    detailLabel.textContent = 'Detail: '; detailLabel.appendChild(detailInput);
+    detailLabel.style.display = 'none';
+
+    classificationSelect.onchange = () => {
+      const isMissing = classificationSelect.value === 'MISSING_SOURCE_TEXT';
+      textLabelSpan.textContent = isMissing
+        ? 'Text immediately before the missing content (leave blank if missing at the very start of the page): '
+        : 'Exact text from the transcription: ';
+      detailLabel.style.display = classificationSelect.value === 'OTHER_EXPLICITLY_CLASSIFIED' ? '' : 'none';
+      const isAppropriateUncertainty = classificationSelect.value === 'APPROPRIATE_UNCERTAINTY';
+      severitySelect.disabled = isAppropriateUncertainty;
+      if (isAppropriateUncertainty) {
+        severitySelect.value = 'NON_ERROR_OBSERVATION';
+      } else if (severitySelect.value === 'NON_ERROR_OBSERVATION') {
+        severitySelect.value = 'MATERIAL';
+      }
+    };
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button'; removeButton.textContent = 'Remove';
+    removeButton.onclick = () => {
+      rowsContainer.removeChild(row);
+      const idx = discrepancyRows.indexOf(entry);
+      if (idx >= 0) discrepancyRows.splice(idx, 1);
+    };
+
+    row.appendChild(pageLabel);
+    row.appendChild(textLabel);
+    row.appendChild(classificationLabel);
+    row.appendChild(severityLabel);
+    row.appendChild(reasonLabel);
+    row.appendChild(detailLabel);
+    row.appendChild(removeButton);
+    row.appendChild(document.createElement('hr'));
+
+    const entry = { row: row, pageInput: pageInput, textInput: textInput, classificationSelect: classificationSelect, severitySelect: severitySelect, reasonInput: reasonInput, detailInput: detailInput };
+    discrepancyRows.push(entry);
+    rowsContainer.appendChild(row);
+  }
+
+  const discrepancySection = document.createElement('div');
+  discrepancySection.className = 'discrepancy-section';
+  discrepancySection.style.display = 'none';
+  const addRowButton = document.createElement('button');
+  addRowButton.type = 'button';
+  addRowButton.textContent = 'Add discrepancy';
+  addRowButton.onclick = () => addDiscrepancyRow();
+  discrepancySection.appendChild(rowsContainer);
+  discrepancySection.appendChild(addRowButton);
+  form.appendChild(discrepancySection);
+
+  outcomeSelect.onchange = () => {
+    const isDiscrepancy = outcomeSelect.value === 'HUMAN_REVIEWED_WITH_DISCREPANCY';
+    discrepancySection.style.display = isDiscrepancy ? '' : 'none';
+    passNote.style.display = isDiscrepancy ? 'none' : '';
+    if (isDiscrepancy && discrepancyRows.length === 0) addDiscrepancyRow();
+  };
 
   const resultP = document.createElement('p');
   resultP.className = 'note';
@@ -2626,25 +2747,19 @@ function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivat
     resultP.textContent = '';
     const reviewedPages = pagesInput.value.split(',').map(s => s.trim()).filter(Boolean);
     if (!reviewedPages.length) { resultP.textContent = 'Enter at least one reviewed page.'; return; }
-    let discrepancies;
-    try {
-      discrepancies = discrepanciesInput.value.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
-        const parts = line.split('|');
-        if (parts.length < 6) throw new Error('malformed discrepancy line');
-        return {
-          pageNumber: parts[0].trim(),
-          startCodePointInclusive: parts[1].trim(),
-          endCodePointExclusive: parts[2].trim(),
-          classification: parts[3].trim(),
-          severity: parts[4].trim(),
-          reason: parts[5].trim(),
-          explicitClassificationDetail: parts.length > 6 ? parts.slice(6).join('|').trim() : undefined,
-        };
-      });
-    } catch (e) {
-      resultP.textContent = 'Malformed discrepancy line -- expected page|start|end|classification|severity|reason[|detail].';
+    const isDiscrepancy = outcomeSelect.value === 'HUMAN_REVIEWED_WITH_DISCREPANCY';
+    if (isDiscrepancy && discrepancyRows.length === 0) {
+      resultP.textContent = 'Add at least one discrepancy, or choose Pass if none were found.';
       return;
     }
+    const discrepancies = isDiscrepancy ? discrepancyRows.map(r => ({
+      pageNumber: r.pageInput.value,
+      exactText: r.textInput.value,
+      classification: r.classificationSelect.value,
+      severity: r.severitySelect.value,
+      reason: r.reasonInput.value,
+      explicitClassificationDetail: r.classificationSelect.value === 'OTHER_EXPLICITLY_CLASSIFIED' ? r.detailInput.value : undefined,
+    })) : [];
     const submission = {
       reviewOutcome: outcomeSelect.value,
       reviewedPages: reviewedPages,

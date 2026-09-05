@@ -2279,6 +2279,69 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
+    // HFR Owner UI acceptance defect fix trace: an owner-observed acceptance defect found that the
+    // HFR form exposed Parker's own internal pipe-delimited discrepancy encoding
+    // ("page|startCodePoint|endCodePoint|classification|severity|reason|detail") and a raw enum
+    // example ("1|0|5|TRANSCRIPTION_DIFFERENCE|MATERIAL|Name misspelled") directly to the owner.
+    // These tests prove that encoding is gone from the served page and replaced with labelled,
+    // structured inputs -- never re-introduced by a later edit.
+    private fun humanFidelityReviewSectionBody(harness: Harness): String {
+        val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+        val start = body.indexOf("function appendHumanFidelityReviewSection")
+        assertTrue(start >= 0, "appendHumanFidelityReviewSection must be present in the served page")
+        return body.substring(start, body.indexOf("\nfunction ", start + 1))
+    }
+
+    @Test
+    fun `the HFR form never exposes Parker's internal pipe-delimited discrepancy encoding to the owner`() {
+        val harness = startHarness("")
+        try {
+            val section = humanFidelityReviewSectionBody(harness)
+            assertFalse(section.contains("startCodePoint", ignoreCase = true))
+            assertFalse(section.contains("endCodePoint", ignoreCase = true))
+            assertFalse(section.contains("page|"))
+            assertFalse(section.contains("|classification|") || section.contains("|severity|"))
+            assertFalse(section.contains("TRANSCRIPTION_DIFFERENCE|MATERIAL"))
+            assertFalse(Regex("""\d\|\d""").containsMatchIn(section), "no pipe-delimited numeric example may remain in the served form")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the HFR discrepancy workflow exposes labelled structured inputs, not free-text schema entry`() {
+        val harness = startHarness("")
+        try {
+            val section = humanFidelityReviewSectionBody(harness)
+            // A real <select> per structured field, not a single free-text schema textarea.
+            assertTrue(section.contains("createElement('select')"))
+            assertTrue(section.contains("What kind of discrepancy"))
+            assertTrue(section.contains("Exact text from the transcription"))
+            assertTrue(section.contains("TRANSCRIPTION_DIFFERENCE"))
+            assertTrue(section.contains("MISSING_SOURCE_TEXT"))
+            // The discrepancy section is not required/visible for a pass.
+            assertTrue(section.contains("No discrepancy entry is required for a pass"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `exact evidence and generation identity are displayed and are never an owner-editable field`() {
+        val harness = startHarness("")
+        try {
+            val section = humanFidelityReviewSectionBody(harness)
+            assertTrue(section.contains("appendField(section, 'Evidence ID', evidenceArtifactId)"))
+            assertTrue(section.contains("appendField(section, 'Generation ID', derivativeGenerationId)"))
+            // appendField renders read-only presentation text, never an <input>/<textarea> bound to
+            // the evidence or generation identity itself.
+            assertFalse(section.contains("input.value = evidenceArtifactId"))
+            assertFalse(section.contains("input.value = derivativeGenerationId"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
     @Test
     fun `real-evidence production-like case -- both real generations are displayed and the newer one is visibly identified as newest`() = runTest {
         val evidenceId = "evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d"
