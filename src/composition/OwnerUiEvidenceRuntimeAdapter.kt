@@ -1,6 +1,7 @@
 package parker.composition
 
 import parker.core.interfaces.DerivativeGenerationId
+import parker.core.interfaces.DerivativeGenerationRecord
 import parker.core.interfaces.DerivativeProducerIdentity
 import parker.core.interfaces.DocumentAnalysisInvocationResult
 import parker.core.interfaces.DocumentAnalysisOutcome
@@ -56,7 +57,9 @@ import parker.ui.TierBOcrContentRetrievalResult
 import parker.ui.TierBProcessingOutcome
 import parker.ui.EnhancedTranscriptionOutcome
 import parker.ui.EnhancedTranscriptionReadiness
+import parker.ui.OwnerOcrDerivativeGenerationSummary
 import parker.ui.OwnerOcrPageOutcomeSummary
+import parker.ui.OwnerOcrUncertaintySpanSummary
 import parker.ui.OwnerAcquisitionDecisionView
 import parker.ui.OwnerAcquisitionExecutionView
 import parker.ui.OwnerAcquisitionSourceFacts
@@ -190,6 +193,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val retrieveTierAExtractedContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome,
     private val invokeTierBOcrDurableGenerationAsOwner: suspend (EvidenceArtifactId) -> TierBOcrOwnerInvocationOutcome,
     private val retrieveTierBOcrContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome,
+    private val discoverOcrDerivativeGenerationsAsOwner: suspend (EvidenceArtifactId) -> List<DerivativeGenerationRecord> = { emptyList() },
     private val analyseDocumentsAsOwner: suspend (OwnerDocumentAnalysisRequest) -> DocumentAnalysisInvocationResult,
     private val saveAnalysisAsOwner: suspend (PendingAnalysisId) -> SaveAnalysisOutcome,
     private val retrieveSavedAnalysisAsOwner: suspend (SavedAnalysisId) -> RetrieveSavedAnalysisOutcome,
@@ -683,6 +687,14 @@ class OwnerUiEvidenceRuntimeAdapter(
                 TierBOcrContentRetrievalResult.UnsupportedRepresentationVersion(outcome.version)
         }
 
+    override suspend fun discoverOcrDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerOcrDerivativeGenerationSummary> =
+        discoverOcrDerivativeGenerationsAsOwner(evidenceArtifactId).map { record ->
+            OwnerOcrDerivativeGenerationSummary(
+                record.derivativeGenerationId.value, record.rootSourceEvidenceArtifactId.value,
+                record.generatedAt.toString(), record.operationalOutcome.name,
+            )
+        }
+
     /**
      * Owner Tier B Durable OCR Content Presentation. Projects the OCR
      * mechanism's own already-produced, already-admitted
@@ -712,12 +724,19 @@ class OwnerUiEvidenceRuntimeAdapter(
         submittedPages = extracted.pageAccounting?.submittedScope?.pageNumbers,
         returnedPages = extracted.pageAccounting?.returnedScope?.pageNumbers,
         pageOutcomes = extracted.pageAccounting?.pageOutcomes?.map { page ->
-            OwnerOcrPageOutcomeSummary(page.pageNumber, page.outcome.name, page.reason?.classification, page.warnings)
+            OwnerOcrPageOutcomeSummary(
+                page.pageNumber, page.outcome.name, page.reason?.classification, page.warnings,
+                reasonDetail = page.reason?.detail,
+                uncertaintySpans = page.uncertaintySpans.map { span -> OwnerOcrUncertaintySpanSummary(span.kind.name, span.disclosure) },
+            )
         }.orEmpty(),
         containsUncertaintyOrIllegibility = extracted.pageAccounting?.pageOutcomes?.any { page ->
             page.uncertaintySpans.isNotEmpty() || page.outcome.name.contains("ILLEGIBLE")
         } == true,
         externalTranscription = extracted.providerProvenance != null,
+        adapterIdentity = extracted.providerProvenance?.adapterIdentity,
+        adapterVersion = extracted.providerProvenance?.adapterVersion,
+        recognisedAt = extracted.recognisedAt?.toString(),
     )
 
     override suspend fun analyseDocuments(

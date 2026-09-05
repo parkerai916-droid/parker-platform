@@ -152,6 +152,16 @@ interface OwnerEvidenceOperations {
     ): TierBOcrContentRetrievalResult
 
     /**
+     * UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations
+     * (governed by `DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md`).
+     * Given one already-known [evidenceArtifactId], returns `0..N` summaries, deterministically
+     * ordered, most-recent first -- never a general enumeration, never content. A caller retrieves
+     * content separately, per discovered identity, via [retrieveTierBOcrContent]. Never invokes a
+     * provider.
+     */
+    suspend fun discoverOcrDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerOcrDerivativeGenerationSummary> = emptyList()
+
+    /**
      * Minimum Production Document Pipeline — Local Reasoning Implementation.
      * Submits one or more already-admitted evidence derivative generations
      * ([selections] -- identities the caller already possesses from a prior
@@ -478,10 +488,41 @@ data class OwnerTierBOcrContent(
     val pageOutcomes: List<OwnerOcrPageOutcomeSummary> = emptyList(),
     val containsUncertaintyOrIllegibility: Boolean = false,
     val externalTranscription: Boolean = false,
+    /** UI-INGESTION-8: adapter identity/version from the governed provider provenance, for the result-summary/provenance section. */
+    val adapterIdentity: String? = null,
+    val adapterVersion: String? = null,
+    /** UI-INGESTION-8: when this admitted result was recognised, from the governed extraction record -- never a display-time timestamp. */
+    val recognisedAt: String? = null,
 )
 
 data class OwnerOcrSegmentSummary(val text: String, val fidelity: String, val pageNumber: Int?)
-data class OwnerOcrPageOutcomeSummary(val pageNumber: Int, val outcome: String, val reason: String?, val warnings: List<String>)
+data class OwnerOcrPageOutcomeSummary(
+    val pageNumber: Int,
+    val outcome: String,
+    val reason: String?,
+    val warnings: List<String>,
+    /** UI-INGESTION-8: the qualification's human-readable detail, distinct from [reason]'s bounded classification code -- e.g. "footer URLs on both pages are visibly truncated in the submitted source." Absent when the provider/mechanism supplied no detail. */
+    val reasonDetail: String? = null,
+    /** UI-INGESTION-8: the admitted structured result's own uncertainty disclosures for this page -- never reconstructed, never inferred. */
+    val uncertaintySpans: List<OwnerOcrUncertaintySpanSummary> = emptyList(),
+)
+
+/** UI-INGESTION-8: one admitted uncertainty/illegibility disclosure, exactly as the provider/mechanism reported it. */
+data class OwnerOcrUncertaintySpanSummary(val kind: String, val disclosure: String)
+
+/**
+ * UI-INGESTION-8B: one discovered admitted Tier B OCR derivative generation -- minimum governed
+ * identity/metadata only, never content. Whether this specific generation is an external
+ * transcription or local OCR is deliberately not exposed here (that distinction lives only in the
+ * derivative content, per the governing amendment's own §7); the owner UI learns it only after
+ * retrieving this generation's content via [OwnerEvidenceOperations.retrieveTierBOcrContent].
+ */
+data class OwnerOcrDerivativeGenerationSummary(
+    val derivativeGenerationId: String,
+    val evidenceArtifactId: String,
+    val generatedAt: String,
+    val outcome: String,
+)
 
 sealed interface EnhancedTranscriptionReadiness {
     data object Disabled : EnhancedTranscriptionReadiness

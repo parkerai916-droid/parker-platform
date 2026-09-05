@@ -16,6 +16,7 @@ import parker.core.interfaces.CandidateProvenance
 import parker.core.interfaces.ConversationEngine
 import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.DerivativeGenerationId
+import parker.core.interfaces.DerivativeGenerationRecord
 import parker.core.interfaces.DerivativeMemoryRegistrationOutcome
 import parker.core.interfaces.DocumentAnalysisInvocationResult
 import parker.core.interfaces.DocumentAnalysisOutcome
@@ -213,6 +214,7 @@ import parker.core.runtime.TierADocumentIngestionComposition
 import parker.core.runtime.TierAContentRetrievalCoordinator
 import parker.core.runtime.TierAOwnerInvocationCoordinator
 import parker.core.runtime.TierBOcrContentRetrievalCoordinator
+import parker.core.runtime.TierBOcrDerivativeGenerationDiscoveryCoordinator
 import parker.core.runtime.TierBOcrOwnerInvocationCoordinator
 
 /**
@@ -373,6 +375,7 @@ class ParkerRuntime(
     // tierAContentRetrievalCoordinator (never modified or repurposed, Tier B scope lock §28),
     // mirroring its own isolation.
     private lateinit var tierBOcrContentRetrievalCoordinator: TierBOcrContentRetrievalCoordinator
+    private lateinit var tierBOcrDerivativeGenerationDiscoveryCoordinator: TierBOcrDerivativeGenerationDiscoveryCoordinator
 
     // External transcription Unit E: a separate owner-only, pre-admission operation. The real
     // provider is composed only after the enablement, profile, and credential gates are all Ready.
@@ -1880,6 +1883,7 @@ class ParkerRuntime(
             externalEgressAuthorised = { id -> externalTranscriptionAuthorizationCoordinator?.isAuthorized(id) == true },
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
+        tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
 
         // Construct the parent saved-analysis store before its separately governed review
         // sub-store; both validate their roots during construction.
@@ -2798,6 +2802,21 @@ class ParkerRuntime(
                 "(evidenceArtifactId=${evidenceArtifactId.value}, derivativeGenerationId=${derivativeGenerationId.value})",
         )
         return tierBOcrContentRetrievalCoordinator.retrieve(evidenceArtifactId, derivativeGenerationId)
+    }
+
+    /**
+     * UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations.
+     * Governed by `DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md`.
+     * Given one already-known [evidenceArtifactId], returns `0..N` admitted generations rooted at
+     * exactly that artifact -- never a general enumeration. Content is never returned here; a
+     * caller retrieves it separately, per discovered identity, via
+     * [retrieveTierBOcrContentAsOwner]. Never invokes a provider.
+     */
+    suspend fun discoverOcrDerivativeGenerationsAsOwner(evidenceArtifactId: EvidenceArtifactId): List<DerivativeGenerationRecord> {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        return tierBOcrDerivativeGenerationDiscoveryCoordinator.discover(evidenceArtifactId)
     }
 
     /** Exact-pair, metadata-only human-review records; ordering conveys no precedence. */

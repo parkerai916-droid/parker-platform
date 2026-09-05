@@ -188,3 +188,21 @@ interface DerivativeGenerationStorage {
     suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId)
     suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId): DerivativeGenerationRecord?
 }
+
+/**
+ * UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations.
+ * Governed by `DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md`,
+ * which narrowly qualifies the base Tier B Scope Lock's own §24 general-enumeration prohibition
+ * for this one bounded shape only. Given one already-known [EvidenceArtifactId] (never inferred,
+ * searched, or guessed), returns every admitted generation rooted at exactly that artifact whose
+ * `transformationHistory` contains [DerivativeTransformation.OCR] -- `0..N` full
+ * [DerivativeGenerationRecord]s (no content; the record carries only identity/lightweight
+ * metadata), never a general enumeration and never keyed by anything but the supplied artifact.
+ * A caller must independently re-validate every returned record's own
+ * [DerivativeGenerationRecord.rootSourceEvidenceArtifactId] and `transformationHistory` before
+ * relying on them (the amendment's own paired-identity re-validation discipline) -- this interface
+ * makes no promise about how an implementation locates candidates internally.
+ */
+fun interface OcrDerivativeGenerationDiscovery {
+    suspend fun findOcrGenerationsForEvidence(evidenceArtifactId: EvidenceArtifactId): List<DerivativeGenerationRecord>
+}

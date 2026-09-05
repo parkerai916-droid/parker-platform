@@ -115,6 +115,8 @@ class OwnerEvidenceHttpServerTest {
         ordinaryExecute: suspend (EvidenceArtifactId, String, String, String) -> OrdinaryRegionOwnerResult =
             { _, _, _, _ -> OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED, "disabled") },
         retrieveTierA: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome)? = null,
+        retrieveTierB: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome)? = null,
+        discoverOcrDerivativeGenerations: (suspend (EvidenceArtifactId) -> List<DerivativeGenerationRecord>)? = null,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -131,7 +133,8 @@ class OwnerEvidenceHttpServerTest {
             analyseEvidence = runtime::analyseEvidence,
             retrieveTierAExtractedContentAsOwner = retrieveTierA ?: runtime::retrieveTierAExtractedContentAsOwner,
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
-            retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
+            retrieveTierBOcrContentAsOwner = retrieveTierB ?: runtime::retrieveTierBOcrContentAsOwner,
+            discoverOcrDerivativeGenerationsAsOwner = discoverOcrDerivativeGenerations ?: runtime::discoverOcrDerivativeGenerationsAsOwner,
             analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
             saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
             retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
@@ -932,6 +935,17 @@ class OwnerEvidenceHttpServerTest {
         if (authToken != null) builder.header("Authorization", "Bearer $authToken")
         return send(builder.build())
     }
+
+    /**
+     * UI-INGESTION-8: [get]'s `Authorization: Bearer` scheme predates the real owner
+     * device-pairing authentication ([OwnerUiAuthentication]) that [isAuthorised] on the server
+     * now actually checks -- a paired-device session cookie is the only credential the server
+     * itself accepts. Used for every new test in this unit that needs a genuinely authenticated
+     * request.
+     */
+    private fun getPaired(harness: Harness, path: String): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path")).header("Cookie", pairedCookie(harness)).GET().build(),
+    )
 
     private fun postJson(harness: Harness, path: String, body: String, authToken: String? = token): HttpResponse<String> {
         val builder = HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
@@ -1826,6 +1840,282 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(".onnx" !in body, "response must never carry a model artifact filename: $body")
             assertTrue("Exception" !in body, "response must never carry a raw exception name: $body")
             assertTrue("\tat " !in body, "response must never carry a stack trace: $body")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // ================= UI-INGESTION-8 — Owner Enhanced Transcription Result Inspection =================
+
+    private fun enhancedTranscriptionRetrieved(id: EvidenceArtifactId, generationId: DerivativeGenerationId): TierBOcrContentRetrievalOutcome.Retrieved {
+        val scope = OcrPageScope(listOf(1, 2))
+        val accounting = OcrPageAccounting(
+            scope, scope, scope,
+            listOf(
+                OcrPageOutcome(
+                    1, OcrPageOutcomeKind.TRANSCRIBED_WITH_QUALIFICATIONS,
+                    OcrPageOutcomeReason("FOOTER_URL_TRUNCATED", "footer URLs on both pages are visibly truncated in the submitted source"),
+                    emptyList(), listOf(OcrUncertaintySpan(1, 0, 5, OcrUncertaintyKind.UNCERTAIN, "footer URL truncated on page 1")),
+                ),
+                OcrPageOutcome(
+                    2, OcrPageOutcomeKind.TRANSCRIBED_WITH_QUALIFICATIONS,
+                    OcrPageOutcomeReason("FOOTER_URL_TRUNCATED", "footer URLs on both pages are visibly truncated in the submitted source"),
+                    emptyList(), listOf(OcrUncertaintySpan(2, 0, 5, OcrUncertaintyKind.UNCERTAIN, "footer URL truncated on page 2")),
+                ),
+            ),
+        )
+        val processing = OcrProcessingProvenance(id, OcrSha256Digest("7".repeat(64)), "application/pdf", 2, scope, scope, "application/pdf", 2, OcrSha256Digest("7".repeat(64)), true, "direct-v1", Instant.EPOCH)
+        val provider = OcrProviderProvenance("OpenAI", "openai-responses-adapter", "2.0.0", "openai-fidelity-first-transcription-v1", "gpt-5.6-sol", OcrModelSnapshot.NotExposed, "response-real-1")
+        val producer = DerivativeProducerIdentity("external", "1.0.0", "openai-fidelity-first-transcription-v1", "openai-responses-adapter", "2.0.0", "gpt-5.6-sol", null)
+        // Segments are deliberately supplied out of page order here -- the governed representation
+        // makes no ordering promise about segment list order, only about each segment's own
+        // pageNumber; the UI must reconstruct page order from pageNumber, never assume list order.
+        val segments = listOf(
+            OcrRecognitionSegment("Page two text — CASE-029168", TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, 2),
+            OcrRecognitionSegment("Submission of Complaint – Michael Kellec v WelTec / Whitireia (CASE-029168)", TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, 1),
+        )
+        val extracted = OcrDerivativeExtractedResult(
+            "Submission of Complaint – Michael Kellec v WelTec / Whitireia (CASE-029168)\nPage two text — CASE-029168",
+            TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, OcrDerivativeOutcomeKind.RECOGNISED,
+            null, emptyList(), segments, producer,
+            listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE), DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
+            accounting, processing, provider, Instant.parse("2026-09-05T03:55:06Z"),
+        )
+        val record = DerivativeGenerationRecord(
+            generationId, id, listOf(DerivativeParentReference.RootEvidenceArtifact(id)),
+            extracted.recognisedText, producer, extracted.transformationHistory, Instant.EPOCH,
+            DerivativeContentIdentity.NoCanonicalSerialization, extracted.completenessState, DerivativeOperationalOutcome.USABLE,
+        )
+        return TierBOcrContentRetrievalOutcome.Retrieved(record, extracted)
+    }
+
+    @Test
+    fun `an admitted enhanced transcription result is retrievable through the governed ocr-content read path with page order, qualifications, uncertainty and provenance preserved, and zero provider execution`() = runTest {
+        var externalCalls = 0
+        val id = EvidenceArtifactId("evidence-enhanced-inspect-1")
+        val genId = DerivativeGenerationId("generation-enhanced-inspect-1")
+        val harness = startHarness(
+            "",
+            invokeExternal = { externalCalls++; error("must not run -- inspection must never invoke a provider") },
+            retrieveTierB = { requestedId, requestedGenId ->
+                assertEquals(id, requestedId); assertEquals(genId, requestedGenId)
+                enhancedTranscriptionRetrieved(id, genId)
+            },
+        )
+        try {
+            val response = getPaired(harness, "/owner/evidence/${id.value}/ocr-content/${genId.value}")
+            assertEquals(200, response.statusCode())
+            val body = response.body()
+            assertEquals("RETRIEVED", extractField(body, "status"))
+
+            // A) Result summary.
+            assertEquals("RECOGNISED", extractField(body, "outcomeKind"))
+            assertEquals("Machine transcription — unverified", extractField(body, "fidelity"))
+            assertEquals("ACCOUNTED_FOR_WITH_QUALIFICATIONS", extractField(body, "completenessState"))
+            assertEquals("OpenAI", extractField(body, "providerIdentity"))
+            assertEquals("gpt-5.6-sol", extractField(body, "returnedModelIdentifier"))
+            assertEquals("openai-fidelity-first-transcription-v1", extractField(body, "transcriptionProfileIdentity"))
+            assertEquals("openai-responses-adapter", extractField(body, "adapterIdentity"))
+            assertEquals("2.0.0", extractField(body, "adapterVersion"))
+            assertEquals("2026-09-05T03:55:06Z", extractField(body, "recognisedAt"))
+            assertTrue(body.contains("\"externalTranscription\":true"))
+
+            // B) Qualifications -- exactly the governed detail text, not invented or suppressed.
+            assertTrue(body.contains("footer URLs on both pages are visibly truncated in the submitted source"))
+
+            // C) Page transcription -- exact admitted text preserved for both pages, regardless of
+            // the order segments happen to appear in the governed representation's own list (the
+            // fixture above deliberately supplies them out of order; only each segment's own
+            // pageNumber field determines page order, which the UI must key off of, never list position).
+            val texts = extractAllFields(body, "text")
+            assertTrue(texts.contains("Submission of Complaint – Michael Kellec v WelTec / Whitireia (CASE-029168)"), "page 1 text must appear byte-for-byte, never rewritten: $body")
+            assertTrue(texts.contains("Page two text — CASE-029168"), "page 2 text must appear byte-for-byte, never rewritten: $body")
+
+            // D) Page status -- governed disposition vocabulary only.
+            assertEquals(2, extractAllFields(body, "outcome").count { it == "TRANSCRIBED_WITH_QUALIFICATIONS" })
+
+            // E) Uncertainty -- the admitted disclosure text, not a reconstruction.
+            assertTrue(body.contains("footer URL truncated on page 1"))
+            assertTrue(body.contains("footer URL truncated on page 2"))
+            assertTrue(body.contains("\"kind\":\"UNCERTAIN\""))
+
+            assertEquals(0, externalCalls, "opening an already-admitted result must never invoke a provider")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `evidence without an admitted enhanced transcription never falsely exposes one`() = runTest {
+        val harness = startHarness("", retrieveTierB = { _, genId -> TierBOcrContentRetrievalOutcome.UnknownGeneration(genId) })
+        try {
+            val response = getPaired(harness, "/owner/evidence/evidence-no-derivative/ocr-content/generation-none")
+            assertEquals(200, response.statusCode())
+            assertEquals("UNKNOWN_GENERATION", extractField(response.body(), "status"))
+            assertFalse(response.body().contains("recognisedText"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the ocr-content endpoint for an enhanced transcription result still requires owner authentication`() = runTest {
+        val harness = startHarness(
+            "",
+            retrieveTierB = { _, genId -> enhancedTranscriptionRetrieved(EvidenceArtifactId("evidence-x"), genId) },
+        )
+        try {
+            val response = get(harness, "/owner/evidence/evidence-x/ocr-content/generation-x", authToken = null)
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // ================= UI-INGESTION-8B — Exact-Evidence OCR Derivative Generation Discovery =================
+    // Governed by DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md.
+
+    private fun discoveryRecord(id: String, evidenceId: String, generatedAt: Instant) =
+        parker.core.interfaces.DerivativeGenerationTest.record(id).copy(
+            rootSourceEvidenceArtifactId = EvidenceArtifactId(evidenceId),
+            parents = listOf(DerivativeParentReference.RootEvidenceArtifact(EvidenceArtifactId(evidenceId))),
+            producerIdentity = DerivativeProducerIdentity(
+                pluginIdentity = "test-parser", pluginVersion = "1.0", configurationIdentity = "test-config-v1",
+                modelIdentity = "test-model", modelVersion = "1.0",
+            ),
+            transformationHistory = listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE),
+            generatedAt = generatedAt,
+        )
+
+    @Test
+    fun `known evidence with zero admitted OCR derivatives discovers an empty list through the governed HTTP route`() = runTest {
+        val harness = startHarness("", discoverOcrDerivativeGenerations = { emptyList() })
+        try {
+            val response = getPaired(harness, "/owner/evidence/evidence-empty/ocr-derivative-generations")
+            assertEquals(200, response.statusCode())
+            assertEquals("DISCOVERED", extractField(response.body(), "status"))
+            assertTrue(response.body().contains("\"generations\":[]"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `one admitted OCR derivative is discovered through the governed HTTP route`() = runTest {
+        val record = discoveryRecord("generation-single", "evidence-single", Instant.parse("2026-09-05T05:48:00Z"))
+        val harness = startHarness("", discoverOcrDerivativeGenerations = { listOf(record) })
+        try {
+            val response = getPaired(harness, "/owner/evidence/evidence-single/ocr-derivative-generations")
+            assertEquals(200, response.statusCode())
+            assertEquals(listOf("generation-single"), extractAllFields(response.body(), "derivativeGenerationId"))
+            assertEquals(listOf("USABLE"), extractAllFields(response.body(), "outcome"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `multiple admitted OCR derivatives for the real production evidence case are all discovered, ordered, and neither hides the other`() = runTest {
+        val evidenceId = "evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d"
+        val older = discoveryRecord("6d8d9307-8281-4574-a050-f9fec1c916f1", evidenceId, Instant.parse("2026-09-05T03:48:00Z"))
+        val newer = discoveryRecord("4c8ed1e2-7524-467c-b4b3-32e8293c7854", evidenceId, Instant.parse("2026-09-05T03:50:00Z"))
+        val harness = startHarness(
+            "",
+            discoverOcrDerivativeGenerations = { requested ->
+                assertEquals(EvidenceArtifactId(evidenceId), requested)
+                listOf(newer, older) // already the coordinator's own deterministic order
+            },
+        )
+        try {
+            val response = getPaired(harness, "/owner/evidence/$evidenceId/ocr-derivative-generations")
+            assertEquals(200, response.statusCode())
+            assertEquals(
+                listOf("4c8ed1e2-7524-467c-b4b3-32e8293c7854", "6d8d9307-8281-4574-a050-f9fec1c916f1"),
+                extractAllFields(response.body(), "derivativeGenerationId"),
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the discovery route is not a general enumeration -- it requires an evidence id path segment and returns 404 without one`() = runTest {
+        val harness = startHarness("", discoverOcrDerivativeGenerations = { error("must not be called -- no evidence id was ever supplied") })
+        try {
+            val response = getPaired(harness, "/owner/evidence/ocr-derivative-generations")
+            assertEquals(404, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the discovery endpoint requires owner authentication`() = runTest {
+        val harness = startHarness("", discoverOcrDerivativeGenerations = { error("must not be called -- unauthenticated") })
+        try {
+            val response = get(harness, "/owner/evidence/evidence-x/ocr-derivative-generations", authToken = null)
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a discovered generation retrieved through ocr-content with the wrong evidence id fails closed with SOURCE_MISMATCH, never fabricated content`() = runTest {
+        val record = discoveryRecord("generation-paired", "evidence-correct", Instant.EPOCH)
+        val harness = startHarness(
+            "",
+            discoverOcrDerivativeGenerations = { listOf(record) },
+            retrieveTierB = { requestedEvidenceId, _ ->
+                if (requestedEvidenceId.value == "evidence-correct") error("not exercised by this test")
+                TierBOcrContentRetrievalOutcome.SourceMismatch(requestedEvidenceId, record.derivativeGenerationId)
+            },
+        )
+        try {
+            val discovery = getPaired(harness, "/owner/evidence/evidence-correct/ocr-derivative-generations")
+            val discoveredId = requireNotNull(extractField(discovery.body(), "derivativeGenerationId"))
+
+            val wrongEvidenceRetrieval = getPaired(harness, "/owner/evidence/evidence-wrong/ocr-content/$discoveredId")
+            assertEquals(200, wrongEvidenceRetrieval.statusCode())
+            assertEquals("SOURCE_MISMATCH", extractField(wrongEvidenceRetrieval.body(), "status"))
+            assertFalse(wrongEvidenceRetrieval.body().contains("recognisedText"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `a pre-existing generation admitted through the real durable OCR pipeline is discoverable using only durable state already present -- no authorization-store interaction of any kind`() = runTest {
+        val recognisedJson = """{"status":"recognised","recognisedText":"PRE-EXISTING DISCOVERY TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val scriptDir = Files.createTempDirectory("evidence-http-scripts")
+        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
+        try {
+            val cookie = pairedCookie(harness)
+            val boundary = "OwnerEvidenceHttpServerTestBoundary"
+            val uploadResponse = send(
+                HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence"))
+                    .header("Cookie", cookie).header("Content-Type", "multipart/form-data; boundary=$boundary")
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody(boundary,
+                        listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf")))))))
+                    .build(),
+            )
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+            send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/process")).header("Cookie", cookie).POST(HttpRequest.BodyPublishers.noBody()).build())
+            val durableResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/ocr-durable")).header("Cookie", cookie).POST(HttpRequest.BodyPublishers.noBody()).build())
+            val derivativeGenerationId = requireNotNull(extractField(durableResponse.body(), "derivativeGenerationId"))
+
+            // The real capability under test: discovery finds this admitted generation using only
+            // the derivative-generation domain's own durable state -- never touching, reading, or
+            // requiring anything from ExternalTranscriptionOwnerAuthorization.
+            val discovery = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/ocr-derivative-generations")).header("Cookie", cookie).GET().build())
+            assertEquals(200, discovery.statusCode())
+            assertEquals(listOf(derivativeGenerationId), extractAllFields(discovery.body(), "derivativeGenerationId"))
+
+            // The discovered identity remains retrievable, unmodified, through the existing governed
+            // content retrieval path -- discovery duplicates no content of its own.
+            val content = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/ocr-content/$derivativeGenerationId")).header("Cookie", cookie).GET().build())
+            assertEquals("RETRIEVED", extractField(content.body(), "status"))
+            assertEquals("PRE-EXISTING DISCOVERY TEXT", extractJsonStringField(content.body(), "recognisedText"))
         } finally {
             harness.shutdown()
         }

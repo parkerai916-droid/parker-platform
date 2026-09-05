@@ -2,18 +2,24 @@ package parker.core.runtime
 
 import java.nio.file.Files
 import java.nio.ByteBuffer
+import java.time.Instant
 import kotlin.io.path.writeBytes
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.async
 import org.junit.jupiter.api.io.TempDir
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationStorageException
 import parker.core.interfaces.DerivativeGenerationTest
+import parker.core.interfaces.DerivativeParentReference
+import parker.core.interfaces.DerivativeProducerIdentity
+import parker.core.interfaces.DerivativeTransformation
+import parker.core.interfaces.EvidenceArtifactId
 import java.nio.file.Path
 
 class FileSystemDerivativeGenerationStorageTest {
@@ -163,5 +169,130 @@ class FileSystemDerivativeGenerationStorageTest {
         val tagOffset = 8 + 4 + idSize + 4 + rootSize + 4
         invalidTag[tagOffset] = 99
         assertFailsWith<IllegalStateException> { DerivativeGenerationRecordCodec.decode(invalidTag) }
+    }
+
+    // ================= UI-INGESTION-8B — Exact-Evidence OCR Derivative Generation Discovery =================
+    // Governed by DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md.
+
+    private fun ocrRecord(
+        id: String,
+        evidenceId: String = "source-1",
+        generatedAt: Instant = Instant.parse("2026-08-23T00:00:00Z"),
+    ) = DerivativeGenerationTest.record(id).copy(
+        rootSourceEvidenceArtifactId = EvidenceArtifactId(evidenceId),
+        parents = listOf(DerivativeParentReference.RootEvidenceArtifact(EvidenceArtifactId(evidenceId))),
+        derivativeKind = "OCR recognised text",
+        producerIdentity = DerivativeProducerIdentity(
+            pluginIdentity = "test-parser", pluginVersion = "1.0", configurationIdentity = "test-config-v1",
+            modelIdentity = "test-model", modelVersion = "1.0",
+        ),
+        transformationHistory = listOf(DerivativeTransformation.OCR, DerivativeTransformation.MODEL_INFERENCE),
+        generatedAt = generatedAt,
+    )
+
+    private suspend fun admit(storage: FileSystemDerivativeGenerationStorage, record: parker.core.interfaces.DerivativeGenerationRecord) {
+        storage.prepare(record)
+        storage.publishPrepared(record.derivativeGenerationId)
+    }
+
+    @Test
+    fun `known evidence with zero admitted OCR derivatives discovers an empty list`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        assertEquals(emptyList(), storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1")))
+    }
+
+    @Test
+    fun `one admitted OCR derivative is discovered`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val record = ocrRecord("generation-a")
+        admit(storage, record)
+        val discovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1"))
+        assertEquals(listOf(record), discovered)
+    }
+
+    @Test
+    fun `multiple admitted OCR derivatives for the same evidence are all discovered -- neither overwrites nor hides the other`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val first = ocrRecord("6d8d9307-8281-4574-a050-f9fec1c916f1", generatedAt = Instant.parse("2026-09-05T03:48:00Z"))
+        val second = ocrRecord("4c8ed1e2-7524-467c-b4b3-32e8293c7854", generatedAt = Instant.parse("2026-09-05T03:50:00Z"))
+        admit(storage, first)
+        admit(storage, second)
+        val discovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1"))
+        assertEquals(2, discovered.size)
+        assertTrue(first in discovered)
+        assertTrue(second in discovered)
+    }
+
+    @Test
+    fun `discovery orders by generatedAt descending then derivativeGenerationId descending`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val older = ocrRecord("generation-b", generatedAt = Instant.parse("2026-09-05T03:48:00Z"))
+        val newer = ocrRecord("generation-a", generatedAt = Instant.parse("2026-09-05T03:50:00Z"))
+        val sameInstantLower = ocrRecord("generation-c", generatedAt = Instant.parse("2026-09-05T03:50:00Z"))
+        admit(storage, older)
+        admit(storage, newer)
+        admit(storage, sameInstantLower)
+        val discovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1"))
+        // Same instant as `newer` -- tie-broken by derivativeGenerationId descending ("generation-c" > "generation-a").
+        assertEquals(
+            listOf(sameInstantLower.derivativeGenerationId, newer.derivativeGenerationId, older.derivativeGenerationId),
+            discovered.map { it.derivativeGenerationId },
+        )
+    }
+
+    @Test
+    fun `a derivative belonging to another evidence artifact never appears in this evidence artifact's discovery result`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val mine = ocrRecord("generation-mine", evidenceId = "source-1")
+        val theirs = ocrRecord("generation-theirs", evidenceId = "source-2")
+        admit(storage, mine)
+        admit(storage, theirs)
+        val discovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1"))
+        assertEquals(listOf(mine), discovered)
+        val theirDiscovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-2"))
+        assertEquals(listOf(theirs), theirDiscovered)
+    }
+
+    @Test
+    fun `a non-OCR derivative for the same evidence artifact never appears in OCR discovery`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val ocr = ocrRecord("generation-ocr")
+        val nonOcr = DerivativeGenerationTest.record("generation-csv")
+        admit(storage, ocr)
+        admit(storage, nonOcr)
+        val discovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1"))
+        assertEquals(listOf(ocr), discovered)
+    }
+
+    @Test
+    fun `discovery exposes no arbitrary or global enumeration -- only records rooted at the exact supplied artifact are ever returned`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        repeat(5) { i -> admit(storage, ocrRecord("generation-other-$i", evidenceId = "source-other-$i")) }
+        val target = ocrRecord("generation-target", evidenceId = "source-target")
+        admit(storage, target)
+        val discovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-target"))
+        assertEquals(listOf(target), discovered)
+    }
+
+    @Test
+    fun `an unrelated corrupt record does not abort discovery for the evidence artifact actually requested`() = runTest {
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val valid = ocrRecord("generation-valid")
+        admit(storage, valid)
+        directory.resolve("generation-corrupt-unrelated.derivative").writeBytes(byteArrayOf(1, 2, 3))
+        val discovered = storage.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1"))
+        assertEquals(listOf(valid), discovered)
+    }
+
+    @Test
+    fun `a pre-existing generation admitted before this capability existed is discoverable using only durable state already present`() = runTest {
+        // No ExternalTranscriptionOwnerAuthorization / authorization-store interaction of any kind
+        // anywhere in this test -- discovery depends solely on the derivative-generation domain.
+        val storage = FileSystemDerivativeGenerationStorage(directory)
+        val preExisting = ocrRecord("4c8ed1e2-7524-467c-b4b3-32e8293c7854")
+        admit(storage, preExisting)
+        val reopened = FileSystemDerivativeGenerationStorage(directory)
+        val discovered = reopened.findOcrGenerationsForEvidence(EvidenceArtifactId("source-1"))
+        assertEquals(listOf(preExisting), discovered)
     }
 }

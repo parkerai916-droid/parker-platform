@@ -14,8 +14,11 @@ import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationRecord
 import parker.core.interfaces.DerivativeGenerationStorage
 import parker.core.interfaces.DerivativeGenerationStorageException
+import parker.core.interfaces.DerivativeTransformation
+import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.OcrDerivativeGenerationDiscovery
 
-class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGenerationStorage {
+class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGenerationStorage, OcrDerivativeGenerationDiscovery {
     private val storageRoot = storageRoot.toAbsolutePath().normalize()
     private val tempDirectory: Path
     private val preparedDirectory: Path
@@ -139,6 +142,45 @@ class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGener
             }
             record
         }
+    }
+
+    /**
+     * UI-INGESTION-8B: `DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md`'s
+     * one authorised capability -- given an already-known [evidenceArtifactId], scans this
+     * storage's own flat, published-record directory (never `.tmp`/`.prepared`, never a
+     * client-supplied path) and returns every record rooted at exactly that artifact whose
+     * `transformationHistory` contains [DerivativeTransformation.OCR]. This is a bounded,
+     * paired-identity-filtered read, never a general `enumerate()`/`listAll()`: nothing about this
+     * method lets a caller retrieve a record for any artifact other than the one it already
+     * supplied, and no unfiltered record or path ever escapes this method.
+     *
+     * A record for another evidence artifact that fails to decode, exceeds the size limit, or is
+     * otherwise unreadable is simply excluded from the result (fail-closed by omission) rather than
+     * aborting discovery for the artifact actually requested -- unlike [retrieve], which is asked
+     * for one specific, already-identified record and so throws on corruption instead. Ordering is
+     * deterministic: [DerivativeGenerationRecord.generatedAt] descending, tie-broken by
+     * [DerivativeGenerationId.value] descending -- never an inferred "current" or "authoritative"
+     * generation; every admitted generation remains independently present in the result.
+     */
+    override suspend fun findOcrGenerationsForEvidence(evidenceArtifactId: EvidenceArtifactId): List<DerivativeGenerationRecord> {
+        val matches = mutex.withLock {
+            Files.list(storageRoot).use { paths ->
+                paths
+                    .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".derivative") }
+                    .toList()
+            }
+        }.mapNotNull { path ->
+            try {
+                val size = Files.size(path)
+                if (size > MAX_RECORD_BYTES) return@mapNotNull null
+                DerivativeGenerationRecordCodec.decode(Files.readAllBytes(path))
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return matches
+            .filter { it.rootSourceEvidenceArtifactId == evidenceArtifactId && DerivativeTransformation.OCR in it.transformationHistory }
+            .sortedWith(compareByDescending<DerivativeGenerationRecord> { it.generatedAt }.thenByDescending { it.derivativeGenerationId.value })
     }
 
     private fun target(id: DerivativeGenerationId): Path = storageRoot.resolve("${id.value}.derivative")

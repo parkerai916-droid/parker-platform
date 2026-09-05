@@ -392,6 +392,8 @@ class OwnerEvidenceHttpServer(
                         handleRetrieveContent(exchange, segments[0], segments[2])
                     segments.size == 3 && segments[1] == "ocr-content" && method == "GET" ->
                         handleRetrieveOcrContent(exchange, segments[0], segments[2])
+                    segments.size == 2 && segments[1] == "ocr-derivative-generations" && method == "GET" ->
+                        handleDiscoverOcrDerivativeGenerations(exchange, segments[0])
                     else -> {
                         runCatching { exchange.requestBody.use { it.readBytes() } }
                         writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -812,6 +814,40 @@ class OwnerEvidenceHttpServer(
             }
             writeJson(exchange, 200, body)
         }
+
+        /**
+         * UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations
+         * (governed by `DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md`).
+         * Requires only the already-known [rawEvidenceArtifactId] from the route -- no client-supplied
+         * path, no enumeration parameter of any kind. Never returns content; the owner UI retrieves
+         * that separately, per discovered identity, via the existing `ocr-content` route above.
+         */
+        private fun handleDiscoverOcrDerivativeGenerations(exchange: HttpExchange, rawEvidenceArtifactId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val evidenceArtifactId = try {
+                EvidenceArtifactId(rawEvidenceArtifactId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val summaries = runBlocking { operations.discoverOcrDerivativeGenerations(evidenceArtifactId) }
+            writeJson(
+                exchange, 200,
+                jsonObject(
+                    "status" to "DISCOVERED",
+                    "generations" to jsonArray(
+                        summaries.map {
+                            jsonObject(
+                                "derivativeGenerationId" to it.derivativeGenerationId,
+                                "evidenceArtifactId" to it.evidenceArtifactId,
+                                "generatedAt" to it.generatedAt,
+                                "outcome" to it.outcome,
+                            )
+                        },
+                    ),
+                ),
+            )
+        }
     }
 
     // ---- /owner/analyse -------------------------------------------------------------------
@@ -1132,9 +1168,22 @@ class OwnerEvidenceHttpServer(
         "requestedPages" to content.requestedPages?.let(::jsonArray),
         "submittedPages" to content.submittedPages?.let(::jsonArray),
         "returnedPages" to content.returnedPages?.let(::jsonArray),
-        "pageOutcomes" to jsonArray(content.pageOutcomes.map { jsonObject("pageNumber" to it.pageNumber, "outcome" to it.outcome, "reason" to it.reason, "warnings" to jsonArray(it.warnings)) }),
+        "pageOutcomes" to jsonArray(
+            content.pageOutcomes.map {
+                jsonObject(
+                    "pageNumber" to it.pageNumber, "outcome" to it.outcome, "reason" to it.reason,
+                    "reasonDetail" to it.reasonDetail, "warnings" to jsonArray(it.warnings),
+                    "uncertaintySpans" to jsonArray(
+                        it.uncertaintySpans.map { span -> jsonObject("kind" to span.kind, "disclosure" to span.disclosure) },
+                    ),
+                )
+            },
+        ),
         "containsUncertaintyOrIllegibility" to content.containsUncertaintyOrIllegibility,
         "externalTranscription" to content.externalTranscription,
+        "adapterIdentity" to content.adapterIdentity,
+        "adapterVersion" to content.adapterVersion,
+        "recognisedAt" to content.recognisedAt,
     )
 
     private fun readinessJson(readiness: EnhancedTranscriptionReadiness): JsonObject = when (readiness) {
@@ -2116,6 +2165,18 @@ function render() {
       external.onclick = () => transcribeExternalRow(index);
       actions.appendChild(external);
     }
+    // UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations
+    // (governed by DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md).
+    // A minimal, explicit, owner-triggered read -- never automatic, never executed for every row on
+    // page load. Works for any already-admitted generation, including one admitted in an earlier
+    // session or before this capability existed; no authorization-record linkage of any kind.
+    if (row.evidenceArtifactId && !row.externalResultRow) {
+      const b = document.createElement('button');
+      b.textContent = row.ocrDerivativeGenerations ? (row.discoveryExpanded ? 'Hide enhanced transcriptions' : 'Show enhanced transcriptions')
+        : 'Check enhanced transcriptions';
+      b.onclick = () => loadOcrDerivativeGenerations(index);
+      actions.appendChild(b);
+    }
     if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
       const b = document.createElement('button');
       b.textContent = expandedIndex === index ? 'Hide Extracted Content' : 'View Extracted Content';
@@ -2201,6 +2262,15 @@ function render() {
       decisionTd.appendChild(buildAcquisitionPanel(row, index));
       decisionTr.appendChild(decisionTd);
       tbody.appendChild(decisionTr);
+    }
+
+    if (row.discoveryExpanded && row.ocrDerivativeGenerations) {
+      const discoveryTr = document.createElement('tr');
+      const discoveryTd = document.createElement('td');
+      discoveryTd.colSpan = 7;
+      discoveryTd.appendChild(buildOcrDerivativeGenerationDiscoveryPanel(row, index));
+      discoveryTr.appendChild(discoveryTd);
+      tbody.appendChild(discoveryTr);
     }
 
     if (expandedIndex === index && (row.content || row.contentError)) {
@@ -2439,6 +2509,10 @@ function buildContentPanel(content) {
 // innerHTML), so OCR-recognised text can never be interpreted as HTML or script (Tier B scope lock
 // §27), no matter what characters the source document contained.
 function buildOcrContentPanel(content, derivativeGenerationId) {
+  // UI-INGESTION-8: an admitted enhanced (external) transcription result gets its own dedicated,
+  // governed-structure inspection surface (buildEnhancedTranscriptionPanel) -- distinct from this
+  // function's flat rendering, which remains exactly as it was for local/durable OCR content.
+  if (content.externalTranscription) return buildEnhancedTranscriptionPanel(content, derivativeGenerationId);
   const container = document.createElement('div');
   container.className = 'content-panel';
   appendField(container, 'Outcome', content.outcomeKind);
@@ -2474,6 +2548,85 @@ function buildOcrContentPanel(content, derivativeGenerationId) {
       appendExtractedText(container, (s.pageNumber != null ? 'Page ' + s.pageNumber : 'Segment') + ':', s.text);
     });
   }
+  return container;
+}
+
+// UI-INGESTION-8: minimum inspection surface for an already-admitted enhanced (external)
+// transcription result. Renders exclusively from content already retrieved via the existing,
+// governed /ocr-content/{generationId} read path (zero provider calls, zero retries, zero
+// external egress -- opening/refreshing this panel performs no fetch beyond that one already-made
+// GET). Never reorders, merges, normalizes or rewrites the admitted text or its per-page
+// disposition/uncertainty disclosures; every value is inserted via textContent (never innerHTML),
+// so recognised text can never be interpreted as HTML or script. Structure:
+//   A) Result summary  B) Qualifications  C) Page transcription (in page order)
+//   D) Page status     E) Uncertainty     F) Provenance/technical (secondary, collapsed)
+function buildEnhancedTranscriptionPanel(content, derivativeGenerationId) {
+  const container = document.createElement('div');
+  container.className = 'content-panel enhanced-transcription-panel';
+
+  // A) Result summary.
+  appendField(container, 'Status', content.outcomeKind);
+  appendField(container, 'Usability / fidelity classification', [content.fidelity, content.completenessState].filter(Boolean).join(' / '));
+  if (content.sourceEvidenceArtifactId) appendField(container, 'Evidence ID', content.sourceEvidenceArtifactId);
+  if (derivativeGenerationId) appendField(container, 'Generation ID', derivativeGenerationId);
+  if (content.providerIdentity) appendField(container, 'Provider', content.providerIdentity);
+  if (content.returnedModelIdentifier) appendField(container, 'Model', content.returnedModelIdentifier);
+  if (content.transcriptionProfileIdentity) appendField(container, 'Profile', content.transcriptionProfileIdentity);
+  if (content.adapterIdentity) appendField(container, 'Adapter', [content.adapterIdentity, content.adapterVersion].filter(Boolean).join(' '));
+  if (content.recognisedAt) appendField(container, 'Timestamp', content.recognisedAt);
+  appendField(container, 'Machine transcription — unverified', 'Fluent machine transcription may contain plausible text that is inconsistent with the source.');
+  appendField(container, 'Human review state', (content.humanReviewStates || ['UNREVIEWED']).join(', '));
+
+  // B) Qualifications -- exactly as governed. Never invented, rewritten or suppressed; if none
+  // were recorded, that absence is itself stated rather than left ambiguous.
+  const qualifications = (content.pageOutcomes || []).map(p => p.reasonDetail).filter(Boolean);
+  const qualHeading = document.createElement('h4');
+  qualHeading.textContent = 'Qualifications';
+  container.appendChild(qualHeading);
+  if (qualifications.length) {
+    qualifications.forEach(q => appendField(container, 'Qualification', q));
+  } else {
+    appendField(container, 'Qualifications', 'None recorded.');
+  }
+  if (content.degradationReason) appendField(container, 'Degradation reason', content.degradationReason);
+
+  // C) Page transcription, in page order -- the admitted text exactly as retrieved, with D) each
+  // page's governed disposition and E) its admitted uncertainty disclosures alongside it.
+  const pagesHeading = document.createElement('h4');
+  pagesHeading.textContent = 'Page transcription';
+  container.appendChild(pagesHeading);
+  const outcomeByPage = new Map((content.pageOutcomes || []).map(p => [p.pageNumber, p]));
+  const segments = (content.segments || []).slice().sort((a, b) => (a.pageNumber || 0) - (b.pageNumber || 0));
+  if (segments.length) {
+    segments.forEach(s => {
+      const pageOutcome = s.pageNumber != null ? outcomeByPage.get(s.pageNumber) : null;
+      const label = s.pageNumber != null ? 'Page ' + s.pageNumber : 'Segment';
+      appendExtractedText(container, label + ':', s.text);
+      if (pageOutcome) {
+        appendField(container, label + ' status', pageOutcome.outcome + (pageOutcome.reason ? ' (' + pageOutcome.reason + ')' : ''));
+        (pageOutcome.uncertaintySpans || []).forEach(span => {
+          appendField(container, label + ' uncertainty', '[' + span.kind + '] ' + span.disclosure);
+        });
+      }
+    });
+  } else {
+    appendExtractedText(container, 'Transcription:', content.recognisedText);
+  }
+
+  // F) Provenance / technical details -- visually separate, secondary, collapsed by default.
+  const provenance = document.createElement('details');
+  provenance.className = 'enhanced-transcription-provenance';
+  const provenanceSummary = document.createElement('summary');
+  provenanceSummary.textContent = 'Provenance / technical details';
+  provenance.appendChild(provenanceSummary);
+  if (content.modelSnapshot) appendField(provenance, 'Model snapshot', content.modelSnapshot);
+  if (content.requestedPages) appendField(provenance, 'Requested pages', content.requestedPages.join(', ') || 'None');
+  if (content.submittedPages) appendField(provenance, 'Submitted pages', content.submittedPages.join(', ') || 'None');
+  if (content.returnedPages) appendField(provenance, 'Returned pages', content.returnedPages.join(', ') || 'None');
+  appendWarnings(provenance, content.warnings);
+  appendProducer(provenance, content.producer);
+  container.appendChild(provenance);
+
   return container;
 }
 
@@ -2620,6 +2773,104 @@ function buildAcquisitionPanel(row, index) {
     panel.appendChild(execute);
   }
   return panel;
+}
+
+// UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations
+// (governed by DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md).
+// A single explicit, owner-triggered read against the existing ocr-derivative-generations route --
+// never automatic, never a provider call. Toggles the panel closed on a repeat click without
+// re-fetching; a fresh fetch only happens the first time (or after an error) for this row.
+async function loadOcrDerivativeGenerations(index) {
+  const row = rows[index];
+  if (row.ocrDerivativeGenerations) {
+    row.discoveryExpanded = !row.discoveryExpanded;
+    render();
+    return;
+  }
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/ocr-derivative-generations`, { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) return;
+    const result = await resp.json();
+    row.ocrDerivativeGenerations = result.generations || [];
+    row.discoveryExpanded = true;
+  } catch (e) {
+    row.ocrDerivativeGenerations = [];
+    row.discoveryExpanded = true;
+  }
+  render();
+}
+
+// Renders the discovered generations honestly -- every admitted generation independently listed,
+// deterministically ordered exactly as the server returned them (generatedAt descending, already
+// sorted server-side), never labelled "current", "official", "best", or "canonical". Each entry's
+// own content is fetched and cached independently (row.discoveredContent, keyed by generation id),
+// never sharing the single-slot row.ocrContent/expandedIndex state the local-durable-OCR "View
+// Extracted Content" button uses -- that single slot cannot represent 0..N generations correctly.
+function buildOcrDerivativeGenerationDiscoveryPanel(row, index) {
+  const panel = document.createElement('div');
+  panel.className = 'content-panel';
+  const heading = document.createElement('h3');
+  heading.textContent = 'Enhanced transcriptions (' + row.ocrDerivativeGenerations.length + ')';
+  panel.appendChild(heading);
+  if (!row.ocrDerivativeGenerations.length) {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.textContent = 'No admitted OCR derivative generations were found for this evidence.';
+    panel.appendChild(p);
+    return panel;
+  }
+  row.ocrDerivativeGenerations.forEach(g => {
+    const row2 = document.createElement('div');
+    const when = document.createElement('span');
+    when.textContent = new Date(g.generatedAt).toLocaleString() + ' — ' + g.outcome;
+    row2.appendChild(when);
+    const expanded = row.discoveredExpandedGenerationId === g.derivativeGenerationId;
+    const viewBtn = document.createElement('button');
+    viewBtn.textContent = expanded ? 'Hide' : 'View';
+    viewBtn.onclick = () => viewDiscoveredGeneration(index, g.derivativeGenerationId);
+    row2.appendChild(viewBtn);
+    panel.appendChild(row2);
+    if (expanded) {
+      const cached = (row.discoveredContent || {})[g.derivativeGenerationId];
+      if (cached && cached.content) {
+        panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId));
+      } else if (cached && cached.error) {
+        const p = document.createElement('p');
+        p.className = 'note';
+        p.textContent = 'Could not retrieve content: ' + cached.error;
+        panel.appendChild(p);
+      }
+    }
+  });
+  return panel;
+}
+
+async function viewDiscoveredGeneration(index, derivativeGenerationId) {
+  const row = rows[index];
+  if (row.discoveredExpandedGenerationId === derivativeGenerationId) {
+    row.discoveredExpandedGenerationId = null;
+    render();
+    return;
+  }
+  row.discoveredContent = row.discoveredContent || {};
+  if (!row.discoveredContent[derivativeGenerationId]) {
+    try {
+      const resp = await fetch(
+        `/owner/evidence/${'$'}{row.evidenceArtifactId}/ocr-content/${'$'}{derivativeGenerationId}`,
+        { method: 'GET', headers: authHeaders() },
+      );
+      const result = await resp.json();
+      if (result.status === 'RETRIEVED') {
+        row.discoveredContent[derivativeGenerationId] = { content: result.content };
+      } else {
+        row.discoveredContent[derivativeGenerationId] = { error: result.status + (result.message ? (': ' + result.message) : '') };
+      }
+    } catch (e) {
+      row.discoveredContent[derivativeGenerationId] = { error: 'Retrieval request failed safely.' };
+    }
+  }
+  row.discoveredExpandedGenerationId = derivativeGenerationId;
+  render();
 }
 
 async function loadAcquisitionDecision(index, preserveExecutionError = false) {
