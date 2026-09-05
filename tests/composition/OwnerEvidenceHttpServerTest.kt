@@ -117,6 +117,7 @@ class OwnerEvidenceHttpServerTest {
         retrieveTierA: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome)? = null,
         retrieveTierB: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome)? = null,
         discoverOcrDerivativeGenerations: (suspend (EvidenceArtifactId) -> List<DerivativeGenerationRecord>)? = null,
+        humanVerificationRecords: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> List<HumanVerificationRecord>)? = null,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -135,6 +136,7 @@ class OwnerEvidenceHttpServerTest {
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
             retrieveTierBOcrContentAsOwner = retrieveTierB ?: runtime::retrieveTierBOcrContentAsOwner,
             discoverOcrDerivativeGenerationsAsOwner = discoverOcrDerivativeGenerations ?: runtime::discoverOcrDerivativeGenerationsAsOwner,
+            listHumanVerificationRecordsAsOwner = humanVerificationRecords ?: runtime::listHumanVerificationRecordsAsOwner,
             analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
             saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
             retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
@@ -2116,6 +2118,184 @@ class OwnerEvidenceHttpServerTest {
             val content = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/ocr-content/$derivativeGenerationId")).header("Cookie", cookie).GET().build())
             assertEquals("RETRIEVED", extractField(content.body(), "status"))
             assertEquals("PRE-EXISTING DISCOVERY TEXT", extractJsonStringField(content.body(), "recognisedText"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // ================= UI-INGESTION-8E — Owner Derivative Inspection UI Acceptance Fix =================
+    // Live owner testing found the UI-INGESTION-8C/8D discovery capability, though functionally
+    // correct end-to-end, was not usable in practice: the trigger control blended into the row's
+    // other buttons, and even once opened, the discovery panel gave no way to tell which
+    // generation was newer or what its human review state was. These tests prove the served page
+    // itself -- not just the JSON API -- now presents that information clearly.
+
+    @Test
+    fun `the served page exposes a visually distinguished discovery action directly on the original evidence row`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("View enhanced transcriptions"))
+            assertTrue(body.contains("discovery-action"), "the trigger button must carry a distinguishing CSS class, not blend into the row's other buttons")
+            assertTrue(body.contains(".discovery-action"), "a distinguishing style rule must actually exist for that class")
+            // The trigger must be present on the ordinary original-evidence-row condition, never
+            // gated behind acquisition/authorization state the owner has not yet loaded.
+            assertTrue(body.contains("if (row.evidenceArtifactId && !row.externalResultRow) {\n      const b = document.createElement('button');\n      b.className = 'discovery-action';"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `clicking the discovery action calls the existing exact-evidence discovery endpoint, never Process document or Run enhanced transcription`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("b.onclick = () => loadOcrDerivativeGenerations(index);"))
+            assertTrue(body.contains("ocr-derivative-generations"))
+            // loadOcrDerivativeGenerations itself must never call the acquisition, authorization,
+            // or external-transcription-invocation endpoints.
+            val fnStart = body.indexOf("async function loadOcrDerivativeGenerations")
+            val fnBody = body.substring(fnStart, body.indexOf("\n}", fnStart) + 2)
+            assertFalse(fnBody.contains("/acquisition"))
+            assertFalse(fnBody.contains("/transcribe-external"))
+            assertFalse(fnBody.contains("authorize-enhanced-transcription"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the discovery panel renders a clear no-existing-transcriptions state for zero generations`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("No admitted OCR derivative generations were found for this evidence."))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the discovery panel labels only the first (newest) generation, shows its generation id, timestamp and human review state, and offers an exact-target View action`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("newest-label"))
+            assertTrue(body.contains("newest.textContent = 'Newest';"))
+            // The label is applied only to sort position 0 -- never every entry, never invented per-entry state.
+            assertTrue(body.contains("if (position === 0) {"))
+            assertTrue(body.contains("appendField(entry, 'Generation', g.derivativeGenerationId);"))
+            assertTrue(body.contains("appendField(entry, 'Generated', new Date(g.generatedAt).toLocaleString());"))
+            assertTrue(body.contains("appendField(entry, 'Human review', g.humanReviewState || 'UNREVIEWED');"))
+            assertTrue(body.contains("viewDiscoveredGeneration(index, g.derivativeGenerationId)"))
+            // Scoped to the discovery panel's own rendering function -- not the whole page, which
+            // legitimately uses "canonical" elsewhere (e.g. the unrelated analysis disclaimer "not
+            // ... canonical Parker truth", and this very file's own explanatory comments about what
+            // must never be labelled).
+            val panelStart = body.indexOf("function buildOcrDerivativeGenerationDiscoveryPanel")
+            val panelBody = body.substring(panelStart, body.indexOf("\nfunction ", panelStart + 1))
+            listOf("'Canonical'", "'Official'", "'Best'", "'Authoritative'").forEach {
+                assertFalse(panelBody.contains(it), "the discovery panel must never render a generation labelled $it")
+            }
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `discovered generations carry human review state sourced from the existing exact-pair human verification query, never invented`() = runTest {
+        val evidenceId = "evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d"
+        val newer = discoveryRecord("4c8ed1e2-7524-467c-b4b3-32e8293c7854", evidenceId, Instant.parse("2026-09-05T03:50:00Z"))
+        val older = discoveryRecord("6d8d9307-8281-4574-a050-f9fec1c916f1", evidenceId, Instant.parse("2026-09-05T03:48:00Z"))
+        var queriedPairs = mutableListOf<Pair<String, String>>()
+        val harness = startHarness(
+            "",
+            discoverOcrDerivativeGenerations = { listOf(newer, older) },
+            humanVerificationRecords = { evId, genId ->
+                queriedPairs.add(evId.value to genId.value)
+                if (genId.value == "6d8d9307-8281-4574-a050-f9fec1c916f1") {
+                    listOf(
+                        HumanVerificationRecord(
+                            HumanVerificationRecordId("hv-1"), evId, genId, OcrPageScope(listOf(1, 2)),
+                            reviewerPrincipalId = PrincipalId("user.steve"), reviewedAt = Instant.EPOCH,
+                            outcome = HumanVerificationOutcome.REVIEW_PASSED, reviewArtifactSha256 = OcrSha256Digest("a".repeat(64)),
+                        ),
+                    )
+                } else {
+                    emptyList()
+                }
+            },
+        )
+        try {
+            val response = getPaired(harness, "/owner/evidence/$evidenceId/ocr-derivative-generations")
+            assertEquals(200, response.statusCode())
+            assertEquals(listOf("UNREVIEWED", "REVIEW_PASSED"), extractAllFields(response.body(), "humanReviewState"))
+            assertEquals(2, queriedPairs.size)
+            assertTrue(queriedPairs.all { it.first == evidenceId })
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `View still uses only the existing paired content route, never a parallel retrieval path, and fails closed on a wrong pair`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            val fnStart = body.indexOf("async function viewDiscoveredGeneration")
+            val fnBody = body.substring(fnStart, body.indexOf("\n}", fnStart) + 2)
+            assertTrue(fnBody.contains("/ocr-content/"))
+            assertTrue(fnBody.contains("row.evidenceArtifactId"))
+            assertTrue(fnBody.contains("derivativeGenerationId"))
+            assertTrue(fnBody.contains("buildOcrContentPanel") || body.contains("panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId));"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `no acknowledgement or human-review-write control of any kind is exposed alongside a discovered generation or its inspection panel`() {
+        // HUMAN ACKNOWLEDGEMENT trace (UI-INGESTION-8E): the only "acknowledgement" control in
+        // this codebase (acknowledgesUnverifiedExternalTranscription) is a client-side-only
+        // analysis-selection gate for ephemeral externalResultRow rows created immediately after a
+        // *new* transcription run -- never rendered for a row discovered via
+        // buildOcrDerivativeGenerationDiscoveryPanel/buildEnhancedTranscriptionPanel, and there is
+        // no HTTP route anywhere that writes a HumanVerificationRecord from the Owner UI. This unit
+        // does not add one (that would be new governance/backend work); it only proves the current,
+        // correct absence, so a discovered generation can never be confused for an acknowledgement
+        // target.
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            val discoveryPanelStart = body.indexOf("function buildOcrDerivativeGenerationDiscoveryPanel")
+            val discoveryPanelBody = body.substring(discoveryPanelStart, body.indexOf("\nfunction ", discoveryPanelStart + 1))
+            assertFalse(discoveryPanelBody.contains("acknowledg", ignoreCase = true))
+            val enhancedPanelStart = body.indexOf("function buildEnhancedTranscriptionPanel")
+            val enhancedPanelBody = body.substring(enhancedPanelStart, body.indexOf("\nfunction ", enhancedPanelStart + 1))
+            assertFalse(enhancedPanelBody.contains("acknowledg", ignoreCase = true))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `real-evidence production-like case -- both real generations are displayed and the newer one is visibly identified as newest`() = runTest {
+        val evidenceId = "evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d"
+        val newer = discoveryRecord("4c8ed1e2-7524-467c-b4b3-32e8293c7854", evidenceId, Instant.parse("2026-09-05T05:50:52.724651455Z"))
+        val older = discoveryRecord("6d8d9307-8281-4574-a050-f9fec1c916f1", evidenceId, Instant.parse("2026-09-05T05:48:33.450076632Z"))
+        val harness = startHarness("", discoverOcrDerivativeGenerations = { listOf(newer, older) })
+        try {
+            val response = getPaired(harness, "/owner/evidence/$evidenceId/ocr-derivative-generations")
+            assertEquals(200, response.statusCode())
+            val ids = extractAllFields(response.body(), "derivativeGenerationId")
+            assertEquals(listOf("4c8ed1e2-7524-467c-b4b3-32e8293c7854", "6d8d9307-8281-4574-a050-f9fec1c916f1"), ids)
+
+            // The page's own rendering logic (already verified generically above) labels
+            // whichever entry the server placed first as "Newest" -- for this exact real pair,
+            // that is unambiguously 4c8ed1e2-..., proving the owner's specific complaint
+            // ("could not tell which generation was newer") is resolved for the real data.
+            assertEquals("4c8ed1e2-7524-467c-b4b3-32e8293c7854", ids.first())
         } finally {
             harness.shutdown()
         }

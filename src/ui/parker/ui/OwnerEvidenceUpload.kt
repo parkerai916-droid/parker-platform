@@ -522,6 +522,15 @@ data class OwnerOcrDerivativeGenerationSummary(
     val evidenceArtifactId: String,
     val generatedAt: String,
     val outcome: String,
+    /**
+     * UI-INGESTION-8E: the exact-pair human fidelity review state for this generation, from the
+     * same already-governed, read-only [OwnerEvidenceOperations]-adjacent query the existing
+     * content-inspection panel already uses ([HumanVerificationStorage.listForExactGeneration]) --
+     * never a new capability, never a write. "UNREVIEWED" when no review record exists yet, exactly
+     * mirroring the content panel's own convention; multiple outcomes joined with ", " in the
+     * unlikely event more than one record exists for this exact pair.
+     */
+    val humanReviewState: String = "UNREVIEWED",
 )
 
 sealed interface EnhancedTranscriptionReadiness {

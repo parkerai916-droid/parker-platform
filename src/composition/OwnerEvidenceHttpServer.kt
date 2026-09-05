@@ -842,6 +842,7 @@ class OwnerEvidenceHttpServer(
                                 "evidenceArtifactId" to it.evidenceArtifactId,
                                 "generatedAt" to it.generatedAt,
                                 "outcome" to it.outcome,
+                                "humanReviewState" to it.humanReviewState,
                             )
                         },
                     ),
@@ -2007,6 +2008,9 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #333; font-size: 0.85rem; }
   button { padding: 0.3rem 0.7rem; margin-right: 0.3rem; }
   .row-actions button { font-size: 0.8rem; }
+  .row-actions button.discovery-action { background: #2a5d3a; color: #eee; border: 1px solid #4a9d5f; font-weight: bold; }
+  .generation-entry { border: 1px solid #333; padding: 0.5rem; margin: 0.4rem 0; }
+  .generation-entry .newest-label { color: #6f6; font-weight: bold; }
   #status { color: #f88; }
   .note { color: #fd8; font-size: 0.85rem; }
   .content-panel { background: #1a1a1a; padding: 0.75rem; margin: 0.5rem 0; border: 1px solid #333; }
@@ -2165,15 +2169,22 @@ function render() {
       external.onclick = () => transcribeExternalRow(index);
       actions.appendChild(external);
     }
-    // UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations
+    // UI-INGESTION-8B/8E: exact-evidence discovery of admitted Tier B OCR derivative generations
     // (governed by DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md).
     // A minimal, explicit, owner-triggered read -- never automatic, never executed for every row on
     // page load. Works for any already-admitted generation, including one admitted in an earlier
     // session or before this capability existed; no authorization-record linkage of any kind.
+    // UI-INGESTION-8E: given its own distinguishing class (never blended into the row's other,
+    // mostly-disabled/specialist buttons) because live owner testing found the original
+    // "Check enhanced transcriptions" control, though functionally correct, was not visibly
+    // distinguishable from those -- an owner scanning the row had no reason to notice it promised
+    // access to already-existing results.
     if (row.evidenceArtifactId && !row.externalResultRow) {
       const b = document.createElement('button');
-      b.textContent = row.ocrDerivativeGenerations ? (row.discoveryExpanded ? 'Hide enhanced transcriptions' : 'Show enhanced transcriptions')
-        : 'Check enhanced transcriptions';
+      b.className = 'discovery-action';
+      b.textContent = row.ocrDerivativeGenerations ? (row.discoveryExpanded ? 'Hide enhanced transcriptions' : 'View enhanced transcriptions')
+        : 'View enhanced transcriptions';
+      b.title = 'View any enhanced-transcription results already admitted for this document -- performs no provider call and creates nothing.';
       b.onclick = () => loadOcrDerivativeGenerations(index);
       actions.appendChild(b);
     }
@@ -2819,17 +2830,30 @@ function buildOcrDerivativeGenerationDiscoveryPanel(row, index) {
     panel.appendChild(p);
     return panel;
   }
-  row.ocrDerivativeGenerations.forEach(g => {
-    const row2 = document.createElement('div');
-    const when = document.createElement('span');
-    when.textContent = new Date(g.generatedAt).toLocaleString() + ' — ' + g.outcome;
-    row2.appendChild(when);
+  // UI-INGESTION-8E: "Newest" labels only the deterministic sort position the server already
+  // computed (generatedAt descending, id descending tie-break) -- it is a presentation of that
+  // order, never a claim of canonical/official/authoritative status. Every generation, including
+  // the newest, remains independently viewable; nothing about this label changes retrieval.
+  row.ocrDerivativeGenerations.forEach((g, position) => {
+    const entry = document.createElement('div');
+    entry.className = 'generation-entry';
+    if (position === 0) {
+      const newest = document.createElement('div');
+      newest.className = 'newest-label';
+      newest.textContent = 'Newest';
+      entry.appendChild(newest);
+    }
+    appendField(entry, 'Generated', new Date(g.generatedAt).toLocaleString());
+    appendField(entry, 'Generation', g.derivativeGenerationId);
+    appendField(entry, 'Outcome', g.outcome);
+    appendField(entry, 'Human review', g.humanReviewState || 'UNREVIEWED');
     const expanded = row.discoveredExpandedGenerationId === g.derivativeGenerationId;
     const viewBtn = document.createElement('button');
     viewBtn.textContent = expanded ? 'Hide' : 'View';
+    viewBtn.title = 'Retrieve this exact generation -- ' + g.derivativeGenerationId + ' -- via the existing paired content route.';
     viewBtn.onclick = () => viewDiscoveredGeneration(index, g.derivativeGenerationId);
-    row2.appendChild(viewBtn);
-    panel.appendChild(row2);
+    entry.appendChild(viewBtn);
+    panel.appendChild(entry);
     if (expanded) {
       const cached = (row.discoveredContent || {})[g.derivativeGenerationId];
       if (cached && cached.content) {

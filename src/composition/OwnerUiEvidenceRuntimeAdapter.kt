@@ -689,9 +689,11 @@ class OwnerUiEvidenceRuntimeAdapter(
 
     override suspend fun discoverOcrDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerOcrDerivativeGenerationSummary> =
         discoverOcrDerivativeGenerationsAsOwner(evidenceArtifactId).map { record ->
+            val reviewStates = listHumanVerificationRecordsAsOwner(evidenceArtifactId, record.derivativeGenerationId).map { it.outcome.name }
             OwnerOcrDerivativeGenerationSummary(
                 record.derivativeGenerationId.value, record.rootSourceEvidenceArtifactId.value,
                 record.generatedAt.toString(), record.operationalOutcome.name,
+                humanReviewState = reviewStates.ifEmpty { listOf("UNREVIEWED") }.joinToString(", "),
             )
         }
 
