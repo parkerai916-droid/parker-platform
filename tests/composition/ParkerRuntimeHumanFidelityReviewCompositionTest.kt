@@ -129,12 +129,22 @@ class ParkerRuntimeHumanFidelityReviewCompositionTest {
     }
 
     @Test
-    fun `composed capability has no provider correction projector or public write route`() {
+    fun `composed capability has no provider or correction route and exposes only the authorized HFR Owner UI entry points`() {
         val serviceFields = DefaultGovernedHumanFidelityReviewRecordingService::class.java.declaredFields.map { it.type.name }
         assertTrue(serviceFields.all { "Provider" !in it && "Correction" !in it && "Projection" !in it })
-        assertFalse(ParkerRuntime::class.java.methods.any {
+        // HFR Owner UI exposure scope lock amendment: this test previously asserted zero public
+        // HFR methods on ParkerRuntime at all -- that guard predates the amendment, which
+        // explicitly authorizes exactly these two additive, exact-target, record/project entry
+        // points (reusing the existing HFR domain unchanged). No correction workflow, no provider
+        // route, and no other HFR method is authorized; this replaces (not weakens) the guard.
+        // JVM name-mangles a suspend function's bytecode name with a hash suffix (e.g.
+        // "recordHumanFidelityReviewAsOwner-4PLIoR8") -- substringBefore('-') normalizes back to
+        // the plain Kotlin method name reflection callers actually invoke by.
+        val hfrMethods = ParkerRuntime::class.java.methods.filter {
             it.name.contains("HumanFidelity", ignoreCase = true) || it.name.contains("ReviewRecording", ignoreCase = true)
-        })
+        }.map { it.name.substringBefore('-') }.toSet()
+        assertEquals(setOf("recordHumanFidelityReviewAsOwner", "projectEffectiveHumanFidelityReviewAsOwner"), hfrMethods)
+        assertFalse(ParkerRuntime::class.java.methods.any { it.name.contains("Correction", ignoreCase = true) })
     }
 
     @Test

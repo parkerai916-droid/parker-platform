@@ -216,6 +216,12 @@ import parker.core.runtime.TierAOwnerInvocationCoordinator
 import parker.core.runtime.TierBOcrContentRetrievalCoordinator
 import parker.core.runtime.TierBOcrDerivativeGenerationDiscoveryCoordinator
 import parker.core.runtime.TierBOcrOwnerInvocationCoordinator
+import parker.core.runtime.TierBOcrHumanFidelityReviewCoordinator
+import parker.core.runtime.TierBHumanFidelityReviewSubmission
+import parker.core.runtime.TierBFidelityDiscrepancySubmission
+import parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome
+import parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome
+import parker.core.runtime.TierBHumanFidelityReviewTargetResolution
 
 /**
  * [ParkerRuntime]'s own lifecycle, restated as an explicit, observable
@@ -430,6 +436,10 @@ class ParkerRuntime(
     private var humanFidelityReviewExactTargetRegistrar: HumanFidelityReviewExactTargetRegistrar? = null
     // OI11R6V-A8A: read-only internal projection seam. It cannot mutate a review or derivative.
     private var effectiveHumanFidelityReviewProjector: EffectiveHumanFidelityReviewProjector? = null
+    // HFR Owner UI exposure scope lock amendment: Tier B OCR exact-target binding into the
+    // existing (unmodified) HFR recording service/storage/projector above -- null unless
+    // humanFidelityReviewConfigured, mirroring every other optional collaborator in this file.
+    private var tierBOcrHumanFidelityReviewCoordinator: TierBOcrHumanFidelityReviewCoordinator? = null
     private var governedHumanCorrectionService: GovernedHumanCorrectionService? = null
     private var humanCorrectedRepresentationStorage: HumanCorrectedRepresentationStorage? = null
     private var humanCorrectionAudit: HumanCorrectionAudit? = null
@@ -1884,6 +1894,17 @@ class ParkerRuntime(
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
+        if (humanFidelityReviewConfigured) {
+            tierBOcrHumanFidelityReviewCoordinator = TierBOcrHumanFidelityReviewCoordinator(
+                derivativeGenerationStorage,
+                derivativeContentStorage,
+                requireNotNull(humanFidelityReviewRecordingService),
+                requireNotNull(humanFidelityReviewExactTargetRegistrar),
+                requireNotNull(effectiveHumanFidelityReviewProjector),
+                PrincipalId(config.ownerPrincipalId),
+                clock,
+            )
+        }
 
         // Construct the parent saved-analysis store before its separately governed review
         // sub-store; both validate their roots during construction.
@@ -2817,6 +2838,55 @@ class ParkerRuntime(
             throw ParkerRuntimeException.NotRunning(state)
         }
         return tierBOcrDerivativeGenerationDiscoveryCoordinator.discover(evidenceArtifactId)
+    }
+
+    /**
+     * HFR Owner UI exposure scope lock amendment: records a governed Human Fidelity Review
+     * against one exact Tier B OCR derivative generation -- **explicit, individually-authorized
+     * owner invocation only**, mirroring [retrieveTierBOcrContentAsOwner]'s own structural
+     * owner-only pattern: no `requestingPrincipalId` parameter, always acts as
+     * `PrincipalId(config.ownerPrincipalId)`.
+     *
+     * Delegates entirely to [tierBOcrHumanFidelityReviewCoordinator], which reuses the existing,
+     * unmodified HFR domain (target construction, [GovernedHumanFidelityReviewRecordingService],
+     * [HumanFidelityReviewStorage]/audit) exactly as governed by the scope lock amendment -- no
+     * new review model, store, permission concept, Authorization Purpose, or projector.
+     *
+     * Throws [IllegalStateException] if the HFR domain is not configured in this deployment
+     * (deliberately not folded into [TierBHumanFidelityReviewRecordingOutcome.Failure]'s existing
+     * [parker.core.interfaces.GovernedHumanFidelityReviewRecordingFailureReason] vocabulary --
+     * none of its members mean "not configured", and inventing a new one would be exactly the
+     * kind of frozen-domain expansion the scope lock amendment forbids).
+     */
+    suspend fun recordHumanFidelityReviewAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+        submission: TierBHumanFidelityReviewSubmission,
+    ): TierBHumanFidelityReviewRecordingOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        val coordinator = tierBOcrHumanFidelityReviewCoordinator
+            ?: error("Human Fidelity Review is not configured in this deployment")
+        return coordinator.recordReview(evidenceArtifactId, derivativeGenerationId, submission)
+    }
+
+    /**
+     * HFR Owner UI exposure scope lock amendment: read-only projection of the effective (possibly
+     * still-unreviewed) Human Fidelity Review state for one exact Tier B OCR derivative
+     * generation -- delegates to the existing, unmodified [EffectiveHumanFidelityReviewProjector]
+     * via [tierBOcrHumanFidelityReviewCoordinator]. Cannot mutate a review or derivative.
+     */
+    suspend fun projectEffectiveHumanFidelityReviewAsOwner(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): TierBEffectiveHumanFidelityReviewOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        val coordinator = tierBOcrHumanFidelityReviewCoordinator
+            ?: return TierBEffectiveHumanFidelityReviewOutcome.FailedClosed
+        return coordinator.projectEffectiveReview(evidenceArtifactId, derivativeGenerationId)
     }
 
     /** Exact-pair, metadata-only human-review records; ordering conveys no precedence. */

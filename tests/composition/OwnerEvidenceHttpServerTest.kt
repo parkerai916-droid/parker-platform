@@ -2248,7 +2248,7 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(fnBody.contains("/ocr-content/"))
             assertTrue(fnBody.contains("row.evidenceArtifactId"))
             assertTrue(fnBody.contains("derivativeGenerationId"))
-            assertTrue(fnBody.contains("buildOcrContentPanel") || body.contains("panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId));"))
+            assertTrue(fnBody.contains("buildOcrContentPanel") || body.contains("panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId, row.evidenceArtifactId));"))
         } finally {
             harness.shutdown()
         }

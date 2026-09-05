@@ -162,6 +162,39 @@ interface OwnerEvidenceOperations {
     suspend fun discoverOcrDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerOcrDerivativeGenerationSummary> = emptyList()
 
     /**
+     * HFR Owner UI exposure scope lock amendment
+     * (`HUMAN_FIDELITY_REVIEW_OWNER_UI_EXPOSURE_SCOPE_LOCK_AMENDMENT.md`). Records a governed
+     * Human Fidelity Review against exactly one already-discovered Tier B OCR derivative
+     * generation ([derivativeGenerationId] -- an identity the caller already possesses from a
+     * prior [discoverOcrDerivativeGenerations]/[retrieveTierBOcrContent] response), through the
+     * existing, unmodified Human Fidelity Review domain (six-field exact-target binding, existing
+     * recording service, existing append-only storage/audit) -- no new review model, store,
+     * permission concept, Authorization Purpose, or projector. Structurally owner-only, exactly
+     * like every other operation on this interface: no `requestingPrincipalId` parameter of any
+     * kind. Never invokes a provider; never mutates evidence or derivative content.
+     */
+    suspend fun recordHumanFidelityReview(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+        submission: OwnerHumanFidelityReviewSubmission,
+    ): OwnerHumanFidelityReviewRecordingOutcome = OwnerHumanFidelityReviewRecordingOutcome.NotConfigured
+
+    /**
+     * Read-only projection of the effective (possibly still-unreviewed) Human Fidelity Review
+     * state for one exact Tier B OCR derivative generation, via the existing, unmodified
+     * `EffectiveHumanFidelityReviewProjector` -- reusing the exact same [OwnerHumanFidelityStatus]
+     * presentation shape the Tier A content-inspection panel already exposes for the Ordinary
+     * Region pipeline, rather than a second, parallel status DTO. Never invokes a provider; cannot
+     * mutate a review or derivative. A target-resolution failure (wrong evidence/generation pair)
+     * or an unconfigured HFR domain both project the same denied-eligibility default this DTO
+     * already uses for [parker.core.interfaces.EffectiveHumanFidelityReviewProjectionOutcome.FailedClosed].
+     */
+    suspend fun effectiveHumanFidelityReview(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): OwnerHumanFidelityStatus = OwnerHumanFidelityStatus(null, null, 0, 0, false, "DENIED", "MALFORMED_OR_UNSUPPORTED_STATE")
+
+    /**
      * Minimum Production Document Pipeline — Local Reasoning Implementation.
      * Submits one or more already-admitted evidence derivative generations
      * ([selections] -- identities the caller already possesses from a prior
@@ -532,6 +565,46 @@ data class OwnerOcrDerivativeGenerationSummary(
      */
     val humanReviewState: String = "UNREVIEWED",
 )
+
+/**
+ * HFR Owner UI exposure scope lock amendment. One governed Human Fidelity Review submission
+ * against one exact Tier B OCR derivative generation. [reviewOutcome] must be exactly
+ * `"HUMAN_REVIEWED_PASS"` or `"HUMAN_REVIEWED_WITH_DISCREPANCY"` -- the existing frozen
+ * `HumanFidelityReviewState` vocabulary's own closed set of human-recordable outcomes; any other
+ * value fails closed as [OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission]. Deliberately
+ * carries no asserted-source-value field for any discrepancy: this Tier B path always resolves
+ * `HumanSourceResolution.Unresolved` (a fully valid, first-class state under the existing domain),
+ * since Tier B OCR has no canonical rendered-page-image pipeline to honestly cite as a consulted
+ * source (see the scope lock amendment's own disclosed limitation).
+ */
+data class OwnerHumanFidelityReviewSubmission(
+    val reviewOutcome: String,
+    val reviewedPages: List<Int>,
+    val descriptiveFidelity: String,
+    val discrepancies: List<OwnerFidelityDiscrepancySubmission> = emptyList(),
+)
+
+/** One structured discrepancy within an [OwnerHumanFidelityReviewSubmission]. */
+data class OwnerFidelityDiscrepancySubmission(
+    val pageNumber: Int,
+    val startCodePointInclusive: Int,
+    val endCodePointExclusive: Int,
+    val classification: String,
+    val severity: String,
+    val reason: String,
+    val explicitClassificationDetail: String? = null,
+)
+
+/** The truthful result of one [OwnerEvidenceOperations.recordHumanFidelityReview] call. */
+sealed interface OwnerHumanFidelityReviewRecordingOutcome {
+    data class Recorded(val reviewId: String) : OwnerHumanFidelityReviewRecordingOutcome
+    data class AlreadyRecorded(val reviewId: String) : OwnerHumanFidelityReviewRecordingOutcome
+    data class TargetResolutionFailed(val reason: String) : OwnerHumanFidelityReviewRecordingOutcome
+    data class InvalidSubmission(val reason: String) : OwnerHumanFidelityReviewRecordingOutcome
+    data class AuthorizationDenied(val reason: String) : OwnerHumanFidelityReviewRecordingOutcome
+    data class Failed(val reason: String) : OwnerHumanFidelityReviewRecordingOutcome
+    data object NotConfigured : OwnerHumanFidelityReviewRecordingOutcome
+}
 
 sealed interface EnhancedTranscriptionReadiness {
     data object Disabled : EnhancedTranscriptionReadiness

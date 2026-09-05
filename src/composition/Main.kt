@@ -102,6 +102,8 @@ internal fun buildOwnerHttpAdapter(runtime: ParkerRuntime, config: ParkerRuntime
         externalTranscriptionAuthorizationStatusAsOwner = runtime::externalTranscriptionAuthorizationStatusAsOwner,
         authorizeExternalTranscriptionAsOwner = runtime::authorizeExternalTranscriptionAsOwner,
         discoverOcrDerivativeGenerationsAsOwner = runtime::discoverOcrDerivativeGenerationsAsOwner,
+        recordHumanFidelityReviewAsOwner = runtime::recordHumanFidelityReviewAsOwner,
+        projectEffectiveHumanFidelityReviewAsOwner = runtime::projectEffectiveHumanFidelityReviewAsOwner,
     )
 
 fun main(args: Array<String>) = runBlocking {

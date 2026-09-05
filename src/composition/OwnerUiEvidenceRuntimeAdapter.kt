@@ -237,6 +237,18 @@ class OwnerUiEvidenceRuntimeAdapter(
             detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
         )
     },
+    // HFR Owner UI exposure scope lock amendment: null default preserves "not configured" for
+    // every existing caller unless explicitly wired -- mirroring every other optional collaborator
+    // in this constructor.
+    private val recordHumanFidelityReviewAsOwner: (suspend (
+        EvidenceArtifactId,
+        DerivativeGenerationId,
+        parker.core.runtime.TierBHumanFidelityReviewSubmission,
+    ) -> parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome)? = null,
+    private val projectEffectiveHumanFidelityReviewAsOwner: (suspend (
+        EvidenceArtifactId,
+        DerivativeGenerationId,
+    ) -> parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome)? = null,
 ) : OwnerEvidenceOperations {
 
     override suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> =
@@ -695,6 +707,79 @@ class OwnerUiEvidenceRuntimeAdapter(
                 record.generatedAt.toString(), record.operationalOutcome.name,
                 humanReviewState = reviewStates.ifEmpty { listOf("UNREVIEWED") }.joinToString(", "),
             )
+        }
+
+    override suspend fun recordHumanFidelityReview(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+        submission: parker.ui.OwnerHumanFidelityReviewSubmission,
+    ): parker.ui.OwnerHumanFidelityReviewRecordingOutcome {
+        val record = recordHumanFidelityReviewAsOwner
+            ?: return parker.ui.OwnerHumanFidelityReviewRecordingOutcome.NotConfigured
+        val reviewOutcome = runCatching { parker.core.interfaces.HumanFidelityReviewState.valueOf(submission.reviewOutcome) }
+            .getOrElse { return parker.ui.OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission("Unknown reviewOutcome '${submission.reviewOutcome}'") }
+        if (reviewOutcome != parker.core.interfaces.HumanFidelityReviewState.HUMAN_REVIEWED_PASS &&
+            reviewOutcome != parker.core.interfaces.HumanFidelityReviewState.HUMAN_REVIEWED_WITH_DISCREPANCY
+        ) {
+            return parker.ui.OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission(
+                "reviewOutcome must be HUMAN_REVIEWED_PASS or HUMAN_REVIEWED_WITH_DISCREPANCY",
+            )
+        }
+        val discrepancies = submission.discrepancies.map { d ->
+            val classification = runCatching { parker.core.interfaces.FidelityDiscrepancyClassification.valueOf(d.classification) }
+                .getOrElse { return parker.ui.OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission("Unknown discrepancy classification '${d.classification}'") }
+            val severity = runCatching { parker.core.interfaces.FidelityDiscrepancySeverity.valueOf(d.severity) }
+                .getOrElse { return parker.ui.OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission("Unknown discrepancy severity '${d.severity}'") }
+            parker.core.runtime.TierBFidelityDiscrepancySubmission(
+                d.pageNumber, d.startCodePointInclusive, d.endCodePointExclusive,
+                classification, severity, d.reason, d.explicitClassificationDetail,
+            )
+        }
+        val outcome = record(
+            evidenceArtifactId,
+            derivativeGenerationId,
+            parker.core.runtime.TierBHumanFidelityReviewSubmission(
+                reviewOutcome, submission.reviewedPages, submission.descriptiveFidelity, discrepancies,
+            ),
+        )
+        return when (outcome) {
+            is parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome.Recorded ->
+                parker.ui.OwnerHumanFidelityReviewRecordingOutcome.Recorded(outcome.reviewId.value)
+            is parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome.AlreadyRecorded ->
+                parker.ui.OwnerHumanFidelityReviewRecordingOutcome.AlreadyRecorded(outcome.reviewId.value)
+            is parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome.TargetResolutionFailed ->
+                parker.ui.OwnerHumanFidelityReviewRecordingOutcome.TargetResolutionFailed(targetResolutionReason(outcome.resolution))
+            is parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome.InvalidSubmission ->
+                parker.ui.OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission(outcome.reason)
+            is parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome.AuthorizationDenied ->
+                parker.ui.OwnerHumanFidelityReviewRecordingOutcome.AuthorizationDenied(outcome.reason.name)
+            is parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome.Failure ->
+                parker.ui.OwnerHumanFidelityReviewRecordingOutcome.Failed(outcome.reason.name)
+        }
+    }
+
+    override suspend fun effectiveHumanFidelityReview(
+        evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: DerivativeGenerationId,
+    ): OwnerHumanFidelityStatus {
+        val project = projectEffectiveHumanFidelityReviewAsOwner ?: return humanFidelityStatus(null)
+        return when (val outcome = project(evidenceArtifactId, derivativeGenerationId)) {
+            is parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome.Projected ->
+                humanFidelityStatus(EffectiveHumanFidelityReviewProjectionOutcome.Projected(outcome.summary))
+            is parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome.TargetResolutionFailed -> humanFidelityStatus(null)
+            parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome.FailedClosed -> humanFidelityStatus(null)
+        }
+    }
+
+    private fun targetResolutionReason(resolution: parker.core.runtime.TierBHumanFidelityReviewTargetResolution): String =
+        when (resolution) {
+            is parker.core.runtime.TierBHumanFidelityReviewTargetResolution.Resolved -> "RESOLVED"
+            parker.core.runtime.TierBHumanFidelityReviewTargetResolution.UnknownGeneration -> "UNKNOWN_GENERATION"
+            parker.core.runtime.TierBHumanFidelityReviewTargetResolution.SourceMismatch -> "SOURCE_MISMATCH"
+            parker.core.runtime.TierBHumanFidelityReviewTargetResolution.WrongDerivativeKind -> "WRONG_DERIVATIVE_KIND"
+            parker.core.runtime.TierBHumanFidelityReviewTargetResolution.ContentMissing -> "CONTENT_MISSING"
+            parker.core.runtime.TierBHumanFidelityReviewTargetResolution.MissingProcessingProvenance -> "MISSING_PROCESSING_PROVENANCE"
+            is parker.core.runtime.TierBHumanFidelityReviewTargetResolution.ContentCorrupt -> "CONTENT_CORRUPT: ${resolution.reason}"
         }
 
     /**

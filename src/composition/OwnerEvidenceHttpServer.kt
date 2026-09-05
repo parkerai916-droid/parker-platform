@@ -27,6 +27,7 @@ import parker.ui.EvidenceImportOutcome
 import parker.ui.OwnerDerivativeProducerSummary
 import parker.ui.OwnerDocumentAnalysisOutcome
 import parker.ui.OwnerEvidenceOperations
+import parker.ui.OwnerHumanFidelityStatus
 import parker.ui.OwnerRetrieveSavedAnalysisOutcome
 import parker.ui.OwnerSaveAnalysisOutcome
 import parker.ui.OwnerSavedAnalysisPresentation
@@ -394,6 +395,10 @@ class OwnerEvidenceHttpServer(
                         handleRetrieveOcrContent(exchange, segments[0], segments[2])
                     segments.size == 2 && segments[1] == "ocr-derivative-generations" && method == "GET" ->
                         handleDiscoverOcrDerivativeGenerations(exchange, segments[0])
+                    segments.size == 3 && segments[1] == "human-fidelity-review" && method == "GET" ->
+                        handleGetHumanFidelityReview(exchange, segments[0], segments[2])
+                    segments.size == 3 && segments[1] == "human-fidelity-review" && method == "POST" ->
+                        handleRecordHumanFidelityReview(exchange, segments[0], segments[2])
                     else -> {
                         runCatching { exchange.requestBody.use { it.readBytes() } }
                         writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -849,7 +854,96 @@ class OwnerEvidenceHttpServer(
                 ),
             )
         }
+
+        /**
+         * HFR Owner UI exposure scope lock amendment: read-only effective Human Fidelity Review
+         * status for one exact Tier B OCR derivative generation, via the existing, unmodified
+         * `EffectiveHumanFidelityReviewProjector`. Never invokes a provider; never mutates.
+         */
+        private fun handleGetHumanFidelityReview(exchange: HttpExchange, rawEvidenceArtifactId: String, rawDerivativeGenerationId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val evidenceArtifactId = try {
+                EvidenceArtifactId(rawEvidenceArtifactId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val derivativeGenerationId = try {
+                DerivativeGenerationId(rawDerivativeGenerationId)
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            }
+            val status = runBlocking { operations.effectiveHumanFidelityReview(evidenceArtifactId, derivativeGenerationId) }
+            writeJson(exchange, 200, humanFidelityStatusJson(status))
+        }
+
+        /**
+         * HFR Owner UI exposure scope lock amendment: records a governed Human Fidelity Review
+         * against one exact Tier B OCR derivative generation, through the existing, unmodified HFR
+         * recording service/storage/audit -- no new review model, store, permission concept,
+         * Authorization Purpose, or projector.
+         */
+        private fun handleRecordHumanFidelityReview(exchange: HttpExchange, rawEvidenceArtifactId: String, rawDerivativeGenerationId: String) {
+            val evidenceArtifactId = try {
+                EvidenceArtifactId(rawEvidenceArtifactId)
+            } catch (e: IllegalArgumentException) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id"))
+                return
+            }
+            val derivativeGenerationId = try {
+                DerivativeGenerationId(rawDerivativeGenerationId)
+            } catch (e: IllegalArgumentException) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                writeJson(exchange, 400, jsonObject("error" to "invalid derivative generation id"))
+                return
+            }
+            val bodyBytes = try {
+                exchange.requestBody.use { readBounded(it, MAX_HUMAN_FIDELITY_REVIEW_REQUEST_BODY_BYTES) }
+            } catch (e: RequestBodyTooLargeException) {
+                writeJson(exchange, 400, jsonObject("error" to "request body too large"))
+                return
+            }
+            val submission = try {
+                parseHumanFidelityReviewSubmissionRequestBody(bodyBytes)
+            } catch (e: JsonParseException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                return
+            } catch (e: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                return
+            }
+            val outcome = runBlocking { operations.recordHumanFidelityReview(evidenceArtifactId, derivativeGenerationId, submission) }
+            val (status, body) = when (outcome) {
+                is parker.ui.OwnerHumanFidelityReviewRecordingOutcome.Recorded ->
+                    200 to jsonObject("status" to "RECORDED", "reviewId" to outcome.reviewId)
+                is parker.ui.OwnerHumanFidelityReviewRecordingOutcome.AlreadyRecorded ->
+                    200 to jsonObject("status" to "ALREADY_RECORDED", "reviewId" to outcome.reviewId)
+                is parker.ui.OwnerHumanFidelityReviewRecordingOutcome.TargetResolutionFailed ->
+                    409 to jsonObject("status" to "TARGET_RESOLUTION_FAILED", "reason" to outcome.reason)
+                is parker.ui.OwnerHumanFidelityReviewRecordingOutcome.InvalidSubmission ->
+                    400 to jsonObject("status" to "INVALID_SUBMISSION", "reason" to outcome.reason)
+                is parker.ui.OwnerHumanFidelityReviewRecordingOutcome.AuthorizationDenied ->
+                    403 to jsonObject("status" to "AUTHORIZATION_DENIED", "reason" to outcome.reason)
+                is parker.ui.OwnerHumanFidelityReviewRecordingOutcome.Failed ->
+                    500 to jsonObject("status" to "FAILED", "reason" to outcome.reason)
+                parker.ui.OwnerHumanFidelityReviewRecordingOutcome.NotConfigured ->
+                    409 to jsonObject("status" to "NOT_CONFIGURED")
+            }
+            writeJson(exchange, status, body)
+        }
     }
+
+    private fun humanFidelityStatusJson(status: OwnerHumanFidelityStatus): JsonObject = jsonObject(
+        "effectiveReviewState" to status.effectiveReviewState,
+        "coverage" to status.coverage,
+        "materialDiscrepancyCount" to status.materialDiscrepancyCount,
+        "systematicPatternCount" to status.systematicPatternCount,
+        "unresolvedConflict" to status.unresolvedConflict,
+        "sourceConfirmedEligibility" to status.sourceConfirmedEligibility,
+        "sourceConfirmedDenialReason" to status.sourceConfirmedDenialReason,
+    )
 
     // ---- /owner/analyse -------------------------------------------------------------------
 
@@ -1486,6 +1580,16 @@ class OwnerEvidenceHttpServer(
          */
         const val MAX_SAVE_REQUEST_BODY_BYTES: Long = 4L * 1024L
         const val MAX_PROMOTION_REQUEST_BODY_BYTES: Long = 1024L
+
+        /**
+         * HFR Owner UI exposure scope lock amendment. A finite bound on the
+         * `POST /owner/evidence/{id}/human-fidelity-review/{generationId}` JSON request body --
+         * carries only structured discrepancy metadata (page numbers, code-point ranges,
+         * classification/severity labels, short reason text), never derivative content itself.
+         * Sized generously for a worst-case worksheet of many discrepancies with headroom for JSON
+         * structure/escaping overhead.
+         */
+        const val MAX_HUMAN_FIDELITY_REVIEW_REQUEST_BODY_BYTES: Long = 64L * 1024L
     }
 }
 
@@ -1599,6 +1703,41 @@ private fun parsePostEgressContinuationRequest(bodyBytes:ByteArray):PostEgressCo
     if(obj.keys!=setOf("evidenceId","authorizationId","executionId","providerStateId"))throw JsonParseException("unexpected continuation fields")
     fun field(name:String)=(obj[name] as? String)?.takeIf{it.isNotBlank()&&it.length<=256}?:throw JsonParseException("invalid $name")
     return PostEgressContinuationRequest(EvidenceArtifactId(field("evidenceId")),field("authorizationId"),field("executionId"),field("providerStateId"))
+}
+
+/**
+ * HFR Owner UI exposure scope lock amendment. Parses `POST
+ * /owner/evidence/{id}/human-fidelity-review/{generationId}`'s JSON body into
+ * [parker.ui.OwnerHumanFidelityReviewSubmission]. Every numeric field is transmitted as a JSON
+ * string and parsed here, exactly mirroring [parseCorrectedPreparationRequest]'s own
+ * `profileVersion` handling -- [SimpleJsonReader] parses only objects, arrays, and strings, never
+ * raw JSON numbers or booleans.
+ */
+private fun parseHumanFidelityReviewSubmissionRequestBody(bodyBytes: ByteArray): parker.ui.OwnerHumanFidelityReviewSubmission {
+    val text = String(bodyBytes, StandardCharsets.UTF_8)
+    val root = SimpleJsonReader(text).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+
+    val reviewOutcome = obj["reviewOutcome"] as? String ?: throw JsonParseException("expected a 'reviewOutcome' string")
+    val reviewedPagesRaw = obj["reviewedPages"] as? List<*> ?: throw JsonParseException("expected a 'reviewedPages' array")
+    val reviewedPages = reviewedPagesRaw.map { (it as? String)?.toIntOrNull() ?: throw JsonParseException("expected page numbers as strings") }
+    val descriptiveFidelity = obj["descriptiveFidelity"] as? String ?: throw JsonParseException("expected a 'descriptiveFidelity' string")
+    val discrepanciesRaw = obj["discrepancies"] as? List<*> ?: emptyList<Any?>()
+    val discrepancies = discrepanciesRaw.map { item ->
+        val itemObj = item as? Map<*, *> ?: throw JsonParseException("expected a discrepancy object")
+        fun intField(name: String) = (itemObj[name] as? String)?.toIntOrNull() ?: throw JsonParseException("expected an integer '$name' string")
+        fun stringField(name: String) = itemObj[name] as? String ?: throw JsonParseException("expected a '$name' string")
+        parker.ui.OwnerFidelityDiscrepancySubmission(
+            pageNumber = intField("pageNumber"),
+            startCodePointInclusive = intField("startCodePointInclusive"),
+            endCodePointExclusive = intField("endCodePointExclusive"),
+            classification = stringField("classification"),
+            severity = stringField("severity"),
+            reason = stringField("reason"),
+            explicitClassificationDetail = itemObj["explicitClassificationDetail"] as? String,
+        )
+    }
+    return parker.ui.OwnerHumanFidelityReviewSubmission(reviewOutcome, reviewedPages, descriptiveFidelity, discrepancies)
 }
 
 /** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */
@@ -2304,7 +2443,7 @@ function render() {
       const detailTd = document.createElement('td');
       detailTd.colSpan = 7;
       if (row.ocrContent) {
-        detailTd.appendChild(buildOcrContentPanel(row.ocrContent, row.ocrDerivativeGenerationId));
+        detailTd.appendChild(buildOcrContentPanel(row.ocrContent, row.ocrDerivativeGenerationId, row.evidenceArtifactId));
       } else {
         const p = document.createElement('p');
         p.className = 'note';
@@ -2406,6 +2545,135 @@ function appendExtractedText(container, label, text) {
   pre.className = 'extracted-text';
   pre.textContent = text;
   container.appendChild(pre);
+}
+
+// HFR Owner UI exposure scope lock amendment: minimal owner-facing affordance to identify the
+// exact generation under review and record a governed Human Fidelity Review against it, through
+// the existing /human-fidelity-review/{generationId} GET/POST routes above -- no client-side
+// review logic, no local persistence; every governed fact is read back from the server after
+// submission, never assumed from the owner's own form input.
+function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId) {
+  const section = document.createElement('div');
+  section.className = 'human-fidelity-review-section';
+  const heading = document.createElement('h4');
+  heading.textContent = 'Human Fidelity Review';
+  section.appendChild(heading);
+  appendField(section, 'Exact generation under review', 'evidence=' + evidenceArtifactId + ' generation=' + derivativeGenerationId);
+
+  const statusP = document.createElement('p');
+  statusP.textContent = 'Effective review status: loading…';
+  section.appendChild(statusP);
+
+  const refreshStatus = async () => {
+    try {
+      const resp = await fetch(
+        `/owner/evidence/${'$'}{evidenceArtifactId}/human-fidelity-review/${'$'}{derivativeGenerationId}`,
+        { method: 'GET', headers: authHeaders() },
+      );
+      const result = await resp.json();
+      statusP.textContent = 'Effective review status: ' + (result.effectiveReviewState || 'UNAVAILABLE') +
+        (result.materialDiscrepancyCount ? (' (material discrepancies: ' + result.materialDiscrepancyCount + ')') : '');
+    } catch (e) {
+      statusP.textContent = 'Effective review status: request failed safely.';
+    }
+  };
+  refreshStatus();
+
+  const form = document.createElement('div');
+  form.className = 'human-fidelity-review-form';
+
+  const outcomeLabel = document.createElement('label');
+  outcomeLabel.textContent = 'Review outcome: ';
+  const outcomeSelect = document.createElement('select');
+  ['HUMAN_REVIEWED_PASS', 'HUMAN_REVIEWED_WITH_DISCREPANCY'].forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v; opt.textContent = v;
+    outcomeSelect.appendChild(opt);
+  });
+  outcomeLabel.appendChild(outcomeSelect);
+  form.appendChild(outcomeLabel);
+
+  const pagesLabel = document.createElement('label');
+  pagesLabel.textContent = 'Reviewed pages (comma-separated): ';
+  const pagesInput = document.createElement('input');
+  pagesInput.type = 'text';
+  pagesInput.placeholder = 'e.g. 1,2,3';
+  pagesLabel.appendChild(pagesInput);
+  form.appendChild(pagesLabel);
+
+  const fidelityLabel = document.createElement('label');
+  fidelityLabel.textContent = 'Descriptive fidelity: ';
+  const fidelityInput = document.createElement('textarea');
+  fidelityInput.rows = 2;
+  fidelityLabel.appendChild(fidelityInput);
+  form.appendChild(fidelityLabel);
+
+  const discrepanciesLabel = document.createElement('label');
+  discrepanciesLabel.textContent = 'Discrepancies (one per line: page|startCodePoint|endCodePoint|classification|severity|reason[|detail]): ';
+  const discrepanciesInput = document.createElement('textarea');
+  discrepanciesInput.rows = 4;
+  discrepanciesInput.placeholder = '1|0|5|TRANSCRIPTION_DIFFERENCE|MATERIAL|Name misspelled';
+  discrepanciesLabel.appendChild(discrepanciesInput);
+  form.appendChild(discrepanciesLabel);
+
+  const resultP = document.createElement('p');
+  resultP.className = 'note';
+  form.appendChild(resultP);
+
+  const submitButton = document.createElement('button');
+  submitButton.textContent = 'Record Human Fidelity Review';
+  submitButton.onclick = async () => {
+    resultP.textContent = '';
+    const reviewedPages = pagesInput.value.split(',').map(s => s.trim()).filter(Boolean);
+    if (!reviewedPages.length) { resultP.textContent = 'Enter at least one reviewed page.'; return; }
+    let discrepancies;
+    try {
+      discrepancies = discrepanciesInput.value.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+        const parts = line.split('|');
+        if (parts.length < 6) throw new Error('malformed discrepancy line');
+        return {
+          pageNumber: parts[0].trim(),
+          startCodePointInclusive: parts[1].trim(),
+          endCodePointExclusive: parts[2].trim(),
+          classification: parts[3].trim(),
+          severity: parts[4].trim(),
+          reason: parts[5].trim(),
+          explicitClassificationDetail: parts.length > 6 ? parts.slice(6).join('|').trim() : undefined,
+        };
+      });
+    } catch (e) {
+      resultP.textContent = 'Malformed discrepancy line -- expected page|start|end|classification|severity|reason[|detail].';
+      return;
+    }
+    const submission = {
+      reviewOutcome: outcomeSelect.value,
+      reviewedPages: reviewedPages,
+      descriptiveFidelity: fidelityInput.value,
+      discrepancies: discrepancies,
+    };
+    submitButton.disabled = true;
+    try {
+      const resp = await fetch(
+        `/owner/evidence/${'$'}{evidenceArtifactId}/human-fidelity-review/${'$'}{derivativeGenerationId}`,
+        { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(submission) },
+      );
+      const result = await resp.json();
+      if (result.status === 'RECORDED' || result.status === 'ALREADY_RECORDED') {
+        resultP.textContent = result.status + ' (reviewId=' + result.reviewId + ')';
+        refreshStatus();
+      } else {
+        resultP.textContent = result.status + (result.reason ? (': ' + result.reason) : '');
+      }
+    } catch (e) {
+      resultP.textContent = 'Recording request failed safely.';
+    } finally {
+      submitButton.disabled = false;
+    }
+  };
+  form.appendChild(submitButton);
+
+  section.appendChild(form);
+  container.appendChild(section);
 }
 
 function buildContentPanel(content) {
@@ -2519,11 +2787,11 @@ function buildContentPanel(content) {
 // discipline exactly: every field inserted via appendField/appendExtractedText (textContent, never
 // innerHTML), so OCR-recognised text can never be interpreted as HTML or script (Tier B scope lock
 // §27), no matter what characters the source document contained.
-function buildOcrContentPanel(content, derivativeGenerationId) {
+function buildOcrContentPanel(content, derivativeGenerationId, evidenceArtifactId) {
   // UI-INGESTION-8: an admitted enhanced (external) transcription result gets its own dedicated,
   // governed-structure inspection surface (buildEnhancedTranscriptionPanel) -- distinct from this
   // function's flat rendering, which remains exactly as it was for local/durable OCR content.
-  if (content.externalTranscription) return buildEnhancedTranscriptionPanel(content, derivativeGenerationId);
+  if (content.externalTranscription) return buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId);
   const container = document.createElement('div');
   container.className = 'content-panel';
   appendField(container, 'Outcome', content.outcomeKind);
@@ -2559,6 +2827,7 @@ function buildOcrContentPanel(content, derivativeGenerationId) {
       appendExtractedText(container, (s.pageNumber != null ? 'Page ' + s.pageNumber : 'Segment') + ':', s.text);
     });
   }
+  if (derivativeGenerationId && evidenceArtifactId) appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId);
   return container;
 }
 
@@ -2571,7 +2840,7 @@ function buildOcrContentPanel(content, derivativeGenerationId) {
 // so recognised text can never be interpreted as HTML or script. Structure:
 //   A) Result summary  B) Qualifications  C) Page transcription (in page order)
 //   D) Page status     E) Uncertainty     F) Provenance/technical (secondary, collapsed)
-function buildEnhancedTranscriptionPanel(content, derivativeGenerationId) {
+function buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId) {
   const container = document.createElement('div');
   container.className = 'content-panel enhanced-transcription-panel';
 
@@ -2638,6 +2907,7 @@ function buildEnhancedTranscriptionPanel(content, derivativeGenerationId) {
   appendProducer(provenance, content.producer);
   container.appendChild(provenance);
 
+  if (derivativeGenerationId && evidenceArtifactId) appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId);
   return container;
 }
 
@@ -2857,7 +3127,7 @@ function buildOcrDerivativeGenerationDiscoveryPanel(row, index) {
     if (expanded) {
       const cached = (row.discoveredContent || {})[g.derivativeGenerationId];
       if (cached && cached.content) {
-        panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId));
+        panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId, row.evidenceArtifactId));
       } else if (cached && cached.error) {
         const p = document.createElement('p');
         p.className = 'note';
