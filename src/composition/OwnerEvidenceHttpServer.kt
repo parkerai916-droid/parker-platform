@@ -2666,6 +2666,12 @@ function appendEnhancedTranscriptionAuthorizationSection(panel, row, index, deci
     appendField(panel, 'Authorization', 'Authorised. "Run enhanced transcription" is now available for this document.');
     return;
   }
+  // A prior authorization attempt's failure (e.g. a wrong high-authority credential) is a
+  // distinct, retryable event -- never the current state of "authorization required" itself.
+  // Shown alongside, never in place of, the Authorize control below.
+  if (row.authorizationError) {
+    appendField(panel, 'Last authorization attempt', 'Failed: ' + row.authorizationError);
+  }
   if (enhancedReadiness.status !== 'READY') {
     appendField(panel, 'Authorization', 'Enhanced transcription is not yet available in this runtime: ' + enhancedReadiness.message);
     return;
@@ -2706,9 +2712,13 @@ async function authorizeEnhancedTranscription(index, credential) {
     });
     const result = await resp.json();
     row.externalTranscriptionAuthorization = result;
-    if (!resp.ok) row.acquisitionError = result.detail || 'Authorization was not created.';
-    await loadAcquisitionDecision(index, true);
-  } catch (e) { row.acquisitionError = 'Authorization request failed safely.'; render(); }
+    // Deliberately a separate field from row.acquisitionError -- that field's presence blanks
+    // the entire acquisition panel (see buildAcquisitionPanel), which must never happen merely
+    // because one past authorization attempt failed; "authorization required" must remain
+    // distinguishable from "authorization attempt failed" on every subsequent render.
+    row.authorizationError = resp.ok ? null : (result.detail || 'Authorization was not created.');
+    await loadAcquisitionDecision(index);
+  } catch (e) { row.authorizationError = 'Authorization request failed safely.'; render(); }
 }
 
 async function authorizeRegionTranscription(index, decision) {

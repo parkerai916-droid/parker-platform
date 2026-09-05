@@ -71,6 +71,37 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
         assertNull(view.approvedAt)
     }
 
+    // UI-INGESTION-5D regression: the read-only status/gate paths -- the ones "Process document"
+    // and its governed re-evaluation actually call -- must never themselves invoke high-authority
+    // verification. Only an explicit authorize() (an owner-submitted credential) may. If this ever
+    // regresses, a bare "Process document" click would again be able to reach
+    // HIGH_AUTHORITY_VERIFICATION_FAILED before any credential was ever presented.
+    @Test
+    fun `status and isAuthorized never invoke high-authority verification -- only an explicit authorize call may`() = runTest {
+        val verification = FakeVerification(secret)
+        val c = coordinator(verification = verification)
+
+        c.status(evidenceId)
+        assertEquals(false, c.isAuthorized(evidenceId))
+        assertEquals(0, verification.calls, "a read-only status/gate check must never call the verifier")
+
+        c.authorize(evidenceId, OwnerVerificationCredential.presented(secret))
+        assertEquals(1, verification.calls, "only the explicit authorize() call may invoke the verifier")
+    }
+
+    // UI-INGESTION-5D regression: "Process document" (governed decision evaluation) for a document
+    // that has never had an authorization attempt must present the plain "not yet authorised"
+    // state -- never the string HIGH_AUTHORITY_VERIFICATION_FAILED, which is meaningful only after
+    // an owner has actually submitted a credential that failed to verify.
+    @Test
+    fun `an evidence target with no authorization attempt never reports HIGH_AUTHORITY_VERIFICATION_FAILED`() = runTest {
+        val c = coordinator()
+        val status = c.status(evidenceId)
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, status.disposition)
+        assertNull(status.detail)
+        assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
     @Test
     fun `exact owner confirmation with correct credential creates an exact-target authorization and never invokes a provider`() = runTest {
         val permission = FakePermission(PermissionDecisionOutcome.APPROVED)

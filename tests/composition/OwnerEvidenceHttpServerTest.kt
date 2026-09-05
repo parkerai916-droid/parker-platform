@@ -1248,6 +1248,37 @@ class OwnerEvidenceHttpServerTest {
         } finally { harness.shutdown() }
     }
 
+    // UI-INGESTION-5D regression: a failed "Confirm authorization" attempt (e.g. a wrong
+    // high-authority credential) must never be stored in row.acquisitionError -- that field's mere
+    // presence makes buildAcquisitionPanel render nothing but that one error for every subsequent
+    // render (including after "Refresh" and after a fresh "Process document" click restores it),
+    // permanently hiding the "Authorize enhanced transcription" control and making "authorization
+    // required" indistinguishable from "a past authorization attempt failed". The failure must live
+    // in its own field so the acquisition panel, and the Authorize control within it, always render.
+    @Test
+    fun `a failed enhanced-transcription authorization attempt never blanks the acquisition panel via acquisitionError`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            val functionStart = body.indexOf("async function authorizeEnhancedTranscription")
+            assertTrue(functionStart >= 0, "authorizeEnhancedTranscription must exist in the served page")
+            val functionBody = body.substring(functionStart, body.indexOf("\n}", functionStart) + 2)
+            assertTrue(
+                functionBody.contains("row.authorizationError = resp.ok ? null : (result.detail || 'Authorization was not created.')"),
+                "a failed enhanced-transcription authorization attempt must set its own dedicated field",
+            )
+            assertFalse(
+                functionBody.contains("row.acquisitionError ="),
+                "an authorization-attempt failure must never be written into the panel-blanking acquisitionError field: $functionBody",
+            )
+            assertTrue(
+                body.contains("if (row.authorizationError) {"),
+                "a past authorization-attempt failure must be rendered as its own distinct, non-blocking status",
+            )
+        } finally { harness.shutdown() }
+    }
+
     @Test
     fun `the served page never renders extracted text or metadata via innerHTML -- only textContent, closing off HTML or script injection`() = runTest {
         val harness = startHarness("")
