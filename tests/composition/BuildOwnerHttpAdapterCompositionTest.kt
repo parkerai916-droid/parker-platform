@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import javax.imageio.ImageIO
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -93,6 +94,7 @@ class BuildOwnerHttpAdapterCompositionTest {
     private suspend fun admitExternalOcrGeneration(
         cfg: ParkerRuntimeConfig,
         evidenceArtifactId: EvidenceArtifactId,
+        derivativeGenerationId: parker.core.interfaces.DerivativeGenerationId = parker.core.interfaces.DerivativeGenerationId("generation-hfr-owner-ui-test"),
     ): parker.core.interfaces.DerivativeGenerationId {
         val generationStorage = parker.core.runtime.FileSystemDerivativeGenerationStorage(Path.of(cfg.derivativeGenerationStorageRootPath))
         val contentStorage = parker.core.runtime.FileSystemDerivativeContentStorage(Path.of(cfg.derivativeContentStorageRootPath))
@@ -113,7 +115,7 @@ class BuildOwnerHttpAdapterCompositionTest {
             producer, listOf(parker.core.interfaces.DerivativeTransformation.OCR, parker.core.interfaces.DerivativeTransformation.MODEL_INFERENCE),
             parker.core.interfaces.DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS, accounting, processing, provider, java.time.Instant.EPOCH,
         )
-        val id = parker.core.interfaces.DerivativeGenerationId("generation-hfr-owner-ui-test")
+        val id = derivativeGenerationId
         val record = parker.core.interfaces.DerivativeGenerationRecord(
             id, evidenceArtifactId, listOf(parker.core.interfaces.DerivativeParentReference.RootEvidenceArtifact(evidenceArtifactId)),
             "External transcription recognised text", producer, extracted.transformationHistory, java.time.Instant.EPOCH,
@@ -197,6 +199,162 @@ class BuildOwnerHttpAdapterCompositionTest {
 
             val afterReview = adapter.effectiveHumanFidelityReview(evidenceArtifactId, derivativeGenerationId)
             assertEquals("HUMAN_REVIEWED_PASS", afterReview.effectiveReviewState)
+        } finally {
+            runtime.shutdown()
+        }
+    }
+
+    // HFR-UI-1: the discovery entry and the inspection panel each used to derive their
+    // "human review" status from the separate, pre-HFR HumanVerificationRecord mechanism -- which
+    // this Tier B path never writes to -- so they silently stayed at "UNREVIEWED" even after a real
+    // Human Fidelity Review was recorded through the HFR panel. These tests prove all three
+    // surfaces now agree, are read directly from the one existing effective HFR projection, and
+    // remain exact-target bound (a review never leaks across generations or evidence artefacts).
+
+    @Test
+    fun `discovery, inspection, and the HFR panel all present the same effective HUMAN_REVIEWED_PASS state after a real review`() = runTest {
+        val scriptDir = Files.createTempDirectory("build-owner-http-adapter-scripts-hfr-ui-1")
+        val cfg = config(writeFakeBridgeScript(scriptDir, successJson()).toString())
+        val runtime = ParkerRuntime(cfg, RecordingParkerLogger())
+        runtime.start()
+        try {
+            val evidenceArtifactId = EvidenceArtifactId("evidence-hfr-ui-1-pass")
+            val derivativeGenerationId = admitExternalOcrGeneration(cfg, evidenceArtifactId, parker.core.interfaces.DerivativeGenerationId("generation-hfr-ui-1-pass"))
+            val adapter = buildOwnerHttpAdapter(runtime, cfg)
+
+            assertIs<parker.ui.OwnerHumanFidelityReviewRecordingOutcome.Recorded>(
+                adapter.recordHumanFidelityReview(
+                    evidenceArtifactId, derivativeGenerationId,
+                    parker.ui.OwnerHumanFidelityReviewSubmission("HUMAN_REVIEWED_PASS", listOf(1), "Faithful and accurate."),
+                ),
+            )
+
+            val discovered = adapter.discoverOcrDerivativeGenerations(evidenceArtifactId).single { it.derivativeGenerationId == derivativeGenerationId.value }
+            assertEquals("HUMAN_REVIEWED_PASS", discovered.humanReviewState, "discovery entry must show the effective HFR state")
+
+            val inspected = assertIs<parker.ui.TierBOcrContentRetrievalResult.Retrieved>(
+                adapter.retrieveTierBOcrContent(evidenceArtifactId, derivativeGenerationId),
+            )
+            assertEquals(listOf("HUMAN_REVIEWED_PASS"), inspected.content.humanReviewStates, "inspection panel must show the effective HFR state")
+            // The intrinsic machine-transcription fidelity designation is a separate fact and is
+            // never altered by recording a human review.
+            assertTrue(inspected.content.externalTranscription, "the intrinsic 'Machine transcription -- unverified' designation must remain unchanged")
+
+            val panel = adapter.effectiveHumanFidelityReview(evidenceArtifactId, derivativeGenerationId)
+            assertEquals("HUMAN_REVIEWED_PASS", panel.effectiveReviewState, "the HFR panel itself must show the same effective state")
+        } finally {
+            runtime.shutdown()
+        }
+    }
+
+    @Test
+    fun `an unreviewed generation shows UNREVIEWED in both discovery and inspection`() = runTest {
+        val scriptDir = Files.createTempDirectory("build-owner-http-adapter-scripts-hfr-ui-1-unreviewed")
+        val cfg = config(writeFakeBridgeScript(scriptDir, successJson()).toString())
+        val runtime = ParkerRuntime(cfg, RecordingParkerLogger())
+        runtime.start()
+        try {
+            val evidenceArtifactId = EvidenceArtifactId("evidence-hfr-ui-1-unreviewed")
+            val derivativeGenerationId = admitExternalOcrGeneration(cfg, evidenceArtifactId, parker.core.interfaces.DerivativeGenerationId("generation-hfr-ui-1-unreviewed"))
+            val adapter = buildOwnerHttpAdapter(runtime, cfg)
+
+            val discovered = adapter.discoverOcrDerivativeGenerations(evidenceArtifactId).single()
+            assertEquals("UNREVIEWED", discovered.humanReviewState)
+            val inspected = assertIs<parker.ui.TierBOcrContentRetrievalResult.Retrieved>(
+                adapter.retrieveTierBOcrContent(evidenceArtifactId, derivativeGenerationId),
+            )
+            assertEquals(listOf("UNREVIEWED"), inspected.content.humanReviewStates)
+        } finally {
+            runtime.shutdown()
+        }
+    }
+
+    @Test
+    fun `a review recorded for one generation does not alter another generation's displayed status -- exact-target isolation`() = runTest {
+        val scriptDir = Files.createTempDirectory("build-owner-http-adapter-scripts-hfr-ui-1-gen-isolation")
+        val cfg = config(writeFakeBridgeScript(scriptDir, successJson()).toString())
+        val runtime = ParkerRuntime(cfg, RecordingParkerLogger())
+        runtime.start()
+        try {
+            val evidenceArtifactId = EvidenceArtifactId("evidence-hfr-ui-1-gen-isolation")
+            val reviewedGenerationId = admitExternalOcrGeneration(cfg, evidenceArtifactId, parker.core.interfaces.DerivativeGenerationId("generation-hfr-ui-1-reviewed"))
+            val otherGenerationId = admitExternalOcrGeneration(cfg, evidenceArtifactId, parker.core.interfaces.DerivativeGenerationId("generation-hfr-ui-1-other"))
+            val adapter = buildOwnerHttpAdapter(runtime, cfg)
+
+            assertIs<parker.ui.OwnerHumanFidelityReviewRecordingOutcome.Recorded>(
+                adapter.recordHumanFidelityReview(
+                    evidenceArtifactId, reviewedGenerationId,
+                    parker.ui.OwnerHumanFidelityReviewSubmission("HUMAN_REVIEWED_PASS", listOf(1), "Faithful and accurate."),
+                ),
+            )
+
+            val discovered = adapter.discoverOcrDerivativeGenerations(evidenceArtifactId).associateBy { it.derivativeGenerationId }
+            assertEquals("HUMAN_REVIEWED_PASS", discovered.getValue(reviewedGenerationId.value).humanReviewState)
+            assertEquals("UNREVIEWED", discovered.getValue(otherGenerationId.value).humanReviewState, "generation B must not inherit generation A's review")
+        } finally {
+            runtime.shutdown()
+        }
+    }
+
+    @Test
+    fun `a review recorded for one evidence artefact does not alter another evidence artefact's displayed status`() = runTest {
+        val scriptDir = Files.createTempDirectory("build-owner-http-adapter-scripts-hfr-ui-1-evidence-isolation")
+        val cfg = config(writeFakeBridgeScript(scriptDir, successJson()).toString())
+        val runtime = ParkerRuntime(cfg, RecordingParkerLogger())
+        runtime.start()
+        try {
+            val evidenceA = EvidenceArtifactId("evidence-hfr-ui-1-a")
+            val evidenceB = EvidenceArtifactId("evidence-hfr-ui-1-b")
+            val generationA = admitExternalOcrGeneration(cfg, evidenceA, parker.core.interfaces.DerivativeGenerationId("generation-hfr-ui-1-evidence-a"))
+            val generationB = admitExternalOcrGeneration(cfg, evidenceB, parker.core.interfaces.DerivativeGenerationId("generation-hfr-ui-1-evidence-b"))
+            val adapter = buildOwnerHttpAdapter(runtime, cfg)
+
+            assertIs<parker.ui.OwnerHumanFidelityReviewRecordingOutcome.Recorded>(
+                adapter.recordHumanFidelityReview(
+                    evidenceA, generationA,
+                    parker.ui.OwnerHumanFidelityReviewSubmission("HUMAN_REVIEWED_PASS", listOf(1), "Faithful and accurate."),
+                ),
+            )
+
+            assertEquals("HUMAN_REVIEWED_PASS", adapter.discoverOcrDerivativeGenerations(evidenceA).single().humanReviewState)
+            assertEquals("UNREVIEWED", adapter.discoverOcrDerivativeGenerations(evidenceB).single().humanReviewState, "evidence B must not inherit evidence A's review")
+        } finally {
+            runtime.shutdown()
+        }
+    }
+
+    @Test
+    fun `discovery and inspection status retrieval perform no HFR write and no evidence-derivative mutation`() = runTest {
+        val scriptDir = Files.createTempDirectory("build-owner-http-adapter-scripts-hfr-ui-1-no-write")
+        val cfg = config(writeFakeBridgeScript(scriptDir, successJson()).toString())
+        val runtime = ParkerRuntime(cfg, RecordingParkerLogger())
+        runtime.start()
+        try {
+            val evidenceArtifactId = EvidenceArtifactId("evidence-hfr-ui-1-no-write")
+            val derivativeGenerationId = admitExternalOcrGeneration(cfg, evidenceArtifactId, parker.core.interfaces.DerivativeGenerationId("generation-hfr-ui-1-no-write"))
+            val adapter = buildOwnerHttpAdapter(runtime, cfg)
+
+            val generationBytesBefore = Files.readAllBytes(Path.of(cfg.derivativeGenerationStorageRootPath).resolve("${derivativeGenerationId.value}.derivative"))
+            val contentBytesBefore = Files.readAllBytes(Path.of(cfg.derivativeContentStorageRootPath).resolve("${derivativeGenerationId.value}.content"))
+            val reviewRoot = Path.of(requireNotNull(cfg.humanFidelityReviewStorageRootPath))
+            fun reviewFileCount() = Files.list(reviewRoot).use { it.filter(Files::isRegularFile).count() }
+            val reviewCountBefore = reviewFileCount()
+
+            repeat(3) {
+                adapter.discoverOcrDerivativeGenerations(evidenceArtifactId)
+                adapter.retrieveTierBOcrContent(evidenceArtifactId, derivativeGenerationId)
+                adapter.effectiveHumanFidelityReview(evidenceArtifactId, derivativeGenerationId)
+            }
+
+            assertEquals(reviewCountBefore, reviewFileCount(), "read-only status display must never write an HFR record")
+            assertContentEquals(
+                generationBytesBefore,
+                Files.readAllBytes(Path.of(cfg.derivativeGenerationStorageRootPath).resolve("${derivativeGenerationId.value}.derivative")),
+            )
+            assertContentEquals(
+                contentBytesBefore,
+                Files.readAllBytes(Path.of(cfg.derivativeContentStorageRootPath).resolve("${derivativeGenerationId.value}.content")),
+            )
         } finally {
             runtime.shutdown()
         }

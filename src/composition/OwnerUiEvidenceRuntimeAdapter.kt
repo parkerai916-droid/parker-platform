@@ -687,8 +687,12 @@ class OwnerUiEvidenceRuntimeAdapter(
     ): TierBOcrContentRetrievalResult =
         when (val outcome = retrieveTierBOcrContentAsOwner(evidenceArtifactId, derivativeGenerationId)) {
             is TierBOcrContentRetrievalOutcome.Retrieved -> {
-                val reviews = listHumanVerificationRecordsAsOwner(evidenceArtifactId, derivativeGenerationId)
-                TierBOcrContentRetrievalResult.Retrieved(toOwnerOcrContent(outcome.extracted, reviews.map { it.outcome.name }))
+                // HFR-UI-1: the effective Human Fidelity Review projection is this exact
+                // generation's one governed truth -- never the separate, pre-HFR
+                // HumanVerificationRecord mechanism, which this Tier B path never wrote to and
+                // which would otherwise silently disagree with the HFR panel's own status.
+                val effectiveState = effectiveHumanFidelityReview(evidenceArtifactId, derivativeGenerationId).effectiveReviewState
+                TierBOcrContentRetrievalResult.Retrieved(toOwnerOcrContent(outcome.extracted, listOf(effectiveState ?: "UNREVIEWED")))
             }
             is TierBOcrContentRetrievalOutcome.UnknownGeneration -> TierBOcrContentRetrievalResult.UnknownGeneration
             is TierBOcrContentRetrievalOutcome.SourceMismatch -> TierBOcrContentRetrievalResult.SourceMismatch
@@ -701,11 +705,14 @@ class OwnerUiEvidenceRuntimeAdapter(
 
     override suspend fun discoverOcrDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerOcrDerivativeGenerationSummary> =
         discoverOcrDerivativeGenerationsAsOwner(evidenceArtifactId).map { record ->
-            val reviewStates = listHumanVerificationRecordsAsOwner(evidenceArtifactId, record.derivativeGenerationId).map { it.outcome.name }
+            // HFR-UI-1: same reasoning as retrieveTierBOcrContent above -- the discovery entry's
+            // own status must agree with the HFR panel's, so it is derived from the exact same
+            // effective HFR projection, exact-target bound to this record's own generation id.
+            val effectiveState = effectiveHumanFidelityReview(evidenceArtifactId, record.derivativeGenerationId).effectiveReviewState
             OwnerOcrDerivativeGenerationSummary(
                 record.derivativeGenerationId.value, record.rootSourceEvidenceArtifactId.value,
                 record.generatedAt.toString(), record.operationalOutcome.name,
-                humanReviewState = reviewStates.ifEmpty { listOf("UNREVIEWED") }.joinToString(", "),
+                humanReviewState = effectiveState ?: "UNREVIEWED",
             )
         }
 

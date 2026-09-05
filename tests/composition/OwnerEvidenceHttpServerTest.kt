@@ -31,6 +31,7 @@ import parker.core.runtime.OrdinaryRegionOwnerAuthorizationView
 import parker.core.runtime.OrdinaryRegionOwnerResult
 import parker.core.runtime.OrdinaryRegionDisposition
 import parker.core.runtime.GovernedCorrectedPreparationOutcome
+import parker.core.runtime.HumanFidelityReviewFixture
 import parker.core.interfaces.*
 import parker.ui.EnhancedTranscriptionReadiness
 import java.time.Instant
@@ -118,6 +119,7 @@ class OwnerEvidenceHttpServerTest {
         retrieveTierB: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome)? = null,
         discoverOcrDerivativeGenerations: (suspend (EvidenceArtifactId) -> List<DerivativeGenerationRecord>)? = null,
         humanVerificationRecords: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> List<HumanVerificationRecord>)? = null,
+        projectEffectiveHumanFidelityReview: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome)? = null,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -137,6 +139,7 @@ class OwnerEvidenceHttpServerTest {
             retrieveTierBOcrContentAsOwner = retrieveTierB ?: runtime::retrieveTierBOcrContentAsOwner,
             discoverOcrDerivativeGenerationsAsOwner = discoverOcrDerivativeGenerations ?: runtime::discoverOcrDerivativeGenerationsAsOwner,
             listHumanVerificationRecordsAsOwner = humanVerificationRecords ?: runtime::listHumanVerificationRecordsAsOwner,
+            projectEffectiveHumanFidelityReviewAsOwner = projectEffectiveHumanFidelityReview,
             analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,
             saveAnalysisAsOwner = runtime::saveAnalysisAsOwner,
             retrieveSavedAnalysisAsOwner = runtime::retrieveSavedAnalysisAsOwner,
@@ -2204,7 +2207,12 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `discovered generations carry human review state sourced from the existing exact-pair human verification query, never invented`() = runTest {
+    fun `discovered generations carry human review state sourced from the existing effective HFR projection, never invented`() = runTest {
+        // HFR-UI-1: the discovery entry's own status used to be sourced from the separate,
+        // pre-HFR HumanVerificationRecord mechanism -- this Tier B path never wrote to it, so a
+        // real recorded Human Fidelity Review never showed here, silently disagreeing with the
+        // HFR panel's own status for the exact same generation. It must now agree, sourced from
+        // the one existing effective HFR projection, exact-target bound per generation.
         val evidenceId = "evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d"
         val newer = discoveryRecord("4c8ed1e2-7524-467c-b4b3-32e8293c7854", evidenceId, Instant.parse("2026-09-05T03:50:00Z"))
         val older = discoveryRecord("6d8d9307-8281-4574-a050-f9fec1c916f1", evidenceId, Instant.parse("2026-09-05T03:48:00Z"))
@@ -2212,25 +2220,41 @@ class OwnerEvidenceHttpServerTest {
         val harness = startHarness(
             "",
             discoverOcrDerivativeGenerations = { listOf(newer, older) },
-            humanVerificationRecords = { evId, genId ->
+            projectEffectiveHumanFidelityReview = { evId, genId ->
                 queriedPairs.add(evId.value to genId.value)
                 if (genId.value == "6d8d9307-8281-4574-a050-f9fec1c916f1") {
-                    listOf(
-                        HumanVerificationRecord(
-                            HumanVerificationRecordId("hv-1"), evId, genId, OcrPageScope(listOf(1, 2)),
-                            reviewerPrincipalId = PrincipalId("user.steve"), reviewedAt = Instant.EPOCH,
-                            outcome = HumanVerificationOutcome.REVIEW_PASSED, reviewArtifactSha256 = OcrSha256Digest("a".repeat(64)),
+                    parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome.Projected(
+                        EffectiveHumanFidelityReviewSummary(
+                            HumanFidelityEligibilityUse.SOURCE_CONFIRMED_WHOLE_GENERATION,
+                            EffectiveHumanFidelityReviewProjection(
+                                HumanFidelityReviewFixture.target.copy(evidenceArtifactId = evId, derivativeGenerationId = genId),
+                                HumanFidelityReviewState.HUMAN_REVIEWED_PASS,
+                                HumanFidelityReviewCoverage(HumanFidelityCoverageKind.FULL_GENERATION, listOf(1)),
+                                listOf(HumanFidelityReviewFixture.review().reviewId), emptyList(),
+                                SourceConfirmedEligibility(SourceConfirmedEligibilityState.ALLOWED, null),
+                            ),
+                            0, 0, false,
                         ),
                     )
                 } else {
-                    emptyList()
+                    parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome.Projected(
+                        EffectiveHumanFidelityReviewSummary(
+                            HumanFidelityEligibilityUse.SOURCE_CONFIRMED_WHOLE_GENERATION,
+                            EffectiveHumanFidelityReviewProjection(
+                                HumanFidelityReviewFixture.target.copy(evidenceArtifactId = evId, derivativeGenerationId = genId),
+                                HumanFidelityReviewState.UNREVIEWED, null, emptyList(), emptyList(),
+                                SourceConfirmedEligibility(SourceConfirmedEligibilityState.DENIED, SourceConfirmedDenialReason.UNREVIEWED),
+                            ),
+                            0, 0, false,
+                        ),
+                    )
                 }
             },
         )
         try {
             val response = getPaired(harness, "/owner/evidence/$evidenceId/ocr-derivative-generations")
             assertEquals(200, response.statusCode())
-            assertEquals(listOf("UNREVIEWED", "REVIEW_PASSED"), extractAllFields(response.body(), "humanReviewState"))
+            assertEquals(listOf("UNREVIEWED", "HUMAN_REVIEWED_PASS"), extractAllFields(response.body(), "humanReviewState"))
             assertEquals(2, queriedPairs.size)
             assertTrue(queriedPairs.all { it.first == evidenceId })
         } finally {
