@@ -337,4 +337,63 @@ class DocumentAnalysisHumanFidelityReviewReconciliationTest {
         val item = assertIs<DocumentAnalysisOutcome.Completed>(withAck).result.evidenceItems.single()
         assertEquals(null, item.assurance.effectiveHumanFidelityReviewState)
     }
+
+    // ANALYSIS-INGESTION-5: the acknowledgement-gate tests above prove a sibling/other-evidence
+    // review can never satisfy the gate, but neither reaches a Completed outcome (the gate blocks
+    // them first), so neither proves what the analysis RESULT's own evidence-reference would show
+    // if that sibling/other generation were itself analysed. These two tests close that gap
+    // directly: a PASS recorded for one exact generation must never leak into a DIFFERENT
+    // generation's own completed analysis result, whether that generation belongs to the same
+    // evidence artifact (sibling) or a different one entirely.
+
+    @Test
+    fun `a completed analysis of a sibling UNREVIEWED generation never shows the PASS state recorded for its sibling`(
+        @org.junit.jupiter.api.io.TempDir directory: Path,
+    ) = runTest {
+        val fixture = fixture(directory, "sibling-result-isolation")
+        val evidence = EvidenceArtifactId("evidence-sibling-result-1")
+        val passGeneration = DerivativeGenerationId("generation-sibling-result-pass")
+        val siblingGeneration = DerivativeGenerationId("generation-sibling-result-unreviewed")
+        admitExternalTranscription(fixture, passGeneration, evidence, recognisedText = "Pass text.")
+        admitExternalTranscription(fixture, siblingGeneration, evidence, recognisedText = "Sibling text.")
+        assertIs<TierBHumanFidelityReviewRecordingOutcome.Recorded>(fixture.hfrCoordinator.recordReview(evidence, passGeneration, passSubmission()))
+
+        // The sibling itself is genuinely unreviewed -- acknowledge explicitly to pass the gate on
+        // its own honest merits, exactly as an owner would for a real UNREVIEWED generation.
+        val outcome = fixture.documentAnalysisCoordinator.analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, siblingGeneration, acknowledgesUnverifiedExternalTranscription = true)), "Analyse"),
+        )
+        val item = assertIs<DocumentAnalysisOutcome.Completed>(outcome).result.evidenceItems.single()
+        assertEquals(siblingGeneration, item.derivativeGenerationId)
+        assertEquals(
+            HumanFidelityReviewState.UNREVIEWED, item.assurance.effectiveHumanFidelityReviewState,
+            "the sibling's own analysis result must show its own genuine UNREVIEWED state, never the OTHER generation's own PASS state",
+        )
+    }
+
+    @Test
+    fun `a completed analysis of a different evidence artifact never shows a PASS recorded for another evidence's own generation`(
+        @org.junit.jupiter.api.io.TempDir directory: Path,
+    ) = runTest {
+        val fixture = fixture(directory, "cross-evidence-result-isolation")
+        val reviewedEvidence = EvidenceArtifactId("evidence-cross-result-reviewed")
+        val reviewedGeneration = DerivativeGenerationId("generation-cross-result-reviewed")
+        val otherEvidence = EvidenceArtifactId("evidence-cross-result-other")
+        val otherGeneration = DerivativeGenerationId("generation-cross-result-other")
+        admitExternalTranscription(fixture, reviewedGeneration, reviewedEvidence, recognisedText = "Reviewed text.")
+        admitExternalTranscription(fixture, otherGeneration, otherEvidence, recognisedText = "Other text.")
+        assertIs<TierBHumanFidelityReviewRecordingOutcome.Recorded>(fixture.hfrCoordinator.recordReview(reviewedEvidence, reviewedGeneration, passSubmission()))
+
+        val outcome = fixture.documentAnalysisCoordinator.analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(otherEvidence, otherGeneration, acknowledgesUnverifiedExternalTranscription = true)), "Analyse"),
+        )
+        val item = assertIs<DocumentAnalysisOutcome.Completed>(outcome).result.evidenceItems.single()
+        assertEquals(otherEvidence, item.evidenceArtifactId)
+        assertEquals(
+            HumanFidelityReviewState.UNREVIEWED, item.assurance.effectiveHumanFidelityReviewState,
+            "a different evidence artifact's own analysis result must show its own genuine UNREVIEWED state, never another evidence's own PASS state",
+        )
+    }
 }

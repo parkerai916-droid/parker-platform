@@ -3792,4 +3792,59 @@ class OwnerEvidenceHttpServerTest {
         sb.append('"')
         return sb.toString()
     }
+
+    // ANALYSIS-INGESTION-5 — Effective HFR State in Analysis Result Provenance. The owner's first
+    // completed analysis displayed "review=UNREVIEWED" for the exact HUMAN_REVIEWED_PASS generation
+    // it analysed, even though DocumentAnalysisCoordinator's own projectAssurance (ANALYSIS-INGESTION-2)
+    // already resolves the real effective HFR state onto AnalysisAcquisitionAssurance.
+    // effectiveHumanFidelityReviewState. Root cause: two independent gaps, both fixed here --
+    // analysisAssuranceJson (the HTTP serializer for the analysis result's own evidence references)
+    // never included that field at all, and the client's own analysisEvidenceReferenceText only
+    // ever read the separate, dead-for-Tier-B humanReviewStates field to build "review=". Neither
+    // gap involves the acknowledgement gate, eligibility, or intrinsic fidelity -- all unchanged.
+
+    @Test
+    fun `the analysis result JSON carries the real effective HFR state, and the client prefers it over the dead humanReviewStates field`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+
+            // Server-side: analysisAssuranceJson is a Kotlin function, not JS -- its own source
+            // text is not part of the served page, so it cannot be checked here. Its actual JSON
+            // output/data-correctness is proven directly by
+            // DocumentAnalysisHumanFidelityReviewReconciliationTest, which asserts
+            // item.assurance.effectiveHumanFidelityReviewState on real Completed outcomes. What IS
+            // provable from the served page is the client's own consumption contract below.
+
+            val start = body.indexOf("function analysisEvidenceReferenceText(ref)")
+            assertTrue(start >= 0, "analysisEvidenceReferenceText must be present in the served page")
+            val nextFunction = body.indexOf("\nfunction ", start + 1)
+            val nextAsyncFunction = body.indexOf("\nasync function ", start + 1)
+            val end = listOf(nextFunction, nextAsyncFunction).filter { it >= 0 }.min()
+            val fnBody = body.substring(start, end)
+
+            // fidelity (intrinsic machine-transcription provenance) is read from its own field,
+            // completely independent of review state -- never touched by this unit.
+            assertTrue(fnBody.contains("if (a.fidelity) text += ', fidelity=' + a.fidelity;"))
+
+            // review= prefers the real, effective HFR projection; falls back to the older
+            // humanReviewStates-derived text only when the new field is absent (e.g. no HFR
+            // resolver configured, or a Tier A row this projection never applies to) -- never
+            // silently dropping the older field, never guessing when the new one is unavailable.
+            assertTrue(
+                fnBody.contains(
+                    "text += ', review=' + (a.effectiveHumanFidelityReviewState || (a.humanReviewStates || ['UNREVIEWED']).join('/'));",
+                ),
+                "review= must prefer the real effective HFR state, falling back to the older field only when absent",
+            )
+
+            // The fidelity assignment must remain textually and positionally independent of the
+            // review assignment -- two separate statements, neither one derived from the other.
+            val fidelityIndex = fnBody.indexOf("if (a.fidelity) text += ', fidelity=' + a.fidelity;")
+            val reviewIndex = fnBody.indexOf("text += ', review=' + (a.effectiveHumanFidelityReviewState")
+            assertTrue(fidelityIndex in 0..<reviewIndex)
+        } finally {
+            harness.shutdown()
+        }
+    }
 }

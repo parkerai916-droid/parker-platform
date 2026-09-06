@@ -1346,6 +1346,16 @@ class OwnerEvidenceHttpServer(
         "humanReviewStates" to jsonArray(value.humanReviewStates.map { it.name }.sorted()),
         "reviewedPages" to jsonArray(value.reviewedPages.sorted()),
         "reviewedCharacterScopeCount" to value.reviewedCharacterScopeCount,
+        // ANALYSIS-INGESTION-5: the real, effective HFR projection for this exact
+        // (evidenceArtifactId, derivativeGenerationId) -- DocumentAnalysisCoordinator's own
+        // projectAssurance already resolves this (ANALYSIS-INGESTION-2); it was simply never
+        // reaching this JSON at all, so the Owner UI fell back to the separate, dead-for-Tier-B
+        // humanReviewStates field above. Distinct from "fidelity" (intrinsic machine-transcription
+        // provenance, never touched by review) and from "humanReviewStates" (the older,
+        // superseded-for-Tier-B mechanism, left unchanged here for any caller still reading it).
+        // Null -- never assumed -- when no HFR resolver was configured or no effective state could
+        // be determined for this exact pair.
+        "effectiveHumanFidelityReviewState" to value.effectiveHumanFidelityReviewState?.name,
     )
 
     private fun ocrContentJson(content: OwnerTierBOcrContent): JsonObject = jsonObject(
@@ -4146,9 +4156,15 @@ function analysisEvidenceReferenceText(ref) {
   const a = ref.assurance;
   if (!a) return text + ' — historical assurance unavailable';
   text += ' — ' + a.mechanism + ', completeness=' + a.completeness;
+  // ANALYSIS-INGESTION-5: fidelity (intrinsic machine-transcription provenance) and review
+  // (current Human Fidelity Review state) are two independent facts -- never conflated, never one
+  // overwriting the other. fidelity is never touched by review.
   if (a.fidelity) text += ', fidelity=' + a.fidelity;
   if (a.providerIdentity) text += ', provider=' + a.providerIdentity;
-  text += ', review=' + (a.humanReviewStates || ['UNREVIEWED']).join('/');
+  // Prefer the real, exact-target effective HFR projection when the backend resolved one; fall
+  // back to the older, separate humanReviewStates field only when it did not (e.g. no HFR resolver
+  // configured, or a Tier A row this projection never applies to) -- never assumed, never guessed.
+  text += ', review=' + (a.effectiveHumanFidelityReviewState || (a.humanReviewStates || ['UNREVIEWED']).join('/'));
   if (a.containsUncertaintyOrIllegibility) text += ', uncertainty/illegibility present';
   return text;
 }

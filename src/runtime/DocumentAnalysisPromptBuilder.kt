@@ -86,6 +86,13 @@ class DefaultDocumentAnalysisPromptBuilder : DocumentAnalysisPromptBuilder {
                 "\"fidelity\":${jsonNullable(item.assurance.fidelity?.name)}," +
                 "\"completeness\":\"${item.assurance.completenessState.name}\"," +
                 "\"humanReviewStates\":[${item.assurance.humanReviewStates.sortedBy { it.name }.joinToString(",") { "\\\"${it.name}\\\"" }}]," +
+                // ANALYSIS-INGESTION-5: the real, effective Human Fidelity Review projection for
+                // this exact generation -- distinct from "fidelity" above (intrinsic
+                // machine-transcription provenance, never touched by review) and from
+                // "humanReviewStates" (the older, separate mechanism, left unchanged). Null when no
+                // HFR resolver was configured or no effective state could be determined -- never
+                // assumed.
+                "\"effectiveHumanFidelityReviewState\":${jsonNullable(item.assurance.effectiveHumanFidelityReviewState?.name)}," +
                 "\"reviewedPages\":[${item.assurance.reviewedPages.sorted().joinToString(",")}]," +
                 "\"containsUncertaintyOrIllegibility\":${item.assurance.containsUncertaintyOrIllegibility}" +
                 "}," +

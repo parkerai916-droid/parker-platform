@@ -4,12 +4,15 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import parker.core.interfaces.AnalysisAcquisitionAssurance
 import parker.core.interfaces.AnalysisEvidenceItem
 import parker.core.interfaces.DerivativeCompletenessState
 import parker.core.interfaces.DerivativeContentIdentity
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.HumanFidelityReviewState
 import parker.core.interfaces.TierADerivativePayloadFixtures
+import parker.core.interfaces.TranscriptionFidelity
 
 /**
  * Minimum Production Document Pipeline — Local Reasoning Implementation,
@@ -220,5 +223,45 @@ class DocumentAnalysisPromptBuilderTest {
         assertEquals(1, Regex("\"ownerInstruction\":\"").findAll(prompt).count())
         assertEquals(1, Regex("\"content\":\"").findAll(prompt).count())
         assertTrue(adversarialEvidence in prompt)
+    }
+
+    // ANALYSIS-INGESTION-5: the effective Human Fidelity Review projection
+    // (AnalysisAcquisitionAssurance.effectiveHumanFidelityReviewState -- distinct from "fidelity",
+    // the intrinsic machine-transcription provenance, which review never touches) must reach the
+    // governed analysis context the model itself receives, not just the Owner UI's own display.
+
+    @Test
+    fun `the effective HFR PASS state reaches the model's own prompt context, distinct from and alongside intrinsic fidelity`() {
+        val historical = AnalysisAcquisitionAssurance.historical(DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS)
+        val assurance = historical.copy(
+            fidelity = TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            effectiveHumanFidelityReviewState = HumanFidelityReviewState.HUMAN_REVIEWED_PASS,
+        )
+        val reviewedItem = AnalysisEvidenceItem(
+            evidenceArtifactId = EvidenceArtifactId("evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d"),
+            derivativeGenerationId = DerivativeGenerationId("4c8ed1e2-7524-467c-b4b3-32e8293c7854"),
+            derivativeKind = "OCR recognised text",
+            contentIdentity = DerivativeContentIdentity.NoCanonicalSerialization,
+            producerIdentity = TierADerivativePayloadFixtures.PRODUCER,
+            extractedText = "Reviewed transcription text.",
+            completenessState = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
+            warnings = emptyList(),
+            assurance = assurance,
+        )
+
+        val prompt = builder.buildPrompt("Summarise", listOf(reviewedItem))
+
+        // Both facts present, independently, neither overwriting the other.
+        assertTrue("\"fidelity\":\"UNVERIFIED_LITERAL_TRANSCRIPTION\"" in prompt)
+        assertTrue("\"effectiveHumanFidelityReviewState\":\"HUMAN_REVIEWED_PASS\"" in prompt)
+    }
+
+    @Test
+    fun `absent effective HFR state renders as JSON null, never assumed, never omitted`() {
+        val prompt = builder.buildPrompt("Summarise", listOf(item("evidence-1", "gen-1", "Ordinary content.")))
+        // item()'s own default assurance (AnalysisAcquisitionAssurance.historical) carries no
+        // effective HFR resolution at all -- this must render as an explicit JSON null, never a
+        // fabricated state and never a silently dropped key.
+        assertTrue("\"effectiveHumanFidelityReviewState\":null" in prompt)
     }
 }
