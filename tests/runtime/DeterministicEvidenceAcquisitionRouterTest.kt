@@ -164,6 +164,62 @@ class DeterministicEvidenceAcquisitionRouterTest {
         assertEquals(listOf(0, 0, 0, 0), listOf(provider, ocr, derivative, analysis))
     }
 
+    // REAL-DOCUMENT-2A/2B: unknownMateriallyAffectsSelection previously blocked a scanned/image-only
+    // PDF into permanent Indeterminate whenever handwriting/complexLayout/tables were UNKNOWN --
+    // deliberately always the case pre-acquisition -- even when exactly one capability was eligible
+    // and there was no competing candidate an unknown fact could have selected instead. These tests
+    // prove that gap is closed without weakening any other fail-closed behaviour.
+
+    @Test fun `single eligible local OCR capability is selected despite unknown handwriting layout and tables`() {
+        val result = selected(route(
+            source(handwriting = UNKNOWN, layout = UNKNOWN, tables = UNKNOWN),
+            listOf(local()),
+        ))
+        assertEquals("local", result.capability.capabilityId)
+    }
+
+    @Test fun `external transcription present but unauthorised leaves local OCR as the sole eligible capability, still selected despite unknown characteristics`() {
+        // Exactly the real production shape: a governed external-transcription capability exists in
+        // the registry but is ineligible for THIS evidence because per-evidence egress has not been
+        // authorised -- never because of the unknown handwriting/layout/table facts themselves.
+        val result = selected(route(
+            source(handwriting = UNKNOWN, layout = UNKNOWN, tables = UNKNOWN),
+            listOf(local(), external()),
+            NOT_AUTHORISED,
+        ))
+        assertEquals("local", result.capability.capabilityId)
+    }
+
+    @Test fun `a single candidate that does not support a known-PRESENT characteristic still fails closed, never selected merely for being the only candidate`() {
+        assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(
+            route(source(handwriting = PRESENT), listOf(local())),
+        )
+    }
+
+    @Test fun `two eligible capabilities with unknown handwriting remain indeterminate exactly as before -- this unit changes only the single-eligible-candidate case`() {
+        // Mirrors the existing "unknown handwriting remains indeterminate when capability choice
+        // depends on it" test's own scenario -- restated here alongside the new single-candidate
+        // tests above so the contrast (candidates.size <= 1 vs > 1) is explicit in one place.
+        assertIs<EvidenceAcquisitionRoutingOutcome.Indeterminate>(
+            route(source(handwriting = UNKNOWN), listOf(local(), external())),
+        )
+    }
+
+    @Test fun `unknown handwriting layout and tables remain unknown in the routing decision's own source, never coerced to PRESENT or ABSENT`() {
+        val src = source(handwriting = UNKNOWN, layout = UNKNOWN, tables = UNKNOWN)
+        val result = selected(route(src, listOf(local())))
+        assertEquals(UNKNOWN, result.source.characteristics.handwriting)
+        assertEquals(UNKNOWN, result.source.characteristics.complexLayout)
+        assertEquals(UNKNOWN, result.source.characteristics.tables)
+    }
+
+    @Test fun `single-eligible-capability selection still invokes no provider OCR derivative analysis or execution surface`() {
+        var provider = 0; var ocr = 0; var derivative = 0; var analysis = 0
+        val result = route(source(handwriting = UNKNOWN, layout = UNKNOWN, tables = UNKNOWN), listOf(local()))
+        assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(result)
+        assertEquals(listOf(0, 0, 0, 0), listOf(provider, ocr, derivative, analysis))
+    }
+
     private fun route(
         source: AcquisitionSource,
         capabilities: List<EvidenceAcquisitionCapability>,

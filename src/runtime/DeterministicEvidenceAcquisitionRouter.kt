@@ -125,6 +125,20 @@ class DeterministicEvidenceAcquisitionRouter {
         source: AcquisitionSource,
         candidates: List<EvidenceAcquisitionCapability>,
     ): Boolean {
+        // REAL-DOCUMENT-2A/2B: "materially affects SELECTION" is meaningless when there is no
+        // choice to make -- with at most one eligible candidate, no unknown characteristic can
+        // ever change which one would be selected, since there is nothing else it could become
+        // instead. Handwriting/complexLayout/tables are deliberately UNKNOWN before visual/OCR
+        // acquisition (no pre-acquisition mechanism determines them), and the accepted acquisition
+        // governance (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §7) requires an
+        // image/scanned source to select an eligible OCR or vision mechanism -- not remain
+        // indeterminate forever merely because a fact only OCR/vision itself could establish is
+        // still unknown. This does not weaken the separate, still-fully-enforced fail-closed check
+        // in EvidenceAcquisitionEligibilityEvaluator for a characteristic later found PRESENT and
+        // unsupported by the selected capability, and it does not affect this same check when two
+        // or more eligible candidates exist and an unknown characteristic could genuinely decide
+        // between them.
+        if (candidates.size <= 1) return false
         val c = source.characteristics
         fun unknownNotUniversallyCovered(state: AcquisitionCharacteristicState, covered: (EvidenceAcquisitionCapability) -> Boolean) =
             state == AcquisitionCharacteristicState.UNKNOWN && candidates.any { !covered(it) }

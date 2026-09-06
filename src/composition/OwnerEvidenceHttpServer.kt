@@ -3519,7 +3519,11 @@ function buildAcquisitionPanel(row, index) {
     appendField(panel, 'Next step', 'Owner review of this proposal; authorization remains a separate action.');
   }
   if (d.source) {
-    appendField(panel, 'Evidence filename', row.name || 'UNKNOWN');
+    // REAL-DOCUMENT-2A/2B: row.name was never set anywhere -- only row.originalFileName is
+    // populated (from /owner/evidence's own response, the same field documentName(row) already
+    // reads correctly elsewhere) -- so this always rendered 'UNKNOWN' regardless of the real
+    // filename. Presentation-only correction: read the field actually populated on the row.
+    appendField(panel, 'Evidence filename', row.originalFileName || 'UNKNOWN');
     appendField(panel, 'Source', 'Original Parker evidence artifact ' + d.source.evidenceArtifactId);
     appendField(panel, 'Media type', d.source.mediaType || 'UNKNOWN');
     appendField(panel, 'Native searchable text', d.source.nativeSearchableText);

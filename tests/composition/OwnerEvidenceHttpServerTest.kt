@@ -3847,4 +3847,32 @@ class OwnerEvidenceHttpServerTest {
             harness.shutdown()
         }
     }
+
+    // REAL-DOCUMENT-2A/2B — Scanned PDF Acquisition Deadlock Remediation. buildAcquisitionPanel's
+    // own "Evidence filename" field read row.name, a property nothing ever sets -- only
+    // row.originalFileName is populated (from /owner/evidence's own response, the same field
+    // documentName(row) already reads correctly elsewhere) -- so it always rendered 'UNKNOWN'
+    // regardless of the real filename. Presentation-only correction, verified here structurally.
+
+    @Test
+    fun `the governed acquisition decision panel reads the row's own populated filename field, never the unused row-name`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val start = body.indexOf("function buildAcquisitionPanel(row, index)")
+            assertTrue(start >= 0, "buildAcquisitionPanel must be present in the served page")
+            val end = body.indexOf("\nfunction ", start + 1)
+            val fnBody = body.substring(start, end)
+            assertTrue(
+                fnBody.contains("appendField(panel, 'Evidence filename', row.originalFileName || 'UNKNOWN');"),
+                "the panel must read row.originalFileName -- the field actually populated on every row",
+            )
+            // The old, always-undefined field must no longer be read as the filename source itself
+            // (a literal "row.name" substring can still legitimately appear only inside this unit's
+            // own explanatory comment above, which is not functional code).
+            assertFalse(fnBody.contains("'Evidence filename', row.name"), "must not read the unused row.name as the filename value")
+        } finally {
+            harness.shutdown()
+        }
+    }
 }
