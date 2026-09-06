@@ -1821,8 +1821,9 @@ private fun parsePostEgressContinuationRequest(bodyBytes:ByteArray):PostEgressCo
  * /owner/evidence/{id}/human-fidelity-review/{generationId}`'s JSON body into
  * [parker.ui.OwnerHumanFidelityReviewSubmission]. Every numeric field is transmitted as a JSON
  * string and parsed here, exactly mirroring [parseCorrectedPreparationRequest]'s own
- * `profileVersion` handling -- [SimpleJsonReader] parses only objects, arrays, and strings, never
- * raw JSON numbers or booleans.
+ * `profileVersion` handling -- [SimpleJsonReader] still never parses a raw JSON number (this
+ * route's own fields remain unaffected by ANALYSIS-INGESTION-3B's boolean-literal support, added
+ * only for `/owner/analyse`'s own genuine `Boolean` field).
  */
 /** CASE-1. Parses `POST /owner/cases`'s `{"caseName": "..."}` body into the owner-supplied case name. */
 private fun parseCaseCreationRequestBody(bodyBytes: ByteArray): String {
@@ -1883,9 +1884,12 @@ private const val MAX_JSON_NESTING_DEPTH = 10
 
 /**
  * The smallest generic JSON value reader [parseAnalyseRequestBody] needs --
- * objects, arrays, and strings only (this route's own request shape never
- * carries a number or boolean); any other token is a malformed request,
- * reported as [JsonParseException] rather than silently misparsed.
+ * objects, arrays, strings, and the two boolean literals `true`/`false`
+ * (ANALYSIS-INGESTION-3B: [parker.core.interfaces.EvidenceGenerationSelection.acknowledgesUnverifiedExternalTranscription]
+ * is a genuine `Boolean`, always transmitted by the Owner UI as a native JSON boolean, so this
+ * reader must recognise it -- every other caller's own request shape still never carries a raw
+ * JSON number, which remains unsupported exactly as before). Any other token is a malformed
+ * request, reported as [JsonParseException] rather than silently misparsed.
  */
 private class SimpleJsonReader(private val text: String) {
     private var pos = 0
@@ -1913,8 +1917,16 @@ private class SimpleJsonReader(private val text: String) {
             '{' -> parseObject()
             '[' -> parseArray()
             '"' -> parseString()
+            't', 'f' -> parseBoolean()
             else -> throw JsonParseException("unexpected token at position $pos")
         }
+    }
+
+    /** The two JSON boolean literals only -- never `null`, never a number, matching exactly the one genuine `Boolean` field [parseAnalyseRequestBody] needs. */
+    private fun parseBoolean(): Boolean = when {
+        text.startsWith("true", pos) -> { pos += 4; true }
+        text.startsWith("false", pos) -> { pos += 5; false }
+        else -> throw JsonParseException("unexpected token at position $pos")
     }
 
     /**

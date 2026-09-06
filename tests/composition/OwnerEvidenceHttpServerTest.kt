@@ -18,6 +18,8 @@ import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.PrincipalId
 import parker.core.runtime.DocumentAnalysisCoordinator
+import parker.core.runtime.FileSystemDerivativeGenerationStorage
+import parker.core.runtime.FileSystemDerivativeContentStorage
 import parker.core.runtime.FidelityFirstAcceptanceOutcome
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.runtime.ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID
@@ -53,15 +55,26 @@ class OwnerEvidenceHttpServerTest {
     private val client: HttpClient = HttpClient.newHttpClient()
     private val token = "test-owner-http-token-1234"
 
-    private fun config(doclingBridgeScriptPath: String, modelEndpointUrl: String = "http://127.0.0.1:1/api/generate"): ParkerRuntimeConfig = ParkerRuntimeConfig(
+    private fun config(
+        doclingBridgeScriptPath: String,
+        modelEndpointUrl: String = "http://127.0.0.1:1/api/generate",
+        // ANALYSIS-INGESTION-3B: optional pre-created roots so a contract-level /owner/analyse test
+        // can admit a real derivative generation directly into the exact storage
+        // DocumentAnalysisCoordinator's own (internal, non-overridable-via-adapter) retrieval reads
+        // from -- the retrieveTierB harness override only affects the separate ocr-content GET read
+        // path, never analyse's own resolution. Defaults to a fresh temp directory exactly as
+        // before, so every existing caller is unaffected.
+        derivativeGenerationStorageRootPath: String = Files.createTempDirectory("evidence-http-derivative").toString(),
+        derivativeContentStorageRootPath: String = Files.createTempDirectory("evidence-http-derivative-content").toString(),
+    ): ParkerRuntimeConfig = ParkerRuntimeConfig(
         modelEndpointUrl = modelEndpointUrl, // deliberately unreachable by default
         modelName = "test-model",
         ownerPrincipalId = ownerPrincipalId,
         localTextChannelModuleId = "channel.local-text-evidence-http-test",
         evidenceStorageRootPath = Files.createTempDirectory("evidence-http-evidence").toString(),
         evidenceSourceManifestStorageRootPath = Files.createTempDirectory("evidence-http-manifest").toString(),
-        derivativeGenerationStorageRootPath = Files.createTempDirectory("evidence-http-derivative").toString(),
-        derivativeContentStorageRootPath = Files.createTempDirectory("evidence-http-derivative-content").toString(),
+        derivativeGenerationStorageRootPath = derivativeGenerationStorageRootPath,
+        derivativeContentStorageRootPath = derivativeContentStorageRootPath,
         savedAnalysisStorageRootPath = Files.createTempDirectory("saved-analysis-storage").toString(),
         documentIngestionAuditLogPath = Files.createTempDirectory("evidence-http-ingestion-audit").resolve("audit.log").toString(),
         evidenceDeletionAuditLogPath = Files.createTempDirectory("evidence-http-deletion-audit").resolve("audit.log").toString(),
@@ -123,12 +136,22 @@ class OwnerEvidenceHttpServerTest {
         discoverOcrDerivativeGenerations: (suspend (EvidenceArtifactId) -> List<DerivativeGenerationRecord>)? = null,
         humanVerificationRecords: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> List<HumanVerificationRecord>)? = null,
         projectEffectiveHumanFidelityReview: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> parker.core.runtime.TierBEffectiveHumanFidelityReviewOutcome)? = null,
+        // ANALYSIS-INGESTION-3B: see config()'s own matching parameters -- pass real, pre-populated
+        // roots here to admit a derivative generation DocumentAnalysisCoordinator's own internal
+        // retrieval will actually see.
+        derivativeGenerationStorageRootPath: String? = null,
+        derivativeContentStorageRootPath: String? = null,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
         val runtimeLogger = RecordingParkerLogger()
         val serverLogger = RecordingParkerLogger()
-        val runtime = ParkerRuntime(config(bridgePath, modelEndpointUrl), runtimeLogger)
+        val runtimeConfig = if (derivativeGenerationStorageRootPath != null && derivativeContentStorageRootPath != null) {
+            config(bridgePath, modelEndpointUrl, derivativeGenerationStorageRootPath, derivativeContentStorageRootPath)
+        } else {
+            config(bridgePath, modelEndpointUrl)
+        }
+        val runtime = ParkerRuntime(runtimeConfig, runtimeLogger)
         kotlinx.coroutines.runBlocking { runtime.start() }
         val adapter = OwnerUiEvidenceRuntimeAdapter(
             ownerPrincipalId = PrincipalId(ownerPrincipalId),
@@ -1908,6 +1931,33 @@ class OwnerEvidenceHttpServerTest {
         return TierBOcrContentRetrievalOutcome.Retrieved(record, extracted)
     }
 
+    /**
+     * ANALYSIS-INGESTION-3B: durably admits the exact same enhanced-transcription fixture
+     * [enhancedTranscriptionRetrieved] returns, but writes it into real, file-backed storage at the
+     * given roots -- the storage DocumentAnalysisCoordinator's own internal, non-overridable
+     * derivative retrieval actually reads from (the retrieveTierB harness override only affects the
+     * separate ocr-content GET read path, never /owner/analyse's own resolution). Callers pass the
+     * SAME roots to [startHarness]'s own derivativeGenerationStorageRootPath/
+     * derivativeContentStorageRootPath so the running ParkerRuntime sees exactly what was admitted
+     * here.
+     */
+    private fun admitEnhancedTranscription(
+        generationStorageRoot: Path,
+        contentStorageRoot: Path,
+        id: EvidenceArtifactId,
+        generationId: DerivativeGenerationId,
+    ) {
+        val outcome = enhancedTranscriptionRetrieved(id, generationId)
+        val generationStorage = FileSystemDerivativeGenerationStorage(generationStorageRoot)
+        val contentStorage = FileSystemDerivativeContentStorage(contentStorageRoot)
+        kotlinx.coroutines.runBlocking {
+            contentStorage.prepare(DerivativeContentEntry(generationId, id, TierADerivativePayload.Ocr(outcome.extracted)))
+            contentStorage.publishPrepared(generationId)
+            generationStorage.prepare(outcome.record)
+            generationStorage.publishPrepared(generationId)
+        }
+    }
+
     @Test
     fun `an admitted enhanced transcription result is retrievable through the governed ocr-content read path with page order, qualifications, uncertainty and provenance preserved, and zero provider execution`() = runTest {
         var externalCalls = 0
@@ -3573,5 +3623,173 @@ class OwnerEvidenceHttpServerTest {
         } finally {
             harness.shutdown()
         }
+    }
+
+    // ANALYSIS-INGESTION-3B — Malformed Analyse Request Investigation and Narrow Fix. Root cause:
+    // SimpleJsonReader (parseAnalyseRequestBody's own hand-rolled JSON reader) recognised only
+    // objects, arrays, and strings -- never the JSON boolean literals `true`/`false` -- despite its
+    // own class doc's incorrect claim that "/owner/analyse's own request shape never carries a...
+    // boolean". EvidenceGenerationSelection.acknowledgesUnverifiedExternalTranscription IS a
+    // genuine Boolean, and the Owner UI has always sent it as a native JSON boolean
+    // (JSON.stringify({..., acknowledgesUnverifiedExternalTranscription: !!row.acknowledges...})).
+    // Any selection carrying that field -- i.e. any Tier B/enhanced-transcription selection --
+    // therefore always failed to parse, reported as "malformed request body". This was never
+    // observed before because no enhanced-transcription-eligible selection had ever reached real
+    // submission until ANALYSIS-INGESTION-2B made that path reachable for the first time. The fix
+    // adds boolean-literal recognition to SimpleJsonReader; every other caller's own request shape
+    // is untouched since none of them use a boolean field.
+    //
+    // These tests exercise the REAL AnalyseHandler/parseAnalyseRequestBody/DocumentAnalysisCoordinator
+    // through the real HTTP harness (postPaired, the genuinely-authenticated cookie scheme -- never
+    // the stale postJson Bearer-token helper the pre-existing, already-failing analyse tests use),
+    // with modelEndpointUrl left at its default unreachable http://127.0.0.1:1/api/generate so no
+    // real provider/model call ever succeeds -- a reached-but-cleanly-failed ModelInvocationFailed
+    // outcome is itself proof the request parsed and passed every validation stage before it.
+    //
+    // The exact HFR-PASS-waives-acknowledgement and sibling-generation-isolation behaviours (items
+    // 5 and 7) are already exhaustively proven at the DocumentAnalysisCoordinator level, with real
+    // HFR storage, by DocumentAnalysisHumanFidelityReviewReconciliationTest -- untouched by this
+    // purely wire-format fix, since that test constructs EvidenceGenerationSelection directly in
+    // Kotlin and never goes through JSON at all. This harness's own config (config(), above) does
+    // not configure Human Fidelity Review at all, so DocumentAnalysisCoordinator's own
+    // effectiveHumanFidelityReviewResolver is always null here -- exactly matching how it behaved
+    // before ANALYSIS-INGESTION-2, i.e. the acknowledgement gate always requires an explicit true.
+
+    @Test
+    fun `a native JSON boolean acknowledgesUnverifiedExternalTranscription value parses correctly instead of being rejected as malformed`() {
+        val evidence = EvidenceArtifactId("evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d")
+        val generation = DerivativeGenerationId("4c8ed1e2-7524-467c-b4b3-32e8293c7854")
+        val generationRoot = Files.createTempDirectory("analysis-3b-generation")
+        val contentRoot = Files.createTempDirectory("analysis-3b-content")
+        admitEnhancedTranscription(generationRoot, contentRoot, evidence, generation)
+        val harness = startHarness(
+            "",
+            derivativeGenerationStorageRootPath = generationRoot.toString(),
+            derivativeContentStorageRootPath = contentRoot.toString(),
+        )
+        try {
+            // Item 1/6: exactly the shape collectAnalysisSelections() produces for a Tier B/discovered
+            // selection -- a native JSON boolean `false`, matching an UNREVIEWED (or, in this harness,
+            // unconfigured-HFR) generation that still requires acknowledgement.
+            val falseBody = """{"selections":[{"evidenceArtifactId":"${evidence.value}","derivativeGenerationId":"${generation.value}","acknowledgesUnverifiedExternalTranscription":false}],"instruction":"Can you confirm whether Kylie is mentioned in this document?"}"""
+            val falseResponse = postPaired(harness, "/owner/analyse", falseBody)
+            assertEquals(200, falseResponse.statusCode(), "a well-formed boolean field must never itself produce a non-200/non-401 rejection")
+            assertNotEquals("malformed request body", extractField(falseResponse.body(), "error"))
+            assertEquals("ACKNOWLEDGEMENT_REQUIRED", extractField(falseResponse.body(), "status"))
+            // Items 2/3: the exact evidence and generation identity survive parsing unchanged and
+            // are echoed back bound to this exact pair -- never substituted, never blank.
+            assertEquals(evidence.value, extractField(falseResponse.body(), "evidenceArtifactId"))
+            assertEquals(generation.value, extractField(falseResponse.body(), "derivativeGenerationId"))
+
+            // The same field as a native JSON boolean `true` (the owner explicitly checking the
+            // acknowledgement box) also parses correctly and passes the gate -- reaching the
+            // model-inference boundary, which then fails cleanly against the deliberately
+            // unreachable test endpoint (no real provider call), proving every validation stage
+            // before it -- JSON parsing, permission, exact-generation retrieval -- succeeded.
+            val trueBody = """{"selections":[{"evidenceArtifactId":"${evidence.value}","derivativeGenerationId":"${generation.value}","acknowledgesUnverifiedExternalTranscription":true}],"instruction":"Can you confirm whether Kylie is mentioned in this document?"}"""
+            val trueResponse = postPaired(harness, "/owner/analyse", trueBody)
+            assertEquals(200, trueResponse.statusCode())
+            assertNotEquals("malformed request body", extractField(trueResponse.body(), "error"))
+            assertEquals("FAILED", extractField(trueResponse.body(), "status"))
+            assertEquals("Local model inference failed", extractField(trueResponse.body(), "message"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `item 4 -- the owner's exact instruction text survives parsing unchanged, including question marks and punctuation`() {
+        val evidence = EvidenceArtifactId("evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d")
+        val generation = DerivativeGenerationId("4c8ed1e2-7524-467c-b4b3-32e8293c7854")
+        val instruction = "Can you confirm whether Kylie is mentioned in this document? Use only the selected document and its human-reviewed transcription. If Kylie is mentioned, identify the name as it appears and briefly state the context. If Kylie is not mentioned, say so clearly. Do not infer information that is not present in the selected document."
+        val generationRoot = Files.createTempDirectory("analysis-3b-generation")
+        val contentRoot = Files.createTempDirectory("analysis-3b-content")
+        admitEnhancedTranscription(generationRoot, contentRoot, evidence, generation)
+        val harness = startHarness(
+            "",
+            derivativeGenerationStorageRootPath = generationRoot.toString(),
+            derivativeContentStorageRootPath = contentRoot.toString(),
+        )
+        try {
+            val body = """{"selections":[{"evidenceArtifactId":"${evidence.value}","derivativeGenerationId":"${generation.value}","acknowledgesUnverifiedExternalTranscription":true}],"instruction":${jsonQuote(instruction)}}"""
+            // A local model call is attempted and fails cleanly (unreachable test endpoint) --
+            // DocumentAnalysisCoordinator never echoes the instruction back on ModelInvocationFailed,
+            // so this only proves the request itself parsed; instruction survival through parsing to
+            // the point of prompt-building is what matters here (never truncated, never malformed).
+            val response = postPaired(harness, "/owner/analyse", body)
+            assertEquals(200, response.statusCode())
+            assertNotEquals("malformed request body", extractField(response.body(), "error"))
+            assertEquals("FAILED", extractField(response.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `item 8 -- a multi-selection array mixing different acknowledgement boolean values remains a valid parseable request`() {
+        val evidence = EvidenceArtifactId("evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d")
+        val passGeneration = DerivativeGenerationId("4c8ed1e2-7524-467c-b4b3-32e8293c7854")
+        val siblingGeneration = DerivativeGenerationId("6d8d9307-8281-4574-a050-f9fec1c916f1")
+        val generationRoot = Files.createTempDirectory("analysis-3b-generation")
+        val contentRoot = Files.createTempDirectory("analysis-3b-content")
+        admitEnhancedTranscription(generationRoot, contentRoot, evidence, passGeneration)
+        admitEnhancedTranscription(generationRoot, contentRoot, evidence, siblingGeneration)
+        val harness = startHarness(
+            "",
+            derivativeGenerationStorageRootPath = generationRoot.toString(),
+            derivativeContentStorageRootPath = contentRoot.toString(),
+        )
+        try {
+            val body = """{"selections":[
+                {"evidenceArtifactId":"${evidence.value}","derivativeGenerationId":"${passGeneration.value}","acknowledgesUnverifiedExternalTranscription":true},
+                {"evidenceArtifactId":"${evidence.value}","derivativeGenerationId":"${siblingGeneration.value}","acknowledgesUnverifiedExternalTranscription":false}
+            ],"instruction":"Summarise both."}""".trimIndent()
+            val response = postPaired(harness, "/owner/analyse", body)
+            assertEquals(200, response.statusCode())
+            assertNotEquals("malformed request body", extractField(response.body(), "error"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `item 9 -- genuinely malformed request bodies still fail closed with the existing error shape, unaffected by the boolean-literal fix`() {
+        val evidence = EvidenceArtifactId("evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d")
+        val generation = DerivativeGenerationId("4c8ed1e2-7524-467c-b4b3-32e8293c7854")
+        val harness = startHarness("")
+        try {
+            // A genuinely-unsupported token (a raw JSON number, still never accepted) must still fail.
+            val numberBody = """{"selections":[{"evidenceArtifactId":"${evidence.value}","derivativeGenerationId":"${generation.value}","acknowledgesUnverifiedExternalTranscription":1}],"instruction":"x"}"""
+            assertEquals(400, postPaired(harness, "/owner/analyse", numberBody).statusCode())
+            assertEquals("malformed request body", extractField(postPaired(harness, "/owner/analyse", numberBody).body(), "error"))
+
+            // A boolean-shaped typo (not exactly "true"/"false") must still fail, never silently coerced.
+            val typoBody = """{"selections":[{"evidenceArtifactId":"${evidence.value}","derivativeGenerationId":"${generation.value}","acknowledgesUnverifiedExternalTranscription":truthy}],"instruction":"x"}"""
+            assertEquals(400, postPaired(harness, "/owner/analyse", typoBody).statusCode())
+
+            // Missing required fields must still fail exactly as before.
+            assertEquals(400, postPaired(harness, "/owner/analyse", """{"selections":[{"evidenceArtifactId":"${evidence.value}"}],"instruction":"x"}""").statusCode())
+            assertEquals(400, postPaired(harness, "/owner/analyse", """{"selections":[],"instruction":"x"}""").statusCode())
+            assertEquals(400, postPaired(harness, "/owner/analyse", "not json at all").statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    /** Minimal, correct JSON string quoting for an owner instruction in a raw test request body -- mirrors the Owner UI's own JSON.stringify escaping for the handful of characters real prose can contain. */
+    private fun jsonQuote(value: String): String {
+        val sb = StringBuilder("\"")
+        for (c in value) {
+            when (c) {
+                '"' -> sb.append("\\\"")
+                '\\' -> sb.append("\\\\")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                else -> sb.append(c)
+            }
+        }
+        sb.append('"')
+        return sb.toString()
     }
 }
