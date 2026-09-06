@@ -71,6 +71,12 @@ class OwnerEvidenceHttpServerTest {
         // governed-acquisition-selection behaviour (explicitly still legitimate in a non-production
         // test context) opts in explicitly.
         productionLocalOcrEligible: Boolean = false,
+        // REAL-DOCUMENT-2F: optional, all default to disabled/absent so every existing caller of
+        // this helper is unaffected. A test proving the accepted-external-transcription acquisition
+        // wiring opts in explicitly, mirroring ParkerRuntimeConfig's own real field names exactly.
+        openAiExternalTranscriptionEnabled: Boolean = false,
+        openAiExternalTranscriptionProviderProfilePath: String? = null,
+        openAiApiCredential: OpenAiApiCredential? = null,
     ): ParkerRuntimeConfig = ParkerRuntimeConfig(
         modelEndpointUrl = modelEndpointUrl, // deliberately unreachable by default
         modelName = "test-model",
@@ -92,6 +98,9 @@ class OwnerEvidenceHttpServerTest {
         caseAssignmentStorageRootPath = Files.createTempDirectory("evidence-http-case-assignments").toString(),
         caseGovernanceAuditLogPath = Files.createTempDirectory("evidence-http-case-audit").resolve("case-audit.log").toString(),
         productionLocalOcrEligible = productionLocalOcrEligible,
+        openAiExternalTranscriptionEnabled = openAiExternalTranscriptionEnabled,
+        openAiExternalTranscriptionProviderProfilePath = openAiExternalTranscriptionProviderProfilePath,
+        openAiApiCredential = openAiApiCredential,
     )
 
     private fun writeFakeBridgeScript(directory: Path, exitCode: Int, stdout: String): Path {
@@ -150,15 +159,27 @@ class OwnerEvidenceHttpServerTest {
         // REAL-DOCUMENT-2E: see config()'s own matching parameter -- defaults to false (ineligible),
         // matching the real production composition root's own default exactly.
         productionLocalOcrEligible: Boolean = false,
+        // REAL-DOCUMENT-2F: see config()'s own matching parameters -- all default off/absent.
+        openAiExternalTranscriptionEnabled: Boolean = false,
+        openAiExternalTranscriptionProviderProfilePath: String? = null,
+        openAiApiCredential: OpenAiApiCredential? = null,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
         val runtimeLogger = RecordingParkerLogger()
         val serverLogger = RecordingParkerLogger()
         val runtimeConfig = if (derivativeGenerationStorageRootPath != null && derivativeContentStorageRootPath != null) {
-            config(bridgePath, modelEndpointUrl, derivativeGenerationStorageRootPath, derivativeContentStorageRootPath, productionLocalOcrEligible)
+            config(
+                bridgePath, modelEndpointUrl, derivativeGenerationStorageRootPath, derivativeContentStorageRootPath, productionLocalOcrEligible,
+                openAiExternalTranscriptionEnabled, openAiExternalTranscriptionProviderProfilePath, openAiApiCredential,
+            )
         } else {
-            config(bridgePath, modelEndpointUrl, productionLocalOcrEligible = productionLocalOcrEligible)
+            config(
+                bridgePath, modelEndpointUrl, productionLocalOcrEligible = productionLocalOcrEligible,
+                openAiExternalTranscriptionEnabled = openAiExternalTranscriptionEnabled,
+                openAiExternalTranscriptionProviderProfilePath = openAiExternalTranscriptionProviderProfilePath,
+                openAiApiCredential = openAiApiCredential,
+            )
         }
         val runtime = ParkerRuntime(runtimeConfig, runtimeLogger)
         kotlinx.coroutines.runBlocking { runtime.start() }
@@ -659,6 +680,92 @@ class OwnerEvidenceHttpServerTest {
             val tierARejection = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/content/$exactGenerationId"))
                 .header("Cookie", cookie).GET().build())
             assertEquals(500, tierARejection.statusCode())
+        } finally { harness.shutdown() }
+    }
+
+    // REAL-DOCUMENT-2F -- Wire Accepted External Transcription into Governed Acquisition. Exercises
+    // ParkerRuntime's own new composition code (reading openAiExternalTranscriptionReadiness's
+    // profile, not a hand-built registry) end-to-end over real HTTP for a real scanned PDF, proving
+    // it wires an ACCEPTED profile without error and without ever misreporting Local OCR as the
+    // selected mechanism -- the defect this whole REAL-DOCUMENT-2D/2E/2F sequence exists to fix.
+    // NO_ELIGIBLE_CAPABILITY here is expected and correct: this harness configures no authorization
+    // coordinator (no authorization storage root), so external egress is universally NOT_AUTHORISED,
+    // and Local OCR remains production-disabled by this harness's own default -- both legitimately
+    // contribute to the aggregated reason set the NoEligible response carries, so this response
+    // alone cannot isolate the external capability's own acceptance state (that precise, uncontaminated
+    // proof -- Ineligible(EXTERNAL_EGRESS_NOT_AUTHORISED) alone, with no CAPABILITY_DISABLED_OR_NOT_READY
+    // of its own -- is what GovernedAcquisitionIntegrationTest's own direct
+    // EvidenceAcquisitionEligibilityEvaluator.evaluate() call proves precisely, unconflated by Local
+    // OCR's separate state). This test's own job is narrower: prove the real composition root itself
+    // does not crash, still fails closed, and never authorizes egress, invokes OpenAI, or processes
+    // the document (no /acquire, no /transcribe-external, no /authorize-enhanced-transcription call
+    // is made here).
+    private fun acceptedExternalTranscriptionProfile(): String = """
+        schemaVersion=3
+        providerIdentity=OpenAI
+        apiProductPath=/v1/responses
+        store=false
+        modelSelectionRule=gpt-5.6-sol
+        modelSnapshotPolicy=RECORD_PRESENT_OR_NOT_EXPOSED
+        maximumPdfBytes=52428800
+        maximumImageBytes=20971520
+        maximumOutputBytes=1048576
+        timeoutMillis=120000
+        allowedNetworkDestination=https://api.openai.com
+        retentionTreatment=retention
+        dataUseTrainingTreatment=disabled
+        zdrMamStatus=not-established
+        projectAccountStatus=active
+        projectAccountControls=controlled
+        authenticationMechanism=BEARER_API_CREDENTIAL
+        requestLoggingConsiderations=none
+        regionalStorageConsiderations=global
+        verifiedOn=2026-08-26
+        approvingOwnerReference=owner
+        nextReviewDate=2026-09-26
+        verificationReferences=reference
+        reverificationTriggers=change
+        transcriptionProfileId=openai-fidelity-first-transcription-v1
+        instructionSha256=${parker.core.runtime.FIDELITY_FIRST_INSTRUCTION_SHA256}
+        structuredSchemaSha256=${parker.core.runtime.FIDELITY_FIRST_SCHEMA_SHA256}
+        processingProfileIdentity=external-transcription.direct-authoritative-byte-v1
+        acceptanceState=ACCEPTED
+        reasoningEffort=none
+        pdfDetail=high
+        imageDetail=original
+    """.trimIndent()
+
+    @Test
+    fun `an ACCEPTED provider profile wires through the real composition root without ever selecting Local OCR or authorizing anything`() = runTest {
+        val profilePath = Files.createTempFile("evidence-http-accepted-profile", ".properties")
+        Files.writeString(profilePath, acceptedExternalTranscriptionProfile())
+        val harness = startHarness(
+            "",
+            openAiExternalTranscriptionEnabled = true,
+            openAiExternalTranscriptionProviderProfilePath = profilePath.toString(),
+            openAiApiCredential = OpenAiApiCredential.fromEnvironment("real-document-2f-synthetic-credential"),
+        )
+        try {
+            val cookie = pairedCookie(harness)
+            val uploadResponse = send(
+                HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence"))
+                    .header("Cookie", cookie).header("Content-Type", "multipart/form-data; boundary=OwnerEvidenceHttpServerTestBoundary")
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody("OwnerEvidenceHttpServerTestBoundary",
+                        listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))))).build(),
+            )
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            val decision = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition"))
+                .header("Cookie", cookie).GET().build())
+            assertEquals(200, decision.statusCode())
+            assertEquals("NO_ELIGIBLE_CAPABILITY", extractField(decision.body(), "status"), decision.body())
+            // No authorization coordinator is configured in this harness (no authorization storage
+            // root supplied), so external egress is correctly still not authorised -- this is the
+            // fail-closed state this harness deliberately exercises, not a defect.
+            assertTrue(decision.body().contains("EXTERNAL_EGRESS_NOT_AUTHORISED"), decision.body())
+            // The real fix under test: production Local OCR stays disabled and the decision never
+            // reports it as selected/available, even with a real ACCEPTED profile now wired in.
+            assertFalse(decision.body().contains("Local OCR"), decision.body())
         } finally { harness.shutdown() }
     }
 

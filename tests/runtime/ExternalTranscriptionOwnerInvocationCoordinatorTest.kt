@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import parker.core.interfaces.*
 
@@ -164,6 +165,97 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         val forbidden = listOf("Docling", "RapidOCR", "OpenAI", "Http", "Network", "Storage", "OwnerUi", "Analysis", "Memory", "Knowledge")
         types.forEach { type -> forbidden.forEach { assertTrue(!type.contains(it), "$type contains $it") } }
         assertTrue(ExternalTranscriptionOwnerInvocationCoordinator::class.java.declaredMethods.none { it.name.contains("retry", true) })
+    }
+
+    // REAL-DOCUMENT-2F -- Wire Accepted External Transcription into Governed Acquisition. Proves,
+    // without a real provider call, that the already-existing ExternalTranscriptionAcquisitionExecutor
+    // (now registered in ParkerRuntime's production executor list) is a pure delegation wrapper: it
+    // dispatches to exactly this already-governed coordinator and retains its existing invocation
+    // gate (permission denial) and admission/provenance behaviour unchanged, never constructing a
+    // second provider-invocation path of its own.
+
+    @Test
+    fun `the acquisition executor delegates to this exact coordinator and retains its permission gate -- denial performs no custody or provider work`() = runTest {
+        val permission = FakePermission(PermissionDecisionOutcome.DENIED, events)
+        val custodian = FakeCustodian()
+        val mechanism = FakeMechanism(events) { error("must not run") }
+        val request = executionRequest()
+
+        val outcome = executor(coordinator(permission, custodian, mechanism)).execute(request)
+
+        assertIs<BoundAcquisitionExecutorOutcome.ExecutionFailed>(outcome)
+        assertEquals(listOf("authorize"), events)
+        assertEquals(0, custodian.sourceCalls)
+        assertEquals(0, custodian.manifestCalls)
+        assertEquals(0, mechanism.calls)
+    }
+
+    @Test
+    fun `the acquisition executor delegates to this exact coordinator and carries an admitted outcome's exact fidelity, generation id and provenance through unchanged`() = runTest {
+        val permission = FakePermission(PermissionDecisionOutcome.APPROVED, events)
+        val custodian = FakeCustodian()
+        val mechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(candidate()) }
+        val request = executionRequest()
+
+        val outcome = executor(coordinator(permission, custodian, mechanism)).execute(request)
+
+        val admitted = assertIs<BoundAcquisitionExecutorOutcome.Admitted>(outcome)
+        assertEquals(listOf("authorize", "source", "manifest", "mechanism"), events)
+        assertEquals(1, mechanism.calls)
+        // The exact same fidelity/provenance shape "valid flow retrieves one identity verifies
+        // source and invokes one mechanism once" (above) already proves a direct coordinator.invoke()
+        // call produces for this identical candidate() -- carried through the executor unchanged.
+        assertEquals(TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, admitted.fidelity)
+        assertEquals(DerivativeGenerationId("generation-unit-j"), admitted.derivativeGenerationId)
+        assertNotNull(admitted.processingProvenance)
+    }
+
+    @Test
+    fun `the acquisition executor is structurally a pure delegation wrapper -- its only collaborator is the existing coordinator, never a second provider-invocation path`() {
+        val fields = ExternalTranscriptionAcquisitionExecutor::class.java.declaredFields.filterNot { it.isSynthetic }
+        val coordinatorFields = fields.filter { it.type == ExternalTranscriptionOwnerInvocationCoordinator::class.java }
+        assertEquals(1, coordinatorFields.size, "expected exactly one ExternalTranscriptionOwnerInvocationCoordinator collaborator field")
+        val forbidden = listOf("Docling", "RapidOCR", "OpenAI", "Http", "Network", "Mechanism")
+        fields.map { it.type.name }.forEach { type -> forbidden.forEach { assertTrue(!type.contains(it), "$type contains $it") } }
+    }
+
+    private fun executor(coordinator: ExternalTranscriptionOwnerInvocationCoordinator) = ExternalTranscriptionAcquisitionExecutor(
+        AcquisitionExecutorBinding(ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID, EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION, null),
+        coordinator,
+    )
+
+    /**
+     * Resolves the same exact-target [AuthoritativeAcquisitionInput] GovernedAcquisitionExecutionCoordinator
+     * itself would resolve, via the real resolver -- never a fabricated stand-in. Uses its own
+     * dedicated custodian instance, deliberately never the one passed to the coordinator under
+     * test, so this resolution's own call counts never contaminate a test's assertions about the
+     * coordinator's own custody calls.
+     */
+    private suspend fun executionRequest(): GovernedAcquisitionExecutionRequest {
+        val silentCustodian = object : EvidenceCustodian {
+            override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact): EvidenceAcceptanceResult = error("not used")
+            override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceRetrievalResult =
+                EvidenceRetrievalResult.Found(evidenceId, bytes)
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
+                EvidenceManifestRetrievalResult.Found(manifest())
+        }
+        val resolved = assertIs<AuthoritativeAcquisitionResolution.Verified>(
+            AuthoritativeAcquisitionSourceResolver(silentCustodian).resolve(owner, evidenceId),
+        )
+        val capability = ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability()
+        val source = AcquisitionSource(
+            evidenceId, digest, bytes.size.toLong(), "application/pdf", AcquisitionPageCount.Known(1),
+            AcquisitionSourceCharacteristics(
+                AcquisitionCharacteristicState.ABSENT, AcquisitionCharacteristicState.PRESENT,
+                AcquisitionCharacteristicState.ABSENT, AcquisitionCharacteristicState.ABSENT,
+                AcquisitionCharacteristicState.ABSENT, AcquisitionCharacteristicState.ABSENT,
+            ), HumanAuthorisedCustody.CONFIRMED,
+        )
+        val decision = EvidenceAcquisitionRoutingDecision(
+            source, capability, AcquisitionRepresentationClass.AUTHORITATIVE_SOURCE_OR_BYTE_EXACT_COPY,
+            setOf(AcquisitionSelectionReason.SOURCE_CHARACTERISTICS_SUPPORTED),
+        )
+        return GovernedAcquisitionExecutionRequest(decision, resolved.input, owner)
     }
 
     private fun coordinator(permission: PermissionEngine, custodian: EvidenceCustodian, mechanism: ExternalTranscriptionMechanism) =

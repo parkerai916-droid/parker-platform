@@ -198,6 +198,89 @@ class GovernedAcquisitionIntegrationTest {
         assertEquals(listOf(0, 0, 0), listOf(counters.native, counters.local, counters.external))
     }
 
+    // REAL-DOCUMENT-2F -- Wire Accepted External Transcription into Governed Acquisition. The
+    // Amber document's own real production source characteristics (evidence-3b2fb721-11e8-48cf-854a-30470449c857,
+    // "amber email to Kylie Tue 28 Jan 2025 at 1034 AM.pdf"): a 651826-byte, single-page,
+    // application/pdf source with no native searchable text and an image/scanned layer -- exactly
+    // what REAL-DOCUMENT-2C/2E's own investigations already established. No byte content is used or
+    // needed here; only the already-established, non-substantive source characteristics that
+    // DeterministicEvidenceAcquisitionRouter itself is allowed to consume.
+
+    private fun amberSource(evidenceArtifactId: String = "evidence-3b2fb721-11e8-48cf-854a-30470449c857") = AcquisitionSource(
+        EvidenceArtifactId(evidenceArtifactId), sha, 651826L, "application/pdf", AcquisitionPageCount.Known(1),
+        AcquisitionSourceCharacteristics(ABSENT, PRESENT, ABSENT, ABSENT, ABSENT, ABSENT), HumanAuthorisedCustody.CONFIRMED,
+    )
+
+    private fun acceptedFidelityFirstExternal() = ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability().let { pending ->
+        EvidenceAcquisitionCapability(
+            pending.capabilityId, pending.mechanism, pending.supportedMediaTypes, pending.supportedSourceForms,
+            pending.fidelity, pending.supportedRepresentations, pending.egress, pending.providerConfiguration,
+            AcquisitionAvailability.Available, pending.limits, pending.fidelitySuitabilityByMediaType,
+        )
+    }
+
+    @Test fun `Amber's exact source characteristics deterministically select accepted external transcription once authorised -- never Local OCR, never arbitrary`() {
+        val registry = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = acceptedFidelityFirstExternal(),
+            localOcrAvailability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
+        )
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(amberSource(), registry.capabilities(), AUTHORISED)
+        val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
+        assertEquals("evidence-3b2fb721-11e8-48cf-854a-30470449c857", selected.decision.source.evidenceArtifactId.value)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID, selected.decision.capability.capabilityId)
+        assertEquals(EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION, selected.decision.capability.mechanism)
+        // Determinism: repeating the exact same inputs (including capability order reversed) never
+        // changes the outcome -- no arbitrary/newest tie-break of any kind.
+        val repeated = DeterministicEvidenceAcquisitionRouter().route(amberSource(), registry.capabilities().reversed(), AUTHORISED)
+        assertEquals(outcome, repeated)
+    }
+
+    @Test fun `the Amber document remains ineligible while accepted globally but not authorised for its exact evidence id -- authorization, not acceptance, is what is still missing`() {
+        val registry = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = acceptedFidelityFirstExternal(),
+            localOcrAvailability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
+        )
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(amberSource(), registry.capabilities(), NOT_AUTHORISED)
+        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED)
+        // Local OCR's own, separate, correct DISABLED state also legitimately contributes
+        // CAPABILITY_DISABLED_OR_NOT_READY to this same aggregated outcome, so that tag's presence
+        // in noSelection.reasons alone cannot distinguish the external capability's own state. Isolate
+        // the external capability's own eligibility directly instead: its own failure set must be
+        // exactly EXTERNAL_EGRESS_NOT_AUTHORISED, proving acceptance (not availability) is what it
+        // no longer lacks.
+        val externalEligibility = EvidenceAcquisitionEligibilityEvaluator.evaluate(acceptedFidelityFirstExternal(), amberSource(), NOT_AUTHORISED)
+        val ineligible = assertIs<AcquisitionEligibility.Ineligible>(externalEligibility)
+        assertEquals(setOf(AcquisitionEligibilityReason.EXTERNAL_EGRESS_NOT_AUTHORISED), ineligible.reasons)
+    }
+
+    @Test fun `authorization is resolved per exact evidence id, never globally -- a different evidence id stays ineligible even though Amber's own id would be authorised`() {
+        val registry = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = acceptedFidelityFirstExternal(),
+            localOcrAvailability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
+        )
+        // Amber's own exact id, authorised -- selected.
+        assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(
+            DeterministicEvidenceAcquisitionRouter().route(amberSource(), registry.capabilities(), AUTHORISED),
+        )
+        // A different evidence id, otherwise identical characteristics, NOT authorised -- remains
+        // ineligible. The router itself never carries authorization state between calls; the exact
+        // ExternalEgressAuthorisation value for this exact call is the only thing that matters, and
+        // in production that value is resolved per-evidence-id by
+        // externalTranscriptionAuthorizationCoordinator.isAuthorized(id) before route() is ever
+        // called -- unchanged, unmodified by this unit, and already independently proven never to
+        // cross evidence targets by `ExternalTranscriptionOwnerAuthorizationCoordinatorTest`'s own
+        // "an authorization for one evidence target never authorises a different target".
+        val otherEvidence = amberSource(evidenceArtifactId = "evidence-unrelated-other-document")
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(otherEvidence, registry.capabilities(), NOT_AUTHORISED)
+        assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
+    }
+
+    @Test fun `the router itself holds no state of any kind -- routing alone cannot create, remember, or leak authorization between calls`() {
+        assertEquals(0, DeterministicEvidenceAcquisitionRouter::class.java.declaredFields.size,
+            "the router must carry no fields -- it cannot remember or create authorization state across calls")
+    }
+
     @Test fun `source projector preserves unknowns and never requires bytes or case meaning`() {
         val manifest = EvidenceSourceManifest(id, sha, bytes.size.toLong(), "application/pdf")
         val projected = AcquisitionSourceCharacteristicsProjector.project(manifest)!!

@@ -99,7 +99,9 @@ import parker.core.runtime.DeterministicEvidenceAcquisitionRouter
 import parker.core.runtime.ProductionAcquisitionCapabilityCatalogue
 import parker.core.runtime.TierANativeAcquisitionExecutor
 import parker.core.runtime.LocalOcrAcquisitionExecutor
+import parker.core.runtime.ExternalTranscriptionAcquisitionExecutor
 import parker.core.runtime.AcquisitionExecutorBinding
+import parker.core.interfaces.EvidenceAcquisitionCapability
 import parker.core.interfaces.EvidenceAcquisitionMechanism
 import parker.core.runtime.DefaultEvidenceCustodian
 import parker.core.runtime.DefaultEvidenceIntelligence
@@ -1880,7 +1882,28 @@ class ParkerRuntime(
         tierBOcrOwnerInvocationCoordinator = TierBOcrOwnerInvocationCoordinator(
             defaultEvidenceCustodian, permissionEngine, evidenceIntelligenceOcrCoordinator, tierBDerivativeGenerationCoordinator,
         )
+        // REAL-DOCUMENT-2F: the fidelity-first external-transcription capability's own governed
+        // acceptance state -- OpenAiExternalTranscriptionProviderProfile.acceptanceState, the same
+        // authoritative field RuntimeReadinessDiagnostic's own providerProfileAccepted already
+        // consumes -- read directly from the parsed profile, never inferred from broader readiness
+        // (credential presence, backend/profile staleness, or any prior provider call). A missing
+        // profile (disabled/invalid/stale) has no acceptance state to read and correctly leaves the
+        // template's own existing Unavailable(CONFIGURATION_NOT_ACCEPTED) default in place below.
+        val fidelityFirstCapabilityTemplate = ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability()
+        val fidelityFirstAccepted = (openAiExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready)
+            ?.profile?.acceptanceState == ExternalTranscriptionAcceptanceState.ACCEPTED
+        val fidelityFirstExternalCapabilityProjection = if (fidelityFirstAccepted) {
+            EvidenceAcquisitionCapability(
+                fidelityFirstCapabilityTemplate.capabilityId, fidelityFirstCapabilityTemplate.mechanism,
+                fidelityFirstCapabilityTemplate.supportedMediaTypes, fidelityFirstCapabilityTemplate.supportedSourceForms,
+                fidelityFirstCapabilityTemplate.fidelity, fidelityFirstCapabilityTemplate.supportedRepresentations,
+                fidelityFirstCapabilityTemplate.egress, fidelityFirstCapabilityTemplate.providerConfiguration,
+                AcquisitionAvailability.Available, fidelityFirstCapabilityTemplate.limits,
+                fidelityFirstCapabilityTemplate.fidelitySuitabilityByMediaType,
+            )
+        } else fidelityFirstCapabilityTemplate
         val acquisitionRegistry = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = fidelityFirstExternalCapabilityProjection,
             ordinaryRegionCapabilityProjection = ordinaryRegionIngestionWorkflow?.let {
                 ProductionAcquisitionCapabilityCatalogue.ordinaryRequestRegionV8Capability(
                     it.capabilityStatus().disposition == parker.core.runtime.OrdinaryRegionCapabilityDisposition.ACCEPTED,
@@ -1920,6 +1943,21 @@ class ParkerRuntime(
                             null,
                         ),
                         tierBOcrOwnerInvocationCoordinator,
+                    ),
+                    // REAL-DOCUMENT-2F: the already-existing executor and coordinator for the
+                    // already-governed "enhanced transcription" invocation boundary -- no new
+                    // provider invocation path. The binding's configurationIdentity is read from
+                    // the same capability template the projection above is derived from, so a
+                    // routing decision can only ever be dispatched here if it selected the exact
+                    // same configuration this executor is bound to (GovernedAcquisitionExecutionCoordinator's
+                    // own CAPABILITY_BINDING_MISMATCH check, unchanged).
+                    ExternalTranscriptionAcquisitionExecutor(
+                        AcquisitionExecutorBinding(
+                            ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
+                            EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
+                            fidelityFirstCapabilityTemplate.providerConfiguration?.configurationIdentity,
+                        ),
+                        externalTranscriptionOwnerInvocationCoordinator,
                     ),
                 ),
             ),
