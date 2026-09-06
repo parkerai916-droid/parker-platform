@@ -2571,11 +2571,21 @@ class OwnerEvidenceHttpServerTest {
             val eligibility = analysisEligibilityFunctionBody(harness)
             // Exactly one discovered generation is unambiguous; two or more require the owner to
             // have explicitly expanded exactly one (discoveredExpandedGenerationId) -- there is no
-            // "prefer the newest" or "prefer the reviewed one" branch of any kind.
+            // "prefer the newest" or "prefer an arbitrary reviewed one" branch of any kind.
             assertTrue(eligibility.contains("generations.length === 1"))
             assertFalse(eligibility.contains("newest", ignoreCase = true))
-            assertFalse(eligibility.contains("HUMAN_REVIEWED"))
             assertFalse(eligibility.contains("sort"))
+            // ANALYSIS-INGESTION-2B narrowly authorised exactly one specific exception: exactly one
+            // HUMAN_REVIEWED_PASS generation (never two or more -- see the dedicated 2B test above)
+            // is itself the unambiguous, durable, effective-HFR-state signal, distinct from
+            // "preferring the newest" or any arbitrary/invented preference among otherwise-equal
+            // candidates -- the exact opposite of guessing, since it is the one governed fact that
+            // makes the ambiguity resolvable at all. Confirm that exception remains the ONLY
+            // reference to human-review state in this function, still strictly gated to exactly one.
+            val passReferences = Regex("HUMAN_REVIEWED_PASS").findAll(eligibility).count()
+            assertEquals(1, passReferences, "HUMAN_REVIEWED_PASS must appear exactly once -- the 2B fast-path filter -- nowhere else")
+            assertTrue(eligibility.contains("passGenerations.length === 1"))
+            assertFalse(eligibility.contains("passGenerations.length >= 1"))
         } finally {
             harness.shutdown()
         }
@@ -3340,6 +3350,132 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("function buildOcrContentPanel(content, derivativeGenerationId, evidenceArtifactId, row) {"))
             assertTrue(body.contains("function buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId, row) {"))
             assertTrue(body.contains("function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId, row) {"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    // ANALYSIS-INGESTION-2B — Durable HFR-PASS Analysis Eligibility Fix. Live owner testing showed
+    // that even after ANALYSIS-INGESTION-2A, an evidence row with exactly one HUMAN_REVIEWED_PASS
+    // enhanced-transcription generation still showed no Analyse checkbox on a fresh page load, and
+    // expanding "Enhanced transcriptions" alone did not fix it -- analysisEligibleDiscoveredGeneration
+    // required the owner to have also fetched a specific generation's own CONTENT
+    // (row.discoveredContent, via "View") before it would ever return non-null, even in the
+    // single-generation case. These tests prove eligibility is now reconstructed purely from
+    // durable generation identity + effective HFR state (row.ocrDerivativeGenerations[].
+    // humanReviewState), loaded silently right after the evidence list itself, never requiring the
+    // owner to expand the panel, view a generation, or acknowledge anything -- using this file's own
+    // established page-source-string testing style (no live JS execution/browser in this suite).
+
+    private fun analysisEligibleDiscoveredGenerationFunctionBody(harness: Harness): String {
+        val body = getPaired(harness, "/").body()
+        val start = body.indexOf("function analysisEligibleDiscoveredGeneration")
+        assertTrue(start >= 0, "analysisEligibleDiscoveredGeneration must be present in the served page")
+        return body.substring(start, body.indexOf("\nfunction ", start + 1))
+    }
+
+    @Test
+    fun `exactly one HUMAN_REVIEWED_PASS generation is eligible immediately, before any content is fetched`() {
+        val harness = startHarness("")
+        try {
+            val fn = analysisEligibleDiscoveredGenerationFunctionBody(harness)
+            val passFilterIndex = fn.indexOf(
+                "const passGenerations = generations.filter(g => g.humanReviewState === 'HUMAN_REVIEWED_PASS');",
+            )
+            assertTrue(passFilterIndex >= 0, "eligibility must filter discovered generations by their own effective HFR state")
+            val fastPathIndex = fn.indexOf("if (passGenerations.length === 1) {")
+            assertTrue(fastPathIndex > passFilterIndex)
+            val fastPathReturnIndex = fn.indexOf(
+                "return { derivativeGenerationId: passGenerations[0].derivativeGenerationId, externalTranscription: true };",
+            )
+            assertTrue(fastPathReturnIndex > fastPathIndex)
+            // Item 2/3: the fast path returns strictly before any reference to discoveredContent
+            // (the "View"-populated content cache) or discoveredExpandedGenerationId (the "View"/
+            // "Hide" expansion state) -- neither is read to reach this return.
+            val contentReferenceIndex = fn.indexOf("row.discoveredContent")
+            val expandedReferenceIndex = fn.indexOf("row.discoveredExpandedGenerationId")
+            assertTrue(fastPathReturnIndex < contentReferenceIndex, "the PASS fast path must return before any content-cache reference")
+            assertTrue(fastPathReturnIndex < expandedReferenceIndex, "the PASS fast path must return before any expansion-state reference")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `zero PASS generations preserve the existing content-fetch-based eligibility unchanged, and two or more PASS generations fail closed to it`() {
+        val harness = startHarness("")
+        try {
+            val fn = analysisEligibleDiscoveredGenerationFunctionBody(harness)
+            // Item 6/7: strict equality to exactly one -- 0 or 2+ PASS generations both fall through
+            // to the pre-existing mechanism (exactly one discovered generation overall, or the
+            // owner's own explicit "View" expansion identifying precisely one), never an automatic
+            // "newest" or arbitrary choice among multiple PASS generations.
+            assertTrue(fn.contains("if (passGenerations.length === 1) {"))
+            assertFalse(fn.contains(">= 1"))
+            assertFalse(fn.contains("newest", ignoreCase = true))
+            assertTrue(
+                fn.contains(
+                    "const candidateId = generations.length === 1 ? generations[0].derivativeGenerationId : row.discoveredExpandedGenerationId;",
+                ),
+                "the pre-existing single-or-explicitly-expanded fallback must remain unchanged",
+            )
+            assertTrue(fn.contains("const cached = (row.discoveredContent || {})[candidateId];"))
+            assertTrue(fn.contains("if (!cached || !cached.content) return null;"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `initial evidence-library rendering silently loads durable generation and effective HFR state for every row, never expanding the panel`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+
+            val ensureStart = body.indexOf("async function ensureOcrDerivativeGenerationsLoaded(row)")
+            assertTrue(ensureStart >= 0, "ensureOcrDerivativeGenerationsLoaded must be present")
+            val ensureBody = body.substring(ensureStart, body.indexOf("\nasync function ", ensureStart + 1))
+
+            // Item 1/9: scoped to this exact row's own evidenceArtifactId (the same discovery route
+            // already exact-evidence bound server-side), never a row-wide guess.
+            assertTrue(ensureBody.contains("`/owner/evidence/\${row.evidenceArtifactId}/ocr-derivative-generations`"))
+            // Item 8: seeds the SAME exact-target cache the ack-control gate (ANALYSIS-INGESTION-2A)
+            // reads, keyed by evidenceArtifactId+derivativeGenerationId -- never a row-wide field.
+            assertTrue(ensureBody.contains("row.effectiveHumanFidelityReviewByTarget = row.effectiveHumanFidelityReviewByTarget || {};"))
+            assertTrue(ensureBody.contains("const key = row.evidenceArtifactId + '::' + g.derivativeGenerationId;"))
+            assertTrue(ensureBody.contains("row.effectiveHumanFidelityReviewByTarget[key] = g.humanReviewState || null;"))
+            // Item 3: never sets discoveryExpanded -- the panel itself is never auto-expanded by
+            // this silent background load.
+            assertFalse(ensureBody.contains("discoveryExpanded"))
+
+            // Item 1/10: loadExistingEvidence -- run on every initial page load and full refresh
+            // alike (there is no persisted client-side eligibility state to lose) -- triggers this
+            // load for every row with an evidenceArtifactId, right after the evidence list itself
+            // renders.
+            val loadStart = body.indexOf("async function loadExistingEvidence(successMessage)")
+            assertTrue(loadStart >= 0)
+            val loadBody = body.substring(loadStart, body.indexOf("\nasync function ", loadStart + 1))
+            assertTrue(
+                loadBody.contains(
+                    "rows.forEach(row => { if (row.evidenceArtifactId) ensureOcrDerivativeGenerationsLoaded(row); });",
+                ),
+                "loadExistingEvidence must trigger the silent per-row discovery+HFR load for every evidence row",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the owner-triggered View enhanced transcriptions action reuses the same silent loader, never a parallel fetch`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val start = body.indexOf("async function loadOcrDerivativeGenerations(index)")
+            assertTrue(start >= 0)
+            val fnBody = body.substring(start, body.indexOf("\nfunction ", start + 1))
+            assertTrue(fnBody.contains("await ensureOcrDerivativeGenerationsLoaded(row);"))
+            assertFalse(fnBody.contains("fetch("), "the owner-triggered action must not perform its own separate fetch any more")
         } finally {
             harness.shutdown()
         }

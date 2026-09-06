@@ -2372,16 +2372,33 @@ function caseMatches(row, caseFilterValue) {
 // already-admitted (evidenceArtifactId, derivativeGenerationId) pair by exact identity alone; no
 // backend change is needed or made here.
 //
-// Eligible only when exactly one candidate generation is unambiguous for this evidence: either
-// there is exactly one discovered generation, or the owner has explicitly expanded exactly one via
-// the existing per-generation "View"/"Hide" control (row.discoveredExpandedGenerationId). Never an
-// automatic preference among multiple candidates (e.g. "newest", or "the reviewed one") -- when two
-// or more generations are discovered and none is currently expanded, this deliberately returns
-// null (fail closed) rather than guess, so an older UNREVIEWED generation can never be silently
-// substituted for a specific reviewed one the owner has not identified.
+// ANALYSIS-INGESTION-2B: durable-first eligibility. Before anything content-fetch-based, checks
+// whether exactly one discovered generation's own effective HFR state (row.ocrDerivativeGenerations[].
+// humanReviewState -- already the real, effective projection per HFR-UI-1's own
+// OwnerUiEvidenceRuntimeAdapter.discoverOcrDerivativeGenerations, never the dead
+// HumanVerificationStorage mechanism) is HUMAN_REVIEWED_PASS. When exactly one is, that exact
+// generation is eligible immediately -- reconstructed purely from durable generation + effective
+// HFR state, never requiring the owner to have expanded "Enhanced transcriptions", clicked "View"
+// on any generation, or acknowledged anything. Two or more HUMAN_REVIEWED_PASS generations fail
+// closed here (never "newest", never arbitrary) and fall through to the pre-existing mechanism
+// below, which is exactly how the owner resolves that ambiguity: explicitly viewing the one they
+// mean.
+//
+// Otherwise (zero PASS generations), eligibility is exactly as before this unit: eligible only
+// when exactly one candidate generation is unambiguous for this evidence -- either there is exactly
+// one discovered generation, or the owner has explicitly expanded exactly one via the existing
+// per-generation "View"/"Hide" control (row.discoveredExpandedGenerationId) -- and its content has
+// actually been retrieved. Never an automatic preference among multiple candidates (e.g. "newest")
+// -- when two or more generations are discovered and none is currently expanded, this deliberately
+// returns null (fail closed) rather than guess, so an older UNREVIEWED generation can never be
+// silently substituted for a specific reviewed one the owner has not identified.
 function analysisEligibleDiscoveredGeneration(row) {
   const generations = row.ocrDerivativeGenerations;
   if (!generations || !generations.length) return null;
+  const passGenerations = generations.filter(g => g.humanReviewState === 'HUMAN_REVIEWED_PASS');
+  if (passGenerations.length === 1) {
+    return { derivativeGenerationId: passGenerations[0].derivativeGenerationId, externalTranscription: true };
+  }
   const candidateId = generations.length === 1 ? generations[0].derivativeGenerationId : row.discoveredExpandedGenerationId;
   if (!candidateId) return null;
   const cached = (row.discoveredContent || {})[candidateId];
@@ -3450,6 +3467,11 @@ async function loadExistingEvidence(successMessage) {
     });
     status.textContent = successMessage || '';
     render();
+    // ANALYSIS-INGESTION-2B: silently reconstruct durable analysis eligibility for every row right
+    // after the evidence list itself loads -- never waiting for the owner to expand "Enhanced
+    // transcriptions" or view a specific generation first. Read-only; already-loaded rows (merged
+    // above from the prior in-memory state) are skipped, never re-fetched.
+    rows.forEach(row => { if (row.evidenceArtifactId) ensureOcrDerivativeGenerationsLoaded(row); });
   } catch (e) { status.textContent = 'Existing evidence list request failed safely.'; }
 }
 
@@ -3540,9 +3562,46 @@ function buildAcquisitionPanel(row, index) {
 
 // UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations
 // (governed by DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md).
-// A single explicit, owner-triggered read against the existing ocr-derivative-generations route --
-// never automatic, never a provider call. Toggles the panel closed on a repeat click without
-// re-fetching; a fresh fetch only happens the first time (or after an error) for this row.
+// A read against the existing ocr-derivative-generations route only -- never a provider call, never
+// a write. ANALYSIS-INGESTION-2B: extracted so the SAME fetch this owner-triggered "View enhanced
+// transcriptions" action already performs can also run silently in the background right after the
+// evidence list itself loads (see loadExistingEvidence), so durable analysis eligibility can be
+// reconstructed without the owner ever expanding this panel. Never re-fetches once loaded (or after
+// an error, which leaves the row simply empty rather than retrying automatically).
+async function ensureOcrDerivativeGenerationsLoaded(row) {
+  if (row.ocrDerivativeGenerations || row.ocrDerivativeGenerationsLoading || !row.evidenceArtifactId) return;
+  row.ocrDerivativeGenerationsLoading = true;
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/ocr-derivative-generations`, { method: 'GET', headers: authHeaders() });
+    if (resp.status === 401) return;
+    const result = await resp.json();
+    row.ocrDerivativeGenerations = result.generations || [];
+    // The discovery response already carries each generation's own real, effective HFR state
+    // (humanReviewState -- HFR-UI-1's own effective projection, not the dead HumanVerificationStorage
+    // mechanism). Seed the same exact-target cache appendHumanFidelityReviewSection/
+    // exactEffectiveHumanFidelityReviewIsPass already use (ANALYSIS-INGESTION-2A), keyed by
+    // evidenceArtifactId+derivativeGenerationId, so the Analyse-column acknowledgement control is
+    // correctly suppressed for a HUMAN_REVIEWED_PASS generation without the owner also having to
+    // open that exact generation's own content panel. Never overwrites an already-known value (e.g.
+    // one that fetch already resolved), only fills gaps.
+    row.effectiveHumanFidelityReviewByTarget = row.effectiveHumanFidelityReviewByTarget || {};
+    row.ocrDerivativeGenerations.forEach(g => {
+      const key = row.evidenceArtifactId + '::' + g.derivativeGenerationId;
+      if (!(key in row.effectiveHumanFidelityReviewByTarget)) {
+        row.effectiveHumanFidelityReviewByTarget[key] = g.humanReviewState || null;
+      }
+    });
+  } catch (e) {
+    row.ocrDerivativeGenerations = [];
+  } finally {
+    row.ocrDerivativeGenerationsLoading = false;
+  }
+  render();
+}
+
+// A single explicit, owner-triggered read -- toggles the panel closed on a repeat click without
+// re-fetching; a fresh fetch only happens the first time (or after an error) for this row, reusing
+// ensureOcrDerivativeGenerationsLoaded exactly as the silent background load above does.
 async function loadOcrDerivativeGenerations(index) {
   const row = rows[index];
   if (row.ocrDerivativeGenerations) {
@@ -3550,16 +3609,8 @@ async function loadOcrDerivativeGenerations(index) {
     render();
     return;
   }
-  try {
-    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/ocr-derivative-generations`, { method: 'GET', headers: authHeaders() });
-    if (resp.status === 401) return;
-    const result = await resp.json();
-    row.ocrDerivativeGenerations = result.generations || [];
-    row.discoveryExpanded = true;
-  } catch (e) {
-    row.ocrDerivativeGenerations = [];
-    row.discoveryExpanded = true;
-  }
+  await ensureOcrDerivativeGenerationsLoaded(row);
+  row.discoveryExpanded = true;
   render();
 }
 
