@@ -277,6 +277,13 @@ data class ParkerRuntimeConfig(
     val doclingBridgeScriptPath: String = Path.of("tools", "docling-ocr-bridge.py").toAbsolutePath().toString(),
     val doclingModelCacheDir: String? = null,
     val doclingTimeoutMillis: Long = 900_000L,
+    // REAL-DOCUMENT-2E: owner architectural decision -- local OCR is not an eligible production
+    // evidence-acquisition mechanism; external transcription is. Defaults to false (ineligible) for
+    // every caller, including [ParkerRuntimeConfigLoader.fromEnvironment] production loading, which
+    // never sets this field and therefore always inherits this same default -- there is no
+    // environment variable that can re-enable it. A direct constructor caller (tests, synthetic
+    // validation, historical compatibility coverage) may still explicitly pass `true`.
+    val productionLocalOcrEligible: Boolean = false,
     val ownerHttpBindAddress: String = "0.0.0.0",
     val ownerHttpPort: Int? = null,
     val ownerHttpToken: String? = null,

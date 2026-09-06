@@ -9,6 +9,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.ActionResourceMapping
 import parker.core.interfaces.ActionVocabularyEntry
+import parker.core.interfaces.AcquisitionAvailability
+import parker.core.interfaces.AcquisitionAvailabilityReason
 import parker.core.interfaces.AgentPolicy
 import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.CandidateEvidenceArtifact
@@ -1884,6 +1886,15 @@ class ParkerRuntime(
                     it.capabilityStatus().disposition == parker.core.runtime.OrdinaryRegionCapabilityDisposition.ACCEPTED,
                 )
             },
+            // REAL-DOCUMENT-2E: owner architectural decision -- local OCR is not an eligible
+            // production evidence-acquisition mechanism; governed external transcription is.
+            // config.productionLocalOcrEligible defaults to false and is never set by
+            // ParkerRuntimeConfigLoader.fromEnvironment, so a real deployment always disables local
+            // OCR here regardless of any environment variable; only a direct ParkerRuntimeConfig
+            // constructor caller (tests, synthetic validation, historical compatibility coverage)
+            // can opt back in.
+            localOcrAvailability = if (config.productionLocalOcrEligible) AcquisitionAvailability.Available
+            else AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
         )
         val acquisitionRouter = DeterministicEvidenceAcquisitionRouter()
         governedAcquisitionOwnerWorkflow = GovernedAcquisitionOwnerWorkflow(

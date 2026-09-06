@@ -10,13 +10,18 @@ object ProductionAcquisitionCapabilityCatalogue {
     const val ORDINARY_REGION_V5_CAPABILITY_ID = ORDINARY_REGION_CAPABILITY_ID
 
     fun create(externalCapabilityProjection: EvidenceAcquisitionCapability? = fidelityFirstExternalCapability(),
-        ordinaryRegionCapabilityProjection: EvidenceAcquisitionCapability? = null): GovernedAcquisitionCapabilityRegistry {
+        ordinaryRegionCapabilityProjection: EvidenceAcquisitionCapability? = null,
+        // REAL-DOCUMENT-2E: defaults to Available so every existing direct caller of this catalogue
+        // (offline router/eligibility tests, synthetic acceptance, historical coverage) is
+        // unaffected. The one real production composition root (ParkerRuntime) passes the owner's
+        // governed production eligibility decision explicitly instead of relying on this default.
+        localOcrAvailability: AcquisitionAvailability = AcquisitionAvailability.Available): GovernedAcquisitionCapabilityRegistry {
         listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection).forEach {
             require(it.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED)
             require(it.providerConfiguration != null)
         }
         return GovernedAcquisitionCapabilityRegistry(
-            listOf(nativeCapability(), localOcrCapability()) + listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection),
+            listOf(nativeCapability(), localOcrCapability(localOcrAvailability)) + listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection),
         )
     }
 
@@ -37,14 +42,14 @@ object ProductionAcquisitionCapabilityCatalogue {
         ),
     )
 
-    fun localOcrCapability() = EvidenceAcquisitionCapability(
+    fun localOcrCapability(availability: AcquisitionAvailability = AcquisitionAvailability.Available) = EvidenceAcquisitionCapability(
         LOCAL_OCR_CAPABILITY_ID, EvidenceAcquisitionMechanism.LOCAL_OCR,
         setOf("application/pdf", "image/jpeg", "image/png", "image/webp"),
         setOf(AcquisitionSourceForm.IMAGE_ONLY_OR_SCANNED, AcquisitionSourceForm.MIXED_TEXT_AND_IMAGE),
         AcquisitionFidelityCapabilities(true, false, true, false, false, false,
             pageAssociation = true, regionAssociation = false, uncertaintyReporting = true, structuredOutput = false),
         setOf(AcquisitionRepresentationClass.AUTHORITATIVE_SOURCE_OR_BYTE_EXACT_COPY),
-        AcquisitionEgress.LOCAL_ONLY, null, AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
+        AcquisitionEgress.LOCAL_ONLY, null, availability, AcquisitionOperationalLimits(),
     )
 
     fun fidelityFirstExternalCapability() = EvidenceAcquisitionCapability(

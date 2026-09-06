@@ -143,6 +143,61 @@ class GovernedAcquisitionIntegrationTest {
         assertEquals(forward, reverse)
     }
 
+    // REAL-DOCUMENT-2E -- External-Only Production OCR Routing Correction. Local OCR remains
+    // Available by default (existing tests above, and every direct catalogue caller, are
+    // unaffected) but is not eligible for the real production composition root, which now passes
+    // localOcrAvailability = Unavailable(DISABLED) explicitly (see ParkerRuntime.kt). These tests
+    // exercise that same disabled projection directly against the router/catalogue, without a full
+    // ParkerRuntime/HTTP harness, per this file's own existing "production catalogue..." convention.
+
+    @Test fun `production catalogue's own default keeps local OCR Available -- only the real composition root disables it`() {
+        assertEquals(AcquisitionAvailability.Available, ProductionAcquisitionCapabilityCatalogue.localOcrCapability().availability)
+        assertEquals(AcquisitionAvailability.Available, ProductionAcquisitionCapabilityCatalogue.create().capabilities()
+            .single { it.capabilityId == ProductionAcquisitionCapabilityCatalogue.LOCAL_OCR_CAPABILITY_ID }.availability)
+    }
+
+    @Test fun `a clean scan never selects local OCR once the production catalogue disables it, and without external authorization fails closed with the authorization-required reason -- never a fallback selection`() {
+        val registry = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = external(availability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED)),
+            localOcrAvailability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
+        )
+        val disabledLocal = registry.capability(ProductionAcquisitionCapabilityCatalogue.LOCAL_OCR_CAPABILITY_ID)!!
+        assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED), disabledLocal.availability)
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(source(), registry.capabilities(), NOT_AUTHORISED)
+        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+    }
+
+    @Test fun `in a controlled test fixture representing granted acceptance and authorization, external transcription -- never local OCR -- becomes the selected production mechanism`() {
+        val acceptedExternal = ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability().let { pending ->
+            EvidenceAcquisitionCapability(
+                pending.capabilityId, pending.mechanism, pending.supportedMediaTypes, pending.supportedSourceForms,
+                pending.fidelity, pending.supportedRepresentations, pending.egress, pending.providerConfiguration,
+                AcquisitionAvailability.Available, pending.limits, pending.fidelitySuitabilityByMediaType,
+            )
+        }
+        val registry = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = acceptedExternal,
+            localOcrAvailability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
+        )
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(source(), registry.capabilities(), AUTHORISED)
+        val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID, selected.decision.capability.capabilityId)
+        assertNotEquals(ProductionAcquisitionCapabilityCatalogue.LOCAL_OCR_CAPABILITY_ID, selected.decision.capability.capabilityId)
+    }
+
+    @Test fun `disabling local OCR and leaving external unauthorised causes the execution coordinator to invoke no executor at all -- no automatic egress and zero provider calls from routing alone`() = runTest {
+        val counters = Counters()
+        val registry = GovernedAcquisitionCapabilityRegistry(listOf(
+            native(), local(availability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED)), external(),
+        ))
+        val result = GovernedAcquisitionExecutionCoordinator(registry, DeterministicEvidenceAcquisitionRouter(), custodian(), allExecutors(counters))
+            .execute(owner, source(), NOT_AUTHORISED)
+        assertIs<GovernedAcquisitionExecutionResult.Failed>(result)
+        assertEquals(listOf(0, 0, 0), listOf(counters.native, counters.local, counters.external))
+    }
+
     @Test fun `source projector preserves unknowns and never requires bytes or case meaning`() {
         val manifest = EvidenceSourceManifest(id, sha, bytes.size.toLong(), "application/pdf")
         val projected = AcquisitionSourceCharacteristicsProjector.project(manifest)!!
@@ -214,9 +269,10 @@ class GovernedAcquisitionIntegrationTest {
     private fun native() = EvidenceAcquisitionCapability("native", DIRECT_NATIVE_EXTRACTION, setOf("application/pdf"),
         setOf(NATIVE_SEARCHABLE), fidelity(native = true, ocr = false), setOf(AUTHORITATIVE), LOCAL_ONLY, null,
         AcquisitionAvailability.Available, AcquisitionOperationalLimits())
-    private fun local() = EvidenceAcquisitionCapability("local", LOCAL_OCR, setOf("application/pdf"),
+    private fun local(availability: AcquisitionAvailability = AcquisitionAvailability.Available) = EvidenceAcquisitionCapability(
+        "local", LOCAL_OCR, setOf("application/pdf"),
         setOf(IMAGE_ONLY, MIXED), fidelity(), setOf(AUTHORITATIVE), LOCAL_ONLY, null,
-        AcquisitionAvailability.Available, AcquisitionOperationalLimits())
+        availability, AcquisitionOperationalLimits())
     private fun external(id: String = "external", availability: AcquisitionAvailability = AcquisitionAvailability.Available) =
         EvidenceAcquisitionCapability(id, EXTERNAL_VISION_TRANSCRIPTION, setOf("application/pdf"), AcquisitionSourceForm.entries.toSet(),
             fidelity(handwriting = true), setOf(AUTHORITATIVE), EXTERNAL,

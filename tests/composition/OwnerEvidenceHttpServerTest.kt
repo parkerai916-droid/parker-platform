@@ -66,6 +66,11 @@ class OwnerEvidenceHttpServerTest {
         // before, so every existing caller is unaffected.
         derivativeGenerationStorageRootPath: String = Files.createTempDirectory("evidence-http-derivative").toString(),
         derivativeContentStorageRootPath: String = Files.createTempDirectory("evidence-http-derivative-content").toString(),
+        // REAL-DOCUMENT-2E: mirrors ParkerRuntimeConfig's own production default (false/ineligible)
+        // for every existing caller of this helper. A test proving Local OCR's historical/legacy
+        // governed-acquisition-selection behaviour (explicitly still legitimate in a non-production
+        // test context) opts in explicitly.
+        productionLocalOcrEligible: Boolean = false,
     ): ParkerRuntimeConfig = ParkerRuntimeConfig(
         modelEndpointUrl = modelEndpointUrl, // deliberately unreachable by default
         modelName = "test-model",
@@ -86,6 +91,7 @@ class OwnerEvidenceHttpServerTest {
         caseStorageRootPath = Files.createTempDirectory("evidence-http-cases").toString(),
         caseAssignmentStorageRootPath = Files.createTempDirectory("evidence-http-case-assignments").toString(),
         caseGovernanceAuditLogPath = Files.createTempDirectory("evidence-http-case-audit").resolve("case-audit.log").toString(),
+        productionLocalOcrEligible = productionLocalOcrEligible,
     )
 
     private fun writeFakeBridgeScript(directory: Path, exitCode: Int, stdout: String): Path {
@@ -141,15 +147,18 @@ class OwnerEvidenceHttpServerTest {
         // retrieval will actually see.
         derivativeGenerationStorageRootPath: String? = null,
         derivativeContentStorageRootPath: String? = null,
+        // REAL-DOCUMENT-2E: see config()'s own matching parameter -- defaults to false (ineligible),
+        // matching the real production composition root's own default exactly.
+        productionLocalOcrEligible: Boolean = false,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
         val runtimeLogger = RecordingParkerLogger()
         val serverLogger = RecordingParkerLogger()
         val runtimeConfig = if (derivativeGenerationStorageRootPath != null && derivativeContentStorageRootPath != null) {
-            config(bridgePath, modelEndpointUrl, derivativeGenerationStorageRootPath, derivativeContentStorageRootPath)
+            config(bridgePath, modelEndpointUrl, derivativeGenerationStorageRootPath, derivativeContentStorageRootPath, productionLocalOcrEligible)
         } else {
-            config(bridgePath, modelEndpointUrl)
+            config(bridgePath, modelEndpointUrl, productionLocalOcrEligible = productionLocalOcrEligible)
         }
         val runtime = ParkerRuntime(runtimeConfig, runtimeLogger)
         kotlinx.coroutines.runBlocking { runtime.start() }
@@ -596,11 +605,20 @@ class OwnerEvidenceHttpServerTest {
         } finally { harness.shutdown() }
     }
 
+    // REAL-DOCUMENT-2E: local OCR is no longer eligible for the real production composition root
+    // (ParkerRuntime defaults ProductionAcquisitionCapabilityCatalogue's local OCR availability to
+    // Unavailable(DISABLED) unless config.productionLocalOcrEligible is explicitly true). This test
+    // deliberately opts back in via that same test-only constructor parameter: it is the historical/
+    // regression coverage REAL-DOCUMENT-2E's own instructions explicitly keep legitimate ("Local OCR
+    // can remain available in whatever non-production/test context is already legitimate") for the
+    // client-side Tier-B-routing fix proven in REAL-DOCUMENT-2D. It is not evidence of, and must
+    // never be read as, real production behaviour -- see the separate
+    // `a real production scanned PDF does not select Local OCR` test below for that.
     @Test
-    fun `the local-OCR-executed governed acquisition flow ends in Tier B durable OCR state and retrieves through ocr-content, matching the durable OCR path exactly`() = runTest {
+    fun `with local OCR explicitly opted back in for this legacy test context, governed acquisition still ends in Tier B durable OCR state and retrieves through ocr-content`() = runTest {
         val recognisedJson = """{"status":"recognised","recognisedText":"GOVERNED ACQUISITION OCR TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
-        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
+        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString(), productionLocalOcrEligible = true)
         try {
             val cookie = pairedCookie(harness)
             val uploadResponse = send(
