@@ -3480,4 +3480,98 @@ class OwnerEvidenceHttpServerTest {
             harness.shutdown()
         }
     }
+
+    // ANALYSIS-INGESTION-3A — Analysis Error Presentation Fix. The first real reviewed-derivative
+    // analysis failed before the model-inference boundary with a 400-class {error: "..."} response
+    // (AnalyseHandler's own request-validation catches never populate {status, message} --
+    // analysisOutcomeJson's own shape, used only for its actual outcome responses). renderAnalysisResult
+    // only read result.message || result.status, so the owner saw the literal text "Analysis failed:
+    // undefined" instead of the real backend reason. These tests prove the fallback chain now also
+    // reads result.error, using this file's own established page-source-string testing style (no
+    // live JS execution/browser in this suite -- JS's `||` short-circuit semantics are well-defined,
+    // so asserting the exact fallback order is itself sufficient proof of behaviour for each shape).
+
+    private fun renderAnalysisResultFunctionBody(harness: Harness): String {
+        val body = getPaired(harness, "/").body()
+        val start = body.indexOf("function renderAnalysisResult(container, result)")
+        assertTrue(start >= 0, "renderAnalysisResult must be present in the served page")
+        return body.substring(start, body.indexOf("\nfunction ", start + 1))
+    }
+
+    @Test
+    fun `the failure fallback chain reads message, then error, then status, then a literal default -- in that exact order`() {
+        val harness = startHarness("")
+        try {
+            val fn = renderAnalysisResultFunctionBody(harness)
+            // Item 1: an {error: "..."} response (AnalyseHandler's own validation-failure shape,
+            // shared with every other endpoint in this file) now displays that real error, since
+            // message is undefined and JS `||` falls through to it.
+            // Item 2: a {message: "..."} response (analysisOutcomeJson's own FAILED/ACKNOWLEDGEMENT_REQUIRED
+            // shape) is tried first and still wins -- unchanged from before this unit.
+            // Item 3: a {status: "..."} response with neither message nor error still falls back to
+            // the status string -- unchanged from before this unit.
+            // Item 4: a response with none of the three fields displays the literal 'unknown error'
+            // default, never the word "undefined".
+            assertTrue(
+                fn.contains(
+                    "p.textContent = 'Analysis failed: ' + (result.message || result.error || result.status || 'unknown error');",
+                ),
+                "the fallback chain must be exactly message, then error, then status, then a literal default, in that order",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the failure branch is gated the same as before -- only entered when status is not COMPLETED`() {
+        val harness = startHarness("")
+        try {
+            val fn = renderAnalysisResultFunctionBody(harness)
+            assertTrue(fn.contains("if (result.status !== 'COMPLETED') {"))
+            val gateIndex = fn.indexOf("if (result.status !== 'COMPLETED') {")
+            val fallbackIndex = fn.indexOf("result.message || result.error || result.status || 'unknown error'")
+            assertTrue(gateIndex in 0..<fallbackIndex)
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `401 handling remains a separate, unchanged, earlier check that never reaches renderAnalysisResult`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val start = body.indexOf("async function analyseSelected()")
+            assertTrue(start >= 0)
+            val fnBody = body.substring(start, body.indexOf("\nasync function ", start + 1))
+            // Item 5: the 401 branch is untouched by this unit -- it still short-circuits with its
+            // own distinct message and returns before result.json() is ever handed to
+            // renderAnalysisResult, so a session-expiry response is never affected by the fallback
+            // chain change above.
+            assertTrue(fnBody.contains("if (resp.status === 401) {"))
+            assertTrue(fnBody.contains("showAnalysisNote('Owner session expired or unavailable.');"))
+            val fourOhOneIndex = fnBody.indexOf("if (resp.status === 401) {")
+            val renderCallIndex = fnBody.indexOf("renderAnalysisResult(resultsDiv, result);")
+            assertTrue(fourOhOneIndex in 0..<renderCallIndex, "the 401 check must remain strictly before renderAnalysisResult is ever called")
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `successful COMPLETED analysis rendering is untouched by this unit`() {
+        val harness = startHarness("")
+        try {
+            val fn = renderAnalysisResultFunctionBody(harness)
+            // Item 6: everything after the failure-branch's early return -- the actual success
+            // presentation -- is unchanged: same fields, same order, same textContent-only discipline.
+            assertTrue(fn.contains("currentPendingAnalysisId = result.pendingAnalysisId || null;"))
+            assertTrue(fn.contains("appendExtractedText(panel, 'Analysis:', result.result.analysisText);"))
+            assertTrue(fn.contains("result.result.evidenceReferences.forEach(ref => {"))
+            assertTrue(fn.contains("'Provider-generated material for human review -- not Evidence, Memory, Knowledge, or canonical Parker truth.'"))
+        } finally {
+            harness.shutdown()
+        }
+    }
 }

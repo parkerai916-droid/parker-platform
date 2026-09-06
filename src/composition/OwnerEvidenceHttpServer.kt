@@ -4084,7 +4084,13 @@ function renderAnalysisResult(container, result) {
   if (result.status !== 'COMPLETED') {
     const p = document.createElement('p');
     p.className = 'note';
-    p.textContent = 'Analysis failed: ' + (result.message || result.status);
+    // ANALYSIS-INGESTION-3A: /owner/analyse's own successful/outcome responses always carry
+    // {status, message} (analysisOutcomeJson), but its own request-validation failure paths
+    // (AnalyseHandler's pre-operations.analyseDocuments and around-it catches -- request too
+    // large, malformed body, invalid derivative generation id) use the generic {error: "..."}
+    // shape shared with every other endpoint in this file. Reading result.error too means a real
+    // backend error is always shown here, never the literal word "undefined".
+    p.textContent = 'Analysis failed: ' + (result.message || result.error || result.status || 'unknown error');
     container.appendChild(p);
     return;
   }
