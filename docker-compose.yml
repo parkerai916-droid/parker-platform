@@ -15,7 +15,12 @@ services:
     environment:
       PARKER_MODEL_ENDPOINT_URL: "http://host.docker.internal:11434/api/generate"
       PARKER_MODEL_NAME: "${OLLAMA_MODEL:-qwen2.5-coder:7b}"
-      PARKER_MODEL_TIMEOUT_MS: "${PARKER_MODEL_TIMEOUT_MS:-30000}"
+      # ANALYSIS-INGESTION-4A calibration: on this CPU-only host, a cold model load alone measured
+      # ~9.5s, and the owner's own real document-analysis request was directly observed still
+      # computing more than 3 minutes in before completing -- 30s was never a realistic budget for
+      # this model/host combination. 360000 (6 minutes) comfortably covers the observed/estimated
+      # real range with a reasonable margin while staying a single bounded, non-arbitrary value.
+      PARKER_MODEL_TIMEOUT_MS: "${PARKER_MODEL_TIMEOUT_MS:-360000}"
 
       PARKER_OWNER_PRINCIPAL_ID: "${PARKER_OWNER_PRINCIPAL_ID:?Set PARKER_OWNER_PRINCIPAL_ID in .env or the environment}"
       PARKER_OWNER_DISPLAY_NAME: "${PARKER_OWNER_DISPLAY_NAME:-Owner}"
