@@ -2364,6 +2364,31 @@ function caseMatches(row, caseFilterValue) {
   return row.caseId === caseFilterValue;
 }
 
+// ANALYSIS-INGESTION-1: a Tier B / enhanced-transcription generation admitted in a prior session
+// (discovered via "View enhanced transcriptions", never live-processed this session) is exactly as
+// analysis-eligible as one this session just processed -- eligibility was never the difference,
+// only this page's own client-side tracking of "did I just process this." The existing
+// TierBOcrContentRetrievalCoordinator/DocumentAnalysisCoordinator already resolve any known,
+// already-admitted (evidenceArtifactId, derivativeGenerationId) pair by exact identity alone; no
+// backend change is needed or made here.
+//
+// Eligible only when exactly one candidate generation is unambiguous for this evidence: either
+// there is exactly one discovered generation, or the owner has explicitly expanded exactly one via
+// the existing per-generation "View"/"Hide" control (row.discoveredExpandedGenerationId). Never an
+// automatic preference among multiple candidates (e.g. "newest", or "the reviewed one") -- when two
+// or more generations are discovered and none is currently expanded, this deliberately returns
+// null (fail closed) rather than guess, so an older UNREVIEWED generation can never be silently
+// substituted for a specific reviewed one the owner has not identified.
+function analysisEligibleDiscoveredGeneration(row) {
+  const generations = row.ocrDerivativeGenerations;
+  if (!generations || !generations.length) return null;
+  const candidateId = generations.length === 1 ? generations[0].derivativeGenerationId : row.discoveredExpandedGenerationId;
+  if (!candidateId) return null;
+  const cached = (row.discoveredContent || {})[candidateId];
+  if (!cached || !cached.content) return null;
+  return { derivativeGenerationId: candidateId, externalTranscription: !!cached.content.externalTranscription };
+}
+
 document.getElementById('logoutButton').onclick = async () => {
   await fetch('/owner/logout', { method: 'POST', credentials: 'same-origin' });
   location.reload();
@@ -2541,11 +2566,14 @@ function render() {
     appendTextCell(tr, formatBytes(row.byteLength));
 
     // Minimum Production Document Pipeline -- a row is selectable for analysis once it carries a
-    // durable derivative generation identity (Tier A or Tier B durable OCR) the owner can already
-    // retrieve content for -- never for a row that has not reached that state yet.
+    // durable derivative generation identity (Tier A or Tier B durable OCR, live-processed this
+    // session or discovered from a prior one -- see analysisEligibleDiscoveredGeneration) the
+    // owner can already retrieve content for -- never for a row that has not reached that state yet.
     const analyseTd = document.createElement('td');
+    const eligibleDiscovered = analysisEligibleDiscoveredGeneration(row);
     if ((row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId && !row.providerRegionTranscription) ||
-        (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId)) {
+        (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId) ||
+        eligibleDiscovered) {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.setAttribute('aria-label', 'Select ' + documentName(row) + ' for analysis');
@@ -2556,7 +2584,7 @@ function render() {
         render();
       };
       analyseTd.appendChild(cb);
-      if (row.externalResultRow) {
+      if (row.externalResultRow || (eligibleDiscovered && eligibleDiscovered.externalTranscription)) {
         const acknowledgement = document.createElement('label');
         const acknowledgementCheckbox = document.createElement('input');
         acknowledgementCheckbox.type = 'checkbox';
@@ -3899,6 +3927,19 @@ function collectAnalysisSelections() {
         derivativeGenerationId: row.ocrDerivativeGenerationId,
         acknowledgesUnverifiedExternalTranscription: !!row.acknowledgesUnverifiedExternalTranscription,
       });
+    } else {
+      // ANALYSIS-INGESTION-1: re-derive eligibility at submission time, exactly as at render time --
+      // never trust a stale row.selectedForAnalysis alone. If the owner collapsed the discovery
+      // panel (or otherwise lost the unambiguous exact generation) since checking the box, this
+      // correctly omits the row rather than guessing which generation was meant.
+      const eligibleDiscovered = analysisEligibleDiscoveredGeneration(row);
+      if (eligibleDiscovered) {
+        selections.push({
+          evidenceArtifactId: row.evidenceArtifactId,
+          derivativeGenerationId: eligibleDiscovered.derivativeGenerationId,
+          acknowledgesUnverifiedExternalTranscription: !!row.acknowledgesUnverifiedExternalTranscription,
+        });
+      }
     }
   });
   return selections;

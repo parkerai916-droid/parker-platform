@@ -2539,6 +2539,90 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
+    // ANALYSIS-INGESTION-1 — Human-Reviewed Enhanced Transcription Analysis Eligibility Defect.
+
+    private fun analysisEligibilityFunctionBody(harness: Harness): String {
+        val body = getPaired(harness, "/").body()
+        val start = body.indexOf("function analysisEligibleDiscoveredGeneration")
+        assertTrue(start >= 0, "analysisEligibleDiscoveredGeneration must be present in the served page")
+        return body.substring(start, body.indexOf("\nfunction ", start + 1))
+    }
+
+    @Test
+    fun `a discovered enhanced-transcription generation becomes analysis-eligible without any live-session processing state`() {
+        val harness = startHarness("")
+        try {
+            val eligibility = analysisEligibilityFunctionBody(harness)
+            // Reads only the discovery-list/expansion state the existing "View enhanced
+            // transcriptions" flow already populates -- never row.status, never a re-run of
+            // Process document or Run OCR.
+            assertTrue(eligibility.contains("row.ocrDerivativeGenerations"))
+            assertTrue(eligibility.contains("row.discoveredExpandedGenerationId"))
+            assertFalse(eligibility.contains("row.status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `analysis eligibility fails closed on genuine ambiguity, never guessing between two discovered generations`() {
+        val harness = startHarness("")
+        try {
+            val eligibility = analysisEligibilityFunctionBody(harness)
+            // Exactly one discovered generation is unambiguous; two or more require the owner to
+            // have explicitly expanded exactly one (discoveredExpandedGenerationId) -- there is no
+            // "prefer the newest" or "prefer the reviewed one" branch of any kind.
+            assertTrue(eligibility.contains("generations.length === 1"))
+            assertFalse(eligibility.contains("newest", ignoreCase = true))
+            assertFalse(eligibility.contains("HUMAN_REVIEWED"))
+            assertFalse(eligibility.contains("sort"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the Analyse checkbox condition and selection collection both recognise the discovered-generation path, and the existing live-processed paths are unchanged`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+
+            val renderStart = body.indexOf("function render() {")
+            val renderBody = body.substring(renderStart, body.indexOf("\nfunction ", renderStart + 1))
+            assertTrue(renderBody.contains("const eligibleDiscovered = analysisEligibleDiscoveredGeneration(row);"))
+            assertTrue(
+                renderBody.contains("row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId && !row.providerRegionTranscription") &&
+                    renderBody.contains("row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId"),
+                "the existing live-processed Tier A/Tier B eligibility conditions must remain unchanged",
+            )
+
+            val collectStart = body.indexOf("function collectAnalysisSelections")
+            val collectBody = body.substring(collectStart, body.indexOf("\nfunction ", collectStart + 1))
+            assertTrue(collectBody.contains("analysisEligibleDiscoveredGeneration(row)"))
+            assertTrue(
+                collectBody.contains("row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId") &&
+                    collectBody.contains("row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId"),
+                "the existing live-processed selection-collection branches must remain unchanged",
+            )
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the unverified-external-transcription acknowledgement control still applies to a discovered generation confirmed to be external transcription`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val renderStart = body.indexOf("function render() {")
+            val renderBody = body.substring(renderStart, body.indexOf("\nfunction ", renderStart + 1))
+            assertTrue(renderBody.contains("row.externalResultRow || (eligibleDiscovered && eligibleDiscovered.externalTranscription)"))
+            assertTrue(renderBody.contains("I acknowledge this exact unverified machine transcription"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
     @Test
     fun `real-evidence production-like case -- both real generations are displayed and the newer one is visibly identified as newest`() = runTest {
         val evidenceId = "evidence-44d61bfe-e46f-4d39-85e7-9f68f122369d"

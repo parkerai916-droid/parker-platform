@@ -799,4 +799,166 @@ class DocumentAnalysisCoordinatorTest {
         // guarantee about what a caller supplies at runtime (see class doc above).
         assertTrue(fieldTypeNames.none { it.contains("OpenAi") || it.contains("Anthropic") })
     }
+
+    // ================= ANALYSIS-INGESTION-1 =================
+    // Owner testing found that an enhanced-transcription generation admitted in a prior session --
+    // discovered via "View enhanced transcriptions" rather than live-processed this session -- was
+    // invisible to the Owner UI's own analysis-selection checkbox, purely because that checkbox's
+    // eligibility condition read client-side session state (row.status) that a discovery-only view
+    // never populates. These tests prove the actual governed retrieval/analysis path this
+    // coordinator already implements requires no such session state at all: it resolves any
+    // already-admitted (evidenceArtifactId, derivativeGenerationId) pair by exact identity alone,
+    // regardless of how or when it was admitted -- confirming the fix belongs entirely in the
+    // owner-facing JS layer (OwnerEvidenceHttpServer.kt), not here.
+
+    @Test
+    fun `an enhanced-transcription generation is fully analysable by exact identity alone, with no live-session processing state required`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-analysis-ingestion-1-no-session-state")
+        val generation = DerivativeGenerationId("generation-analysis-ingestion-1-reviewed")
+        // Admitted directly into durable storage, exactly as a prior session's admission would
+        // leave it -- this coordinator is constructed fresh, with no session/cache of any kind.
+        admitTierBOcr(generationStorage, contentStorage, generation, evidence, "The reviewed transcription text.", "provider-x")
+
+        val model = FakeModelInferenceClient()
+        val outcome = coordinator(generationStorage, contentStorage, modelInferenceClient = model).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, generation, acknowledgesUnverifiedExternalTranscription = true)), "Summarise"),
+        )
+
+        val completed = assertIs<DocumentAnalysisOutcome.Completed>(outcome)
+        assertEquals(1, model.invocationCount)
+        assertTrue(model.receivedPrompts.single().contains("The reviewed transcription text."))
+        assertEquals(generation, completed.result.evidenceItems.single().derivativeGenerationId)
+    }
+
+    @Test
+    fun `the exact selected generation's content is used, never an older sibling generation's, when two generations exist for the same evidence`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-analysis-ingestion-1-two-generations")
+        val olderGeneration = DerivativeGenerationId("generation-analysis-ingestion-1-older-unreviewed")
+        val reviewedGeneration = DerivativeGenerationId("generation-analysis-ingestion-1-newer-reviewed")
+        admitTierBOcr(generationStorage, contentStorage, olderGeneration, evidence, "OLDER UNREVIEWED TEXT", "provider-old")
+        admitTierBOcr(generationStorage, contentStorage, reviewedGeneration, evidence, "NEWER REVIEWED TEXT", "provider-new")
+
+        val model = FakeModelInferenceClient()
+        val outcome = coordinator(generationStorage, contentStorage, modelInferenceClient = model).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(
+                listOf(EvidenceGenerationSelection(evidence, reviewedGeneration, acknowledgesUnverifiedExternalTranscription = true)),
+                "Summarise",
+            ),
+        )
+
+        val completed = assertIs<DocumentAnalysisOutcome.Completed>(outcome)
+        assertEquals(reviewedGeneration, completed.result.evidenceItems.single().derivativeGenerationId)
+        assertTrue(completed.result.evidenceItems.single().extractedText.contains("NEWER REVIEWED TEXT"))
+        assertFalse(completed.result.evidenceItems.single().extractedText.contains("OLDER UNREVIEWED TEXT"))
+        assertTrue(model.receivedPrompts.single().contains("NEWER REVIEWED TEXT"))
+        assertFalse(model.receivedPrompts.single().contains("OLDER UNREVIEWED TEXT"))
+    }
+
+    @Test
+    fun `selecting the older sibling generation explicitly retrieves only its own content, never the newer one's -- exact-target isolation is symmetric`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-analysis-ingestion-1-symmetric")
+        val olderGeneration = DerivativeGenerationId("generation-analysis-ingestion-1-symmetric-older")
+        val newerGeneration = DerivativeGenerationId("generation-analysis-ingestion-1-symmetric-newer")
+        admitTierBOcr(generationStorage, contentStorage, olderGeneration, evidence, "OLDER TEXT", "provider-old")
+        admitTierBOcr(generationStorage, contentStorage, newerGeneration, evidence, "NEWER TEXT", "provider-new")
+
+        val outcome = coordinator(generationStorage, contentStorage).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(
+                listOf(EvidenceGenerationSelection(evidence, olderGeneration, acknowledgesUnverifiedExternalTranscription = true)),
+                "Summarise",
+            ),
+        )
+
+        val completed = assertIs<DocumentAnalysisOutcome.Completed>(outcome)
+        assertEquals(olderGeneration, completed.result.evidenceItems.single().derivativeGenerationId)
+        assertTrue(completed.result.evidenceItems.single().extractedText.contains("OLDER TEXT"))
+        assertFalse(completed.result.evidenceItems.single().extractedText.contains("NEWER TEXT"))
+    }
+
+    @Test
+    fun `two distinct evidence artefacts each contribute only their own generation's content -- evidence-generation isolation`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidenceA = EvidenceArtifactId("evidence-analysis-ingestion-1-isolation-a")
+        val evidenceB = EvidenceArtifactId("evidence-analysis-ingestion-1-isolation-b")
+        val generationA = DerivativeGenerationId("generation-analysis-ingestion-1-isolation-a")
+        val generationB = DerivativeGenerationId("generation-analysis-ingestion-1-isolation-b")
+        admitTierBOcr(generationStorage, contentStorage, generationA, evidenceA, "EVIDENCE A TEXT", "provider-a")
+        admitTierBOcr(generationStorage, contentStorage, generationB, evidenceB, "EVIDENCE B TEXT", "provider-b")
+
+        val outcome = coordinator(generationStorage, contentStorage).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(
+                listOf(
+                    EvidenceGenerationSelection(evidenceA, generationA, acknowledgesUnverifiedExternalTranscription = true),
+                    EvidenceGenerationSelection(evidenceB, generationB, acknowledgesUnverifiedExternalTranscription = true),
+                ),
+                "Summarise both",
+            ),
+        )
+
+        val completed = assertIs<DocumentAnalysisOutcome.Completed>(outcome)
+        val itemA = completed.result.evidenceItems.single { it.evidenceArtifactId == evidenceA }
+        val itemB = completed.result.evidenceItems.single { it.evidenceArtifactId == evidenceB }
+        assertTrue(itemA.extractedText.contains("EVIDENCE A TEXT"))
+        assertFalse(itemA.extractedText.contains("EVIDENCE B TEXT"))
+        assertTrue(itemB.extractedText.contains("EVIDENCE B TEXT"))
+        assertFalse(itemB.extractedText.contains("EVIDENCE A TEXT"))
+        // Selecting evidenceA's generation under evidenceB's identity fails closed rather than
+        // silently cross-attributing content.
+        val mismatched = coordinator(generationStorage, contentStorage).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidenceB, generationA, acknowledgesUnverifiedExternalTranscription = true)), "x"),
+        )
+        assertEquals(DocumentAnalysisOutcome.SourceMismatch(evidenceB, generationA), mismatched)
+    }
+
+    @Test
+    fun `analysis fails closed with UnknownGeneration for a generation identity that was never admitted, never guessing a substitute`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-analysis-ingestion-1-unknown")
+        val neverAdmitted = DerivativeGenerationId("generation-analysis-ingestion-1-never-admitted")
+
+        val outcome = coordinator(generationStorage, contentStorage).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, neverAdmitted)), "Summarise"),
+        )
+        assertEquals(DocumentAnalysisOutcome.UnknownGeneration(neverAdmitted), outcome)
+    }
+
+    @Test
+    fun `analysing an already-admitted enhanced-transcription generation never mutates its own generation or content record`() = runTest {
+        val (generationStorage, contentStorage) = storages()
+        val evidence = EvidenceArtifactId("evidence-analysis-ingestion-1-no-mutation")
+        val generation = DerivativeGenerationId("generation-analysis-ingestion-1-no-mutation")
+        admitTierBOcr(generationStorage, contentStorage, generation, evidence, "STABLE TEXT", "provider-stable")
+        val recordBefore = requireNotNull(generationStorage.retrieve(generation))
+        val entryBefore = requireNotNull(contentStorage.retrieve(generation))
+        val generationBytesBefore = DerivativeGenerationRecordCodec.encode(recordBefore)
+        val contentBytesBefore = DerivativeContentCodec.encode(entryBefore)
+
+        val outcome = coordinator(generationStorage, contentStorage).analyse(
+            owner,
+            OwnerDocumentAnalysisRequest(listOf(EvidenceGenerationSelection(evidence, generation, acknowledgesUnverifiedExternalTranscription = true)), "Summarise"),
+        )
+        assertIs<DocumentAnalysisOutcome.Completed>(outcome)
+
+        val recordAfter = requireNotNull(generationStorage.retrieve(generation))
+        val entryAfter = requireNotNull(contentStorage.retrieve(generation))
+        assertEquals(generationBytesBefore.toList(), DerivativeGenerationRecordCodec.encode(recordAfter).toList())
+        assertEquals(contentBytesBefore.toList(), DerivativeContentCodec.encode(entryAfter).toList())
+    }
+
+    @Test
+    fun `this class's own declared field TYPES contain no HumanFidelityReview or Case dependency of any kind`() {
+        // Confirms the analysis path is, and remains, entirely independent of the separate HFR and
+        // CASE-1 domains -- analysing a generation can never read, let alone write, either.
+        val fieldTypeNames = DocumentAnalysisCoordinator::class.java.declaredFields.map { it.type.simpleName }.toSet()
+        assertTrue(fieldTypeNames.none { it.contains("HumanFidelity") || it.contains("Case") })
+    }
 }
