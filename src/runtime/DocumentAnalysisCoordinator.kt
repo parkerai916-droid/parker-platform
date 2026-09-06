@@ -12,7 +12,10 @@ import parker.core.interfaces.CsvStructuralResult
 import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.DocxStructuralResult
 import parker.core.interfaces.EmlStructuralResult
+import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceGenerationSelection
+import parker.core.interfaces.DerivativeGenerationId
+import parker.core.interfaces.HumanFidelityReviewState
 import parker.core.interfaces.OwnerDocumentAnalysisRequest
 import parker.core.interfaces.OwnerDocumentAnalysisResult
 import parker.core.interfaces.PdfStructuralResult
@@ -26,6 +29,19 @@ import parker.core.interfaces.EvidenceSourceManifestStorage
 import parker.core.interfaces.HumanVerificationStorage
 import parker.core.interfaces.HumanVerificationOutcome
 import parker.core.interfaces.OcrModelSnapshot
+
+/**
+ * ANALYSIS-INGESTION-2: the one exact-target-bound capability [DocumentAnalysisCoordinator] needs
+ * from the existing, unmodified Human Fidelity Review domain -- resolving the effective review
+ * state for one exact (evidenceArtifactId, derivativeGenerationId) pair. Deliberately narrow so
+ * this coordinator depends on an abstraction rather than the internal Tier B HFR recording/
+ * projection wiring itself ([parker.core.runtime.TierBOcrHumanFidelityReviewCoordinator], supplied
+ * by the composition root). Must return null -- never assume [HumanFidelityReviewState.HUMAN_REVIEWED_PASS]
+ * -- when the exact target cannot be resolved or no effective state is known.
+ */
+fun interface AnalysisEffectiveHumanFidelityReviewResolver {
+    suspend fun resolve(evidenceArtifactId: EvidenceArtifactId, derivativeGenerationId: DerivativeGenerationId): HumanFidelityReviewState?
+}
 
 /**
  * Minimum Production Document Pipeline — Local Reasoning Implementation.
@@ -61,6 +77,7 @@ class DocumentAnalysisCoordinator(
     private val modelTimeoutMs: Long,
     private val sourceManifestStorage: EvidenceSourceManifestStorage? = null,
     private val humanVerificationStorage: HumanVerificationStorage? = null,
+    private val effectiveHumanFidelityReviewResolver: AnalysisEffectiveHumanFidelityReviewResolver? = null,
     private val now: () -> Instant = Instant::now,
 ) {
     suspend fun analyse(ownerPrincipalId: PrincipalId, request: OwnerDocumentAnalysisRequest): DocumentAnalysisOutcome {
@@ -173,14 +190,21 @@ class DocumentAnalysisCoordinator(
                         ),
                     )
                 }
+                // ANALYSIS-INGESTION-2: resolved once, exact-target-bound to this selection's own
+                // (evidenceArtifactId, derivativeGenerationId) -- never inferred from a sibling
+                // generation or another evidence artifact, and never assumed PASS when the
+                // projector is absent or projection fails closed (both yield null here).
+                val effectiveHfrState = resolveEffectiveHumanFidelityReviewState(selection)
                 val assurance = projectAssurance(
                     selection,
                     tierB.record,
                     tierB.extracted,
+                    effectiveHfrState,
                 )
                 if (tierB.extracted.providerProvenance != null &&
                     tierB.extracted.fidelity == parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION &&
-                    !selection.acknowledgesUnverifiedExternalTranscription
+                    !selection.acknowledgesUnverifiedExternalTranscription &&
+                    effectiveHfrState != HumanFidelityReviewState.HUMAN_REVIEWED_PASS
                 ) {
                     return Failed(
                         DocumentAnalysisOutcome.UnverifiedExternalAcknowledgementRequired(
@@ -223,7 +247,7 @@ class DocumentAnalysisCoordinator(
         return when (tierA) {
             is TierAContentRetrievalOutcome.Retrieved -> {
                 val record = tierA.record
-                val assurance = projectAssurance(selection, record, null)
+                val assurance = projectAssurance(selection, record, null, null)
                 // Defensive, for every governed Tier A kind, not only OCR: Tier A's own retrieval
                 // performs no kind discrimination at all (it decodes whatever payload shape the
                 // content codec reports, independent of the resolved record's own derivativeKind
@@ -285,10 +309,25 @@ class DocumentAnalysisCoordinator(
         }
     }
 
+    /**
+     * ANALYSIS-INGESTION-2: reuses the existing, unmodified [TierBOcrHumanFidelityReviewCoordinator]
+     * (the same collaborator the Owner UI's own effective-review presentation already uses via
+     * `ParkerRuntime.projectEffectiveHumanFidelityReviewAsOwner`) to resolve the effective Human
+     * Fidelity Review state for this exact selection. Read-only; never invokes a provider; never
+     * mutates the derivative, evidence, or any HFR record. Returns null -- never PASS -- when no
+     * projector is configured, the exact target cannot be resolved, or projection fails closed:
+     * "if effective review state cannot be determined, do not assume PASS."
+     */
+    private suspend fun resolveEffectiveHumanFidelityReviewState(
+        selection: EvidenceGenerationSelection,
+    ): HumanFidelityReviewState? =
+        effectiveHumanFidelityReviewResolver?.resolve(selection.evidenceArtifactId, selection.derivativeGenerationId)
+
     private suspend fun projectAssurance(
         selection: EvidenceGenerationSelection,
         record: parker.core.interfaces.DerivativeGenerationRecord,
         ocr: parker.core.interfaces.OcrDerivativeExtractedResult?,
+        effectiveHfrState: HumanFidelityReviewState?,
     ): AnalysisAcquisitionAssurance {
         val manifest = sourceManifestStorage?.read(selection.evidenceArtifactId)
         val reviews = humanVerificationStorage
@@ -343,6 +382,7 @@ class DocumentAnalysisCoordinator(
             humanReviewStates = reviewStates,
             reviewedPages = reviews.flatMapTo(linkedSetOf()) { it.reviewedPageScope.pageNumbers },
             reviewedCharacterScopeCount = reviews.sumOf { it.reviewedCharacterScopes.size },
+            effectiveHumanFidelityReviewState = effectiveHfrState,
         )
     }
 

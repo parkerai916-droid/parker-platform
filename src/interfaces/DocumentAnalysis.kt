@@ -63,6 +63,17 @@ data class AnalysisAcquisitionAssurance(
     val humanReviewStates: Set<AnalysisHumanReviewState>,
     val reviewedPages: Set<Int>,
     val reviewedCharacterScopeCount: Int,
+    /**
+     * ANALYSIS-INGESTION-2: the effective Human Fidelity Review state for this exact
+     * (evidenceArtifactId, derivativeGenerationId), projected through the same governed
+     * [EffectiveHumanFidelityReviewProjector] the Owner UI's own HFR presentation uses -- kept
+     * strictly separate from [fidelity]/[mechanism] (intrinsic machine-transcription provenance),
+     * per `FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md` §12's own requirement that
+     * analysis "retain... human-review state" as a distinct fact, never folded into or overwriting
+     * provenance. Null when no HFR projector was available or no effective state could be
+     * determined -- never assumed.
+     */
+    val effectiveHumanFidelityReviewState: HumanFidelityReviewState? = null,
 ) {
     companion object {
         fun historical(completenessState: DerivativeCompletenessState) = AnalysisAcquisitionAssurance(

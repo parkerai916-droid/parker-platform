@@ -115,6 +115,7 @@ import parker.core.runtime.DefaultReasoningPromptBuilder
 import parker.core.runtime.DefaultDocumentAnalysisPromptBuilder
 import parker.core.runtime.DerivativeMemoryRegistrationCoordinator
 import parker.core.runtime.DeterministicAgentStepSource
+import parker.core.runtime.AnalysisEffectiveHumanFidelityReviewResolver
 import parker.core.runtime.DocumentAnalysisCoordinator
 import parker.core.runtime.FileSystemSavedAnalysisStorage
 import parker.core.runtime.FileSystemHumanVerificationStorage
@@ -1973,6 +1974,18 @@ class ParkerRuntime(
             modelTimeoutMs = config.modelTimeoutMs,
             sourceManifestStorage = evidenceSourceManifestStorage,
             humanVerificationStorage = humanVerificationStorage,
+            // ANALYSIS-INGESTION-2: reuses the same, unmodified tierBOcrHumanFidelityReviewCoordinator
+            // (already constructed above) via a narrow resolver adapter, so DocumentAnalysisCoordinator
+            // depends on an abstraction rather than the internal Tier B HFR coordinator type itself.
+            effectiveHumanFidelityReviewResolver = tierBOcrHumanFidelityReviewCoordinator?.let { coordinator ->
+                AnalysisEffectiveHumanFidelityReviewResolver { evidenceArtifactId, derivativeGenerationId ->
+                    when (val outcome = coordinator.projectEffectiveReview(evidenceArtifactId, derivativeGenerationId)) {
+                        is TierBEffectiveHumanFidelityReviewOutcome.Projected -> outcome.summary.projection.effectiveState
+                        is TierBEffectiveHumanFidelityReviewOutcome.TargetResolutionFailed -> null
+                        TierBEffectiveHumanFidelityReviewOutcome.FailedClosed -> null
+                    }
+                }
+            },
         )
 
         // Reviewed Analysis Result — Explicit Owner Save. pendingAnalysisCache is the entire

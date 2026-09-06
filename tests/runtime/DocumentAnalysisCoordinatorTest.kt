@@ -955,10 +955,17 @@ class DocumentAnalysisCoordinatorTest {
     }
 
     @Test
-    fun `this class's own declared field TYPES contain no HumanFidelityReview or Case dependency of any kind`() {
-        // Confirms the analysis path is, and remains, entirely independent of the separate HFR and
-        // CASE-1 domains -- analysing a generation can never read, let alone write, either.
+    fun `this class's own declared field TYPES carry no Case dependency and only the narrow read-only HFR resolver`() {
+        // ANALYSIS-INGESTION-2 narrowly authorised one exact-target-bound, read-only dependency on
+        // the Human Fidelity Review domain (AnalysisEffectiveHumanFidelityReviewResolver) so the
+        // acknowledgement gate and analysis context can be reconciled with the effective HFR
+        // projection -- see resolveEffectiveHumanFidelityReviewState/projectAssurance. This
+        // continues to confirm the analysis path remains entirely independent of CASE-1 (never
+        // reads or writes it), and that it depends on no HFR type wider than that one narrow
+        // resolver abstraction -- never the internal recording service, storage, audit, or
+        // exact-target registrar.
         val fieldTypeNames = DocumentAnalysisCoordinator::class.java.declaredFields.map { it.type.simpleName }.toSet()
-        assertTrue(fieldTypeNames.none { it.contains("HumanFidelity") || it.contains("Case") })
+        assertTrue(fieldTypeNames.none { it.contains("Case") })
+        assertTrue(fieldTypeNames.none { it.contains("HumanFidelity") && it != "AnalysisEffectiveHumanFidelityReviewResolver" })
     }
 }
