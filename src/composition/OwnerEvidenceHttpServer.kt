@@ -2389,6 +2389,21 @@ function analysisEligibleDiscoveredGeneration(row) {
   return { derivativeGenerationId: candidateId, externalTranscription: !!cached.content.externalTranscription };
 }
 
+// ANALYSIS-INGESTION-2A: reconciles the Analyse-column "I acknowledge this exact unverified
+// machine transcription" control with the real, effective Human Fidelity Review projection the
+// backend (ANALYSIS-INGESTION-2) already uses to waive its own acknowledgement gate -- reading
+// back exactly what appendHumanFidelityReviewSection's own existing exact-target fetch already
+// cached on this row, under row.effectiveHumanFidelityReviewByTarget, keyed by
+// evidenceArtifactId+derivativeGenerationId. Never a new fetch of its own; never assumes PASS
+// before that fetch has resolved (returns false -- keep the control -- for missing/unknown/loading
+// state, a sibling generation's own key, or another evidence's own key), and never inferred from
+// any row-wide/shared field a sibling generation or different evidence could have written.
+function exactEffectiveHumanFidelityReviewIsPass(row, evidenceArtifactId, derivativeGenerationId) {
+  if (!evidenceArtifactId || !derivativeGenerationId) return false;
+  const cache = row.effectiveHumanFidelityReviewByTarget || {};
+  return cache[evidenceArtifactId + '::' + derivativeGenerationId] === 'HUMAN_REVIEWED_PASS';
+}
+
 document.getElementById('logoutButton').onclick = async () => {
   await fetch('/owner/logout', { method: 'POST', credentials: 'same-origin' });
   location.reload();
@@ -2585,15 +2600,22 @@ function render() {
       };
       analyseTd.appendChild(cb);
       if (row.externalResultRow || (eligibleDiscovered && eligibleDiscovered.externalTranscription)) {
-        const acknowledgement = document.createElement('label');
-        const acknowledgementCheckbox = document.createElement('input');
-        acknowledgementCheckbox.type = 'checkbox';
-        acknowledgementCheckbox.checked = !!row.acknowledgesUnverifiedExternalTranscription;
-        acknowledgementCheckbox.onchange = () => { row.acknowledgesUnverifiedExternalTranscription = acknowledgementCheckbox.checked; };
-        acknowledgement.appendChild(acknowledgementCheckbox);
-        acknowledgement.appendChild(document.createTextNode(' I acknowledge this exact unverified machine transcription'));
-        analyseTd.appendChild(document.createElement('br'));
-        analyseTd.appendChild(acknowledgement);
+        // ANALYSIS-INGESTION-2A: the exact generation this checkbox's own selection is bound to --
+        // never a different sibling generation or another evidence's own generation -- so the
+        // effective-HFR lookup below is exact-target isolated exactly like the backend gate it
+        // mirrors (ANALYSIS-INGESTION-2).
+        const exactGenerationId = row.externalResultRow ? row.ocrDerivativeGenerationId : eligibleDiscovered.derivativeGenerationId;
+        if (!exactEffectiveHumanFidelityReviewIsPass(row, row.evidenceArtifactId, exactGenerationId)) {
+          const acknowledgement = document.createElement('label');
+          const acknowledgementCheckbox = document.createElement('input');
+          acknowledgementCheckbox.type = 'checkbox';
+          acknowledgementCheckbox.checked = !!row.acknowledgesUnverifiedExternalTranscription;
+          acknowledgementCheckbox.onchange = () => { row.acknowledgesUnverifiedExternalTranscription = acknowledgementCheckbox.checked; };
+          acknowledgement.appendChild(acknowledgementCheckbox);
+          acknowledgement.appendChild(document.createTextNode(' I acknowledge this exact unverified machine transcription'));
+          analyseTd.appendChild(document.createElement('br'));
+          analyseTd.appendChild(acknowledgement);
+        }
       }
     }
     const details = document.createElement('button');
@@ -2664,7 +2686,7 @@ function render() {
       const detailTd = document.createElement('td');
       detailTd.colSpan = 8;
       if (row.ocrContent) {
-        detailTd.appendChild(buildOcrContentPanel(row.ocrContent, row.ocrDerivativeGenerationId, row.evidenceArtifactId));
+        detailTd.appendChild(buildOcrContentPanel(row.ocrContent, row.ocrDerivativeGenerationId, row.evidenceArtifactId, row));
       } else {
         const p = document.createElement('p');
         p.className = 'note';
@@ -2874,7 +2896,7 @@ function appendExtractedText(container, label, text) {
 // the existing /human-fidelity-review/{generationId} GET/POST routes above -- no client-side
 // review logic, no local persistence; every governed fact is read back from the server after
 // submission, never assumed from the owner's own form input.
-function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId) {
+function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId, row) {
   const section = document.createElement('div');
   section.className = 'human-fidelity-review-section';
   const heading = document.createElement('h4');
@@ -2896,6 +2918,19 @@ function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivat
       const result = await resp.json();
       statusP.textContent = 'Effective review status: ' + (result.effectiveReviewState || 'UNAVAILABLE') +
         (result.materialDiscrepancyCount ? (' (material discrepancies: ' + result.materialDiscrepancyCount + ')') : '');
+      // ANALYSIS-INGESTION-2A: cache the exact-target effective HFR state this fetch already
+      // retrieved, keyed by evidenceArtifactId+derivativeGenerationId (never row-wide), so the
+      // separate Analyse-column acknowledgement control (rendered elsewhere in the same row) can
+      // reconcile itself with the same real projection this section already displays -- see
+      // exactEffectiveHumanFidelityReviewIsPass. A sibling generation or different evidence's own
+      // fetch writes under a different key and can never affect this one.
+      if (row) {
+        row.effectiveHumanFidelityReviewByTarget = row.effectiveHumanFidelityReviewByTarget || {};
+        const key = evidenceArtifactId + '::' + derivativeGenerationId;
+        const previous = row.effectiveHumanFidelityReviewByTarget[key];
+        row.effectiveHumanFidelityReviewByTarget[key] = result.effectiveReviewState || null;
+        if (previous !== row.effectiveHumanFidelityReviewByTarget[key]) render();
+      }
     } catch (e) {
       statusP.textContent = 'Effective review status: request failed safely.';
     }
@@ -3225,11 +3260,11 @@ function buildContentPanel(content) {
 // discipline exactly: every field inserted via appendField/appendExtractedText (textContent, never
 // innerHTML), so OCR-recognised text can never be interpreted as HTML or script (Tier B scope lock
 // §27), no matter what characters the source document contained.
-function buildOcrContentPanel(content, derivativeGenerationId, evidenceArtifactId) {
+function buildOcrContentPanel(content, derivativeGenerationId, evidenceArtifactId, row) {
   // UI-INGESTION-8: an admitted enhanced (external) transcription result gets its own dedicated,
   // governed-structure inspection surface (buildEnhancedTranscriptionPanel) -- distinct from this
   // function's flat rendering, which remains exactly as it was for local/durable OCR content.
-  if (content.externalTranscription) return buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId);
+  if (content.externalTranscription) return buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId, row);
   const container = document.createElement('div');
   container.className = 'content-panel';
   appendField(container, 'Outcome', content.outcomeKind);
@@ -3265,7 +3300,7 @@ function buildOcrContentPanel(content, derivativeGenerationId, evidenceArtifactI
       appendExtractedText(container, (s.pageNumber != null ? 'Page ' + s.pageNumber : 'Segment') + ':', s.text);
     });
   }
-  if (derivativeGenerationId && evidenceArtifactId) appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId);
+  if (derivativeGenerationId && evidenceArtifactId) appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId, row);
   return container;
 }
 
@@ -3278,7 +3313,7 @@ function buildOcrContentPanel(content, derivativeGenerationId, evidenceArtifactI
 // so recognised text can never be interpreted as HTML or script. Structure:
 //   A) Result summary  B) Qualifications  C) Page transcription (in page order)
 //   D) Page status     E) Uncertainty     F) Provenance/technical (secondary, collapsed)
-function buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId) {
+function buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId, row) {
   const container = document.createElement('div');
   container.className = 'content-panel enhanced-transcription-panel';
 
@@ -3345,7 +3380,7 @@ function buildEnhancedTranscriptionPanel(content, derivativeGenerationId, eviden
   appendProducer(provenance, content.producer);
   container.appendChild(provenance);
 
-  if (derivativeGenerationId && evidenceArtifactId) appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId);
+  if (derivativeGenerationId && evidenceArtifactId) appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId, row);
   return container;
 }
 
@@ -3574,7 +3609,7 @@ function buildOcrDerivativeGenerationDiscoveryPanel(row, index) {
     if (expanded) {
       const cached = (row.discoveredContent || {})[g.derivativeGenerationId];
       if (cached && cached.content) {
-        panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId, row.evidenceArtifactId));
+        panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId, row.evidenceArtifactId, row));
       } else if (cached && cached.error) {
         const p = document.createElement('p');
         p.className = 'note';

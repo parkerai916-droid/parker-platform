@@ -2286,7 +2286,7 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(fnBody.contains("/ocr-content/"))
             assertTrue(fnBody.contains("row.evidenceArtifactId"))
             assertTrue(fnBody.contains("derivativeGenerationId"))
-            assertTrue(fnBody.contains("buildOcrContentPanel") || body.contains("panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId, row.evidenceArtifactId));"))
+            assertTrue(fnBody.contains("buildOcrContentPanel") || body.contains("panel.appendChild(buildOcrContentPanel(cached.content, g.derivativeGenerationId, row.evidenceArtifactId, row));"))
         } finally {
             harness.shutdown()
         }
@@ -3227,6 +3227,121 @@ class OwnerEvidenceHttpServerTest {
             } finally {
                 harness.shutdown()
             }
+        }
+    }
+
+    // ANALYSIS-INGESTION-2A — Owner UI Acknowledgement Presentation Defect. ANALYSIS-INGESTION-2
+    // reconciled the backend's own UnverifiedExternalAcknowledgementRequired gate with the
+    // effective Human Fidelity Review projection, but the Owner UI's Analyse-column "I acknowledge
+    // this exact unverified machine transcription" control was never reconciled with it -- it kept
+    // rendering unconditionally even for an exact generation the same live page already displayed
+    // as HUMAN_REVIEWED_PASS. These tests prove the served page's own embedded JS now derives that
+    // control's presence from the same exact-target effective HFR state, using this file's own
+    // established page-source-string testing style (no live JS execution/browser in this suite).
+
+    private fun exactEffectiveHumanFidelityReviewIsPassFunctionBody(harness: Harness): String {
+        val body = getPaired(harness, "/").body()
+        val start = body.indexOf("function exactEffectiveHumanFidelityReviewIsPass")
+        assertTrue(start >= 0, "exactEffectiveHumanFidelityReviewIsPass must be present in the served page")
+        return body.substring(start, body.indexOf("\nfunction ", start + 1))
+    }
+
+    @Test
+    fun `the effective HFR pass check is exact-target keyed by evidence and generation, and fails closed by default`() {
+        val harness = startHarness("")
+        try {
+            val fn = exactEffectiveHumanFidelityReviewIsPassFunctionBody(harness)
+            // Keyed by BOTH evidenceArtifactId and derivativeGenerationId -- a sibling generation's
+            // or a different evidence's own cached entry lives under a different key entirely and
+            // can never satisfy this lookup (exact-target isolation, items 3/4).
+            assertTrue(fn.contains("evidenceArtifactId + '::' + derivativeGenerationId"))
+            // Fails closed: an absent evidenceArtifactId/derivativeGenerationId, or any cached
+            // value other than the literal HUMAN_REVIEWED_PASS string (including undefined/still-
+            // loading, UNREVIEWED, HUMAN_REVIEWED_WITH_DISCREPANCY, HUMAN_REVIEW_CONFLICT), returns
+            // false -- PASS is never assumed.
+            assertTrue(fn.contains("return false"))
+            assertTrue(fn.contains("=== 'HUMAN_REVIEWED_PASS'"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `PASS generation suppresses the acknowledgement control, UNREVIEWED keeps it, and the base Analyse selection is never conditional on either`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val renderStart = body.indexOf("function render() {")
+            val renderBody = body.substring(renderStart, body.indexOf("\nfunction ", renderStart + 1))
+
+            // Item 5: the base "select for analysis" checkbox is appended unconditionally once
+            // ordinary eligibility is established -- never gated on the effective HFR state, so
+            // Analyse selection remains available for a PASS generation.
+            val cbAppendIndex = renderBody.indexOf("analyseTd.appendChild(cb);")
+            assertTrue(cbAppendIndex >= 0)
+
+            // Item 1/2: the acknowledgement control's own creation is gated on the exact-target
+            // effective HFR check -- rendered only when it is NOT HUMAN_REVIEWED_PASS for this
+            // exact (evidenceArtifactId, derivativeGenerationId) pair.
+            val gateIndex = renderBody.indexOf(
+                "if (!exactEffectiveHumanFidelityReviewIsPass(row, row.evidenceArtifactId, exactGenerationId))",
+            )
+            assertTrue(gateIndex >= 0, "the acknowledgement control must be gated by the exact-target effective HFR check")
+            assertTrue(
+                cbAppendIndex < gateIndex,
+                "the base Analyse selection checkbox must be appended before the acknowledgement gate, never conditional on it",
+            )
+
+            // The exact generation id fed into the gate is the SAME one eligible for analysis on
+            // this row (the live-processed row's own ocrDerivativeGenerationId, or the unambiguous
+            // discovered generation's own id) -- never a different/sibling generation.
+            val exactGenerationLine = renderBody.indexOf(
+                "const exactGenerationId = row.externalResultRow ? row.ocrDerivativeGenerationId : eligibleDiscovered.derivativeGenerationId;",
+            )
+            assertTrue(exactGenerationLine in 0..<gateIndex, "the exact generation id used for the HFR gate must be the same exact generation eligible for analysis")
+
+            // The acknowledgement mechanism itself is preserved (not removed) for UNREVIEWED generations.
+            assertTrue(renderBody.contains("' I acknowledge this exact unverified machine transcription'"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `appendHumanFidelityReviewSection caches its own exact-target fetch result onto the row, never a row-wide or shared field`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val start = body.indexOf("function appendHumanFidelityReviewSection")
+            assertTrue(start >= 0)
+            val fnBody = body.substring(start, body.indexOf("\nfunction ", start + 1))
+            assertTrue(fnBody.contains("row.effectiveHumanFidelityReviewByTarget = row.effectiveHumanFidelityReviewByTarget || {};"))
+            assertTrue(fnBody.contains("const key = evidenceArtifactId + '::' + derivativeGenerationId;"))
+            assertTrue(fnBody.contains("row.effectiveHumanFidelityReviewByTarget[key] = result.effectiveReviewState || null;"))
+            // Never assigns to a row-wide/shared field a sibling generation's or a different
+            // evidence's own exact-target fetch could also write to.
+            assertFalse(fnBody.contains("row.humanFidelityStatus ="))
+            assertFalse(fnBody.contains("row.effectiveHumanFidelityReviewState ="))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `the row parameter threading required for the HFR cache reaches both the live-processed and discovered-generation content panels`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            // Live-processed Tier B/external row.
+            assertTrue(body.contains("buildOcrContentPanel(row.ocrContent, row.ocrDerivativeGenerationId, row.evidenceArtifactId, row)"))
+            // Discovered-generation panel -- a completely independent per-generation fetch/cache
+            // (row.discoveredContent, keyed by generation id) from the live-processed path above.
+            assertTrue(body.contains("buildOcrContentPanel(cached.content, g.derivativeGenerationId, row.evidenceArtifactId, row)"))
+            assertTrue(body.contains("function buildOcrContentPanel(content, derivativeGenerationId, evidenceArtifactId, row) {"))
+            assertTrue(body.contains("function buildEnhancedTranscriptionPanel(content, derivativeGenerationId, evidenceArtifactId, row) {"))
+            assertTrue(body.contains("function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivativeGenerationId, row) {"))
+        } finally {
+            harness.shutdown()
         }
     }
 }
