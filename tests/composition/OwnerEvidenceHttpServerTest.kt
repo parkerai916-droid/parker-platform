@@ -500,6 +500,150 @@ class OwnerEvidenceHttpServerTest {
         } finally { harness.shutdown() }
     }
 
+    // REAL-DOCUMENT-2D — Local OCR Post-Acquisition Routing Fix. executeAcquisition's success
+    // branch previously treated every governed-acquisition result as Tier A/REGION_TRANSCRIPTION
+    // regardless of the actually-selected mechanism, so a Local OCR execution left the row believing
+    // it held Tier A content -- "View Extracted Content" then called the Tier A /content/ endpoint,
+    // which explicitly refuses an OCR-typed payload (see REAL-DOCUMENT-2C's investigation), producing
+    // "Could not retrieve extracted content: undefined". These tests use this suite's own established
+    // page-source-string style (no live JS execution/browser in this suite) for the client branch,
+    // plus a live end-to-end HTTP execution to prove the exact-identity/mutation properties.
+
+    private fun executeAcquisitionFunctionBody(harness: Harness): String {
+        val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+        val start = body.indexOf("async function executeAcquisition(index, expectedCapabilityId)")
+        assertTrue(start >= 0, "executeAcquisition must be present in the served page")
+        return body.substring(start, body.indexOf("\nasync function ", start + 1))
+    }
+
+    private fun viewContentFunctionBody(harness: Harness): String {
+        val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+        val start = body.indexOf("async function viewContent(index)")
+        assertTrue(start >= 0, "viewContent must be present in the served page")
+        return body.substring(start, body.indexOf("\nasync function ", start + 1))
+    }
+
+    @Test
+    fun `executeAcquisition classifies a Local OCR result into Tier B durable OCR client state, keyed on the governed mechanism label`() {
+        val harness = startHarness("")
+        try {
+            val fn = executeAcquisitionFunctionBody(harness)
+            assertTrue(fn.contains("result.capability && result.capability.mechanism === 'Local OCR'"))
+            val branchIndex = fn.indexOf("result.capability.mechanism === 'Local OCR'")
+            val ocrGenerationAssign = fn.indexOf("row.ocrDerivativeGenerationId = result.derivativeGenerationId;")
+            val tierBStatusAssign = fn.indexOf("row.status = 'TIER_B_DURABLE_COMPLETE';", branchIndex)
+            assertTrue(ocrGenerationAssign in branchIndex..<fn.indexOf("} else {"))
+            assertTrue(tierBStatusAssign in branchIndex..<fn.indexOf("} else {"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `executeAcquisition never sets Tier A region-transcription state for a Local OCR result`() {
+        val harness = startHarness("")
+        try {
+            val fn = executeAcquisitionFunctionBody(harness)
+            val branchStart = fn.indexOf("result.capability.mechanism === 'Local OCR'")
+            val elseIndex = fn.indexOf("} else {", branchStart)
+            val localOcrBranch = fn.substring(branchStart, elseIndex)
+            assertFalse(localOcrBranch.contains("row.derivativeGenerationId = "))
+            assertFalse(localOcrBranch.contains("REGION_TRANSCRIPTION"))
+            assertFalse(localOcrBranch.contains("row.providerRegionTranscription"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `executeAcquisition preserves the existing Tier A region-transcription state for every other mechanism`() {
+        val harness = startHarness("")
+        try {
+            val fn = executeAcquisitionFunctionBody(harness)
+            val branchStart = fn.indexOf("result.capability.mechanism === 'Local OCR'")
+            val elseIndex = fn.indexOf("} else {", branchStart)
+            val elseBranch = fn.substring(elseIndex, fn.indexOf("\n    }", elseIndex))
+            // Unchanged from before this unit -- covers genuine Tier A native extraction and
+            // Tier A region-transcription/external-vision results alike.
+            assertTrue(elseBranch.contains("row.derivativeGenerationId = result.derivativeGenerationId;"))
+            assertTrue(elseBranch.contains("row.status = 'TIER_A_COMPLETE';"))
+            assertTrue(elseBranch.contains("row.tierAFormat = 'REGION_TRANSCRIPTION';"))
+            assertTrue(elseBranch.contains("row.providerRegionTranscription = true;"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `transcribeExternalRow, the separate enhanced-external-transcription path, is untouched by the executeAcquisition fix`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            val start = body.indexOf("async function transcribeExternalRow(index)")
+            assertTrue(start >= 0)
+            val fn = body.substring(start, body.indexOf("\nasync function ", start + 1))
+            assertFalse(fn.contains("Local OCR"))
+            assertFalse(fn.contains("capability.mechanism"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `viewContent's error fallback reads message, then error, then status, then a literal default -- never the word 'undefined'`() {
+        val harness = startHarness("")
+        try {
+            val fn = viewContentFunctionBody(harness)
+            assertTrue(
+                fn.contains(
+                    "row.contentError = result.message || result.error || result.status || 'unknown error';",
+                ),
+                "the fallback chain must be exactly message, then error, then status, then a literal default, in that order",
+            )
+            assertFalse(fn.contains("result.status + (result.message ? (': ' + result.message) : '')"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `the local-OCR-executed governed acquisition flow ends in Tier B durable OCR state and retrieves through ocr-content, matching the durable OCR path exactly`() = runTest {
+        val recognisedJson = """{"status":"recognised","recognisedText":"GOVERNED ACQUISITION OCR TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val scriptDir = Files.createTempDirectory("evidence-http-scripts")
+        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
+        try {
+            val cookie = pairedCookie(harness)
+            val uploadResponse = send(
+                HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence"))
+                    .header("Cookie", cookie).header("Content-Type", "multipart/form-data; boundary=OwnerEvidenceHttpServerTestBoundary")
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody("OwnerEvidenceHttpServerTestBoundary",
+                        listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))))).build(),
+            )
+            val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
+
+            val decision = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition"))
+                .header("Cookie", cookie).GET().build())
+            assertEquals(200, decision.statusCode())
+            assertEquals("SELECTED", extractField(decision.body(), "status"), decision.body())
+            assertTrue(decision.body().contains("Local OCR"), decision.body())
+            val capabilityId = requireNotNull(extractField(decision.body(), "capabilityId"))
+            assertEquals("parker-docling-local-ocr-v1", capabilityId)
+
+            val execute = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
+                .header("Cookie", cookie).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"$capabilityId\"}")).build())
+            assertEquals(200, execute.statusCode(), execute.body())
+            assertEquals("COMPLETED", extractField(execute.body(), "status"))
+            assertTrue(execute.body().contains("\"mechanism\":\"Local OCR\""), execute.body())
+            val exactGenerationId = requireNotNull(extractField(execute.body(), "derivativeGenerationId"))
+
+            // Exact-target retrieval through the existing, unaltered Tier B durable OCR route --
+            // never the Tier A route, and never a substituted/newest generation.
+            val retrieve = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/ocr-content/$exactGenerationId"))
+                .header("Cookie", cookie).GET().build())
+            assertEquals(200, retrieve.statusCode())
+            assertEquals("RETRIEVED", extractField(retrieve.body(), "status"), retrieve.body())
+            assertEquals("GOVERNED ACQUISITION OCR TEXT", extractJsonStringField(retrieve.body(), "recognisedText"))
+
+            // The Tier A route explicitly and safely refuses this exact same generation id (the
+            // REAL-DOCUMENT-2C-confirmed defensive invariant); the client fix means this route is
+            // simply never called for a Local OCR result any more.
+            val tierARejection = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/content/$exactGenerationId"))
+                .header("Cookie", cookie).GET().build())
+            assertEquals(500, tierARejection.statusCode())
+        } finally { harness.shutdown() }
+    }
+
     @Test
     fun `owner page presents governed primary action warnings and labels compatibility controls`() {
         val harness = startHarness("")

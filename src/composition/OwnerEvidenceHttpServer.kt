@@ -3858,11 +3858,22 @@ async function executeAcquisition(index, expectedCapabilityId) {
     else {
       row.acquisitionResult = result; row.acquisitionError = null;
       if (result.derivativeGenerationId) {
-        row.derivativeGenerationId = result.derivativeGenerationId;
-        row.status = 'TIER_A_COMPLETE';
-        row.tierAFormat = 'REGION_TRANSCRIPTION';
-        row.providerRegionTranscription = true;
-        row.message = 'Governed transcription available';
+        // REAL-DOCUMENT-2D: the selected mechanism decides which client-side derivative state this
+        // result is -- Local OCR is a Tier B durable OCR result (existing ocrDurableRow pattern) and
+        // must route "View Extracted Content" through /ocr-content/, never through the Tier A
+        // /content/ route, which explicitly rejects OCR-typed payloads. result.capability.mechanism
+        // is the same server-computed, governed label already rendered as 'Selected mechanism' above.
+        if (result.capability && result.capability.mechanism === 'Local OCR') {
+          row.ocrDerivativeGenerationId = result.derivativeGenerationId;
+          row.status = 'TIER_B_DURABLE_COMPLETE';
+          row.message = 'Governed local OCR available';
+        } else {
+          row.derivativeGenerationId = result.derivativeGenerationId;
+          row.status = 'TIER_A_COMPLETE';
+          row.tierAFormat = 'REGION_TRANSCRIPTION';
+          row.providerRegionTranscription = true;
+          row.message = 'Governed transcription available';
+        }
       }
     }
   } catch (e) { row.acquisitionError = 'Acquisition request failed safely.'; }
@@ -3924,7 +3935,10 @@ async function viewContent(index) {
       row.humanFidelityStatus = result.content.humanFidelityStatus;
       row.correctedRepresentation = result.content.humanCorrectedRepresentation;
     } else {
-      row.contentError = result.status + (result.message ? (': ' + result.message) : '');
+      // REAL-DOCUMENT-2D: the generic unexpected-failure response shape is {"error": "..."}, which
+      // has neither result.status nor result.message -- reading only those coerced 'undefined' via
+      // JS string concatenation, hiding the real (or at least a real placeholder) failure reason.
+      row.contentError = result.message || result.error || result.status || 'unknown error';
     }
   }
   expandedIndex = index;
