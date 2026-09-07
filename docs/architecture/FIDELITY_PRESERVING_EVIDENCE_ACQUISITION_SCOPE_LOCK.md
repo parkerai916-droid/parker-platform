@@ -95,7 +95,7 @@ Selection occurs before execution and is deterministic. Parker chooses the stron
 - Scanned/image-only PDF or image: select an eligible OCR or vision mechanism.
 - Handwriting: select a governed handwriting-capable mechanism where available.
 - Difficult layout or tables: select a governed layout- or table-capable mechanism where materially suitable.
-- DOCX, spreadsheets, EML, and future structured formats: prefer source-aware native structural acquisition where appropriate.
+- DOCX, spreadsheets, EML, and future structured formats: source-aware native structural acquisition remains an implemented, testable capability but is not itself production-preferred; see §7.2.
 
 Source classification and acquisition selection remain different decisions. `TIER_A_COMPLETE`, `REQUIRES_OCR`, and UI row status describe current processing state; they are not the permanent policy model.
 
@@ -111,13 +111,39 @@ Transcription/OCR remains non-reasoning: no summarisation, legal interpretation,
 
 FA.9.2 real-PDF acceptance is negative capability evidence for the tested native path: despite token completeness, it materially altered reading order/source relationships, corrupted meaningful punctuation, and lacked page-associated text. Native extraction is not universally invalid and may remain available for a bounded source class independently demonstrated faithful, but no further native-PDF remediation is currently a programme priority.
 
-The current FA.4 `DeterministicEvidenceAcquisitionRouter` requires a future bounded amendment before ordinary fidelity-first production acquisition. It selects an eligible direct/native capability immediately when native searchable text is present, before comparing it with other eligible mechanisms; its later tie-breakers also prefer a byte-exact representation and local execution. Those rules can make lower transformation burden or lower egress decisive without evidence that fidelity is equivalent. This instrument records the required correction but authorises no router or production-code change.
+The current FA.4 `DeterministicEvidenceAcquisitionRouter` requires a future bounded amendment before ordinary fidelity-first production acquisition. It selects an eligible direct/native capability immediately when native searchable text is present, before comparing it with other eligible mechanisms; its later tie-breakers also prefer a byte-exact representation and local execution. Those rules can make lower transformation burden or lower egress decisive without evidence that fidelity is equivalent. This instrument authorises the correction at the capability/configuration layer described in §7.2. It does not authorise any change to `DeterministicEvidenceAcquisitionRouter`'s own selection algorithm; that remains reserved pending evidence the capability-layer correction is insufficient.
 
 The next active programme priority is governed external high-fidelity transcription assessment, including the OpenAI/ChatGPT path. Historical OpenAI `POST /v1/responses`, `store=false`, `gpt-4.1-mini`, `openai-literal-page-transcription-v2`, adapter `1.1.0`, `external-transcription.direct-byte-exact-v1`, instruction digest `c721e63b29e56f9242ee24dd8f13ddcab5d4468d3d17e9e3b9b1d66a68cb2000`, and schema digest `3fe8a26be40a06f047b493094d06c52e1df056162583b8e0b81564f55de265b2` facts remain background evidence only; they are not presumed current or optimal. FA.9.4P-F must establish current provider, model, and capability suitability and the minimum fidelity-first changes before any separately authorised real provider execution.
+
+### 7.2 OpenAI-first production selection correction (accepted)
+
+The Owner has accepted the correction §7.1 identified as pending. This subsection is the exercise of that correction; it changes production *selection policy*, not the constitutional fidelity model in §1, §3, §4, or §6.
+
+**Production preference.** Governed external transcription (OpenAI, or another separately accepted provider) is the preferred production content-acquisition mechanism for every evidence media type explicitly accepted for external processing under this instrument. Native extractability or a structured native format — including a searchable PDF text layer, or the native machine-readability of CSV, EML, or DOCX — does not itself confer production preference. §7.1's fidelity-first principle governs regardless of format: mechanism selection is decided by demonstrated fidelity and governed acceptance, not by which mechanism requires the least transformation or the least egress.
+
+**Native and local remain dormant, not removed.** Direct/native structural extraction and local OCR remain implemented, tested, governed capabilities under §8 and §13. Neither is production-selected by default for any media type. A specific media type becomes natively or locally selected in production only by a separate, explicit Owner decision naming that media type. This instrument does not remove, deprecate, or reduce test coverage for any native or local mechanism.
+
+**Local OCR stays disabled.** This instrument makes no change to Local OCR's production-disabled state (§8). Enabling it for any media type requires its own separate Owner decision, independent of this one.
+
+**No silent fallback on external unavailability.** If a media type's preferred external mechanism is unavailable, unauthorised, unaccepted, or fails, Parker must not fall back to native or local extraction for that reason alone. This sharpens §15's existing "failure of one capability does not authorise another provider" rule for the specific production-preference case: unavailability of the *preferred* mechanism is not itself grounds to select a *non-preferred* one. The acquisition attempt fails closed using §15's existing outcome vocabulary and requires a separate Owner action to proceed.
+
+**Unsupported media types fail closed.** A media type not yet within a production external capability's proven, authorised transport does not lawfully route to that capability merely because this instrument states a preference. It fails closed until either (a) direct provider transport for that exact media type is explicitly proven and separately authorised, or (b) a governed derived-preparation path for that media type is separately authorised under the representation rules below and in §6.
+
+**Derived preparation.** Where direct provider transport is not proven for a media type, any governed local preparation step producing a non-byte-exact representation must satisfy §6 in full — source EvidenceArtifactId/SHA-256/length/media type linkage, representation identity/SHA-256/length/media type, exact transformation identity via `OcrMaterialTransformation`, `byteExactCopy=false` recorded truthfully, and explicit `AcquisitionRepresentationClass` (e.g. `DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION`, not `AUTHORITATIVE_SOURCE_OR_BYTE_EXACT_COPY`) — and must never assert, in provenance, UI, or analysis output, that the derived representation is the original evidence. The original `EvidenceArtifact` remains sole authoritative source regardless of which representation was submitted to a provider.
+
+**Text-shaped source encoding.** Where a media type has been separately accepted for external processing and its proven transport is text-shaped (for example CSV, or text/plain if separately authorised in future), Parker may pass source content to the provider only when the source byte encoding is deterministically validated as UTF-8. Non-UTF-8 or ambiguous encodings must fail closed with an explicit unsupported/encoding-classified reason. No replacement-character decoding, no best-effort charset guessing, and no silent normalisation of authoritative source bytes is permitted. If a decoding or re-encoding step is later separately authorised for non-UTF-8 sources, its output is a derived representation under the paragraph above, not the original evidence.
+
+**Narrowest lawful mechanism.** This correction is implemented through capability and configuration changes (e.g. `ProductionAcquisitionCapabilityCatalogue`'s fidelity-suitability and supported-media-type declarations) wherever that is sufficient to produce the intended routing outcome. `DeterministicEvidenceAcquisitionRouter`'s own selection algorithm is not modified by this instrument; a future amendment authorising router-algorithm change requires its own separate evidence and acceptance.
+
+**Hermes unaffected.** Hermes continues to request governed acquisition only, per `PARKER_AGENT_GATEWAY_SCOPE_LOCK.md`; it does not choose, and this instrument grants it no new ability to choose, a mechanism.
+
+**Egress unchanged.** Nothing in this subsection alters §2 or §8's existing egress-authorisation requirements. External selection remains subject to owner-controlled authorisation, provider acceptance, credential and endpoint readiness exactly as before.
 
 ## 8. Local and external capabilities
 
 Local OCR is one governed acquisition capability. It is neither a constitutional comparator nor inherently preferred because it is local.
+
+Production Local OCR is disabled by explicit Owner decision (see §7.2); this is a deployment-configuration fact recorded here for governance visibility, not a change to Local OCR's architectural standing as a capability.
 
 External OCR or vision transcription is another possible governed capability. It may be selected only when external egress, provider/profile, privacy, retention, credential, endpoint, model, cost/request, media, size, page, and representation policies make it eligible.
 
@@ -240,7 +266,8 @@ No existing constitutional boundary prevents this decision. The following earlie
 - `TIER_A_COMPLETE` permanently excluding another separately governed acquisition capability;
 - external transcription being inherently exceptional rather than policy-eligible;
 - universal human verification of every acquired derivative;
-- UI row status itself constituting acquisition policy.
+- UI row status itself constituting acquisition policy;
+- source-aware native/structural extractability, or a document being CSV/EML/DOCX/spreadsheet-shaped, as itself justifying production mechanism preference over governed external transcription (see §7.2).
 
 The current implementation does not claim OCR output is authoritative source text and does not silently use derivatives as acquisition input; those are not conflicts.
 
