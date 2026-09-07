@@ -325,15 +325,19 @@ class AgentGatewayEvidenceProjectionTest {
     // ================= M/N/O/P/Q. Only the exact governed surface exists -- no other mutation =================
 
     @Test
-    fun `AgentGatewayEvidenceProjection declares exactly three public methods -- the two R0 reads plus AG-1F's one governed submission, nothing else`() {
+    fun `AgentGatewayEvidenceProjection declares exactly four public methods -- the two R0 reads, AG-1F's governed submission, and AG-1G's governed acquisition request, nothing else`() {
         val publicFunctionNames = AgentGatewayEvidenceProjection::class.declaredFunctions
             .filter { it.visibility == kotlin.reflect.KVisibility.PUBLIC }
             .map { it.name }
             .toSet()
-        // In particular: no acquisition, transcription, HFR, case-assignment, or deletion method
-        // exists on this class at all -- it is structurally impossible for this projection to
-        // trigger any of them.
-        assertEquals(setOf("retrieveEvidence", "retrieveEvidenceManifest", "submitSource"), publicFunctionNames)
+        // In particular: no transcription, HFR, case-assignment, or deletion method exists on
+        // this class at all -- it is structurally impossible for this projection to trigger any
+        // of them. requestAcquisition (AG-1G) delegates the entire acquisition decision to the
+        // existing, unmodified GovernedAcquisitionOwnerWorkflow -- this class itself still
+        // performs no routing, provider, or egress logic of its own.
+        //
+        // Revision history: AG-1G added requestAcquisition (three -> four).
+        assertEquals(setOf("retrieveEvidence", "retrieveEvidenceManifest", "submitSource", "requestAcquisition"), publicFunctionNames)
     }
 
     // ================= AG-1F. Candidate-source submission =================

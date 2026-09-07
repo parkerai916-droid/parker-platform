@@ -65,9 +65,11 @@ class AgentGatewayHttpServerTest {
         val retrieveCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
         val manifestCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
         val submitCalls: MutableList<Pair<parker.core.interfaces.CandidateEvidenceArtifact, String?>> = mutableListOf(),
+        val acquireCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
         var retrieveResult: AgentGatewayEvidenceRetrievalResult = AgentGatewayEvidenceRetrievalResult.NotFound(EvidenceArtifactId("unset")),
         var manifestResult: AgentGatewayEvidenceManifestResult = AgentGatewayEvidenceManifestResult.NotFound(EvidenceArtifactId("unset")),
         var submitResult: parker.core.runtime.AgentGatewaySourceSubmissionResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
+        var acquireResult: parker.core.runtime.AgentGatewayAcquisitionResult = parker.core.runtime.AgentGatewayAcquisitionResult.Denied(PermissionDecisionOutcome.DENIED),
     ) {
         val auditLogFile = Files.createTempDirectory("agent-gateway-http-test-audit").resolve("audit.log")
         val server = AgentGatewayHttpServer(
@@ -77,6 +79,7 @@ class AgentGatewayHttpServerTest {
             retrieveEvidenceAsAgent = { id -> retrieveCalls.add(id); retrieveResult },
             retrieveEvidenceManifestAsAgent = { id -> manifestCalls.add(id); manifestResult },
             submitSourceAsAgent = { candidate, advisory -> submitCalls.add(candidate to advisory); submitResult },
+            requestAcquisitionAsAgent = { id -> acquireCalls.add(id); acquireResult },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -132,6 +135,7 @@ class AgentGatewayHttpServerTest {
             retrieveEvidenceAsAgent = { id -> runtime.retrieveEvidenceAsAgent(id) },
             retrieveEvidenceManifestAsAgent = { id -> runtime.retrieveEvidenceManifestAsAgent(id) },
             submitSourceAsAgent = { candidate, advisory -> runtime.submitSourceAsAgent(candidate, advisory) },
+            requestAcquisitionAsAgent = { id -> runtime.requestAcquisitionAsAgent(id) },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -381,15 +385,17 @@ class AgentGatewayHttpServerTest {
     // ================= P. Cannot invoke arbitrary ParkerRuntime methods =================
 
     @Test
-    fun `AgentGatewayHttpServer's only callable capabilities are the three injected AG-1D-AG-1F functions`() {
+    fun `AgentGatewayHttpServer's only callable capabilities are the four injected AG-1D-AG-1G functions`() {
         val functionTypedFields = AgentGatewayHttpServer::class.java.declaredFields.filter {
             it.type.name.startsWith("kotlin.jvm.functions.Function")
         }
-        // Exactly the three delegate fields (retrieveEvidenceAsAgent/retrieveEvidenceManifestAsAgent/
-        // submitSourceAsAgent) -- no generic "invoke arbitrary method" capability, and no fourth
-        // callable added silently.
+        // Exactly the four delegate fields (retrieveEvidenceAsAgent/retrieveEvidenceManifestAsAgent/
+        // submitSourceAsAgent/requestAcquisitionAsAgent) -- no generic "invoke arbitrary method"
+        // capability, and no fifth callable added silently.
+        //
+        // Revision history: AG-1G added requestAcquisitionAsAgent (three -> four).
         assertEquals(
-            setOf("retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent"),
+            setOf("retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent"),
             functionTypedFields.map { it.name }.toSet(),
         )
     }
@@ -622,7 +628,7 @@ class AgentGatewayHttpServerTest {
     }
 
     @Test
-    fun `no acquisition or transcription route is reachable under agent evidence`() = withFakeHarness { fake ->
+    fun `no transcription route is reachable, and acquire without an identity segment is not reachable either -- only exact evidenceArtifactId-acquire is (AG-1G)`() = withFakeHarness { fake ->
         listOf("/agent/evidence/acquire", "/agent/evidence/transcribe").forEach { path ->
             val response = send(
                 HttpRequest.newBuilder(URI.create("${fake.baseUri()}$path"))
@@ -630,11 +636,202 @@ class AgentGatewayHttpServerTest {
             )
             assertEquals(404, response.statusCode(), "unexpected route reachable: $path")
         }
+        // "/agent/evidence/acquire" as a POST has no identity segment -- distinct from the real
+        // AG-1G route "/agent/evidence/{evidenceArtifactId}/acquire" -- and must still 404.
         val postResponse = send(
             HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/acquire"))
                 .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.ofString("{}")).build(),
         )
         assertEquals(404, postResponse.statusCode())
+        assertEquals(0, fake.acquireCalls.size)
+    }
+
+    // ================= AG-1G. Governed acquisition request =================
+
+    @Test
+    fun `A -- a valid authenticated acquisition POST delegates to requestAcquisitionAsAgent with the exact id and returns 200 on Completed`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.Completed(
+            EvidenceArtifactId("evidence-1"),
+            parker.core.interfaces.DerivativeGenerationId("derivative-1"),
+            "parker-tier-a-native-v1",
+            parker.core.interfaces.EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION,
+        )
+
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(200, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"COMPLETED\""))
+        assertTrue(response.body().contains("\"derivativeGenerationId\":\"derivative-1\""))
+        assertEquals(listOf(EvidenceArtifactId("evidence-1")), fake.acquireCalls)
+    }
+
+    @Test
+    fun `AUTHORIZATION_REQUIRED maps to 409 with a narrow, opaque body`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.AuthorizationRequired(EvidenceArtifactId("evidence-1"))
+
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"AUTHORIZATION_REQUIRED\""))
+    }
+
+    @Test
+    fun `PROVIDER_NOT_READY maps to 409 with a narrow, opaque body`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.ProviderNotReady(EvidenceArtifactId("evidence-1"))
+
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"PROVIDER_NOT_READY\""))
+    }
+
+    @Test
+    fun `a NotFound acquisition result maps to 404`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.NotFound(EvidenceArtifactId("evidence-1"))
+
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(404, response.statusCode())
+    }
+
+    @Test
+    fun `a Failed acquisition result maps to 409 with only the narrow enum-derived reason`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.Failed(EvidenceArtifactId("evidence-1"), "UNSUPPORTED_SOURCE_OR_MEDIA")
+
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("UNSUPPORTED_SOURCE_OR_MEDIA"))
+    }
+
+    @Test
+    fun `a Denied acquisition result maps to 403 with a narrow error body`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.Denied(PermissionDecisionOutcome.DENIED)
+
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(403, response.statusCode())
+    }
+
+    @Test
+    fun `E -- a malformed evidence id in the acquire route is rejected with 400 before requestAcquisitionAsAgent is ever invoked`() = withFakeHarness { fake ->
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/has%20space/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(400, response.statusCode())
+        assertTrue(response.body().contains("invalid evidence artefact id"))
+        assertEquals(0, fake.acquireCalls.size)
+    }
+
+    @Test
+    fun `H (fake) -- a POST acquisition with a missing bearer token is rejected, no acquisition is invoked`() = withFakeHarness { fake ->
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.acquireCalls.size)
+    }
+
+    @Test
+    fun `I (fake) -- a POST acquisition with an invalid bearer token is rejected, no acquisition is invoked`() = withFakeHarness { fake ->
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer wrong-token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.acquireCalls.size)
+    }
+
+    @Test
+    fun `J (fake) -- a POST acquisition presenting only an Owner UI session cookie is rejected, no acquisition is invoked`() = withFakeHarness { fake ->
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Cookie", "parker_owner_session=some-real-looking-session-value")
+                .POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.acquireCalls.size)
+    }
+
+    @Test
+    fun `the acquire route ignores any request body -- no caller-selected acquisition mode, provider, or model is ever read`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.NotFound(EvidenceArtifactId("evidence-1"))
+
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token")
+                .POST(HttpRequest.BodyPublishers.ofString("""{"provider":"anything","mode":"whatever"}"""))
+                .build(),
+        )
+
+        assertEquals(404, response.statusCode())
+        assertEquals(listOf(EvidenceArtifactId("evidence-1")), fake.acquireCalls)
+    }
+
+    @Test
+    fun `T-U -- existing GET routes and the AG-1F submit route are unaffected by the new acquire route`() = withFakeHarness { fake ->
+        fake.retrieveResult = AgentGatewayEvidenceRetrievalResult.Found(EvidenceArtifactId("evidence-1"), 7)
+        fake.submitResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Registered(
+            AgentGatewayEvidenceManifestProjection(EvidenceArtifactId("evidence-1"), "e".repeat(64), 7L, null, null),
+        )
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.NotFound(EvidenceArtifactId("evidence-2"))
+
+        val getResponse = send(HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1")).header("Authorization", "Bearer $token").GET().build())
+        val submitResponse = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.ofString("content")).build(),
+        )
+        val acquireResponse = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-2/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        assertEquals(200, getResponse.statusCode())
+        assertEquals(201, submitResponse.statusCode())
+        assertEquals(404, acquireResponse.statusCode())
+        assertEquals(1, fake.retrieveCalls.size)
+        assertEquals(1, fake.submitCalls.size)
+        assertEquals(1, fake.acquireCalls.size)
+    }
+
+    @Test
+    fun `the audit log for an acquisition request contains the operation and outcome but never the bearer token`() = withFakeHarness { fake ->
+        fake.acquireResult = parker.core.runtime.AgentGatewayAcquisitionResult.AuthorizationRequired(EvidenceArtifactId("evidence-1"))
+
+        send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/evidence/evidence-1/acquire"))
+                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build(),
+        )
+
+        val lines = fake.auditLines()
+        assertEquals(1, lines.size)
+        assertTrue(lines.single().contains("ACQUISITION_AUTHORIZATION_REQUIRED"))
+        assertTrue(lines.single().contains("evidence-1"))
+        assertFalse(lines.single().contains(token))
     }
 
     // ================= R. No raw bytes/path/internal object in the response =================
@@ -724,6 +921,27 @@ class AgentGatewayHttpServerTest {
                 HttpRequest.newBuilder(URI.create("${harness.baseUri()}/agent/evidence"))
                     .header("Authorization", "Bearer $token")
                     .POST(HttpRequest.BodyPublishers.ofString("real runtime submission while Hermes is CREATED"))
+                    .build(),
+            )
+
+            assertEquals(403, response.statusCode())
+        }
+    }
+
+    // ================= H (AG-1G). Real-runtime integration: CREATED Hermes is DENIED for acquisition too =================
+
+    @Test
+    fun `through the real composed runtime, a valid authenticated acquisition request is DENIED because Hermes remains CREATED (AG-1G)`() = runTest {
+        withRealHarness(token) { harness ->
+            val identityService: parker.core.interfaces.IdentityService = harness.runtime.privateField<parker.core.interfaces.PermissionEngine>("permissionEngine").privateField("identityService")
+            val hermes = identityService.resolve(hermesPrincipalId)
+            assertNotNull(hermes)
+            assertEquals(PrincipalStatus.CREATED, hermes.status)
+
+            val response = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/agent/evidence/nonexistent-but-syntactically-valid/acquire"))
+                    .header("Authorization", "Bearer $token")
+                    .POST(HttpRequest.BodyPublishers.noBody())
                     .build(),
             )
 

@@ -240,7 +240,7 @@ internal class ExternalTranscriptionAcquisitionExecutor(
     private val coordinator: ExternalTranscriptionOwnerInvocationCoordinator,
 ) : BoundAcquisitionCapabilityExecutor {
     override suspend fun execute(request: GovernedAcquisitionExecutionRequest): BoundAcquisitionExecutorOutcome =
-        when (val outcome = coordinator.invoke(request.authoritativeSource.evidenceArtifactId)) {
+        when (val outcome = coordinator.invoke(request.principalId, request.authoritativeSource.evidenceArtifactId)) {
             is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> BoundAcquisitionExecutorOutcome.Admitted(
                 outcome.record.derivativeGenerationId, outcome.extracted.fidelity,
                 outcome.extracted.completenessState, outcome.extracted.processingProvenance,

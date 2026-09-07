@@ -35,12 +35,13 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         var sourceCalls = 0
         var manifestCalls = 0
         val ids = mutableListOf<EvidenceArtifactId>()
+        val principals = mutableListOf<PrincipalId>()
         override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact): EvidenceAcceptanceResult = error("not used")
         override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceRetrievalResult {
-            events += "source"; sourceCalls++; ids += evidenceArtifactId; return source
+            events += "source"; sourceCalls++; ids += evidenceArtifactId; principals += requestingPrincipalId; return source
         }
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult {
-            events += "manifest"; manifestCalls++; ids += evidenceArtifactId; return manifest
+            events += "manifest"; manifestCalls++; ids += evidenceArtifactId; principals += requestingPrincipalId; return manifest
         }
         override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
             throw UnsupportedOperationException("submitSource not supported by this fake")
@@ -63,7 +64,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         val custodian = FakeCustodian()
         val mechanism = FakeMechanism(events) { error("must not run") }
 
-        val outcome = coordinator(permission, custodian, mechanism).invoke(evidenceId)
+        val outcome = coordinator(permission, custodian, mechanism).invoke(owner, evidenceId)
 
         assertIs<ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised>(outcome)
         assertEquals(listOf("authorize"), events)
@@ -80,7 +81,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         val custodian = FakeCustodian()
         val mechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(candidate()) }
 
-        val outcome = coordinator(permission, custodian, mechanism).invoke(evidenceId)
+        val outcome = coordinator(permission, custodian, mechanism).invoke(owner, evidenceId)
 
         assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(outcome)
         assertEquals(listOf("authorize", "source", "manifest", "mechanism"), events)
@@ -89,6 +90,37 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         assertEquals(evidenceId, mechanism.request.sourceEvidenceArtifactId)
         assertContentEquals(bytes, mechanism.request.content)
         assertEquals(digest, mechanism.request.sourceManifestSha256.value)
+    }
+
+    @Test
+    fun `AG-1G -- invoke uses the supplied requestingPrincipalId throughout, never a fixed value`() = runTest {
+        val hermesLikePrincipal = PrincipalId("agent.hermes-ingestion-operator")
+        var admissionPrincipal: PrincipalId? = null
+        val permission = FakePermission(PermissionDecisionOutcome.APPROVED, events)
+        val custodian = FakeCustodian()
+        val mechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(candidate()) }
+
+        val outcome = coordinator(permission, custodian, mechanism) { admissionPrincipal = it }
+            .invoke(hermesLikePrincipal, evidenceId)
+
+        assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(outcome)
+        assertEquals(hermesLikePrincipal, permission.request.principalId, "the internal permission check must use the supplied principal")
+        assertTrue(custodian.principals.isNotEmpty())
+        custodian.principals.forEach { assertEquals(hermesLikePrincipal, it, "source resolution must use the supplied principal") }
+        assertEquals(hermesLikePrincipal, admissionPrincipal, "durable admission must attribute to the supplied principal")
+
+        // A second, distinct principal on a second call proves this is a genuine per-call
+        // parameter, not a value memoised from the first call or otherwise fixed.
+        events.clear()
+        val ownerLikePrincipal = PrincipalId("user.owner-distinct")
+        var secondAdmissionPrincipal: PrincipalId? = null
+        val secondPermission = FakePermission(PermissionDecisionOutcome.APPROVED, events)
+        val secondCustodian = FakeCustodian()
+        val secondMechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(candidate()) }
+        coordinator(secondPermission, secondCustodian, secondMechanism) { secondAdmissionPrincipal = it }
+            .invoke(ownerLikePrincipal, evidenceId)
+        assertEquals(ownerLikePrincipal, secondPermission.request.principalId)
+        assertEquals(ownerLikePrincipal, secondAdmissionPrincipal)
     }
 
     @Test
@@ -103,7 +135,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         cases.forEach { (custodian, expected) ->
             events.clear()
             val mechanism = FakeMechanism(events) { error("must not run") }
-            val result = coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), custodian, mechanism).invoke(evidenceId)
+            val result = coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), custodian, mechanism).invoke(owner, evidenceId)
             assertEquals(expected, result::class)
             assertEquals(0, mechanism.calls)
         }
@@ -113,7 +145,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
     fun `provider failure does not retry and contradictory structured candidate rejects`() = runTest {
         val failureMechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Failure("provider unavailable") }
         assertIs<ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure>(
-            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), failureMechanism).invoke(evidenceId),
+            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), failureMechanism).invoke(owner, evidenceId),
         )
         assertEquals(1, failureMechanism.calls)
 
@@ -121,7 +153,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         val invalid = candidate().copy(declaredReturnedPageScope = OcrPageScope(emptyList()))
         val invalidMechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(invalid) }
         assertIs<ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected>(
-            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), invalidMechanism).invoke(evidenceId),
+            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), invalidMechanism).invoke(owner, evidenceId),
         )
         assertEquals(1, invalidMechanism.calls)
     }
@@ -139,7 +171,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         val mechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(invalid) }
 
         assertIs<ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected>(
-            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), mechanism).invoke(evidenceId),
+            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), mechanism).invoke(owner, evidenceId),
         )
         assertEquals(1, mechanism.calls)
     }
@@ -155,7 +187,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         )
         val mechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(partial) }
         val outcome = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(
-            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), mechanism).invoke(evidenceId),
+            coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), FakeCustodian(), mechanism).invoke(owner, evidenceId),
         )
         assertEquals(OcrPageOutcomeKind.NOT_RETURNED, outcome.extracted.pageAccounting!!.pageOutcomes.last().outcome)
         assertEquals(1, mechanism.calls)
@@ -262,10 +294,15 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         return GovernedAcquisitionExecutionRequest(decision, resolved.input, owner)
     }
 
-    private fun coordinator(permission: PermissionEngine, custodian: EvidenceCustodian, mechanism: ExternalTranscriptionMechanism) =
-        ExternalTranscriptionOwnerInvocationCoordinator(owner, permission, custodian, mechanism, OcrStructuredResultValidator(), admission(), correlationFactory = { "correlation-unit-j" })
+    private fun coordinator(
+        permission: PermissionEngine,
+        custodian: EvidenceCustodian,
+        mechanism: ExternalTranscriptionMechanism,
+        onAdmissionPrincipal: (PrincipalId) -> Unit = {},
+    ) = ExternalTranscriptionOwnerInvocationCoordinator(permission, custodian, mechanism, OcrStructuredResultValidator(), admission(onAdmissionPrincipal), correlationFactory = { "correlation-unit-j" })
 
-    private fun admission() = ValidatedExternalTranscriptionAdmission { id, validation, _, _ ->
+    private fun admission(onPrincipal: (PrincipalId) -> Unit = {}) = ValidatedExternalTranscriptionAdmission { id, validation, principal, _ ->
+        onPrincipal(principal)
         val triple = when (val outcome = validation.outcome) {
             is OcrRecognitionOutcome.Recognised -> Triple(outcome.result, OcrDerivativeOutcomeKind.RECOGNISED, null as String?)
             is OcrRecognitionOutcome.PartialOrDegradedOutput -> Triple(outcome.partialResult, OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED, outcome.reason)

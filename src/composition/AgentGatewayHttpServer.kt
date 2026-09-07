@@ -15,6 +15,7 @@ import parker.core.interfaces.AgentGatewayAccessOutcome
 import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.PrincipalId
+import parker.core.runtime.AgentGatewayAcquisitionResult
 import parker.core.runtime.AgentGatewayEvidenceManifestResult
 import parker.core.runtime.AgentGatewayEvidenceRetrievalResult
 import parker.core.runtime.AgentGatewaySourceSubmissionResult
@@ -46,18 +47,18 @@ import parker.core.runtime.AgentGatewaySourceSubmissionResult
  *
  * This class holds no reference to `ParkerRuntime`, `PermissionEngine`, or
  * any coordinator/storage type. [retrieveEvidenceAsAgent]/
- * [retrieveEvidenceManifestAsAgent]/[submitSourceAsAgent] are the *only*
- * three capabilities it can ever invoke -- all supplied as individually
+ * [retrieveEvidenceManifestAsAgent]/[submitSourceAsAgent]/[requestAcquisitionAsAgent] are the
+ * *only* four capabilities it can ever invoke -- all supplied as individually
  * bound functions at construction (mirroring [OwnerEvidenceHttpServer]'s
  * own established "individually bound lambda parameters, never the raw
  * runtime object" construction pattern), each already performing its own
  * complete, Hermes-principal-bound [parker.core.interfaces.PermissionEngine]
- * evaluation internally (AG-1D/AG-1F). This class never constructs an
+ * evaluation internally (AG-1D/AG-1F/AG-1G). This class never constructs an
  * `ExecutionRequest`, never references a `PrincipalId` other than what
  * [authentication] resolves, never computes an authoritative source hash
  * itself, never invents an `EvidenceArtifactId`, and never accepts a
- * caller-supplied `PrincipalId`, `AuthorizationPurposeId`, action, or
- * resource of any kind.
+ * caller-supplied `PrincipalId`, `AuthorizationPurposeId`, action, resource,
+ * acquisition mode, provider, or model of any kind.
  *
  * ## Routes
  *
@@ -68,9 +69,15 @@ import parker.core.runtime.AgentGatewaySourceSubmissionResult
  *   `X-Parker-Original-Filename` → original filename, `X-Parker-Advisory-Sha256` → optional
  *   advisory hash), never multipart -- one file per request, matching Hermes's own one-source-
  *   at-a-time submission shape, never the Owner UI's own multi-file convenience-upload shape.
+ * - `POST /agent/evidence/{evidenceArtifactId}/acquire` (AG-1G) → [requestAcquisitionAsAgent] --
+ *   no request body of any kind is read as input; `evidenceArtifactId` is the only
+ *   caller-supplied fact. Fully synchronous: the response is the final governed acquisition
+ *   result, never a "started"/"accepted" placeholder requiring a separate poll.
  *
- * No other method or path is recognised. No acquisition, transcription, HFR, case, or deletion
- * route exists anywhere in this class.
+ * No other method or path is recognised. No transcription, HFR, case, or deletion route exists
+ * anywhere in this class, and no acquisition, provider, or egress-authorisation *logic* exists
+ * here either -- [requestAcquisitionAsAgent] is a single opaque delegation, exactly like the
+ * other three capabilities.
  */
 class AgentGatewayHttpServer(
     private val bindAddress: String,
@@ -79,6 +86,7 @@ class AgentGatewayHttpServer(
     private val retrieveEvidenceAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayEvidenceRetrievalResult,
     private val retrieveEvidenceManifestAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayEvidenceManifestResult,
     private val submitSourceAsAgent: suspend (CandidateEvidenceArtifact, String?) -> AgentGatewaySourceSubmissionResult,
+    private val requestAcquisitionAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayAcquisitionResult,
     private val audit: AgentGatewayAccessAudit,
     private val logger: ParkerLogger,
 ) {
@@ -138,6 +146,14 @@ class AgentGatewayHttpServer(
                 if (exchange.requestMethod == "POST" && exchange.requestURI.path == "/agent/evidence") {
                     handleSubmit(exchange, correlationId, principalId)
                     return
+                }
+
+                if (exchange.requestMethod == "POST") {
+                    val postSegments = exchange.requestURI.path.removePrefix("/agent/evidence/").split('/').filter { it.isNotEmpty() }
+                    if (postSegments.size == 2 && postSegments[1] == "acquire") {
+                        handleAcquire(exchange, correlationId, principalId, postSegments[0])
+                        return
+                    }
                 }
 
                 if (exchange.requestMethod != "GET") {
@@ -298,6 +314,50 @@ class AgentGatewayHttpServer(
             }
         }
 
+        /**
+         * Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request). No request body of any
+         * kind is read as input -- any body present is discarded, unread, exactly like the GET
+         * routes above. `evidenceArtifactId` is the only caller-supplied fact; no acquisition
+         * mode, provider, or model may ever be selected here. Contains no acquisition, provider,
+         * or egress logic of its own -- [requestAcquisitionAsAgent] is the entire delegation.
+         */
+        private fun handleAcquire(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val id = parseEvidenceId(exchange, correlationId, principalId, rawId) ?: return
+            when (val result = runBlocking { requestAcquisitionAsAgent(id) }) {
+                is AgentGatewayAcquisitionResult.Completed -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.ACQUISITION_COMPLETED)
+                    writeJson(exchange, 200, jsonObject(
+                        "status" to "COMPLETED",
+                        "evidenceArtifactId" to result.evidenceArtifactId.value,
+                        "derivativeGenerationId" to result.derivativeGenerationId.value,
+                        "capabilityId" to result.capabilityId,
+                        "mechanism" to result.mechanism.name,
+                    ))
+                }
+                is AgentGatewayAcquisitionResult.AuthorizationRequired -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.ACQUISITION_AUTHORIZATION_REQUIRED)
+                    writeJson(exchange, 409, jsonObject("status" to "AUTHORIZATION_REQUIRED", "evidenceArtifactId" to id.value))
+                }
+                is AgentGatewayAcquisitionResult.ProviderNotReady -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.ACQUISITION_PROVIDER_NOT_READY)
+                    writeJson(exchange, 409, jsonObject("status" to "PROVIDER_NOT_READY", "evidenceArtifactId" to id.value))
+                }
+                is AgentGatewayAcquisitionResult.NotFound -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.NOT_FOUND)
+                    writeJson(exchange, 404, jsonObject("error" to "not found"))
+                }
+                is AgentGatewayAcquisitionResult.Failed -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.ACQUISITION_FAILED)
+                    writeJson(exchange, 409, jsonObject("status" to "FAILED", "evidenceArtifactId" to id.value, "reason" to result.reason))
+                }
+                is AgentGatewayAcquisitionResult.Denied -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied"))
+                }
+            }
+        }
+
         private fun submissionJson(status: String, projection: parker.core.runtime.AgentGatewayEvidenceManifestProjection) = jsonObject(
             "status" to status,
             "evidenceArtifactId" to projection.evidenceArtifactId.value,
@@ -391,6 +451,7 @@ class AgentGatewayHttpServer(
         const val RETRIEVE_ACTION_NAME = "agent-gateway.evidence.retrieve"
         const val RETRIEVE_MANIFEST_ACTION_NAME = "agent-gateway.evidence.retrieve-manifest"
         const val SUBMIT_ACTION_NAME = "agent-gateway.evidence.submit"
+        const val ACQUIRE_ACTION_NAME = "agent-gateway.evidence.acquire"
         const val ORIGINAL_FILENAME_HEADER = "X-Parker-Original-Filename"
         const val ADVISORY_SHA256_HEADER = "X-Parker-Advisory-Sha256"
 

@@ -22,9 +22,28 @@ interface ExternalTranscriptionInvocationObserver {
     companion object { val NONE = object : ExternalTranscriptionInvocationObserver {} }
 }
 
-/** Owner-bound authorization, custody verification, one external invocation, and pure validation. */
+/**
+ * Custody verification, one external invocation, and pure validation -- gated by the exact
+ * caller-supplied [PrincipalId] passed to [invoke], never a principal fixed at construction.
+ *
+ * ## Principal-parameterised, not principal-fixed (Parker Agent Gateway AG-1G correction)
+ *
+ * This class previously held a constructor-fixed `ownerPrincipalId`, used unconditionally for its
+ * own internal permission check, source resolution, and durable admission/provenance -- meaning
+ * every caller, regardless of who actually initiated the request, was silently attributed to
+ * whichever principal this instance was constructed with. That was safe as long as the only
+ * production callers were genuinely Owner-only entry points (`ParkerRuntime.invokeExternalTranscriptionAsOwner`,
+ * `FidelityFirstAcceptanceCoordinator`), but AG-1G's own Hermes-scoped governed-acquisition path
+ * (`ExternalTranscriptionAcquisitionExecutor`) reuses this exact same, shared coordinator instance
+ * -- and a constructor-fixed Owner principal there would silently misattribute a Hermes-initiated
+ * acquisition to Owner at the one stage (internal permission check, source resolution, durable
+ * admission) this class itself controls. [invoke] now takes [requestingPrincipalId] as an explicit
+ * per-call parameter instead -- every existing Owner-only call site now passes
+ * `PrincipalId(config.ownerPrincipalId)` (or its own already-held owner-scoped field) explicitly,
+ * preserving identical behaviour; AG-1G's own Hermes-scoped call site passes Hermes's principal.
+ * No second coordinator, no second pipeline -- the identical class, parameterised correctly.
+ */
 class ExternalTranscriptionOwnerInvocationCoordinator(
-    private val ownerPrincipalId: PrincipalId,
     private val permissionEngine: PermissionEngine,
     private val evidenceCustodian: EvidenceCustodian,
     private val externalMechanism: ExternalTranscriptionMechanism,
@@ -37,15 +56,15 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
 ) {
     private val sourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
 
-    suspend fun invoke(evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {
+    suspend fun invoke(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionOwnerInvocationOutcome {
         val decision = permissionEngine.evaluate(
-            ExternalTranscriptionInvocationGate.buildExecutionRequest(ownerPrincipalId, evidenceArtifactId),
+            ExternalTranscriptionInvocationGate.buildExecutionRequest(requestingPrincipalId, evidenceArtifactId),
         )
         if (decision.decision != PermissionDecisionOutcome.APPROVED &&
             decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
         ) return ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised
 
-        val trusted = when (val resolution = sourceResolver.resolveSourceThenManifest(ownerPrincipalId, evidenceArtifactId)) {
+        val trusted = when (val resolution = sourceResolver.resolveSourceThenManifest(requestingPrincipalId, evidenceArtifactId)) {
             is AuthoritativeAcquisitionResolution.Verified -> resolution.input
             AuthoritativeAcquisitionResolution.ManifestNotFound -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestNotFound(evidenceArtifactId)
             is AuthoritativeAcquisitionResolution.ManifestRejected,
@@ -93,7 +112,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
 
         return when (val validated = validator.validate(candidate)) {
             is OcrStructuredValidationOutcome.Validated -> when (val admission = durableAdmission.admit(
-                evidenceArtifactId, validated, ownerPrincipalId, correlationFactory(),
+                evidenceArtifactId, validated, requestingPrincipalId, correlationFactory(),
             )) {
                 is OcrDerivativeGenerationCoordinationOutcome.Admitted -> {
                     invocationObserver.generationAdmitted()

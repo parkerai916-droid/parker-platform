@@ -4,6 +4,7 @@ import java.time.Instant
 import java.util.UUID
 import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.CandidateEvidenceArtifact
+import parker.core.interfaces.EvidenceAcquisitionRoutingOutcome
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceManifestRetrievalResult
@@ -82,6 +83,18 @@ internal class AgentGatewayEvidenceProjection(
     private val agentGatewayPurpose: AuthorizationPurposeId,
     private val permissionEngine: PermissionEngine,
     private val evidenceCustodian: EvidenceCustodian,
+    /**
+     * Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section 20). The
+     * second, Hermes-principal-scoped instance of the identical, unmodified
+     * `GovernedAcquisitionOwnerWorkflow` class Section 9 permits -- sharing every other
+     * dependency (registry, router, execution coordinator, evidence custodian,
+     * external-egress-authorisation source) by reference with `ParkerRuntime`'s own
+     * owner-composed instance. `null` only for compositions that never wire governed acquisition
+     * at all (mirrors this class's other constructor defaults' own "always supplied in
+     * production" convention) -- [requestAcquisition] returns [AgentGatewayAcquisitionResult.Failed]
+     * rather than throwing if absent.
+     */
+    private val governedAcquisitionWorkflow: GovernedAcquisitionOwnerWorkflow? = null,
     private val clock: () -> Instant = Instant::now,
 ) {
 
@@ -166,6 +179,127 @@ internal class AgentGatewayEvidenceProjection(
         }
     }
 
+    /**
+     * Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section 20).
+     * Performs exactly one [PermissionEngine.evaluate] call using the Agent-Gateway-specific
+     * acquisition-request shape (Hermes's own fixed principal, the fixed gateway purpose, the
+     * exact `agent-gateway.evidence.acquire` verb/resource -- never a caller-supplied one) and,
+     * only if approved, delegates unchanged to [governedAcquisitionWorkflow] -- the same,
+     * unmodified `GovernedAcquisitionOwnerWorkflow` class the Owner UI's own governed acquisition
+     * route already uses, Hermes-principal-scoped. This class invents no routing, source
+     * verification, egress-authorisation, or provider logic of its own.
+     *
+     * `evaluate` is called first; on [GovernedAcquisitionOwnerEvaluation.Evaluated] with a
+     * [EvidenceAcquisitionRoutingOutcome.Selected] routing outcome, `execute` is called with
+     * exactly the capability id that same evaluation just selected -- never a caller-supplied
+     * "expected capability" (Hermes never sees or chooses a capability; Parker decides the
+     * entire path). Passing the freshly-computed id back in as the expected one is safe by
+     * construction: `execute` internally re-evaluates and compares against it, so a genuine race
+     * between these two calls naturally falls through to [GovernedAcquisitionOwnerExecution.StaleOrUnavailable],
+     * never a mismatched or stale acquisition.
+     */
+    suspend fun requestAcquisition(evidenceArtifactId: EvidenceArtifactId): AgentGatewayAcquisitionResult {
+        val decision = permissionEngine.evaluate(
+            buildRequest(
+                resourceId = AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID,
+                actionName = AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME,
+                requestIdPrefix = "agent-gateway-evidence-acquire",
+                contextId = evidenceArtifactId.value,
+            ),
+        )
+        if (!decision.isApproved()) {
+            return AgentGatewayAcquisitionResult.Denied(decision.decision)
+        }
+        val workflow = governedAcquisitionWorkflow
+            ?: return AgentGatewayAcquisitionResult.Failed(evidenceArtifactId, "ACQUISITION_NOT_CONFIGURED")
+        return mapEvaluation(evidenceArtifactId, workflow.evaluate(evidenceArtifactId), workflow)
+    }
+
+    private suspend fun mapEvaluation(
+        evidenceArtifactId: EvidenceArtifactId,
+        evaluation: GovernedAcquisitionOwnerEvaluation,
+        workflow: GovernedAcquisitionOwnerWorkflow,
+    ): AgentGatewayAcquisitionResult = when (evaluation) {
+        is GovernedAcquisitionOwnerEvaluation.SourceUnavailable ->
+            if (evaluation.reason == "SOURCE_MANIFEST_NOT_FOUND") {
+                AgentGatewayAcquisitionResult.NotFound(evidenceArtifactId)
+            } else {
+                AgentGatewayAcquisitionResult.Failed(evidenceArtifactId, evaluation.reason)
+            }
+        is GovernedAcquisitionOwnerEvaluation.Evaluated -> when (val routing = evaluation.routing) {
+            is EvidenceAcquisitionRoutingOutcome.Selected -> when (
+                val execution = workflow.execute(evidenceArtifactId, routing.decision.capability.capabilityId)
+            ) {
+                is GovernedAcquisitionOwnerExecution.Executed -> mapExecutionResult(evidenceArtifactId, execution.result)
+                is GovernedAcquisitionOwnerExecution.StaleOrUnavailable -> mapEvaluation(evidenceArtifactId, execution.current, workflow)
+            }
+            is EvidenceAcquisitionRoutingOutcome.NoEligibleCapability -> mapNoSelection(evidenceArtifactId, routing.reasons)
+            is EvidenceAcquisitionRoutingOutcome.Indeterminate -> mapNoSelection(evidenceArtifactId, routing.reasons)
+            is EvidenceAcquisitionRoutingOutcome.Ambiguous -> mapNoSelection(evidenceArtifactId, routing.reasons)
+        }
+    }
+
+    /**
+     * The router's own [EvidenceAcquisitionRoutingOutcome.NoEligibleCapability.reasons] (and
+     * [EvidenceAcquisitionRoutingOutcome.Indeterminate.reasons]/[EvidenceAcquisitionRoutingOutcome.Ambiguous.reasons])
+     * is a *flat union* across every considered capability's own independent ineligibility
+     * reasons (`DeterministicEvidenceAcquisitionRouter.noEligibleReasons`) -- it always includes
+     * the constant [parker.core.interfaces.AcquisitionNoSelectionReason.NO_ELIGIBLE_CAPABILITY]
+     * marker, plus one entry per *other* capability's own distinct failure reason. A disabled
+     * capability (Local OCR, in production) contributes
+     * [parker.core.interfaces.AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY] to
+     * this same set on *every* submission regardless of media type, so its mere presence does not
+     * by itself mean "every otherwise-eligible capability is disabled" -- it may simply mean one
+     * permanently-disabled, already-inapplicable capability happened to also be considered.
+     * [AgentGatewayAcquisitionResult.ProviderNotReady] is therefore reported only when disablement
+     * is the *entire* remaining explanation (no unsupported-media/fidelity/limit reason also
+     * present) -- otherwise the more informative [AgentGatewayAcquisitionResult.Failed] is
+     * returned, echoing every reason. [AgentGatewayAcquisitionResult.AuthorizationRequired] always
+     * takes priority when present -- it is the one actionable state a human owner, not Hermes,
+     * must resolve, regardless of what else also failed to match.
+     */
+    private fun mapNoSelection(
+        evidenceArtifactId: EvidenceArtifactId,
+        reasons: Set<parker.core.interfaces.AcquisitionNoSelectionReason>,
+    ): AgentGatewayAcquisitionResult {
+        val meaningful = reasons - parker.core.interfaces.AcquisitionNoSelectionReason.NO_ELIGIBLE_CAPABILITY
+        return when {
+            parker.core.interfaces.AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED in meaningful ->
+                AgentGatewayAcquisitionResult.AuthorizationRequired(evidenceArtifactId)
+            meaningful.isNotEmpty() && meaningful == setOf(parker.core.interfaces.AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY) ->
+                AgentGatewayAcquisitionResult.ProviderNotReady(evidenceArtifactId)
+            else -> AgentGatewayAcquisitionResult.Failed(evidenceArtifactId, reasons.joinToString(",") { it.name }.ifEmpty { "NO_ELIGIBLE_CAPABILITY" })
+        }
+    }
+
+    private fun mapExecutionResult(
+        evidenceArtifactId: EvidenceArtifactId,
+        result: GovernedAcquisitionExecutionResult,
+    ): AgentGatewayAcquisitionResult = when (result) {
+        is GovernedAcquisitionExecutionResult.Admitted -> AgentGatewayAcquisitionResult.Completed(
+            evidenceArtifactId = evidenceArtifactId,
+            derivativeGenerationId = result.derivativeGenerationId,
+            capabilityId = result.routingProvenance.capabilityId,
+            mechanism = result.routingProvenance.mechanism,
+        )
+        is GovernedAcquisitionExecutionResult.Failed -> {
+            val routingReasons = when (val routing = result.routingOutcome) {
+                is EvidenceAcquisitionRoutingOutcome.NoEligibleCapability -> routing.reasons
+                is EvidenceAcquisitionRoutingOutcome.Indeterminate -> routing.reasons
+                is EvidenceAcquisitionRoutingOutcome.Ambiguous -> routing.reasons
+                is EvidenceAcquisitionRoutingOutcome.Selected, null -> emptySet()
+            }
+            val meaningful = routingReasons - parker.core.interfaces.AcquisitionNoSelectionReason.NO_ELIGIBLE_CAPABILITY
+            if (parker.core.interfaces.AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED in meaningful) {
+                AgentGatewayAcquisitionResult.AuthorizationRequired(evidenceArtifactId)
+            } else if (meaningful.isNotEmpty() && meaningful == setOf(parker.core.interfaces.AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)) {
+                AgentGatewayAcquisitionResult.ProviderNotReady(evidenceArtifactId)
+            } else {
+                AgentGatewayAcquisitionResult.Failed(evidenceArtifactId, result.reason.name)
+            }
+        }
+    }
+
     private fun projectionOf(evidenceArtifactId: EvidenceArtifactId, manifest: parker.core.interfaces.EvidenceSourceManifest) =
         AgentGatewayEvidenceManifestProjection(
             evidenceArtifactId = evidenceArtifactId,
@@ -203,9 +337,11 @@ internal class AgentGatewayEvidenceProjection(
         const val AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME = "agent-gateway.evidence.retrieve"
         const val AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME = "agent-gateway.evidence.retrieve-manifest"
         const val AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME = "agent-gateway.evidence.submit"
+        const val AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME = "agent-gateway.evidence.acquire"
         val AGENT_GATEWAY_EVIDENCE_RETRIEVAL_RESOURCE_ID = ResourceId("agent-gateway-evidence-retrieval")
         val AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID = ResourceId("agent-gateway-evidence-manifest-retrieval")
         val AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-evidence-submit")
+        val AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID = ResourceId("agent-gateway-evidence-acquire")
     }
 }
 
@@ -264,4 +400,61 @@ sealed class AgentGatewaySourceSubmissionResult {
      * explanation crosses this projection boundary.
      */
     data class Conflict(val evidenceArtifactId: EvidenceArtifactId, val computedSha256: String, val reason: String) : AgentGatewaySourceSubmissionResult()
+}
+
+/**
+ * AG-1G's own narrow projection of governed acquisition's existing result types
+ * ([GovernedAcquisitionOwnerEvaluation]/[GovernedAcquisitionOwnerExecution]/
+ * [GovernedAcquisitionExecutionResult]). Every variant carries only an opaque identifier, a
+ * narrow enum-derived diagnostic string, or -- for [Completed] -- the already-opaque
+ * [parker.core.interfaces.DerivativeGenerationId]/[parker.core.interfaces.EvidenceAcquisitionMechanism]
+ * the existing machinery itself already returns. No raw source bytes, filesystem path, provider
+ * credential, or stack trace crosses this projection boundary; [Failed.reason] is always derived
+ * from an existing Parker enum's own `name`, never a caught exception's message.
+ *
+ * Governed acquisition is fully synchronous end-to-end (`GovernedAcquisitionOwnerWorkflow.execute`
+ * suspends until the selected executor -- Tier A native extraction, Local OCR, or the external
+ * transcription invocation coordinator -- itself returns), so [Completed] is the final result, not
+ * a "started" or "accepted" placeholder; there is no separate status/polling projection because
+ * no asynchronous job system exists anywhere in this call chain.
+ *
+ * No `AlreadyComplete` variant: the existing governed acquisition machinery (`GovernedAcquisitionOwnerWorkflow`,
+ * `GovernedAcquisitionExecutionCoordinator`, and every `BoundAcquisitionCapabilityExecutor`) carries
+ * no signal distinguishing "this evidence already has a derivative" from an ordinary execution
+ * outcome -- inventing one here would assert a fact current Parker semantics cannot back.
+ */
+sealed class AgentGatewayAcquisitionResult {
+
+    /** Governed acquisition executed and durably admitted a derivative. Terminal -- acquisition is synchronous. */
+    data class Completed(
+        val evidenceArtifactId: EvidenceArtifactId,
+        val derivativeGenerationId: parker.core.interfaces.DerivativeGenerationId,
+        val capabilityId: String,
+        val mechanism: parker.core.interfaces.EvidenceAcquisitionMechanism,
+    ) : AgentGatewayAcquisitionResult()
+
+    /**
+     * Governed routing determined that the selected capability requires external egress, and the
+     * exact-target authorisation Section 9's external-egress fail-closed contract requires is
+     * absent. Hermes cannot satisfy this itself -- see this class's own file KDoc, "Egress
+     * authorisation."
+     */
+    data class AuthorizationRequired(val evidenceArtifactId: EvidenceArtifactId) : AgentGatewayAcquisitionResult()
+
+    /** Governed routing determined every otherwise-eligible capability is disabled or not yet ready (e.g. unaccepted provider configuration). */
+    data class ProviderNotReady(val evidenceArtifactId: EvidenceArtifactId) : AgentGatewayAcquisitionResult()
+
+    /** No source manifest exists under this exact identity -- distinct from a routing/execution failure. */
+    data class NotFound(val evidenceArtifactId: EvidenceArtifactId) : AgentGatewayAcquisitionResult()
+
+    /**
+     * Any other governed-acquisition failure -- routing found no eligible capability for a reason
+     * other than egress/readiness, source verification failed, or the selected executor itself
+     * failed. [reason] is always one of a fixed, already-existing Parker enum's own constant
+     * names (never free text, never an exception message).
+     */
+    data class Failed(val evidenceArtifactId: EvidenceArtifactId, val reason: String) : AgentGatewayAcquisitionResult()
+
+    /** The Agent-Gateway-specific acquisition-request permission check was not approved. */
+    data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewayAcquisitionResult()
 }

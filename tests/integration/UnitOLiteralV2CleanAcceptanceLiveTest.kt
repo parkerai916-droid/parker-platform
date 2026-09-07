@@ -50,13 +50,14 @@ class UnitOLiteralV2CleanAcceptanceLiveTest {
             val contents = FileSystemDerivativeContentStorage(contentRoot)
             val admission = DerivativeGenerationCoordinator(CsvStructuralExtractor { error("CSV unreachable") }, generations,
                 DocumentIngestionAudit { }, now = { Instant.now() }, contentStorage = contents)
-            val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(PrincipalId("owner.unit-o4r.acceptance"), permission,
+            val acceptancePrincipalId = PrincipalId("owner.unit-o4r.acceptance")
+            val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(permission,
                 custodian, adapter.mechanism, OcrStructuredResultValidator(), admission, invocationObserver = tracker)
             val boundary = UnitOLiteralV2CleanAcceptanceBoundary(UnitOManifestMetadataReader { id ->
                 UnitOReadOnlyManifestAcceptanceBridge.read(manifestRoot, id)?.let {
                     UnitOAuthoritativeManifestFacts(it.evidenceArtifactId, it.sha256, it.byteLength, it.mediaType)
                 }
-            }, coordinator::invoke)
+            }, { id -> coordinator.invoke(acceptancePrincipalId, id) })
             val input = UnitOLiteralV2AcceptancePreflightInput(
                 System.getProperty("parker.unitO4r.literalV2.acceptance.enabled") == "true", authorization, evidenceId, commit,
                 readiness, credentialReady, resultPath,

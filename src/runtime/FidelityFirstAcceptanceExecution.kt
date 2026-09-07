@@ -193,7 +193,7 @@ class FidelityFirstAcceptanceCoordinator(
         }
 
         val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(
-            ownerPrincipalId, permissionEngine, custodian, mechanismFactory(tracker), validator, durableAdmission,
+            permissionEngine, custodian, mechanismFactory(tracker), validator, durableAdmission,
             invocationObserver = tracker,
             executionBinding = ExternalTranscriptionExecutionBinding(
                 executionIdentity.safeRequestId,
@@ -202,7 +202,7 @@ class FidelityFirstAcceptanceCoordinator(
             ),
         )
         return try {
-            when (val outcome = coordinator.invoke(evidenceId)) {
+            when (val outcome = coordinator.invoke(ownerPrincipalId, evidenceId)) {
                 is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> {
                     tracker.terminalSuccess(outcome.record.derivativeGenerationId.value)
                     FidelityFirstAcceptanceOutcome.Admitted(authorityId, authority.attemptId, outcome.record.derivativeGenerationId)

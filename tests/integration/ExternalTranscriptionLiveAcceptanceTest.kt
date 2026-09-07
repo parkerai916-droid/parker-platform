@@ -59,11 +59,11 @@ class ExternalTranscriptionLiveAcceptanceTest {
             contentStorage = contentStorage,
         )
         val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(
-            owner, permission, custodian, adapterHandle.mechanism, OcrStructuredResultValidator(), admission,
+            permission, custodian, adapterHandle.mechanism, OcrStructuredResultValidator(), admission,
             correlationFactory = { "unit-n-live-correlation" },
         )
 
-        val outcome = coordinator.invoke(evidenceId)
+        val outcome = coordinator.invoke(owner, evidenceId)
         val admitted = outcome as? ExternalTranscriptionOwnerInvocationOutcome.Admitted
             ?: error(
                 "live invocation did not admit: ${safeOutcome(outcome)}" +

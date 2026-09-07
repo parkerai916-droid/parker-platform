@@ -818,6 +818,10 @@ class ParkerRuntime(
                 // Parker Agent Gateway, AG-1F: the submission counterpart's own fixed resource --
                 // still ResourceType.DOCUMENT, still no new ResourceType.
                 Triple(AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Submission"),
+                // Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9,
+                // Section 11, Section 20): the acquisition-request counterpart's own fixed
+                // resource -- still ResourceType.DOCUMENT, still no new ResourceType.
+                Triple(AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Acquisition Request"),
             ).forEach { (resourceId, resourceType, displayName) ->
                 resourceRegistry.register(
                     Resource(
@@ -983,6 +987,21 @@ class ParkerRuntime(
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
+                ),
+            )
+            // Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section
+            // 11, Section 20): one new, distinct verb phrase for requesting governed acquisition
+            // of an already-registered EvidenceArtifactId -- a write/create operation (governed
+            // acquisition may durably admit a new derivative), mirroring
+            // AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME's own identical reasoning immediately
+            // above. Reuses the identical existing (WRITE, DOCUMENT) pair -- no new
+            // PermissionAction or ResourceType is introduced. See the exact-verb DENIED guard
+            // below, which prevents this from silently resolving through the pre-existing coarse
+            // (WRITE, DOCUMENT) approval.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
                 ),
             )
@@ -1305,6 +1324,39 @@ class ParkerRuntime(
                     authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
                     proposedAction = AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME,
                 ),
+                // Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9,
+                // Section 11, Section 20): the same fail-closed guard-then-override shape as
+                // AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME's own two rules immediately above,
+                // applied to the one new acquisition-request verb -- specificity 1 (the guard)
+                // outranks the pre-existing coarse (WRITE, DOCUMENT) approval (specificity 0)
+                // for this verb only, leaving that coarse rule, and every other verb it still
+                // governs (including Owner's own evidence.accept and
+                // agent-gateway.evidence.submit), completely unchanged. Specificity 2 (the
+                // override) outranks the guard only for a request carrying the exact, active,
+                // gateway-originated Authorization Purpose. This is the ONLY thing standing
+                // between an ACTIVE Hermes principal and reachability of the governed acquisition
+                // workflow at all: GovernedAcquisitionOwnerWorkflow itself performs no
+                // PermissionEngine check of its own, and the downstream calls it makes
+                // (EvidenceCustodian.retrieveManifest, AuthoritativeAcquisitionSourceResolver.resolve)
+                // resolve through the pre-existing coarse (READ, DOCUMENT)/(WRITE, DOCUMENT)
+                // approvals -- which carry no purpose or principal restriction at all -- for any
+                // ACTIVE principal already. Every principal-binding invariant documented on the
+                // AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME rules above applies identically here.
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME,
+                ),
             ) + (if (humanFidelityReviewConfigured) listOf(
                 PermissionPolicyRule(
                     action = PermissionAction.WRITE,
@@ -1466,16 +1518,14 @@ class ParkerRuntime(
             defaultEvidenceCustodian,
         )
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
-        // Parker Agent Gateway, AG-1D (Section 20): Hermes's own fixed PrincipalId and the Agent
-        // Gateway's own fixed AuthorizationPurposeId are supplied here, once, at composition
-        // time -- the only place either value is ever threaded into this projection. No caller
-        // of retrieveEvidenceAsAgent/retrieveEvidenceManifestAsAgent below can substitute either.
-        agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
-            hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
-            agentGatewayPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
-            permissionEngine = permissionEngine,
-            evidenceCustodian = defaultEvidenceCustodian,
-        )
+        // Parker Agent Gateway, AG-1D/AG-1G (Section 20): agentGatewayEvidenceProjection's own
+        // construction is deferred to immediately after the governed acquisition machinery is
+        // built, below -- AG-1G's own Hermes-principal-scoped GovernedAcquisitionOwnerWorkflow
+        // instance is one of its constructor dependencies, and that instance cannot exist until
+        // the shared registry/router/execution-coordinator it reuses (by reference) with the
+        // owner-scoped instance are themselves constructed. This is a pure move: nothing between
+        // this point and that later construction site ever reads agentGatewayEvidenceProjection
+        // (a lateinit var), so no behaviour changes for any earlier-constructed component.
         // Document Ingestion, Derivative-to-Memory-Core Registration. Depends on memoryCore and
         // permissionEngine only -- never evidenceCustodian, never DerivativeGenerationStorage,
         // never either existing Document Ingestion owner-invocation coordinator (Scope Lock
@@ -1921,7 +1971,6 @@ class ParkerRuntime(
         // Unit J durable admission remains downstream of the explicitly owner-invoked mechanism;
         // constructing either mechanism performs no provider request.
         externalTranscriptionOwnerInvocationCoordinator = ExternalTranscriptionOwnerInvocationCoordinator(
-            ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
             permissionEngine = permissionEngine,
             evidenceCustodian = defaultEvidenceCustodian,
             externalMechanism = externalTranscriptionMechanism,
@@ -2155,48 +2204,99 @@ class ParkerRuntime(
             else AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
         )
         val acquisitionRouter = DeterministicEvidenceAcquisitionRouter()
+        // Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section 20).
+        // Extracted into its own local val -- previously constructed inline as an anonymous
+        // constructor argument -- so the identical instance (never a second, differently-built
+        // one) can be shared by reference with the Hermes-principal-scoped
+        // GovernedAcquisitionOwnerWorkflow below. Pure extraction: the owner-scoped workflow
+        // immediately below receives this exact same object, so its own behaviour is completely
+        // unchanged by this refactor.
+        val governedAcquisitionExecutionCoordinator = GovernedAcquisitionExecutionCoordinator(
+            acquisitionRegistry, acquisitionRouter, defaultEvidenceCustodian,
+            listOf(
+                TierANativeAcquisitionExecutor(
+                    AcquisitionExecutorBinding(
+                        ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
+                        EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION,
+                        null,
+                    ),
+                    tierAOwnerInvocationCoordinator,
+                ),
+                LocalOcrAcquisitionExecutor(
+                    AcquisitionExecutorBinding(
+                        ProductionAcquisitionCapabilityCatalogue.LOCAL_OCR_CAPABILITY_ID,
+                        EvidenceAcquisitionMechanism.LOCAL_OCR,
+                        null,
+                    ),
+                    tierBOcrOwnerInvocationCoordinator,
+                ),
+                // REAL-DOCUMENT-2F: the already-existing executor and coordinator for the
+                // already-governed "enhanced transcription" invocation boundary -- no new
+                // provider invocation path. The binding's configurationIdentity is read from
+                // the same capability template the projection above is derived from, so a
+                // routing decision can only ever be dispatched here if it selected the exact
+                // same configuration this executor is bound to (GovernedAcquisitionExecutionCoordinator's
+                // own CAPABILITY_BINDING_MISMATCH check, unchanged).
+                ExternalTranscriptionAcquisitionExecutor(
+                    AcquisitionExecutorBinding(
+                        ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
+                        EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
+                        fidelityFirstCapabilityTemplate.providerConfiguration?.configurationIdentity,
+                    ),
+                    externalTranscriptionOwnerInvocationCoordinator,
+                ),
+            ),
+        )
+        // Parker Agent Gateway, AG-1G (Section 9, Section 20): reused, unmodified by reference --
+        // never a second, independently-constructed lambda that could diverge from the owner
+        // instance's own egress-authorisation source.
+        val externalEgressAuthorised: suspend (EvidenceArtifactId) -> Boolean =
+            { id -> externalTranscriptionAuthorizationCoordinator?.isAuthorized(id) == true }
         governedAcquisitionOwnerWorkflow = GovernedAcquisitionOwnerWorkflow(
             ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
             evidenceCustodian = defaultEvidenceCustodian,
             registry = acquisitionRegistry,
             router = acquisitionRouter,
-            executionCoordinator = GovernedAcquisitionExecutionCoordinator(
-                acquisitionRegistry, acquisitionRouter, defaultEvidenceCustodian,
-                listOf(
-                    TierANativeAcquisitionExecutor(
-                        AcquisitionExecutorBinding(
-                            ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
-                            EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION,
-                            null,
-                        ),
-                        tierAOwnerInvocationCoordinator,
-                    ),
-                    LocalOcrAcquisitionExecutor(
-                        AcquisitionExecutorBinding(
-                            ProductionAcquisitionCapabilityCatalogue.LOCAL_OCR_CAPABILITY_ID,
-                            EvidenceAcquisitionMechanism.LOCAL_OCR,
-                            null,
-                        ),
-                        tierBOcrOwnerInvocationCoordinator,
-                    ),
-                    // REAL-DOCUMENT-2F: the already-existing executor and coordinator for the
-                    // already-governed "enhanced transcription" invocation boundary -- no new
-                    // provider invocation path. The binding's configurationIdentity is read from
-                    // the same capability template the projection above is derived from, so a
-                    // routing decision can only ever be dispatched here if it selected the exact
-                    // same configuration this executor is bound to (GovernedAcquisitionExecutionCoordinator's
-                    // own CAPABILITY_BINDING_MISMATCH check, unchanged).
-                    ExternalTranscriptionAcquisitionExecutor(
-                        AcquisitionExecutorBinding(
-                            ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
-                            EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
-                            fidelityFirstCapabilityTemplate.providerConfiguration?.configurationIdentity,
-                        ),
-                        externalTranscriptionOwnerInvocationCoordinator,
-                    ),
-                ),
-            ),
-            externalEgressAuthorised = { id -> externalTranscriptionAuthorizationCoordinator?.isAuthorized(id) == true },
+            executionCoordinator = governedAcquisitionExecutionCoordinator,
+            externalEgressAuthorised = externalEgressAuthorised,
+        )
+        // Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section 20).
+        // The one candidate Section 9 itself named as permitted "if AG-1G's own investigation
+        // demonstrates it is the narrowest governance-compatible means available": a second,
+        // principal-scoped instance of the identical, UNMODIFIED GovernedAcquisitionOwnerWorkflow
+        // class, sharing every other dependency (registry, router, executionCoordinator,
+        // evidenceCustodian, externalEgressAuthorised) by reference with the owner-composed
+        // instance immediately above -- never a second execution path, never a modified public
+        // signature. Investigated and rejected alternative: reshaping
+        // GovernedAcquisitionOwnerWorkflow's own `evaluate`/`execute` to accept a per-call
+        // `requestingPrincipalId` parameter instead of a constructor-fixed one -- technically
+        // possible (the class holds no other principal-scoped internal state), but strictly
+        // wider in blast radius for zero additional safety: it would touch this already-tested,
+        // frozen class's own public shape and both of ParkerRuntime's existing owner call sites
+        // (evaluateGovernedAcquisitionAsOwner/executeGovernedAcquisitionAsOwner), where
+        // constructing one additional, fully independent instance touches neither.
+        val hermesGovernedAcquisitionWorkflow = GovernedAcquisitionOwnerWorkflow(
+            ownerPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
+            evidenceCustodian = defaultEvidenceCustodian,
+            registry = acquisitionRegistry,
+            router = acquisitionRouter,
+            executionCoordinator = governedAcquisitionExecutionCoordinator,
+            externalEgressAuthorised = externalEgressAuthorised,
+        )
+        // Parker Agent Gateway, AG-1D/AG-1F/AG-1G (Section 20): Hermes's own fixed PrincipalId and
+        // the Agent Gateway's own fixed AuthorizationPurposeId are supplied here, once, at
+        // composition time -- the only place either value is ever threaded into this projection.
+        // No caller of retrieveEvidenceAsAgent/retrieveEvidenceManifestAsAgent/submitSourceAsAgent/
+        // requestAcquisitionAsAgent below can substitute either. Construction is deferred to this
+        // point (moved from immediately after evidenceRegistrationCoordinator, above) solely
+        // because hermesGovernedAcquisitionWorkflow, AG-1G's own added dependency, cannot exist
+        // any earlier.
+        agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
+            hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
+            agentGatewayPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+            permissionEngine = permissionEngine,
+            evidenceCustodian = defaultEvidenceCustodian,
+            governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
@@ -2794,6 +2894,39 @@ class ParkerRuntime(
     }
 
     /**
+     * Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request,
+     * `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 9, Section 20). The
+     * acquisition-request counterpart to [submitSourceAsAgent] immediately above -- every
+     * guarantee documented there applies identically here: no caller-supplied
+     * principal/purpose/action/resource (this method takes only an already-registered
+     * [EvidenceArtifactId] -- never a `PrincipalId`, never an expected-capability revalidation
+     * token, never a provider/mode selection), the same shared [permissionEngine], Hermes's own
+     * fixed principal only, `internal` visibility for the same defence-in-depth reason, and an
+     * expected `Denied` outcome while Hermes remains status `CREATED`.
+     *
+     * Delegates unchanged to [agentGatewayEvidenceProjection], which itself delegates unchanged
+     * to the same, unmodified `GovernedAcquisitionOwnerWorkflow` class the Owner UI's own
+     * `executeGovernedAcquisitionAsOwner` already uses (Section 9's own frozen requirement) --
+     * a second, Hermes-principal-scoped instance of it, sharing every other dependency (registry,
+     * router, execution coordinator, evidence custodian, external-egress-authorisation source) by
+     * reference with the owner-composed instance. This method never routes, never resolves a
+     * source, never selects a capability/provider/mode, never authorises external egress, and
+     * never invokes a provider directly -- Parker's existing governed acquisition machinery
+     * decides all of that, completely unchanged.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    internal suspend fun requestAcquisitionAsAgent(
+        evidenceArtifactId: EvidenceArtifactId,
+    ): parker.core.runtime.AgentGatewayAcquisitionResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Agent Gateway governed acquisition requested (evidenceArtifactId=${evidenceArtifactId.value})")
+        return agentGatewayEvidenceProjection.requestAcquisition(evidenceArtifactId)
+    }
+
+    /**
      * Evidence Custodian Runtime Integration (Implementation Plan Phase 10).
      * The one production entry point capable of ending Evidence Custodian
      * custody. Deliberately takes **no** `requestingPrincipalId` parameter
@@ -3033,12 +3166,12 @@ class ParkerRuntime(
             readiness = readyProfile, credential = credential, transport = openAiTransport, transportLifecycleObserver = tracker,
         )
         val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(
-            ownerPrincipalId, permissionEngine, evidenceCustodian, mechanism,
+            permissionEngine, evidenceCustodian, mechanism,
             OcrStructuredResultValidator(), tierBDerivativeGenerationCoordinator,
             invocationObserver = tracker, executionBinding = binding,
         )
         return try {
-            when (val outcome = coordinator.invoke(evidenceArtifactId)) {
+            when (val outcome = coordinator.invoke(ownerPrincipalId, evidenceArtifactId)) {
                 is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> {
                     tracker.terminalSuccess(outcome.record.derivativeGenerationId.value); outcome
                 }
@@ -3744,6 +3877,17 @@ class ParkerRuntime(
         // Gateway purpose is created.
         val AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-evidence-submit")
         const val AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME = "agent-gateway.evidence.submit"
+
+        // Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request,
+        // `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 9, Section 11, Section
+        // 20): one new, distinct, narrow, operation-specific verb phrase and one new, distinct,
+        // fixed, opaque ResourceId for requesting governed acquisition of an already-registered
+        // EvidenceArtifactId -- mirrors AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME/
+        // _RESOURCE_ID's own identical shape and reasoning exactly. Still AG-1B's own
+        // agent-gateway.hermes-ingestion purpose -- no second or "acquisition" Agent Gateway
+        // purpose is created.
+        val AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID = ResourceId("agent-gateway-evidence-acquire")
+        const val AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME = "agent-gateway.evidence.acquire"
 
         // Controlled Agent Run Submission (docs/implementation/
         // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and

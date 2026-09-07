@@ -75,6 +75,22 @@ enum class AgentGatewayAccessOutcome {
      * consistency fault, failed closed. Never an ordinary outcome of resubmitting identical bytes.
      */
     SOURCE_IDENTITY_CONFLICT,
+
+    /** AG-1G. Governed acquisition executed and durably admitted a derivative for the requested identity. */
+    ACQUISITION_COMPLETED,
+
+    /**
+     * AG-1G. Governed routing determined the selected capability requires external egress and the
+     * exact-target authorisation is absent. Hermes cannot satisfy this itself -- it must pause the
+     * evidence item; only a separate, owner-authorised action can supply it.
+     */
+    ACQUISITION_AUTHORIZATION_REQUIRED,
+
+    /** AG-1G. Governed routing determined every otherwise-eligible capability is disabled or not yet ready. */
+    ACQUISITION_PROVIDER_NOT_READY,
+
+    /** AG-1G. Any other governed-acquisition failure (no eligible capability, source verification failure, execution failure). */
+    ACQUISITION_FAILED,
 }
 
 /**
