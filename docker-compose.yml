@@ -99,6 +99,30 @@ services:
       PARKER_DOCLING_MODEL_CACHE_DIR: "/opt/docling-models"
       HF_HOME: "/opt/docling-models"
 
+      # OpenAI External Transcription readiness. Opt-in and off by default: blank/false unless
+      # set in a local, git-ignored .env file. This wires only the three deployment inputs
+      # ParkerRuntimeConfigLoader already reads -- it changes no runtime, provider, or governance
+      # logic. PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED=true alone is not sufficient to reach
+      # Ready readiness: OpenAiExternalTranscriptionProviderReadinessEvaluator.evaluate requires a
+      # real, valid, non-stale provider profile file at
+      # PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH -- there is no built-in/default
+      # profile fallback (confirmed by direct source reading; enabled-with-no-path resolves to
+      # InvalidProfile, never Ready). No such file is mounted by this compose project today; if
+      # one is added, it additionally needs a bind mount from a host path to whatever path this
+      # variable is set to (matching the read-only, single-file mount shape the OpenAI high
+      # authority secret below already uses) -- deliberately not added here since no real profile
+      # file exists yet to mount (Compose has no way to bind-mount a file that is not already
+      # present without silently creating an empty directory in its place). Even once Ready, the
+      # capability projection additionally requires the profile's own acceptanceState field to be
+      # ACCEPTED, not merely present/valid/current -- a distinct, deliberate owner governance
+      # step this wiring neither performs nor bypasses (ParkerRuntime.kt's own
+      # fidelityFirstAccepted check). PARKER_OPENAI_API_KEY is the raw deployment-local credential
+      # string itself (never a file path -- OpenAiApiCredential.fromEnvironment reads it as a
+      # literal value), from .env only, never committed.
+      PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED: "${PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED:-false}"
+      PARKER_OPENAI_API_KEY: "${PARKER_OPENAI_API_KEY:-}"
+      PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH: "${PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH:-}"
+
       # Owner LAN Evidence Upload. Opt-in and off by default: both
       # variables below are blank unless set in a local, git-ignored .env
       # file, and ParkerRuntimeConfigLoader.load collapses a blank value
