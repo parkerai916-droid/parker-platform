@@ -1,5 +1,9 @@
 package parker.core.runtime
 
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
 import parker.core.interfaces.*
@@ -35,7 +39,10 @@ class OcrProcessingRepresentationFactory(
         if (authoritativeSourceByteLength != verifiedSourceBytes.size.toLong()) return OcrProcessingRepresentationOutcome.SourceLengthMismatch
         val limit = when (authoritativeSourceMediaType) {
             "application/pdf" -> limits.maximumPdfBytes
-            "image/jpeg", "image/png", "image/webp" -> limits.maximumImageBytes
+            // No distinct text bound exists yet; reusing the image bound is deliberate and
+            // narrow -- both currently resolve to the same ExternalTranscriptionRequest.MAX_SOURCE_BYTES
+            // value in production, and introducing a dedicated text limit is out of scope here.
+            "image/jpeg", "image/png", "image/webp", "text/csv" -> limits.maximumImageBytes
             else -> return OcrProcessingRepresentationOutcome.UnsupportedMedia
         }
         if (authoritativeSourceByteLength > minOf(limit, ExternalTranscriptionRequest.MAX_SOURCE_BYTES)) {
@@ -45,6 +52,9 @@ class OcrProcessingRepresentationFactory(
             val representationBytes = verifiedSourceBytes.copyOf()
             val digest = sha256(representationBytes)
             if (digest != authoritativeManifestSha256) return OcrProcessingRepresentationOutcome.DigestMismatch
+            if (authoritativeSourceMediaType == "text/csv" && !isStrictlyValidUtf8(representationBytes)) {
+                return OcrProcessingRepresentationOutcome.InvalidTextEncoding
+            }
             val provenance = OcrProcessingProvenance(
                 sourceEvidenceArtifactId = authoritativeSource.evidenceArtifactId,
                 sourceManifestSha256 = authoritativeManifestSha256,
@@ -69,6 +79,27 @@ class OcrProcessingRepresentationFactory(
     private fun sha256(bytes: ByteArray) = OcrSha256Digest(
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) },
     )
+
+    /**
+     * Deterministic, strict UTF-8 validation: RFC 3629 well-formedness only. Rejects malformed
+     * sequences, incomplete trailing sequences, invalid continuation bytes, overlong encodings, and
+     * surrogate code-point encodings -- whatever the strict decoder itself rejects. No replacement
+     * decoding, no alternate-charset guessing, no normalisation: this only decides accept/reject.
+     * A leading UTF-8 BOM (EF BB BF) is a valid three-byte UTF-8 sequence and is neither stripped
+     * nor special-cased here, matching this codebase's existing authoritative CSV BOM behaviour
+     * (ApacheCommonsCsvExtractorTest.kt: "UTF-8 BOM is preserved as literal header content").
+     */
+    private fun isStrictlyValidUtf8(bytes: ByteArray): Boolean {
+        val decoder = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        return try {
+            decoder.decode(ByteBuffer.wrap(bytes))
+            true
+        } catch (_: CharacterCodingException) {
+            false
+        }
+    }
 
     companion object {
         const val PROCESSING_PROFILE_IDENTITY = "external-transcription.direct-byte-exact-v1"

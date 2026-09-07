@@ -189,13 +189,26 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     }
 
     private fun buildRequestBody(request: ExternalTranscriptionRequest): String {
-        val base64 = Base64.getEncoder().encodeToString(request.content)
         val binding = request.executionBinding
         if (fidelityFirst) require(binding != null && binding.profileId == profile.transcriptionProfileId)
-        val mediaPart = if (request.mediaType == "application/pdf") {
-            "{\"type\":\"input_file\",\"filename\":\"source.pdf\",\"detail\":\"${jsonEscape(profile.pdfDetail)}\",\"file_data\":\"data:application/pdf;base64,$base64\"}"
-        } else {
-            "{\"type\":\"input_image\",\"detail\":\"${jsonEscape(profile.imageDetail)}\",\"image_url\":\"data:${jsonEscape(request.mediaType)};base64,$base64\"}"
+        // The PDF and image branches are byte-identical to before this unit. text/csv is the one
+        // new, narrow, explicit branch -- no startsWith("text/") generalisation, and the adapter
+        // performs no decoding/charset detection of its own: request.content is already the
+        // verified-UTF-8 authoritative source bytes, admitted only after
+        // OcrProcessingRepresentationFactory's strict UTF-8 validation.
+        val mediaPart = when {
+            request.mediaType == "application/pdf" -> {
+                val base64 = Base64.getEncoder().encodeToString(request.content)
+                "{\"type\":\"input_file\",\"filename\":\"source.pdf\",\"detail\":\"${jsonEscape(profile.pdfDetail)}\",\"file_data\":\"data:application/pdf;base64,$base64\"}"
+            }
+            request.mediaType == "text/csv" -> {
+                val text = String(request.content, Charsets.UTF_8)
+                "{\"type\":\"input_text\",\"text\":\"${jsonEscape(text)}\"}"
+            }
+            else -> {
+                val base64 = Base64.getEncoder().encodeToString(request.content)
+                "{\"type\":\"input_image\",\"detail\":\"${jsonEscape(profile.imageDetail)}\",\"image_url\":\"data:${jsonEscape(request.mediaType)};base64,$base64\"}"
+            }
         }
         val identityText = if (binding == null) "Maximum page count: ${request.maximumPageCount}." else
             "Profile ID: ${binding.profileId}. Request ID: ${binding.requestId}. Attempt ID: ${binding.attemptId}. Maximum page count: ${request.maximumPageCount}. Expected page count: ${request.expectedPageCount?.toString() ?: "not independently established"}."

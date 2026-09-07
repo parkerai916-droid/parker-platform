@@ -20,5 +20,6 @@ sealed interface OcrProcessingRepresentationOutcome {
     data object BoundsExceeded : OcrProcessingRepresentationOutcome
     data object SourceLengthMismatch : OcrProcessingRepresentationOutcome
     data object DigestMismatch : OcrProcessingRepresentationOutcome
+    data object InvalidTextEncoding : OcrProcessingRepresentationOutcome
     data object ImplementationFailure : OcrProcessingRepresentationOutcome
 }

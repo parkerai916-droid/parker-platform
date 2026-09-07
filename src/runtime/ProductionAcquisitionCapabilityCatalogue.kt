@@ -57,7 +57,10 @@ object ProductionAcquisitionCapabilityCatalogue {
 
     fun fidelityFirstExternalCapability() = EvidenceAcquisitionCapability(
         FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID, EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
-        setOf("application/pdf", "image/jpeg", "image/png", "image/webp"),
+        // text/csv per the OpenAI-first production selection correction (FIDELITY_PRESERVING_
+        // EVIDENCE_ACQUISITION_SCOPE_LOCK.md §7.2, Step 3): narrow, proven transport only --
+        // message/rfc822, DOCX, and text/plain are deliberately not added here.
+        setOf("application/pdf", "image/jpeg", "image/png", "image/webp", "text/csv"),
         setOf(AcquisitionSourceForm.NATIVE_SEARCHABLE, AcquisitionSourceForm.IMAGE_ONLY_OR_SCANNED,
             AcquisitionSourceForm.MIXED_TEXT_AND_IMAGE),
         AcquisitionFidelityCapabilities(true, false, true, true, true, true,

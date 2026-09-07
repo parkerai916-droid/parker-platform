@@ -77,7 +77,10 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         }
         val mediaType = trusted.mediaType
         if (trusted.byteLength <= 0 || trusted.byteLength > ExternalTranscriptionRequest.MAX_SOURCE_BYTES ||
-            mediaType == null || (mediaType != "application/pdf" && !mediaType.startsWith("image/", ignoreCase = true))
+            mediaType == null || (
+                mediaType != "application/pdf" && mediaType != "text/csv" &&
+                    !mediaType.startsWith("image/", ignoreCase = true)
+                )
         ) return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
         invocationObserver.sourceRetrieved()
 

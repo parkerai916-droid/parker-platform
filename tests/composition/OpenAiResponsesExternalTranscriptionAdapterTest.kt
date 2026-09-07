@@ -128,6 +128,21 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     }
 
     @Test
+    fun `CSV request uses input_text with the exact UTF-8 content and no file or image wrapping`() = runTest {
+        val transport = FakeTransport { OpenAiResponsesTransportResponse(200, successEnvelope().toByteArray()) }
+        val csv = "name,value\nÉtoile,1\n".toByteArray(Charsets.UTF_8)
+        adapter(transport).transcribe(request("text/csv", csv))
+        val body = transport.request.body
+
+        assertTrue(body.contains("\"type\":\"input_text\""))
+        assertTrue(body.contains("name,value"))
+        assertTrue(body.contains("Étoile"))
+        assertFalse(body.contains("\"type\":\"input_file\""))
+        assertFalse(body.contains("\"type\":\"input_image\""))
+        assertFalse(body.contains("base64"))
+    }
+
+    @Test
     fun `bearer header exists only at JDK transport boundary and request diagnostics redact body and secret`() {
         val transportRequest = OpenAiResponsesTransportRequest(
             URI("https://api.openai.com/v1/responses"), 1000, "sensitive-body", 1000, credential,

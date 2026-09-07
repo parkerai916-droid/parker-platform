@@ -29,8 +29,10 @@ class ExternalTranscriptionRequest(
     init {
         require(processingRepresentation.byteLength >= 1) { "ExternalTranscriptionRequest.content must not be empty" }
         require(processingRepresentation.byteLength <= MAX_SOURCE_BYTES) { "External transcription source exceeds $MAX_SOURCE_BYTES bytes" }
-        require(mediaType == "application/pdf" || mediaType.startsWith("image/", ignoreCase = true)) {
-            "ExternalTranscriptionRequest.mediaType must be PDF or image"
+        require(
+            mediaType == "application/pdf" || mediaType == "text/csv" || mediaType.startsWith("image/", ignoreCase = true),
+        ) {
+            "ExternalTranscriptionRequest.mediaType must be PDF, CSV, or image"
         }
         require(maximumPageCount in 1..MAX_PAGE_COUNT) { "ExternalTranscriptionRequest.maximumPageCount must be in 1..$MAX_PAGE_COUNT" }
         require(expectedPageCount == null || expectedPageCount in 1..maximumPageCount) {

@@ -63,6 +63,43 @@ class OcrProcessingRepresentationFactoryTest {
     }
 
     @Test
+    fun `STEP 3 -- valid UTF-8 CSV, ASCII and multibyte, is copied byte-exactly with no material transformation`() = runTest {
+        listOf(
+            "name,value\na,1\n".toByteArray(Charsets.UTF_8),
+            "name,value\nÉtoile,1\n".toByteArray(Charsets.UTF_8),
+        ).forEach { source ->
+            val representation = created(factory().create(trusted(source, "text/csv")))
+            assertContentEquals(source, representation.bytes())
+            with(representation.processingProvenance) {
+                assertEquals(digest(source), sourceManifestSha256)
+                assertEquals(digest(source), representationSha256)
+                assertEquals(source.size.toLong(), sourceByteLength)
+                assertEquals(source.size.toLong(), representationByteLength)
+                assertEquals("text/csv", representationMediaType)
+                assertTrue(byteExactCopy)
+                assertNull(materialTransformation)
+            }
+        }
+    }
+
+    @Test
+    fun `STEP 3 -- malformed, incomplete, overlong, and surrogate-encoded UTF-8 CSV fail closed with InvalidTextEncoding`() = runTest {
+        val malformedCases = listOf(
+            "incomplete two-byte sequence" to byteArrayOf('a'.code.toByte(), 0xC3.toByte()),
+            "invalid continuation byte" to byteArrayOf(0xC2.toByte(), 0x20),
+            "lone continuation byte with no leading byte" to byteArrayOf('a'.code.toByte(), 0x80.toByte()),
+            "overlong two-byte encoding of ASCII '/'" to byteArrayOf(0xC0.toByte(), 0xAF.toByte()),
+            "surrogate code point encoded as UTF-8 (CESU-8 style)" to byteArrayOf(0xED.toByte(), 0xA0.toByte(), 0x80.toByte()),
+        )
+        malformedCases.forEach { (label, source) ->
+            assertIs<OcrProcessingRepresentationOutcome.InvalidTextEncoding>(
+                factory().create(trusted(source, "text/csv")),
+                "expected InvalidTextEncoding for: $label",
+            )
+        }
+    }
+
+    @Test
     fun `unsupported media and invalid source facts fail closed`() = runTest {
         val source = byteArrayOf(1)
         assertIs<OcrProcessingRepresentationOutcome.UnsupportedMedia>(factory().create(trusted(source, "image/gif")))

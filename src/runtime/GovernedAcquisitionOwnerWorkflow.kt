@@ -86,7 +86,14 @@ internal class GovernedAcquisitionOwnerWorkflow(
         val establishedPdf = pdfInspection as? PdfSourceCharacteristicsInspection.Established
         return AcquisitionSourceCharacteristicsProjector.project(
             manifest = manifest,
-            pageCount = establishedPdf?.pageCount ?: if (image) AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
+            // STEP 3: text/csv gets the same Known(1) treatment as image/* -- a single, undivided
+            // source submitted as one atomic unit for operational page-limit bounding only; this
+            // is not a claim about physical pages. Without it, the external capability's
+            // maximumPages check leaves CSV's page count PAGE_COUNT_UNKNOWN, which the router
+            // reports as Indeterminate rather than Selected -- CSV would never actually reach the
+            // external mechanism despite being an otherwise-eligible, accepted media type.
+            pageCount = establishedPdf?.pageCount
+                ?: if (image || media == "text/csv") AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
             nativeSearchableText = establishedPdf?.nativeSearchableText ?: when { nativeStructured -> AcquisitionCharacteristicState.PRESENT; image -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
             imageOnlyOrScanned = establishedPdf?.imageOnlyOrScanned ?: when { image -> AcquisitionCharacteristicState.PRESENT; nativeStructured -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
             mixedTextAndImage = establishedPdf?.mixedTextAndImage ?: if (nativeStructured || image) AcquisitionCharacteristicState.ABSENT else AcquisitionCharacteristicState.UNKNOWN,

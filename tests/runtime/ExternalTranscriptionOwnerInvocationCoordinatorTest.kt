@@ -131,6 +131,10 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
             FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(byteLength = bytes.size.toLong() + 1))) to ExternalTranscriptionOwnerInvocationOutcome.ByteLengthMismatch::class,
             FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(sha = "0".repeat(64)))) to ExternalTranscriptionOwnerInvocationOutcome.DigestMismatch::class,
             FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(media = "text/plain"))) to ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds::class,
+            // STEP 3 -- text/csv is the only newly-supported media type. message/rfc822 (EML) and
+            // DOCX remain fail-closed, exactly as before this unit.
+            FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(media = "message/rfc822"))) to ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds::class,
+            FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))) to ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds::class,
         )
         cases.forEach { (custodian, expected) ->
             events.clear()
@@ -139,6 +143,44 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
             assertEquals(expected, result::class)
             assertEquals(0, mechanism.calls)
         }
+    }
+
+    @Test
+    fun `STEP 3 -- valid UTF-8 CSV is admitted, byte-exact, and reaches the mechanism exactly once`() = runTest {
+        val csvBytes = "name,value\nÉtoile,1\n".toByteArray(Charsets.UTF_8)
+        val csvDigest = sha256(csvBytes)
+        val custodian = FakeCustodian(
+            source = EvidenceRetrievalResult.Found(evidenceId, csvBytes),
+            manifest = EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(evidenceId, csvDigest, csvBytes.size.toLong(), "text/csv")),
+        )
+        val mechanism = FakeMechanism(events) { ExternalTranscriptionMechanismOutcome.Candidate(candidate(csvBytes, csvDigest, "text/csv")) }
+
+        val outcome = coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), custodian, mechanism).invoke(owner, evidenceId)
+
+        assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(outcome)
+        assertEquals(1, mechanism.calls)
+        assertContentEquals(csvBytes, mechanism.request.content)
+        assertEquals("text/csv", mechanism.request.mediaType)
+        assertEquals(csvDigest, mechanism.request.sourceManifestSha256.value)
+    }
+
+    @Test
+    fun `STEP 3 -- malformed UTF-8 CSV fails closed before the mechanism is ever reached, with no fallback`() = runTest {
+        // 0xC3 alone is an incomplete two-byte UTF-8 continuation sequence -- deterministically
+        // malformed, not decodable by any strict UTF-8 decoder.
+        val malformedBytes = byteArrayOf('a'.code.toByte(), 0xC3.toByte())
+        val malformedDigest = sha256(malformedBytes)
+        val custodian = FakeCustodian(
+            source = EvidenceRetrievalResult.Found(evidenceId, malformedBytes),
+            manifest = EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(evidenceId, malformedDigest, malformedBytes.size.toLong(), "text/csv")),
+        )
+        val mechanism = FakeMechanism(events) { error("must not run -- invalid encoding must fail closed before provider invocation") }
+
+        val outcome = coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), custodian, mechanism).invoke(owner, evidenceId)
+
+        assertIs<ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds>(outcome)
+        assertEquals(0, mechanism.calls)
+        assertEquals(listOf("authorize", "source", "manifest"), events)
     }
 
     @Test
@@ -326,7 +368,11 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
     private fun manifest(sha: String = digest, byteLength: Long = bytes.size.toLong(), media: String? = "application/pdf") =
         EvidenceSourceManifest(evidenceId, sha, byteLength, media)
 
-    private fun candidate(): OcrStructuredTranscriptionCandidate {
+    private fun candidate(
+        sourceBytes: ByteArray = bytes,
+        sourceDigest: String = digest,
+        media: String = "application/pdf",
+    ): OcrStructuredTranscriptionCandidate {
         val scope = OcrPageScope(listOf(1))
         return OcrStructuredTranscriptionCandidate(
             scope, scope, scope,
@@ -334,7 +380,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
             TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
             OcrRecognitionIdentity("external", "literal-v1", "1.0.0"),
             OcrProviderProvenance("provider", "adapter", "1.0.0", "literal-v1", "model", OcrModelSnapshot.NotExposed, "provider-correlation"),
-            OcrProcessingProvenance(evidenceId, OcrSha256Digest(digest), "application/pdf", bytes.size.toLong(), scope, scope, "application/pdf", bytes.size.toLong(), OcrSha256Digest(digest), true, "byte-exact-v1", Instant.EPOCH),
+            OcrProcessingProvenance(evidenceId, OcrSha256Digest(sourceDigest), media, sourceBytes.size.toLong(), scope, scope, media, sourceBytes.size.toLong(), OcrSha256Digest(sourceDigest), true, "byte-exact-v1", Instant.EPOCH),
             Instant.EPOCH,
         )
     }
