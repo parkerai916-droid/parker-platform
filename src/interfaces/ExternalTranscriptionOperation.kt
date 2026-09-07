@@ -15,20 +15,22 @@ data class ExternalTranscriptionExecutionBinding(
 }
 
 class ExternalTranscriptionRequest(
-    val processingRepresentation: OcrProcessingRepresentation,
+    val representation: ExternallySubmittedRepresentation,
     val maximumPageCount: Int,
     val expectedPageCount: Int? = null,
     val executionBinding: ExternalTranscriptionExecutionBinding? = null,
 ) {
-    val sourceEvidenceArtifactId get() = processingRepresentation.processingProvenance.sourceEvidenceArtifactId
-    val mediaType get() = processingRepresentation.processingProvenance.representationMediaType
-    val sourceManifestSha256 get() = processingRepresentation.processingProvenance.sourceManifestSha256
-    val processingProvenance get() = processingRepresentation.processingProvenance
-    val content: ByteArray get() = processingRepresentation.bytes()
+    val sourceEvidenceArtifactId get() = representation.sourceEvidenceArtifactId
+    val mediaType get() = representation.representationMediaType
+    val sourceManifestSha256 get() = representation.sourceSha256
+    val content: ByteArray get() = representation.content()
+
+    /** Present only when [representation] is an [OcrProcessingRepresentation] -- the OCR/page-shaped response path requires this explicitly rather than assuming every representation is OCR-shaped. */
+    val ocrProcessingProvenance: OcrProcessingProvenance? get() = (representation as? OcrProcessingRepresentation)?.processingProvenance
 
     init {
-        require(processingRepresentation.byteLength >= 1) { "ExternalTranscriptionRequest.content must not be empty" }
-        require(processingRepresentation.byteLength <= MAX_SOURCE_BYTES) { "External transcription source exceeds $MAX_SOURCE_BYTES bytes" }
+        require(representation.representationByteLength >= 1) { "ExternalTranscriptionRequest.content must not be empty" }
+        require(representation.representationByteLength <= MAX_SOURCE_BYTES) { "External transcription source exceeds $MAX_SOURCE_BYTES bytes" }
         require(
             mediaType == "application/pdf" || mediaType == "text/csv" || mediaType.startsWith("image/", ignoreCase = true),
         ) {

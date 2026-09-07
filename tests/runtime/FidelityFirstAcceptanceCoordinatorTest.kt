@@ -216,7 +216,7 @@ class FidelityFirstAcceptanceCoordinatorTest {
             OcrRecognitionIdentity("OpenAI", configuration.profileId, configuration.adapterVersion),
             OcrProviderProvenance("OpenAI", configuration.adapterId, configuration.adapterVersion, configuration.profileId,
                 configuration.modelAlias, OcrModelSnapshot.NotExposed, "response-synthetic"),
-            request.processingProvenance, Instant.EPOCH,
+            requireNotNull(request.ocrProcessingProvenance), Instant.EPOCH,
         )
     }
 

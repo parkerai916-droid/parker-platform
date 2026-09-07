@@ -69,7 +69,7 @@ class FidelityFirstExternalTranscriptionTest {
     @Test fun `missing execution binding fails closed before transport for the fidelity-first profile`() = runTest {
         val transport = FakeTransport(envelope(payload()))
         val requestWithoutBinding = request().let {
-            ExternalTranscriptionRequest(it.processingRepresentation, it.maximumPageCount, it.expectedPageCount, executionBinding = null)
+            ExternalTranscriptionRequest(it.representation, it.maximumPageCount, it.expectedPageCount, executionBinding = null)
         }
         assertFailsWith<IllegalArgumentException> { adapter(transport).transcribe(requestWithoutBinding) }
         assertEquals(0, transport.calls, "a missing binding must fail before any provider call")
@@ -79,7 +79,7 @@ class FidelityFirstExternalTranscriptionTest {
         val transport = FakeTransport(envelope(payload()))
         val mismatched = request().let {
             ExternalTranscriptionRequest(
-                it.processingRepresentation, it.maximumPageCount, it.expectedPageCount,
+                it.representation, it.maximumPageCount, it.expectedPageCount,
                 executionBinding = ExternalTranscriptionExecutionBinding("request-1", "attempt-1", "some-other-profile-id"),
             )
         }

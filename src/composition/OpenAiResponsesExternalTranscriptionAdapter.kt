@@ -273,7 +273,8 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
                     OcrSha256Digest(STRUCTURED_SCHEMA_SHA256),
                 ),
             ),
-            request.processingProvenance, Instant.now(), result.requiredStringArray("warnings"),
+            requireNotNull(request.ocrProcessingProvenance) { "OCR-shaped response parsing requires an OcrProcessingRepresentation" },
+            Instant.now(), result.requiredStringArray("warnings"),
         ) }
     }
 
@@ -344,7 +345,8 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
                 model, OcrModelSnapshot.NotExposed, responseId,
                 OcrTranscriptionConfiguration.DigestedConfiguration(profile.transcriptionProfileId,
                     OcrSha256Digest(instructionSha256), OcrSha256Digest(schemaSha256))),
-            request.processingProvenance, Instant.now(), result.requiredStringArray("warnings"),
+            requireNotNull(request.ocrProcessingProvenance) { "OCR-shaped response parsing requires an OcrProcessingRepresentation" },
+            Instant.now(), result.requiredStringArray("warnings"),
         ) }
     }
 

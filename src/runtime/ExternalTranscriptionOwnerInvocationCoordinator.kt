@@ -91,7 +91,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             else -> return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
         }
         val request = ExternalTranscriptionRequest(
-            processingRepresentation = representation,
+            representation = representation,
             maximumPageCount = ExternalTranscriptionRequest.MAX_PAGE_COUNT,
             expectedPageCount = if (mediaType.startsWith("image/", ignoreCase = true)) 1 else null,
             executionBinding = executionBinding,
