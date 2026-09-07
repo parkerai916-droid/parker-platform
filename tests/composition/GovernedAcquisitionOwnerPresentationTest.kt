@@ -105,7 +105,19 @@ class GovernedAcquisitionOwnerPresentationTest {
             override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
                 throw UnsupportedOperationException("submitSource not supported by this fake")
         }
-        val registry = ProductionAcquisitionCapabilityCatalogue.create()
+        // A synthetic, CSV-eligible native capability -- not the production catalogue, which (per
+        // the OpenAI-first production selection correction) no longer makes native eligible for
+        // CSV. This test is about source-binding-mismatch ordering, not production eligibility.
+        val csvEligibleNativeCapability = EvidenceAcquisitionCapability(
+            ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, DIRECT_NATIVE_EXTRACTION,
+            setOf("text/csv"), setOf(AcquisitionSourceForm.NATIVE_SEARCHABLE),
+            AcquisitionFidelityCapabilities(false, true, false, false, false, false,
+                pageAssociation = true, regionAssociation = false, uncertaintyReporting = false, structuredOutput = true),
+            setOf(AcquisitionRepresentationClass.AUTHORITATIVE_SOURCE_OR_BYTE_EXACT_COPY),
+            AcquisitionEgress.LOCAL_ONLY, null, AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
+            mapOf("text/csv" to AcquisitionFidelitySuitability.ACCEPTED),
+        )
+        val registry = GovernedAcquisitionCapabilityRegistry(listOf(csvEligibleNativeCapability))
         val router = DeterministicEvidenceAcquisitionRouter()
         val executor = object : BoundAcquisitionCapabilityExecutor {
             override val binding = AcquisitionExecutorBinding(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, DIRECT_NATIVE_EXTRACTION, null)

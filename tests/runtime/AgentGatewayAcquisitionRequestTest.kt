@@ -173,6 +173,26 @@ class AgentGatewayAcquisitionRequestTest {
         localOcrAvailability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
     )
 
+    // A synthetic, CSV-eligible native-only registry -- not the production catalogue, which (per
+    // the OpenAI-first production selection correction, FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md
+    // §7.2) no longer makes Native Tier A eligible for CSV. Used only by tests whose purpose is
+    // Tier A execution/attribution behaviour itself, not production routing-policy selection.
+    private fun csvEligibleNativeOnlyRegistry() = GovernedAcquisitionCapabilityRegistry(
+        listOf(
+            EvidenceAcquisitionCapability(
+                ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
+                parker.core.interfaces.EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION,
+                setOf("text/csv"), setOf(parker.core.interfaces.AcquisitionSourceForm.NATIVE_SEARCHABLE),
+                parker.core.interfaces.AcquisitionFidelityCapabilities(false, true, false, false, false, false,
+                    pageAssociation = true, regionAssociation = false, uncertaintyReporting = false, structuredOutput = true),
+                setOf(parker.core.interfaces.AcquisitionRepresentationClass.AUTHORITATIVE_SOURCE_OR_BYTE_EXACT_COPY),
+                parker.core.interfaces.AcquisitionEgress.LOCAL_ONLY, null, AcquisitionAvailability.Available,
+                parker.core.interfaces.AcquisitionOperationalLimits(),
+                mapOf("text/csv" to parker.core.interfaces.AcquisitionFidelitySuitability.ACCEPTED),
+            ),
+        ),
+    )
+
     private fun availableExternalCapability() = ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability().let { pending ->
         EvidenceAcquisitionCapability(
             pending.capabilityId, pending.mechanism, pending.supportedMediaTypes, pending.supportedSourceForms,
@@ -292,7 +312,11 @@ class AgentGatewayAcquisitionRequestTest {
     }
 
     @Test
-    fun `Completed -- a real CSV fixture is admitted end to end through the real, unmodified Tier A native extraction path`() = runTest {
+    fun `Failed -- a real CSV fixture fails closed now that Native Tier A is production-ineligible for CSV`() = runTest {
+        // Per the OpenAI-first production selection correction (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md
+        // §7.2), Native Tier A is no longer production-eligible for CSV, and no external
+        // capability yet supports CSV either. This must fail closed, never silently fall back
+        // to native.
         val env = buildEnvironment(registry = registryWithout(null))
         env.registerHermes(PrincipalStatus.ACTIVE)
         val bytes = Files.readAllBytes(java.nio.file.Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/06-structured.csv"))
@@ -300,13 +324,9 @@ class AgentGatewayAcquisitionRequestTest {
 
         val result = env.projection.requestAcquisition(id)
 
-        val completed = assertIs<AgentGatewayAcquisitionResult.Completed>(result)
-        assertEquals(id, completed.evidenceArtifactId)
-        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, completed.capabilityId)
-        assertEquals(parker.core.interfaces.EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION, completed.mechanism)
-        assertTrue(completed.derivativeGenerationId.value.isNotBlank())
-        // No raw bytes, path, or internal object anywhere in the result's own toString().
-        assertFalse(completed.toString().contains(String(bytes)))
+        val failed = assertIs<AgentGatewayAcquisitionResult.Failed>(result)
+        assertEquals(id, failed.evidenceArtifactId)
+        assertTrue(failed.reason.contains("NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY"))
     }
 
     // ================= AG-1G FINAL SECURITY REVIEW -- end-to-end principal attribution =================
@@ -330,7 +350,7 @@ class AgentGatewayAcquisitionRequestTest {
     @Test
     fun `1 -- Tier A native acquisition triggered by ACTIVE Hermes is genuinely Hermes-attributed all the way to the durable audit record`() = runTest {
         val auditLogFile = Files.createTempDirectory("ag-1g-attribution-audit").resolve("audit.log")
-        val env = buildEnvironment(registry = registryWithout(null), tierAAuditLogFile = auditLogFile)
+        val env = buildEnvironment(registry = csvEligibleNativeOnlyRegistry(), tierAAuditLogFile = auditLogFile)
         env.registerHermes(PrincipalStatus.ACTIVE)
         val bytes = Files.readAllBytes(java.nio.file.Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/06-structured.csv"))
         val id = env.accept(bytes, "text/csv", "06-structured.csv")

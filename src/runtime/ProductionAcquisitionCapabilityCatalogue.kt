@@ -35,10 +35,13 @@ object ProductionAcquisitionCapabilityCatalogue {
         setOf(AcquisitionRepresentationClass.AUTHORITATIVE_SOURCE_OR_BYTE_EXACT_COPY),
         AcquisitionEgress.LOCAL_ONLY, null, AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
         mapOf(
-            "text/csv" to AcquisitionFidelitySuitability.ACCEPTED,
-            "message/rfc822" to AcquisitionFidelitySuitability.ACCEPTED,
+            // Not production-selected per the OpenAI-first production selection correction
+            // (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §7.2). The extractor remains
+            // implemented and tested; only production eligibility is withdrawn here.
+            "text/csv" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
+            "message/rfc822" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
             "application/pdf" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
         ),
     )
 
