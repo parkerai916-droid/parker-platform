@@ -368,6 +368,14 @@ class ParkerRuntime(
     private lateinit var evidenceRegistrationCoordinator: EvidenceRegistrationCoordinator
     private lateinit var ownerEvidenceDeletionAuthority: OwnerEvidenceDeletionAuthority
 
+    // Parker Agent Gateway, AG-1D (R0 Governed Runtime Projections,
+    // `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 20): the one thin,
+    // read-only "AsAgent" projection layer, constructed once with Hermes's fixed PrincipalId
+    // and the Agent Gateway's fixed AuthorizationPurposeId permanently bound at construction --
+    // never a caller-supplied identity. Only this class's own retrieveEvidenceAsAgent/
+    // retrieveEvidenceManifestAsAgent methods below ever read it.
+    private lateinit var agentGatewayEvidenceProjection: parker.core.runtime.AgentGatewayEvidenceProjection
+
     // Document Ingestion, Owner-Authorized Local File Ingress. Held as its own narrow class,
     // exactly mirroring ownerEvidenceDeletionAuthority's own "only this class's own entry-point
     // method reads it" isolation -- no other coordinator constructed in
@@ -1394,6 +1402,16 @@ class ParkerRuntime(
             defaultEvidenceCustodian,
         )
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
+        // Parker Agent Gateway, AG-1D (Section 20): Hermes's own fixed PrincipalId and the Agent
+        // Gateway's own fixed AuthorizationPurposeId are supplied here, once, at composition
+        // time -- the only place either value is ever threaded into this projection. No caller
+        // of retrieveEvidenceAsAgent/retrieveEvidenceManifestAsAgent below can substitute either.
+        agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
+            hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
+            agentGatewayPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+            permissionEngine = permissionEngine,
+            evidenceCustodian = defaultEvidenceCustodian,
+        )
         // Document Ingestion, Derivative-to-Memory-Core Registration. Depends on memoryCore and
         // permissionEngine only -- never evidenceCustodian, never DerivativeGenerationStorage,
         // never either existing Document Ingestion owner-invocation coordinator (Scope Lock
@@ -2625,6 +2643,61 @@ class ParkerRuntime(
         }
         logger.info("Evidence retrieval requested (principal=${requestingPrincipalId.value})")
         return evidenceCustodian.retrieve(requestingPrincipalId, evidenceArtifactId)
+    }
+
+    /**
+     * Parker Agent Gateway, AG-1D (R0 Governed Runtime Projections,
+     * `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 7 item 2, Section 20).
+     * Deliberately takes **no** `requestingPrincipalId` parameter -- unlike [retrieveEvidence]
+     * above, this method always acts as Hermes's own fixed principal
+     * (`PrincipalId("agent.hermes-ingestion-operator")`), supplied once at composition time to
+     * [agentGatewayEvidenceProjection] and never again. There is no parameter through which any
+     * caller of this method -- internal or, eventually, an authenticated Agent Gateway HTTP
+     * route (AG-1E) -- could substitute a different principal, purpose, action, or resource.
+     * Mirrors [deleteEvidenceAsOwner]'s own precedent exactly: principal-scoping here is
+     * enforced by call-site structure, never by `DefaultPermissionPolicy` content (AG-1C's own
+     * documented "no per-principal matching capability at all").
+     *
+     * Evaluates through the same, shared, unmodified [permissionEngine] the entire runtime uses
+     * -- no bypass, no second evaluator. Hermes remains status `CREATED` (AG-1B); this call is
+     * therefore expected to resolve `Denied` today, via `DefaultPermissionEngine`'s own
+     * identity-status short-circuit, before any policy is even consulted. Activating Hermes is
+     * explicitly out of this unit's scope.
+     *
+     * `internal` (AG-1D security review, call-site reachability): defence-in-depth on top of the
+     * composition-root discipline that is the actual security boundary (mirroring
+     * [deleteEvidenceAsOwner]'s own reachability profile -- neither method is wired to anything
+     * outside this file today). `internal` additionally makes this method unreachable from the
+     * `ui-desktop` Gradle module or any other module depending on this one, while still leaving
+     * it callable by same-module composition code, including the future `AgentGatewayHttpServer`
+     * (AG-1E) -- exactly as `OwnerEvidenceHttpServer` already calls the (still `public`)
+     * `AsOwner` family today.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    internal suspend fun retrieveEvidenceAsAgent(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.AgentGatewayEvidenceRetrievalResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Agent Gateway evidence retrieval requested (evidenceArtifactId=${evidenceArtifactId.value})")
+        return agentGatewayEvidenceProjection.retrieveEvidence(evidenceArtifactId)
+    }
+
+    /**
+     * Parker Agent Gateway, AG-1D -- the manifest-retrieval counterpart to [retrieveEvidenceAsAgent]
+     * immediately above. Every guarantee documented there applies identically here: no
+     * caller-supplied principal/purpose/action/resource, the same shared [permissionEngine],
+     * Hermes's own fixed principal only, an expected `Denied` outcome while Hermes remains
+     * status `CREATED`, and the same `internal`-visibility defence-in-depth rationale.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    internal suspend fun retrieveEvidenceManifestAsAgent(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.AgentGatewayEvidenceManifestResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Agent Gateway evidence manifest retrieval requested (evidenceArtifactId=${evidenceArtifactId.value})")
+        return agentGatewayEvidenceProjection.retrieveEvidenceManifest(evidenceArtifactId)
     }
 
     /**
