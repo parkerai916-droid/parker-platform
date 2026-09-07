@@ -87,6 +87,14 @@ Existing `OcrProcessingRepresentation`, `OcrProcessingProvenance`, `OcrMaterialT
 
 A processing representation is request-scoped subordinate material, not new authoritative evidence.
 
+### 6.1 Non-paginated structured-document representations
+
+Not every lawful processing representation is paginated. §6's page/pixel/DPI/rotation/crop/colour-space provenance fields apply only where the source and representation are genuinely page- or image-shaped (PDF, scanned/photographed image). They are not required, and must not be fabricated, for a source with no inherent pages — an email (`message/rfc822`) today, and potentially other structured document formats later.
+
+A non-paginated structured-document transformation (for example, a deterministic canonical text projection of an EML's headers, MIME structure, body alternatives, and attachment manifest) is a lawful `DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION` under this instrument, governed by purpose-built structural provenance in place of §6's page/pixel fields. That structural provenance must still, at minimum, record: Parker's own extractor/structural-processing profile identity, *and*, where distinct from it, the underlying parsing library's own identity and version (for example, Apache James Mime4j and its exact library version) — one fact must not be assumed to stand in for the other without inspection confirming they coincide; every subsequent transformation stage by name (parsing/decoding is not the same fact as text projection, and must not be collapsed into one vague label); the profile identity of the final representation-generation step; source EvidenceArtifactId, SHA-256, byte length, and media type; final representation SHA-256, byte length, and media type; and, for every substantive part or section the source contained, whether it was included or explicitly excluded (silent omission is not permitted).
+
+`byteExactCopy=false` and `DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION` remain mandatory for any such transformation, exactly as for a paginated one. The original `EvidenceArtifact` remains the sole authoritative source regardless, and no processing representation — paginated or not — may be presented, labelled, or provenance-recorded as if it were the original. Provider submission of any such representation remains downstream of, and conditioned on, this governed preparation succeeding; a preparation failure is not a submission with gaps, it is no submission at all.
+
 ## 7. Source-appropriate fidelity selection
 
 Selection occurs before execution and is deterministic. Parker chooses the strongest suitable capability among those authorised and eligible for the established source characteristics and requested acquisition purpose.
