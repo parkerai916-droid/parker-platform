@@ -197,12 +197,40 @@ fun main(args: Array<String>) = runBlocking {
         null
     }
 
+    // Parker Agent Gateway, AG-1E. Opt-in: only constructed when both
+    // PARKER_AGENT_GATEWAY_HTTP_PORT and PARKER_AGENT_GATEWAY_HTTP_TOKEN are set
+    // (ParkerRuntimeConfigLoader enforces they are set together or not at all, and that an
+    // access audit log path is configured whenever the port is). Structurally separate from
+    // ownerHttpServer above -- its own bind/port, its own AgentGatewayAuthentication (never
+    // OwnerUiAuthentication), and delegates only to runtime's own internal AG-1D
+    // retrieveEvidenceAsAgent/retrieveEvidenceManifestAsAgent -- never the raw runtime object,
+    // mirroring buildOwnerHttpAdapter's own "individually bound lambda parameters" discipline.
+    val agentGatewayHttpServer = if (config.agentGatewayHttpPort != null) {
+        AgentGatewayHttpServer(
+            bindAddress = requireNotNull(config.agentGatewayHttpBindAddress),
+            port = config.agentGatewayHttpPort,
+            authentication = AgentGatewayAuthentication(
+                configuredToken = requireNotNull(config.agentGatewayHttpToken),
+                hermesPrincipalId = PrincipalId("agent.hermes-ingestion-operator"),
+            ),
+            retrieveEvidenceAsAgent = runtime::retrieveEvidenceAsAgent,
+            retrieveEvidenceManifestAsAgent = runtime::retrieveEvidenceManifestAsAgent,
+            audit = parker.core.runtime.FileSystemAgentGatewayAccessAudit(
+                java.nio.file.Path.of(requireNotNull(config.agentGatewayAccessAuditLogPath)),
+            ),
+            logger = ConsoleParkerLogger("agent-gateway-http", minLevel = effectiveLogLevel),
+        ).also { it.start() }
+    } else {
+        null
+    }
+
     val shutdownComplete = CompletableDeferred<Unit>()
     Runtime.getRuntime().addShutdownHook(
         Thread(
             {
                 logger.info("Shutdown signal received")
                 runCatching { ownerHttpServer?.stop() }
+                runCatching { agentGatewayHttpServer?.stop() }
                 runBlocking {
                     try {
                         runtime.shutdown()

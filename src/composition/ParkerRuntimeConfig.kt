@@ -249,6 +249,31 @@ import java.nio.file.Path
  *   is a startup configuration error, never a silently-anonymous server.
  *   Never logged, never returned in any response, never committed to this
  *   repository -- supplied only via environment/runtime configuration.
+ * @param agentGatewayHttpBindAddress Parker Agent Gateway, AG-1E. The network interface
+ *   [parker.composition.AgentGatewayHttpServer] binds -- structurally separate from
+ *   [ownerHttpBindAddress]. **No default is provided, deliberately** (owner-review correction,
+ *   AG-1E): unlike [ownerHttpBindAddress]'s own `"0.0.0.0"` default, a newly introduced
+ *   authenticated Gateway must never silently bind to every interface. [ParkerRuntimeConfigLoader.load]
+ *   requires this be explicitly set whenever [agentGatewayHttpPort] is set -- `0.0.0.0` remains a
+ *   valid value, but only when the owner supplies it explicitly, never as a fallback. The intended
+ *   client is the Hermes VM on the same trusted local network, never the public internet.
+ * @param agentGatewayHttpPort Parker Agent Gateway, AG-1E. Optional; `null` (the default) means
+ *   the Gateway is disabled entirely -- no port is opened, [Main.kt]'s own composition never
+ *   constructs [parker.composition.AgentGatewayHttpServer] at all, and no bind address, token, or
+ *   audit log path is required.
+ * @param agentGatewayHttpToken Parker Agent Gateway, AG-1E. The single Hermes bearer token every
+ *   request to [parker.composition.AgentGatewayHttpServer]'s endpoints must present --
+ *   structurally separate from [ownerHttpToken] and from `OwnerUiAuthentication`'s own
+ *   session/pairing/device cookies (Section 10's frozen "no impersonation" constraint: this
+ *   value is never derived from, and never accepted as, Owner UI authentication material).
+ *   [ParkerRuntimeConfigLoader.load] enforces that [agentGatewayHttpPort] and this field are set
+ *   together or not at all. Never logged, never returned in any response, never committed to
+ *   this repository -- supplied only via environment/runtime configuration.
+ * @param agentGatewayAccessAuditLogPath Parker Agent Gateway, AG-1E (Section 12, Section 20
+ *   bullet 5). The append-only Gateway-boundary access audit log path
+ *   ([parker.core.runtime.FileSystemAgentGatewayAccessAudit]) -- additive to, never a
+ *   replacement for, the existing per-domain audits. [ParkerRuntimeConfigLoader.load] enforces
+ *   this is set whenever [agentGatewayHttpPort] is set.
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -315,6 +340,18 @@ data class ParkerRuntimeConfig(
     val caseStorageRootPath: String? = null,
     val caseAssignmentStorageRootPath: String? = null,
     val caseGovernanceAuditLogPath: String? = null,
+    // Parker Agent Gateway, AG-1E (R0 Agent Gateway Transport,
+    // `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 10, Section 18, Section 20):
+    // structurally separate from ownerHttpBindAddress/ownerHttpPort/ownerHttpToken above --
+    // its own bind address, its own port, its own bearer token, never derived from or shared
+    // with Owner UI session/pairing credentials (Section 10's own frozen "no impersonation"
+    // constraint). Optional and opt-in, mirroring the Owner LAN Evidence Upload feature's own
+    // "null port disables the feature entirely" discipline: no existing deployment or test is
+    // affected unless this is explicitly configured.
+    val agentGatewayHttpBindAddress: String? = null,
+    val agentGatewayHttpPort: Int? = null,
+    val agentGatewayHttpToken: String? = null,
+    val agentGatewayAccessAuditLogPath: String? = null,
 )
 
 /**
@@ -388,6 +425,10 @@ object ParkerRuntimeConfigLoader {
     const val KEY_CASE_STORAGE_ROOT = "PARKER_CASE_STORAGE_ROOT"
     const val KEY_CASE_ASSIGNMENT_STORAGE_ROOT = "PARKER_CASE_ASSIGNMENT_STORAGE_ROOT"
     const val KEY_CASE_GOVERNANCE_AUDIT_LOG_PATH = "PARKER_CASE_GOVERNANCE_AUDIT_LOG_PATH"
+    const val KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS = "PARKER_AGENT_GATEWAY_HTTP_BIND_ADDRESS"
+    const val KEY_AGENT_GATEWAY_HTTP_PORT = "PARKER_AGENT_GATEWAY_HTTP_PORT"
+    const val KEY_AGENT_GATEWAY_HTTP_TOKEN = "PARKER_AGENT_GATEWAY_HTTP_TOKEN"
+    const val KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH = "PARKER_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -496,6 +537,57 @@ object ParkerRuntimeConfigLoader {
             throw ParkerRuntimeException.InvalidConfiguration(
                 KEY_OWNER_UI_AUTHENTICATION_ROOT,
                 "owner HTTP requires protected pairing/device authentication storage",
+            )
+        }
+
+        // Parker Agent Gateway, AG-1E (R0 Agent Gateway Transport, Section 10, Section 18):
+        // structurally separate from Owner LAN Evidence Upload immediately above -- its own bind
+        // address, port, bearer token, and audit log path, never derived from Owner's. Optional
+        // and opt-in: with no port set, the Gateway is disabled entirely and none of the other
+        // three values is required.
+        //
+        // Owner-review correction (fail-safe binding): unlike ownerHttpBindAddress's own
+        // "0.0.0.0" default, agentGatewayHttpBindAddress has NO default at all. A newly
+        // introduced authenticated Gateway must never silently bind to every interface merely
+        // because a port was configured -- once a port is set, the bind address, the bearer
+        // token, and the audit log path must ALL be explicitly present, or startup fails closed
+        // naming whichever is missing. `0.0.0.0` remains an accepted value, but only when the
+        // owner supplies it themselves; it can never arise as a fallback.
+        val agentGatewayHttpPortRaw = environment[KEY_AGENT_GATEWAY_HTTP_PORT]?.takeIf { it.isNotBlank() }
+        val agentGatewayHttpPort = agentGatewayHttpPortRaw?.let {
+            it.toIntOrNull()?.takeIf { port -> port in 1..65535 }
+                ?: throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_AGENT_GATEWAY_HTTP_PORT,
+                    "must be an integer TCP port in 1..65535; was '$agentGatewayHttpPortRaw'",
+                )
+        }
+        val agentGatewayHttpBindAddress = environment[KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS]?.takeIf { it.isNotBlank() }
+        val agentGatewayHttpToken = environment[KEY_AGENT_GATEWAY_HTTP_TOKEN]?.takeIf { it.isNotBlank() }
+        val agentGatewayAccessAuditLogPath = environment[KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH]?.takeIf { it.isNotBlank() }
+        if (agentGatewayHttpPort != null) {
+            if (agentGatewayHttpBindAddress == null) {
+                throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS,
+                    "agent gateway HTTP requires an explicit bind address -- no default is provided, " +
+                        "to prevent a newly introduced authenticated Gateway from silently binding to every interface",
+                )
+            }
+            if (agentGatewayHttpToken == null) {
+                throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_AGENT_GATEWAY_HTTP_TOKEN,
+                    "agent gateway HTTP port requires a bearer token",
+                )
+            }
+            if (agentGatewayAccessAuditLogPath == null) {
+                throw ParkerRuntimeException.InvalidConfiguration(
+                    KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH,
+                    "agent gateway HTTP requires an access audit log path",
+                )
+            }
+        } else if (agentGatewayHttpToken != null) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_AGENT_GATEWAY_HTTP_TOKEN,
+                "agent gateway HTTP bearer token requires a port",
             )
         }
 
@@ -623,6 +715,10 @@ object ParkerRuntimeConfigLoader {
             caseStorageRootPath = environment[KEY_CASE_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
             caseAssignmentStorageRootPath = environment[KEY_CASE_ASSIGNMENT_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
             caseGovernanceAuditLogPath = environment[KEY_CASE_GOVERNANCE_AUDIT_LOG_PATH]?.takeIf { it.isNotBlank() },
+            agentGatewayHttpBindAddress = agentGatewayHttpBindAddress,
+            agentGatewayHttpPort = agentGatewayHttpPort,
+            agentGatewayHttpToken = agentGatewayHttpToken,
+            agentGatewayAccessAuditLogPath = agentGatewayAccessAuditLogPath,
         )
     }
 

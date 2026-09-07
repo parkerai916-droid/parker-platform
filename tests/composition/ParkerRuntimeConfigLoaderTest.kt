@@ -730,4 +730,135 @@ class ParkerRuntimeConfigLoaderTest {
             }
         }
     }
+
+    // ================= Parker Agent Gateway, AG-1E =================
+
+    // Owner-review correction (fail-safe binding): agentGatewayHttpBindAddress has NO default.
+    // Once a port is configured, bind address, token, and audit log path must ALL be explicit.
+
+    /** All four Agent Gateway values, valid and complete -- the common base for the "one missing" tests below. */
+    private fun completeAgentGatewayOverrides(auditLogDir: java.nio.file.Path) = mapOf(
+        ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS to "192.168.1.50",
+        ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_PORT to "9090",
+        ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_TOKEN to "hermes-token",
+        ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH to auditLogDir.resolve("audit.log").toString(),
+    )
+
+    @Test
+    fun `1 - with no PARKER_AGENT_GATEWAY_HTTP_PORT set, the Agent Gateway feature stays entirely off and requires nothing else`() {
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment())
+
+        assertEquals(null, config.agentGatewayHttpBindAddress)
+        assertEquals(null, config.agentGatewayHttpPort)
+        assertEquals(null, config.agentGatewayHttpToken)
+        assertEquals(null, config.agentGatewayAccessAuditLogPath)
+    }
+
+    @Test
+    fun `2 - port present with bind address missing is rejected, naming the bind address key -- no 0-0-0-0 fallback`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-missing-bind")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS to null)
+        val environment = fullEnvironment(overrides = overrides)
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS, thrown.key)
+    }
+
+    @Test
+    fun `3 - port present with token missing is rejected, naming the token key`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-missing-token")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_TOKEN to null)
+        val environment = fullEnvironment(overrides = overrides)
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_TOKEN, thrown.key)
+    }
+
+    @Test
+    fun `4 - port present with audit log path missing is rejected, naming the audit log path key`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-missing-audit")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH to null)
+        val environment = fullEnvironment(overrides = overrides)
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH, thrown.key)
+    }
+
+    @Test
+    fun `5 - all four values present is accepted with those exact values`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-complete")
+        val environment = fullEnvironment(overrides = completeAgentGatewayOverrides(auditLogDir))
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals("192.168.1.50", config.agentGatewayHttpBindAddress)
+        assertEquals(9090, config.agentGatewayHttpPort)
+        assertEquals("hermes-token", config.agentGatewayHttpToken)
+        assertEquals(auditLogDir.resolve("audit.log").toString(), config.agentGatewayAccessAuditLogPath)
+    }
+
+    @Test
+    fun `6 - an explicitly-supplied 0-0-0-0 bind address is accepted -- allowed only because the owner supplied it, never as a default`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-explicit-0000")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS to "0.0.0.0")
+        val environment = fullEnvironment(overrides = overrides)
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals("0.0.0.0", config.agentGatewayHttpBindAddress)
+        // Confirms this is not silently reachable by omission: the same override set with the
+        // bind address key removed instead throws (test 2) -- "0.0.0.0" here came only from the
+        // explicit override above, never from a fallback this loader could have applied.
+    }
+
+    @Test
+    fun `setting only PARKER_AGENT_GATEWAY_HTTP_TOKEN without a port throws InvalidConfiguration naming the token key`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_TOKEN to "hermes-token"))
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_TOKEN, thrown.key)
+    }
+
+    @Test
+    fun `a non-numeric PARKER_AGENT_GATEWAY_HTTP_PORT throws InvalidConfiguration naming that key`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-nonnumeric-port")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_PORT to "not-a-port")
+        val environment = fullEnvironment(overrides = overrides)
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_PORT, thrown.key)
+    }
+
+    @Test
+    fun `a PARKER_AGENT_GATEWAY_HTTP_PORT out of the valid TCP port range throws InvalidConfiguration`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-port-range")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HTTP_PORT to "99999")
+        val environment = fullEnvironment(overrides = overrides)
+
+        assertIs<ParkerRuntimeException.InvalidConfiguration>(
+            assertFailsWith<ParkerRuntimeException> { ParkerRuntimeConfigLoader.load(environment) },
+        )
+    }
+
+    @Test
+    fun `7 - Agent Gateway configuration is independent of Owner HTTP configuration -- setting one never implies or requires the other`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-independence")
+        val environment = fullEnvironment(overrides = completeAgentGatewayOverrides(auditLogDir))
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(null, config.ownerHttpPort)
+        assertEquals(null, config.ownerHttpToken)
+        assertEquals(9090, config.agentGatewayHttpPort)
+    }
 }
