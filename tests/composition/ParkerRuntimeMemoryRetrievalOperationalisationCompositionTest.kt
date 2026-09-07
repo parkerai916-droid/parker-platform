@@ -130,14 +130,27 @@ class ParkerRuntimeMemoryRetrievalOperationalisationCompositionTest {
         val registry = policy(runtime).privateField<InMemoryAuthorizationPurposeRegistry>("authorizationPurposeRegistry")
         val entries = registry.privateField<Map<*, *>>("entries")
 
+        // Parker Agent Gateway, AG-1B (`docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md`
+        // Section 11, Section 20): adds one namespaced purpose reserved for future Agent
+        // Gateway requests, granting nothing yet -- see
+        // ParkerRuntimeAgentGatewayIdentityCompositionTest for AG-1B's own dedicated coverage.
+        val agentGatewayHermesIngestionPurpose = AuthorizationPurposeId("agent-gateway.hermes-ingestion")
+
         assertEquals(
-            setOf(candidatePurpose, evidencePurpose, reasoningContextPurpose, ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE),
+            setOf(
+                candidatePurpose,
+                evidencePurpose,
+                reasoningContextPurpose,
+                ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE,
+                agentGatewayHermesIngestionPurpose,
+            ),
             entries.keys,
         )
         assertTrue(registry.isActive(candidatePurpose))
         assertTrue(registry.isActive(evidencePurpose))
         assertTrue(registry.isActive(reasoningContextPurpose))
         assertTrue(registry.isActive(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE))
+        assertTrue(registry.isActive(agentGatewayHermesIngestionPurpose))
 
         runtime.shutdown()
     }

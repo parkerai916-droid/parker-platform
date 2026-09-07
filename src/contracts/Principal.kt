@@ -19,6 +19,15 @@ enum class PrincipalType {
     SCHEDULED_TASK,
     DEVELOPER_SESSION,
     FUTURE_REMOTE_DEVICE,
+
+    /**
+     * An external, untrusted, subordinate agent running outside Parker's own
+     * process/host trust boundary -- e.g. the Nous Hermes Agent, proposing
+     * ingestion work across a network boundary. Distinct from
+     * [INTERNAL_AGENT], which is reserved for cognition Parker itself runs.
+     * See `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 10.
+     */
+    EXTERNAL_AGENT,
 }
 
 /**

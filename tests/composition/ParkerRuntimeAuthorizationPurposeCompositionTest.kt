@@ -151,15 +151,27 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         val evidenceIntelligencePurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution")
         val reasoningContextPurpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
         val externalTranscriptionPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE
+        // Parker Agent Gateway, AG-1B (`docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md`
+        // Section 11, Section 20): a namespaced purpose reserved for future Agent Gateway
+        // requests, registered but granting nothing yet -- see
+        // ParkerRuntimeAgentGatewayIdentityCompositionTest for AG-1B's own dedicated coverage.
+        val agentGatewayHermesIngestionPurpose = AuthorizationPurposeId("agent-gateway.hermes-ingestion")
 
         assertEquals(
-            setOf(candidateEvaluationPurpose, evidenceIntelligencePurpose, reasoningContextPurpose, externalTranscriptionPurpose),
+            setOf(
+                candidateEvaluationPurpose,
+                evidenceIntelligencePurpose,
+                reasoningContextPurpose,
+                externalTranscriptionPurpose,
+                agentGatewayHermesIngestionPurpose,
+            ),
             entries.keys,
         )
         assertTrue(registry.isActive(candidateEvaluationPurpose))
         assertTrue(registry.isActive(evidenceIntelligencePurpose))
         assertTrue(registry.isActive(reasoningContextPurpose))
         assertTrue(registry.isActive(externalTranscriptionPurpose))
+        assertTrue(registry.isActive(agentGatewayHermesIngestionPurpose))
 
         runtime.shutdown()
     }

@@ -662,6 +662,13 @@ class ParkerRuntime(
             }
             if (humanCorrectionConfigured) HumanCorrectionPermissionPolicy.registerPurpose(authorizationPurposeRegistry)
         }
+        // Parker Agent Gateway, AG-1B (Section 11, Section 20): registers the namespaced
+        // AuthorizationPurposeId reserved for future Parker Agent Gateway requests. This
+        // grants nothing in AG-1B -- no PermissionPolicyRule references it, and no consumer
+        // supplies it on any request yet.
+        stage("Parker Agent Gateway Authorization Purpose registration") {
+            authorizationPurposeRegistry.register(AGENT_GATEWAY_HERMES_INGESTION_PURPOSE)
+        }
         val toolRegistry = InMemoryToolRegistry(resourceRegistry)
         val moduleRegistry = InMemoryModuleRegistry(toolRegistry, resourceRegistry)
         val toolInvocationBinding = InMemoryToolInvocationBinding()
@@ -2213,6 +2220,27 @@ class ParkerRuntime(
                 config.ownerDisplayName,
             )
         }
+        // Parker Agent Gateway, AG-1B (External Agent Identity Foundation,
+        // `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 20): provisions
+        // Hermes's own distinct Principal, left at status CREATED -- deliberately never
+        // activated here. DefaultPermissionEngine.evaluate already denies every non-ACTIVE
+        // status before policy is even consulted (Section 17), so this alone gives Hermes
+        // zero authority until a separate, future, explicit owner action activates it. No
+        // Gateway HTTP surface, evidence/acquisition capability, or new ParkerRuntime
+        // operation is introduced by this registration.
+        stage("Parker Agent Gateway external agent identity foundation registration") {
+            identityService.register(
+                Principal(
+                    principalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
+                    principalType = PrincipalType.EXTERNAL_AGENT,
+                    displayName = "Hermes Ingestion Operator",
+                    owner = PrincipalId(config.ownerPrincipalId),
+                    status = PrincipalStatus.CREATED,
+                    createdAt = clock(),
+                    lastSeenAt = clock(),
+                ),
+            )
+        }
     }
 
     private suspend fun registerActive(
@@ -3369,6 +3397,15 @@ class ParkerRuntime(
         // constants above.
         val PLANNER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.planner-runtime")
         val TASK_MANAGER_RUNTIME_PRINCIPAL_ID = PrincipalId("system.task-manager-runtime")
+
+        // Parker Agent Gateway, AG-1B (`docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md`
+        // Section 10, Section 20): one deterministic PrincipalId for the Hermes Ingestion
+        // Operator, and one deterministic, namespaced AuthorizationPurposeId reserved for
+        // future Parker Agent Gateway requests. Neither value grants Hermes anything by
+        // itself in this unit -- the Principal is provisioned at status CREATED (never
+        // ACTIVE) and no PermissionPolicyRule references this purpose yet.
+        val HERMES_INGESTION_OPERATOR_PRINCIPAL_ID = PrincipalId("agent.hermes-ingestion-operator")
+        val AGENT_GATEWAY_HERMES_INGESTION_PURPOSE = AuthorizationPurposeId("agent-gateway.hermes-ingestion")
 
         // Controlled Agent Run Submission (docs/implementation/
         // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and

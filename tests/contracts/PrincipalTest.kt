@@ -53,4 +53,17 @@ class PrincipalTest {
         assertEquals(PrincipalType.INTERNAL_AGENT, agent.principalType)
         assertEquals(PrincipalId("user-1"), agent.owner)
     }
+
+    @Test
+    fun `an external subordinate agent is representable as a principal and is distinct from INTERNAL_AGENT`() {
+        val externalAgent = principal().copy(
+            principalId = PrincipalId("external-agent-1"),
+            principalType = PrincipalType.EXTERNAL_AGENT,
+            owner = PrincipalId("user-1"),
+        )
+
+        assertEquals(PrincipalType.EXTERNAL_AGENT, externalAgent.principalType)
+        assertNotEquals(PrincipalType.INTERNAL_AGENT, externalAgent.principalType)
+        assertEquals(PrincipalId("user-1"), externalAgent.owner)
+    }
 }
