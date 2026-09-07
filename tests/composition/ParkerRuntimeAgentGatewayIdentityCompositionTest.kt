@@ -231,13 +231,25 @@ class ParkerRuntimeAgentGatewayIdentityCompositionTest {
     // ================= H. No existing policy is broadened =================
 
     @Test
-    fun `no PermissionPolicyRule references the new Agent Gateway purpose or Hermes's principal`() = runTest {
+    fun `any PermissionPolicyRule referencing the new Agent Gateway purpose is exact-verb-scoped, never a coarse grant`() = runTest {
+        // At AG-1B's own commit, zero such rules existed at all -- this unit added only the
+        // Principal and the AuthorizationPurposeId (Section 20: "This grants nothing in
+        // AG-1B"). AG-1C (a later, separately-governed unit, Section 20) is explicitly
+        // authorised to add "exact, gateway-purpose-scoped PermissionPolicyRule entries" --
+        // see ParkerRuntimeAgentGatewayR0VocabularyCompositionTest for that unit's own
+        // dedicated coverage of exactly what it added. What AG-1B's own acceptance criterion H
+        // still guarantees, and what this test now proves instead of an absolute "zero rules
+        // forever" claim that a later, authorised unit is expected to supersede: every rule
+        // naming this purpose is scoped to an exact proposedAction verb phrase -- never a
+        // coarse grant across the purpose alone -- so the purpose's mere existence still
+        // grants nothing beyond the narrow, named verbs a later unit explicitly adds.
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val rules = composedPolicy(runtime).privateField<List<PermissionPolicyRule>>("rules")
+        val gatewayScopedRules = rules.filter { it.authorizationPurpose == agentGatewayPurpose }
 
-        assertTrue(rules.none { it.authorizationPurpose == agentGatewayPurpose }, "AG-1B must register the purpose without any rule granting it authority yet")
+        assertTrue(gatewayScopedRules.all { it.proposedAction != null }, "every Agent Gateway purpose rule must be scoped to an exact verb phrase, never a coarse grant")
 
         runtime.shutdown()
     }

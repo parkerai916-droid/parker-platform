@@ -790,6 +790,38 @@ class ParkerRuntime(
             }
         }
 
+        // Parker Agent Gateway, AG-1C (R0 Permission Vocabulary,
+        // `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 7 item 2, Section 11,
+        // Section 20): two new, distinct, fixed ResourceIds -- never a new ResourceType (Section
+        // 11: "No new ResourceType is introduced") -- registered under the same existing
+        // ResourceType.DOCUMENT the Owner's own evidence.retrieve/evidence.retrieve-manifest
+        // already use, mirroring that exact registration pattern immediately above. These back
+        // the two new agent-gateway.evidence.* verb phrases registered below. Registering a
+        // Resource is not itself a grant: no PermissionPolicyRule below approves either verb for
+        // an absent/wrong Authorization Purpose, and no ParkerRuntime entry point yet constructs
+        // a request naming either identifier for any principal (AG-1D's own future scope).
+        stage("Parker Agent Gateway R0 resource registration") {
+            val now = clock()
+            listOf(
+                Triple(AGENT_GATEWAY_EVIDENCE_RETRIEVAL_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Retrieval"),
+                Triple(AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Manifest Retrieval"),
+            ).forEach { (resourceId, resourceType, displayName) ->
+                resourceRegistry.register(
+                    Resource(
+                        resourceId = resourceId,
+                        resourceType = resourceType,
+                        displayName = displayName,
+                        ownerPrincipalId = SYSTEM_PARKER_PRINCIPAL_ID,
+                        sensitivity = ResourceSensitivity.PUBLIC,
+                        lifecycleState = ResourceLifecycleState.REGISTERED,
+                        createdAt = now,
+                        updatedAt = now,
+                        source = "composition-root:agent-gateway-r0",
+                    ),
+                )
+            }
+        }
+
         stage("action vocabulary registration") {
             vocabulary.register(
                 ActionVocabularyEntry(
@@ -905,6 +937,26 @@ class ParkerRuntime(
             vocabulary.register(
                 ActionVocabularyEntry(
                     verbPhrase = PermissionFilteredMemoryRetrieval.RETRIEVE_DOCUMENT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
+                ),
+            )
+            // Parker Agent Gateway, AG-1C (R0 Permission Vocabulary, Section 7 item 2, Section
+            // 11, Section 20): two new, distinct verb phrases for the minimum R0 read-only
+            // capability -- exact evidence metadata/content lookup by an already-known
+            // EvidenceArtifactId. Both reuse the identical existing (READ, DOCUMENT) pair
+            // evidence.retrieve/evidence.retrieve-manifest already use -- no new PermissionAction
+            // or ResourceType is introduced. Registering the verb phrase alone grants nothing:
+            // see the exact-verb DENIED guards below, which prevent either from silently
+            // resolving through the pre-existing coarse (READ, DOCUMENT) approval.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
+                ),
+            )
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
                 ),
             )
@@ -1104,6 +1156,100 @@ class ParkerRuntime(
                     level = PermissionLevel.AUTOMATIC,
                     authorizationPurpose = REASONING_CONTEXT_RETRIEVAL_PURPOSE,
                     proposedAction = PermissionFilteredMemoryRetrieval.RETRIEVE_ACTION_NAME,
+                ),
+                // Parker Agent Gateway, AG-1C (R0 Permission Vocabulary, Section 7 item 2,
+                // Section 11, Section 20): fail-closed guards for the two new agent-gateway.
+                // evidence.* verbs registered above -- specificity 1, outranking the pre-existing
+                // coarse (READ, DOCUMENT) approval (specificity 0) for these two verbs only. This
+                // leaves that coarse rule, and every other verb it still governs (including
+                // Owner's own evidence.retrieve/evidence.retrieve-manifest), completely
+                // unchanged -- mirroring Gap #54 Unit 2's own identical guard-then-override shape.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME,
+                ),
+                // Specificity 2: outranks the two guards immediately above only for a request
+                // carrying this exact, active, gateway-originated Authorization Purpose (AG-1B).
+                //
+                // ## STRUCTURAL PRINCIPAL-BINDING INVARIANT -- read before adding any caller of
+                // ## this Purpose (AG-1D/AG-1E), and before assuming these two rules "belong" to
+                // ## Hermes in any sense this policy itself enforces
+                //
+                // 1. DefaultPermissionPolicy does NOT bind either rule below to a PrincipalId or
+                //    PrincipalType. Its own matching (`ruleOutcomeFor`) reads only `action`,
+                //    `resourceType`, `authorizationPurpose`, and `proposedAction` -- it never
+                //    reads `request.principalId` at all. This is not an oversight; it is this
+                //    class's own documented, frozen design (its own KDoc: "no per-principal
+                //    matching capability at all").
+                // 2. Therefore `AuthorizationPurposeId("agent-gateway.hermes-ingestion")`
+                //    appearing on a request is, by itself, NOT proof the caller is Hermes. Any
+                //    ACTIVE principal of any type that supplies this exact purpose alongside the
+                //    exact verb/resource below is APPROVED identically -- confirmed empirically
+                //    by the adversarial tests in `ParkerRuntimeAgentGatewayR0VocabularyCompositionTest`
+                //    (an ACTIVE PLUGIN, INTERNAL_AGENT, or arbitrary TOOL principal all resolve
+                //    APPROVED when supplying this purpose). Do not read "APPROVED" in those tests
+                //    as evidence that unrelated principals are entitled to Agent Gateway access --
+                //    it proves only that this *policy layer* is principal-blind, a separate fact
+                //    from whether the request was ever reachable in production (point 3).
+                // 3. These two rules are safe to register now, in AG-1C, only because there is
+                //    currently NO production call site anywhere in this file (or elsewhere) that
+                //    constructs an `ExecutionRequest` naming this Purpose together with either
+                //    `AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME` or
+                //    `AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME` -- this vocabulary is
+                //    registered, additive metadata only, unreachable by any existing coordinator,
+                //    HTTP route, or entry point (AG-1C's own explicit scope: no runtime
+                //    projections, no HTTP Gateway). Reachability, not policy content, is what
+                //    currently makes this safe.
+                // 4. Future AG-1D/AG-1E entry points MUST enforce principal binding
+                //    structurally -- never by adding PrincipalId/PrincipalType matching to
+                //    DefaultPermissionPolicy or PermissionEngine, and never by a second
+                //    permission engine.
+                // 5. The only production path ever permitted to construct an `ExecutionRequest`
+                //    naming `agent-gateway.hermes-ingestion` is the authenticated Agent Gateway
+                //    entry point (AG-1D's "AsAgent" family, behind AG-1E's dedicated Agent
+                //    Gateway authentication, Section 10/18) -- never any other coordinator,
+                //    Owner UI path, or generic request-construction helper.
+                // 6. That path MUST resolve and supply Hermes's own explicit principal,
+                //    `PrincipalId("agent.hermes-ingestion-operator")` -- never a caller-supplied
+                //    or inferred principal substituted in its place.
+                // 7. That path MUST NOT: accept an arbitrary caller-supplied PrincipalId in
+                //    place of Hermes's own; resolve a Hermes-shaped request to the Owner
+                //    principal; accept `OwnerUiAuthentication` (session/pairing/device
+                //    credential) as Agent-Gateway-valid authentication; or permit a PLUGIN,
+                //    INTERNAL_AGENT, TOOL, or any other unrelated principal to ever reach these
+                //    two rules through a real production call path.
+                // 8. This mirrors Parker's own existing call-site structural enforcement
+                //    pattern for principal-sensitive operations that this same flat policy
+                //    mechanism cannot itself express -- see `deleteEvidenceAsOwner`'s own KDoc
+                //    above ("this flat (action, resourceType) policy mechanism has no
+                //    per-principal matching capability at all... Owner-scoping is enforced
+                //    instead by call-site structure") and Controlled Agent Run Submission's
+                //    identical EXECUTE/AGENT rule -- neither is a novel gap introduced here.
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME,
                 ),
             ) + (if (humanFidelityReviewConfigured) listOf(
                 PermissionPolicyRule(
@@ -3406,6 +3552,20 @@ class ParkerRuntime(
         // ACTIVE) and no PermissionPolicyRule references this purpose yet.
         val HERMES_INGESTION_OPERATOR_PRINCIPAL_ID = PrincipalId("agent.hermes-ingestion-operator")
         val AGENT_GATEWAY_HERMES_INGESTION_PURPOSE = AuthorizationPurposeId("agent-gateway.hermes-ingestion")
+
+        // Parker Agent Gateway, AG-1C (R0 Permission Vocabulary,
+        // `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 7 item 2, Section 11,
+        // Section 20): the minimum additive R0 read-only vocabulary -- two new, distinct,
+        // narrow, operation-specific verb phrases and two new, distinct, fixed, opaque
+        // ResourceIds. Both verbs reuse the identical existing (PermissionAction.READ,
+        // ResourceType.DOCUMENT) pair Owner's own evidence.retrieve/evidence.retrieve-manifest
+        // already use -- Section 11 freezes "No new ResourceType is introduced," and no new
+        // PermissionAction is introduced either. AG-1C's own AuthorizationPurposeId is AG-1B's
+        // existing agent-gateway.hermes-ingestion -- no second Agent Gateway purpose is created.
+        val AGENT_GATEWAY_EVIDENCE_RETRIEVAL_RESOURCE_ID = ResourceId("agent-gateway-evidence-retrieval")
+        val AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID = ResourceId("agent-gateway-evidence-manifest-retrieval")
+        const val AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME = "agent-gateway.evidence.retrieve"
+        const val AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME = "agent-gateway.evidence.retrieve-manifest"
 
         // Controlled Agent Run Submission (docs/implementation/
         // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and

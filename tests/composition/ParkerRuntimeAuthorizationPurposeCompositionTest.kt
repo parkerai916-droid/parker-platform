@@ -185,8 +185,11 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         val candidateEvaluationPurpose = AuthorizationPurposeId("knowledge-memory.candidate-evaluation")
         val evidenceIntelligencePurpose = AuthorizationPurposeId("evidence-intelligence.input-resolution")
         val reasoningContextPurpose = AuthorizationPurposeId("knowledge-memory.reasoning-context-retrieval")
-
-        assertEquals(5, rules.count { it.authorizationPurpose != null })
+        // Parker Agent Gateway, AG-1C (R0 Permission Vocabulary, Section 7 item 2, Section 11,
+        // Section 20): adds exactly two Purpose-scoped rules (both APPROVED, both scoped to
+        // agent-gateway.hermes-ingestion) -- see
+        // ParkerRuntimeAgentGatewayR0VocabularyCompositionTest for AG-1C's own dedicated coverage.
+        assertEquals(7, rules.count { it.authorizationPurpose != null })
 
         val candidateEvaluationRules = rules.filter { it.authorizationPurpose == candidateEvaluationPurpose }
         assertEquals(2, candidateEvaluationRules.size)
