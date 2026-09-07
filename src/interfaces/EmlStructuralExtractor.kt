@@ -19,6 +19,10 @@ data class EmlMimeEntity(
     val filename: String?,
     val charset: String?,
     val childEntityIds: List<String>,
+    /** The raw, un-normalised Content-ID header value, when present. Never fetched, resolved, rendered, or interpreted as a location -- inert metadata only, preserved exactly as declared (including hostile/odd values), matching this extractor's existing unstripped Message-ID precedent. */
+    val contentId: String? = null,
+    /** Populated only for an entity that is itself a nested message/rfc822 (never for the root message). The nested message's own top-level headers, captured the same way the root message's headers are. */
+    val nestedMessageHeaders: List<EmlHeader>? = null,
 )
 
 data class EmlBodyAlternative(
@@ -41,6 +45,8 @@ data class EmlAttachmentCandidate(
     val byteLength: Long,
     val sha256: String,
     val transformations: List<DerivativeTransformation>,
+    /** The raw, un-normalised Content-ID header value, when present. See [EmlMimeEntity.contentId]. */
+    val contentId: String? = null,
 )
 
 data class EmlStructuralResult(

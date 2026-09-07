@@ -52,10 +52,7 @@ class ApacheJamesMime4jExtractor : EmlStructuralExtractor {
         if (entities.isEmpty() || entities.any { it.mediaType.isBlank() }) {
             return EmlStructuralExtractionOutcome.Malformed("MIME structure could not be accounted for")
         }
-        val headers = message.header.fields.map { field ->
-            val rawBytes = field.raw.toByteArray()
-            EmlHeader(field.name, field.body, rawBytes, String(rawBytes, Charsets.ISO_8859_1))
-        }
+        val headers = headersOf(message)
         val rawDate = message.header.getField("Date")?.body
         val parsedDate = (message.header.getField("Date") as? DateTimeField)?.date?.toInstant()
         if (bodies.isEmpty()) warnings += "No readable body alternative was discovered"
@@ -84,22 +81,39 @@ class ApacheJamesMime4jExtractor : EmlStructuralExtractor {
         if (depth > MAX_MIME_DEPTH) throw BoundedMimeException("MIME nesting exceeds the $MAX_MIME_DEPTH-level adapter limit")
         if (entities.size >= MAX_ENTITY_COUNT) throw BoundedMimeException("MIME entity count exceeds the $MAX_ENTITY_COUNT-entity adapter limit")
         val body = entity.body
-        val children = if (body is Multipart) body.bodyParts.mapIndexed { index, _ -> "$id.$index" } else emptyList()
+        // Mime4j's Message interface extends both Entity and Body -- a nested message/rfc822
+        // part's own body is a Message directly (no separate wrapper type exists). It is
+        // recursed exactly like a Multipart child, through this same function, so the existing
+        // MAX_MIME_DEPTH/MAX_ENTITY_COUNT bounds already cover nested-message recursion without
+        // any new limit.
+        val children = when (body) {
+            is Multipart -> body.bodyParts.mapIndexed { index, _ -> "$id.$index" }
+            is Message -> listOf("$id.0")
+            else -> emptyList()
+        }
         val mediaType = entity.mimeType.lowercase()
         val disposition = entity.dispositionType
         val filename = entity.filename
         val encoding = entity.contentTransferEncoding
         val charset = (entity.header.getField("Content-Type") as? ContentTypeField)
             ?.getParameter(ContentTypeField.PARAM_CHARSET)
-        entities += EmlMimeEntity(id, parent, order, mediaType, disposition, encoding, filename, charset, children)
+        // Preserved exactly as declared -- never fetched, resolved, rendered, or interpreted as a
+        // location, and never normalised (matching this extractor's existing unstripped
+        // Message-ID precedent: angle brackets, if any, are part of the raw header value).
+        val contentId = entity.header.getField("Content-ID")?.body
+        // Only for an entity that is itself a nested message/rfc822 (depth > 0 excludes the root
+        // message, whose headers are already exposed on EmlStructuralResult itself).
+        val nestedMessageHeaders = if (entity is Message && depth > 0) headersOf(entity) else null
+        entities += EmlMimeEntity(id, parent, order, mediaType, disposition, encoding, filename, charset, children, contentId, nestedMessageHeaders)
         when (body) {
             is Multipart -> body.bodyParts.forEachIndexed { index, child ->
                 visit(child, "$id.$index", id, index, depth + 1, entities, bodies, attachments, warnings)
             }
+            is Message -> visit(body, "$id.0", id, 0, depth + 1, entities, bodies, attachments, warnings)
             is TextBody -> {
                 val bytes = body.inputStream.use { readBounded(it, MAX_DECODED_PART_BYTES, id) }
                 if (disposition.equals("attachment", ignoreCase = true) || filename != null) {
-                    attachments += attachment(id, parent, filename, mediaType, disposition, encoding, charset, bytes)
+                    attachments += attachment(id, parent, filename, mediaType, disposition, encoding, charset, bytes, contentId)
                     if (charset == null) warnings += "Attachment $id has no declared charset; exact decoded bytes remain authoritative"
                 } else {
                     val decoded = decodeText(bytes, charset, id, warnings)
@@ -108,7 +122,7 @@ class ApacheJamesMime4jExtractor : EmlStructuralExtractor {
             }
             is BinaryBody -> {
                 val bytes = body.inputStream.use { readBounded(it, MAX_DECODED_PART_BYTES, id) }
-                attachments += attachment(id, parent, filename, mediaType, disposition, encoding, charset, bytes)
+                attachments += attachment(id, parent, filename, mediaType, disposition, encoding, charset, bytes, contentId)
             }
             else -> warnings += "MIME entity $id has an unreadable or unsupported body representation"
         }
@@ -132,12 +146,16 @@ class ApacheJamesMime4jExtractor : EmlStructuralExtractor {
     }
 
     private fun attachment(id: String, parent: String?, filename: String?, mediaType: String,
-        disposition: String?, encoding: String?, charset: String?, bytes: ByteArray) = EmlAttachmentCandidate(
+        disposition: String?, encoding: String?, charset: String?, bytes: ByteArray, contentId: String?) = EmlAttachmentCandidate(
         id, parent, filename, mediaType, disposition, encoding, charset, bytes, bytes.size.toLong(), sha256(bytes),
-        listOf(DerivativeTransformation.MIME_TRANSFER_DECODING),
+        listOf(DerivativeTransformation.MIME_TRANSFER_DECODING), contentId,
     )
 
     private fun value(message: Message, name: String) = message.header.getField(name)?.body
+    private fun headersOf(entity: Entity) = entity.header.fields.map { field ->
+        val rawBytes = field.raw.toByteArray()
+        EmlHeader(field.name, field.body, rawBytes, String(rawBytes, Charsets.ISO_8859_1))
+    }
     private fun readBounded(input: InputStream, maximum: Int, entityId: String): ByteArray {
         val output = java.io.ByteArrayOutputStream(minOf(8192, maximum))
         val buffer = ByteArray(8192)
@@ -160,7 +178,7 @@ class ApacheJamesMime4jExtractor : EmlStructuralExtractor {
         const val PRODUCT_VERSION = "0.8.14"
         const val ADAPTER_IDENTITY = "parker.apache-james-mime4j"
         const val ADAPTER_VERSION = "1"
-        const val CONFIGURATION_IDENTITY = "mime4j-dom-exact-transfer-bytes-ordered-tree-bounded-v2"
+        const val CONFIGURATION_IDENTITY = "mime4j-dom-exact-transfer-bytes-ordered-tree-bounded-v3"
         const val MAX_MESSAGE_BYTES = 16 * 1024 * 1024
         const val MAX_DECODED_PART_BYTES = 8 * 1024 * 1024
         const val MAX_HEADER_COUNT = 500
