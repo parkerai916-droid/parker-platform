@@ -243,6 +243,7 @@ services:
       # retrieval rules are unaffected by this deployment-only wiring.
       - /home/steve/qmd:/opt/qmd:ro
       - /home/steve/.cache/qmd/models:/opt/qmd-models:ro
+      - /home/steve/.config/parker/openai-external-transcription.properties:/run/parker/openai-external-transcription.properties:ro
       # Docling Production Runtime Enablement. The Parker host's own
       # already-populated Hugging Face cache (the document-layout model
       # Docling itself fetches on first use, docling-project/docling-layout-heron
