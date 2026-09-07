@@ -15,6 +15,7 @@ import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.EvidenceSourceManifest
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.OcrMechanism
 import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.OcrRecognitionRequest
@@ -76,6 +77,9 @@ class EvidenceIntelligenceOcrCoordinatorTest {
             retrieveManifestCallCount += 1
             return onRetrieveManifest(requestingPrincipalId, evidenceArtifactId)
         }
+
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private class FakeOcrMechanism(

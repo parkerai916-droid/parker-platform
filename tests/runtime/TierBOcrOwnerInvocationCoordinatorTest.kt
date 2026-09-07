@@ -17,6 +17,7 @@ import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.EvidenceSourceManifest
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.OcrMechanism
 import parker.core.interfaces.OcrRecognitionIdentity
@@ -73,6 +74,9 @@ class TierBOcrOwnerInvocationCoordinatorTest {
 
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
             manifestResult
+
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private class FakeOcrMechanism(private val onRecognise: (OcrRecognitionRequest) -> OcrRecognitionOutcome) : OcrMechanism {

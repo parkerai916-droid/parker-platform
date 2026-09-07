@@ -560,6 +560,45 @@ interface EvidenceCustodian {
         requestingPrincipalId: PrincipalId,
         evidenceArtifactId: EvidenceArtifactId,
     ): EvidenceManifestRetrievalResult
+
+    /**
+     * Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission,
+     * `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 8, Section 16) -- a fourth,
+     * narrow, incrementally-added operation, mirroring exactly how [retrieveManifest] was itself
+     * added on top of the original [accept]/[retrieve] pair: no authority-narrowing reason
+     * applies, so this remains part of the same interface rather than a new one.
+     *
+     * Idempotent with respect to authoritative source identity, closing Section 8's own "hard
+     * prerequisite, not optional": unlike [accept] (which mints a fresh identity on every call,
+     * unconditionally, and remains completely unmodified by this addition), [submitSource]
+     * computes the authoritative SHA-256 from [candidate.content] *before* deciding whether to
+     * mint anything, consults the source-identity-by-hash mechanism this Unit adds, and:
+     *
+     * - returns [EvidenceSourceSubmissionResult.AlreadyRegistered] with the pre-existing
+     *   [EvidenceArtifactId] if that exact hash was already registered -- no new identity is
+     *   minted, no bytes are rewritten;
+     * - otherwise delegates to this same instance's own [accept] to actually persist the bytes
+     *   and mint the identity (the "existing, unmodified chain" Section 8 requires reuse of),
+     *   then durably records the new hash -> identity mapping, and returns
+     *   [EvidenceSourceSubmissionResult.Registered].
+     *
+     * If [advisorySha256] is supplied and disagrees with the computed authoritative hash, fails
+     * closed as [EvidenceSourceSubmissionResult.HashMismatch] -- nothing is registered, mirroring
+     * `AuthoritativeAcquisitionSourceResolver`'s own established `DigestMismatch` shape (Section
+     * 13). [advisorySha256] is never used for identity/duplicate-detection purposes -- only
+     * Parker's own computed hash ever is.
+     *
+     * Performs its own permission check first, using the same disclosed resource/action
+     * convention [accept] itself uses (this is the same governed act of proposing a source,
+     * whether it turns out to be new or a duplicate) -- a denied decision returns
+     * [EvidenceSourceSubmissionResult.Rejected] before any hash is computed or any lookup
+     * performed.
+     */
+    suspend fun submitSource(
+        requestingPrincipalId: PrincipalId,
+        candidate: CandidateEvidenceArtifact,
+        advisorySha256: String? = null,
+    ): EvidenceSourceSubmissionResult
 }
 
 /**

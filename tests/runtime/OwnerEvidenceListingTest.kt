@@ -64,6 +64,8 @@ class OwnerEvidenceListingTest {
             error("listing never accepts evidence")
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
             error("listing reads canonical registration storage directly")
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes)

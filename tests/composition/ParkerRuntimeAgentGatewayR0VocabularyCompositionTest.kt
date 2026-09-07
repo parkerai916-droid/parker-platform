@@ -563,16 +563,20 @@ class ParkerRuntimeAgentGatewayR0VocabularyCompositionTest {
     // ================= L. No evidence-submission/acquisition/HFR/case/provider rule =================
 
     @Test
-    fun `exactly the two expected READ DOCUMENT rules are scoped to the Agent Gateway purpose -- nothing else`() = runTest {
+    fun `exactly the two R0 READ DOCUMENT rules are scoped to the Agent Gateway purpose -- as of AG-1C, nothing else`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val rules = composedPolicy(runtime).privateField<List<PermissionPolicyRule>>("rules")
-        val gatewayScopedRules = rules.filter { it.authorizationPurpose == agentGatewayPurpose }
+        // AG-1F (R1 Candidate-Source Submission) later adds a third, WRITE-scoped rule to this
+        // same purpose -- deliberately excluded here so this AG-1C-scoped assertion continues to
+        // prove exactly what AG-1C itself added. See
+        // `no rule maps the Agent Gateway purpose to DELETE or EXECUTE, and the only WRITE rule
+        // is AG-1F's own exact submission verb` below for the complete, current picture.
+        val readRules = rules.filter { it.authorizationPurpose == agentGatewayPurpose && it.action == PermissionAction.READ }
 
-        assertEquals(2, gatewayScopedRules.size)
-        gatewayScopedRules.forEach { rule ->
-            assertEquals(PermissionAction.READ, rule.action)
+        assertEquals(2, readRules.size)
+        readRules.forEach { rule ->
             assertEquals(ResourceType.DOCUMENT, rule.resourceType)
             assertEquals(PermissionDecisionOutcome.APPROVED, rule.outcome)
             assertTrue(rule.proposedAction == retrieveAction || rule.proposedAction == retrieveManifestAction)
@@ -582,13 +586,19 @@ class ParkerRuntimeAgentGatewayR0VocabularyCompositionTest {
     }
 
     @Test
-    fun `no rule anywhere maps the Agent Gateway purpose to WRITE, DELETE, or EXECUTE`() = runTest {
+    fun `no rule maps the Agent Gateway purpose to DELETE or EXECUTE, and the only WRITE rule is AG-1F's own exact submission verb`() = runTest {
         val runtime = ParkerRuntime(config(), RecordingParkerLogger())
         runtime.start()
 
         val rules = composedPolicy(runtime).privateField<List<PermissionPolicyRule>>("rules")
+        val gatewayScopedRules = rules.filter { it.authorizationPurpose == agentGatewayPurpose }
 
-        assertTrue(rules.none { it.authorizationPurpose == agentGatewayPurpose && it.action != PermissionAction.READ })
+        assertTrue(rules.none { it.authorizationPurpose == agentGatewayPurpose && (it.action == PermissionAction.DELETE || it.action == PermissionAction.EXECUTE) })
+        val writeRules = gatewayScopedRules.filter { it.action == PermissionAction.WRITE }
+        assertEquals(1, writeRules.size)
+        assertEquals("agent-gateway.evidence.submit", writeRules.single().proposedAction)
+        assertEquals(ResourceType.DOCUMENT, writeRules.single().resourceType)
+        assertEquals(PermissionDecisionOutcome.APPROVED, writeRules.single().outcome)
 
         runtime.shutdown()
     }

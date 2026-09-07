@@ -102,6 +102,8 @@ class GovernedAcquisitionOwnerPresentationTest {
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = EvidenceRetrievalResult.Found(id, sourceBytes)
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
                 EvidenceManifestRetrievalResult.Found(if (manifestCalls++ == 0) staleManifest else currentManifest)
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         val registry = ProductionAcquisitionCapabilityCatalogue.create()
         val router = DeterministicEvidenceAcquisitionRouter()
@@ -133,6 +135,8 @@ class GovernedAcquisitionOwnerPresentationTest {
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = error("not used")
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
                 EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(id, "a".repeat(64), 10L, "image/jpeg"))
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         val externalImageCapability = EvidenceAcquisitionCapability(
             "external-image", EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION, setOf("image/jpeg"), setOf(IMAGE_ONLY),
@@ -166,6 +170,8 @@ class GovernedAcquisitionOwnerPresentationTest {
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = error("not used")
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
                 EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(id, "a".repeat(64), 10L, "image/jpeg"))
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         val externalImageCapability = EvidenceAcquisitionCapability(
             "external-image", EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION, setOf("image/jpeg"), setOf(IMAGE_ONLY),

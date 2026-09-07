@@ -189,7 +189,10 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         // Section 20): adds exactly two Purpose-scoped rules (both APPROVED, both scoped to
         // agent-gateway.hermes-ingestion) -- see
         // ParkerRuntimeAgentGatewayR0VocabularyCompositionTest for AG-1C's own dedicated coverage.
-        assertEquals(7, rules.count { it.authorizationPurpose != null })
+        // AG-1F (R1 Candidate-Source Submission, Section 8, Section 20) adds exactly one more --
+        // the submission verb's own Purpose-scoped APPROVED rule (its DENIED guard carries no
+        // purpose, so it does not count here).
+        assertEquals(8, rules.count { it.authorizationPurpose != null })
 
         val candidateEvaluationRules = rules.filter { it.authorizationPurpose == candidateEvaluationPurpose }
         assertEquals(2, candidateEvaluationRules.size)

@@ -166,6 +166,8 @@ class FidelityFirstAcceptanceCoordinatorTest {
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = EvidenceRetrievalResult.Found(evidenceId, bytes.copyOf())
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
                 EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(evidenceId, digest, bytes.size.toLong(), "application/pdf"))
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         private val permission = object : PermissionEngine {
             override suspend fun evaluate(request: ExecutionRequest) = PermissionDecision(

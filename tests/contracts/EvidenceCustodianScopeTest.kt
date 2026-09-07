@@ -56,6 +56,17 @@ import parker.core.runtime.DefaultEvidenceCustodian
  * guard against; a new, dedicated test confirms this type's now-complete
  * field set instead.
  *
+ * ## Revision history (Parker Agent Gateway, AG-1F -- R1 Candidate-Source Submission)
+ *
+ * `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 8 identifies, as a hard
+ * prerequisite, a "separate, narrow, `EvidenceCustodian`-owned addition -- a source-identity-by-
+ * hash lookup" -- explicitly authorised to be added to this same interface, by the identical
+ * "no authority-narrowing reason applies" reasoning the Authoritative Source Manifest revision
+ * above already used for [EvidenceCustodian.retrieveManifest]. [EvidenceCustodian.submitSource]
+ * is that addition. The "exactly N domain operations" tests below are revised, by the same
+ * reasoning stated above, to expect exactly *four* (`accept`, `retrieve`, `retrieveManifest`,
+ * `submitSource`); a new shape test checks `submitSource`'s own signature.
+ *
  * ## Why Kotlin reflection ([kotlin.reflect.full.declaredFunctions]), not
  * `java.lang.reflect.Class.declaredMethods`
  *
@@ -89,16 +100,48 @@ import parker.core.runtime.DefaultEvidenceCustodian
 class EvidenceCustodianScopeTest {
 
     @Test
-    fun `EvidenceCustodian declares exactly three domain operations -- accept, retrieve, and retrieveManifest`() {
+    fun `EvidenceCustodian declares exactly four domain operations -- accept, retrieve, retrieveManifest, and submitSource`() {
         val declared = EvidenceCustodian::class.declaredFunctions
 
         assertEquals(
-            setOf("accept", "retrieve", "retrieveManifest"),
+            setOf("accept", "retrieve", "retrieveManifest", "submitSource"),
             declared.map { it.name }.toSet(),
-            "EvidenceCustodian must declare exactly accept, retrieve, and retrieveManifest -- found: " +
+            "EvidenceCustodian must declare exactly accept, retrieve, retrieveManifest, and submitSource -- found: " +
                 declared.map { it.name },
         )
-        assertEquals(3, declared.size, "no domain operation name may be declared more than once")
+        assertEquals(4, declared.size, "no domain operation name may be declared more than once")
+    }
+
+    @Test
+    fun `submitSource has the expected public, suspend, abstract shape`() {
+        val submitSource = EvidenceCustodian::class.declaredFunctions.single { it.name == "submitSource" }
+
+        assertEquals(KVisibility.PUBLIC, submitSource.visibility, "submitSource must be a public operation")
+        assertTrue(submitSource.isSuspend, "submitSource must be a suspend function -- Permission Engine evaluation is async")
+        assertAbstract(submitSource)
+
+        val valueParameters = submitSource.parameters.filter { it.kind == KParameter.Kind.VALUE }
+        assertEquals(3, valueParameters.size, "submitSource must take exactly three value parameters")
+        assertEquals(
+            PrincipalId::class,
+            valueParameters[0].type.classifier,
+            "submitSource's first parameter must be the requesting principal",
+        )
+        assertEquals(
+            CandidateEvidenceArtifact::class,
+            valueParameters[1].type.classifier,
+            "submitSource's second parameter must be the candidate evidence artifact",
+        )
+        assertEquals(
+            String::class,
+            valueParameters[2].type.classifier,
+            "submitSource's third parameter must be the optional advisory SHA-256",
+        )
+        assertEquals(
+            parker.core.interfaces.EvidenceSourceSubmissionResult::class,
+            submitSource.returnType.classifier,
+            "submitSource must return the sealed EvidenceSourceSubmissionResult",
+        )
     }
 
     @Test
@@ -286,14 +329,14 @@ class EvidenceCustodianScopeTest {
     // --- Implementation Plan Phase 7 ("Deletion workflow") -- Boundary Clarification Section 3 ---
 
     @Test
-    fun `EvidenceCustodian still declares exactly accept, retrieve, and retrieveManifest -- deletion was not added to it`() {
+    fun `EvidenceCustodian still declares exactly accept, retrieve, retrieveManifest, and submitSource -- deletion was not added to it`() {
         val declared = EvidenceCustodian::class.declaredFunctions
 
         assertEquals(
-            setOf("accept", "retrieve", "retrieveManifest"),
+            setOf("accept", "retrieve", "retrieveManifest", "submitSource"),
             declared.map { it.name }.toSet(),
-            "EvidenceCustodian must remain exactly accept, retrieve, and retrieveManifest -- deletion (Phase 7) is a " +
-                "structurally separate capability (OwnerEvidenceDeletionAuthority), never added to " +
+            "EvidenceCustodian must remain exactly accept, retrieve, retrieveManifest, and submitSource -- deletion " +
+                "(Phase 7) is a structurally separate capability (OwnerEvidenceDeletionAuthority), never added to " +
                 "this interface -- found: ${declared.map { it.name }}",
         )
     }

@@ -340,6 +340,8 @@ class GovernedAcquisitionIntegrationTest {
         override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = EvidenceRetrievalResult.Found(id, bytes)
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
             EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(id, sha, bytes.size.toLong(), "application/pdf"))
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private fun source(

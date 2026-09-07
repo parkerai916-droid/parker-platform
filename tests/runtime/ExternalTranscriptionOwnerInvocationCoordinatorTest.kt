@@ -42,6 +42,8 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult {
             events += "manifest"; manifestCalls++; ids += evidenceArtifactId; return manifest
         }
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private class FakeMechanism(
@@ -238,6 +240,8 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
                 EvidenceRetrievalResult.Found(evidenceId, bytes)
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
                 EvidenceManifestRetrievalResult.Found(manifest())
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         val resolved = assertIs<AuthoritativeAcquisitionResolution.Verified>(
             AuthoritativeAcquisitionSourceResolver(silentCustodian).resolve(owner, evidenceId),

@@ -625,5 +625,12 @@ class OwnerLocalFileIngressCoordinatorTest {
 
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: parker.core.interfaces.EvidenceArtifactId) =
             throw AssertionError("retrieveManifest must not be called by OwnerLocalFileIngressCoordinator")
+
+        override suspend fun submitSource(
+            requestingPrincipalId: PrincipalId,
+            candidate: parker.core.interfaces.CandidateEvidenceArtifact,
+            advisorySha256: String?,
+        ): parker.core.interfaces.EvidenceSourceSubmissionResult =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 }

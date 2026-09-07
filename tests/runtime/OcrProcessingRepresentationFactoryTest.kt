@@ -113,6 +113,8 @@ class OcrProcessingRepresentationFactoryTest {
                 EvidenceRetrievalResult.Found(evidenceArtifactId, bytes)
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
                 EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(evidenceId, declaredDigest, declaredLength, mediaType))
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         return AuthoritativeAcquisitionSourceResolver(custodian).resolve(PrincipalId("owner"), evidenceId)
     }

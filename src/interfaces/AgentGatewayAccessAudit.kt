@@ -51,6 +51,30 @@ enum class AgentGatewayAccessOutcome {
 
     /** An unexpected failure occurred after authentication succeeded. */
     INTERNAL_FAILURE,
+
+    /**
+     * Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission). The request body failed a
+     * pre-registration validity check (empty, malformed advisory hash shape, or oversized) before
+     * [EvidenceCustodian.submitSource] was ever called.
+     */
+    INVALID_SOURCE,
+
+    /** AG-1F. A submitted source's authoritative SHA-256 had never been registered before -- newly, durably accepted. */
+    REGISTERED,
+
+    /** AG-1F. A submitted source's authoritative SHA-256 was already registered -- no new identity was minted. */
+    ALREADY_REGISTERED,
+
+    /** AG-1F. The caller's advisory SHA-256 disagreed with Parker's own computed authoritative hash -- nothing was registered. */
+    HASH_MISMATCH,
+
+    /**
+     * Crash-safe idempotency review correction (AG-1F). The source-identity reservation for the
+     * submitted content's authoritative SHA-256 named an identity whose existing canonical
+     * Evidence Custodian state did not match what this submission would produce -- an internal
+     * consistency fault, failed closed. Never an ordinary outcome of resubmitting identical bytes.
+     */
+    SOURCE_IDENTITY_CONFLICT,
 }
 
 /**

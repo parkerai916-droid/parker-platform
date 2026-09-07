@@ -37,6 +37,7 @@ import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceExtractor
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.ExtractionIdentity
 import parker.core.interfaces.ExtractionOutcome
@@ -133,6 +134,9 @@ class EvidenceExtractionCoordinatorTest {
 
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
             fail("retrieveManifest must not be called")
+
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private class FakeMemoryRetrieval(
@@ -244,6 +248,9 @@ class EvidenceExtractionCoordinatorTest {
 
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
                 fail("not used")
+
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         val memoryCore = FakeMemoryCoreForRegistration(
             onCreateProvenance = { _, candidate ->
@@ -288,6 +295,7 @@ class EvidenceExtractionCoordinatorTest {
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
 
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) = throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         if (outcome is EvidenceRegistrationOutcome.NotAccepted) {
             val memoryCore = FakeMemoryCoreForRegistration(
@@ -306,6 +314,7 @@ class EvidenceExtractionCoordinatorTest {
             override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
 
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = fail("not used")
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) = throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         val provenanceOnly = outcome is EvidenceRegistrationOutcome.DocumentRegistrationNotAuthorised
         var evaluateCount = 0

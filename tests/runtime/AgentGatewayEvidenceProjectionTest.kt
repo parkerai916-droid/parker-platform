@@ -56,6 +56,8 @@ class AgentGatewayEvidenceProjectionTest {
     private val gatewayManifestResourceId = AgentGatewayEvidenceProjection.AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID
     private val gatewayRetrieveAction = AgentGatewayEvidenceProjection.AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME
     private val gatewayManifestAction = AgentGatewayEvidenceProjection.AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME
+    private val gatewaySubmitResourceId = AgentGatewayEvidenceProjection.AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID
+    private val gatewaySubmitAction = AgentGatewayEvidenceProjection.AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME
 
     /** Records every [ExecutionRequest] this test's engine was asked to evaluate, then delegates to [delegate]. */
     private class RecordingPermissionEngine(private val delegate: PermissionEngine) : PermissionEngine {
@@ -105,9 +107,18 @@ class AgentGatewayEvidenceProjectionTest {
         vocabulary.register(
             ActionVocabularyEntry(gatewayManifestAction, setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT))),
         )
+        vocabulary.register(
+            ActionVocabularyEntry(DefaultEvidenceCustodian.ACCEPT_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))),
+        )
+        vocabulary.register(
+            ActionVocabularyEntry(gatewaySubmitAction, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))),
+        )
 
         val resourceRegistry = InMemoryResourceRegistry()
-        listOf(ownerEvidenceRetrieveResourceId, ownerEvidenceManifestResourceId, gatewayRetrieveResourceId, gatewayManifestResourceId).forEach { id ->
+        listOf(
+            ownerEvidenceRetrieveResourceId, ownerEvidenceManifestResourceId, gatewayRetrieveResourceId,
+            gatewayManifestResourceId, DefaultEvidenceCustodian.EVIDENCE_INTAKE_RESOURCE_ID, gatewaySubmitResourceId,
+        ).forEach { id ->
             resourceRegistry.register(
                 parker.core.interfaces.Resource(
                     resourceId = id,
@@ -128,8 +139,10 @@ class AgentGatewayEvidenceProjectionTest {
 
         val rules = listOf(
             PermissionPolicyRule(PermissionAction.READ, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC),
+            PermissionPolicyRule(PermissionAction.WRITE, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC),
             PermissionPolicyRule(PermissionAction.READ, ResourceType.DOCUMENT, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC, proposedAction = gatewayRetrieveAction),
             PermissionPolicyRule(PermissionAction.READ, ResourceType.DOCUMENT, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC, proposedAction = gatewayManifestAction),
+            PermissionPolicyRule(PermissionAction.WRITE, ResourceType.DOCUMENT, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC, proposedAction = gatewaySubmitAction),
             PermissionPolicyRule(
                 PermissionAction.READ, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC,
                 authorizationPurpose = agentGatewayPurpose, proposedAction = gatewayRetrieveAction,
@@ -137,6 +150,10 @@ class AgentGatewayEvidenceProjectionTest {
             PermissionPolicyRule(
                 PermissionAction.READ, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC,
                 authorizationPurpose = agentGatewayPurpose, proposedAction = gatewayManifestAction,
+            ),
+            PermissionPolicyRule(
+                PermissionAction.WRITE, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC,
+                authorizationPurpose = agentGatewayPurpose, proposedAction = gatewaySubmitAction,
             ),
         )
         val policy = DefaultPermissionPolicy(ActionMapper(vocabulary), resourceRegistry, rules, authorizationPurposeRegistry)
@@ -305,14 +322,83 @@ class AgentGatewayEvidenceProjectionTest {
         )
     }
 
-    // ================= M. No mutation capability =================
+    // ================= M/N/O/P/Q. Only the exact governed surface exists -- no other mutation =================
 
     @Test
-    fun `AgentGatewayEvidenceProjection declares exactly two public methods, both read-only retrieve operations`() {
+    fun `AgentGatewayEvidenceProjection declares exactly three public methods -- the two R0 reads plus AG-1F's one governed submission, nothing else`() {
         val publicFunctionNames = AgentGatewayEvidenceProjection::class.declaredFunctions
             .filter { it.visibility == kotlin.reflect.KVisibility.PUBLIC }
             .map { it.name }
             .toSet()
-        assertEquals(setOf("retrieveEvidence", "retrieveEvidenceManifest"), publicFunctionNames)
+        // In particular: no acquisition, transcription, HFR, case-assignment, or deletion method
+        // exists on this class at all -- it is structurally impossible for this projection to
+        // trigger any of them.
+        assertEquals(setOf("retrieveEvidence", "retrieveEvidenceManifest", "submitSource"), publicFunctionNames)
+    }
+
+    // ================= AG-1F. Candidate-source submission =================
+
+    @Test
+    fun `submitSource constructs a request naming exactly Hermes, the gateway purpose, the submit verb, and its own resource`() = runTest {
+        val env = buildEnvironment()
+        env.registerHermes(PrincipalStatus.CREATED) // request shape is checked regardless of outcome
+
+        env.projection.submitSource(parker.core.interfaces.CandidateEvidenceArtifact("content".toByteArray()), null)
+
+        val request = env.engine.requests.single()
+        assertEquals(hermesPrincipalId, request.principalId)
+        assertEquals(agentGatewayPurpose, request.authorizationPurpose)
+        assertEquals(listOf(gatewaySubmitAction), request.proposedActions)
+        assertEquals(listOf(gatewaySubmitResourceId), request.targetResources)
+    }
+
+    @Test
+    fun `submitSource accepts only a CandidateEvidenceArtifact and an optional advisory hash -- no PrincipalId, PrincipalType, or AuthorizationPurposeId parameter of any kind`() {
+        val function = AgentGatewayEvidenceProjection::class.declaredFunctions.single { it.name == "submitSource" }
+        val valueParameterTypes = function.parameters
+            .filter { it.kind == kotlin.reflect.KParameter.Kind.VALUE }
+            .map { it.type.classifier }
+        assertEquals(listOf(parker.core.interfaces.CandidateEvidenceArtifact::class, String::class), valueParameterTypes)
+    }
+
+    @Test
+    fun `a CREATED (not yet ACTIVE) Hermes is DENIED for submission too`() = runTest {
+        val env = buildEnvironment()
+        env.registerHermes(PrincipalStatus.CREATED)
+
+        val result = env.projection.submitSource(parker.core.interfaces.CandidateEvidenceArtifact("content".toByteArray()), null)
+
+        assertIs<AgentGatewaySourceSubmissionResult.Denied>(result)
+        assertEquals(PermissionDecisionOutcome.DENIED, result.decision)
+    }
+
+    @Test
+    fun `a synthetic ACTIVE Hermes successfully registers a new source, then the identical bytes resolve AlreadyRegistered`() = runTest {
+        val env = buildEnvironment()
+        env.registerHermes(PrincipalStatus.ACTIVE)
+        val content = "hello agent gateway submission".toByteArray()
+
+        val first = env.projection.submitSource(parker.core.interfaces.CandidateEvidenceArtifact(content, "text/plain", "hello.txt"), null)
+        val second = env.projection.submitSource(parker.core.interfaces.CandidateEvidenceArtifact(content, "text/plain", "hello.txt"), null)
+
+        val registered = assertIs<AgentGatewaySourceSubmissionResult.Registered>(first)
+        val alreadyRegistered = assertIs<AgentGatewaySourceSubmissionResult.AlreadyRegistered>(second)
+        assertEquals(registered.projection.evidenceArtifactId, alreadyRegistered.projection.evidenceArtifactId)
+        assertEquals("text/plain", registered.projection.receivedMediaType)
+        assertEquals("hello.txt", registered.projection.originalFileName)
+    }
+
+    @Test
+    fun `a synthetic ACTIVE Hermes submitting a mismatched advisory hash gets HashMismatch and nothing is registered`() = runTest {
+        val env = buildEnvironment()
+        env.registerHermes(PrincipalStatus.ACTIVE)
+        val content = "content for mismatch test".toByteArray()
+
+        val result = env.projection.submitSource(
+            parker.core.interfaces.CandidateEvidenceArtifact(content),
+            "0".repeat(64),
+        )
+
+        assertIs<AgentGatewaySourceSubmissionResult.HashMismatch>(result)
     }
 }

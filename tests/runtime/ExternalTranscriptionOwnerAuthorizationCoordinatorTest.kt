@@ -38,6 +38,8 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
         override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceRetrievalResult = error("not used")
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
             manifests[evidenceArtifactId.value] ?: EvidenceManifestRetrievalResult.NotFound(evidenceArtifactId)
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private fun manifest(id: EvidenceArtifactId, sha256: String = sha) = EvidenceSourceManifest(id, sha256, 10L, "application/pdf")

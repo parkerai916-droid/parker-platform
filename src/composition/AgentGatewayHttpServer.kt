@@ -12,10 +12,12 @@ import kotlinx.coroutines.runBlocking
 import parker.core.interfaces.AgentGatewayAccessAudit
 import parker.core.interfaces.AgentGatewayAccessAuditRecord
 import parker.core.interfaces.AgentGatewayAccessOutcome
+import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.PrincipalId
 import parker.core.runtime.AgentGatewayEvidenceManifestResult
 import parker.core.runtime.AgentGatewayEvidenceRetrievalResult
+import parker.core.runtime.AgentGatewaySourceSubmissionResult
 
 /**
  * Parker Agent Gateway, AG-1E — R0 Agent Gateway Transport
@@ -44,24 +46,31 @@ import parker.core.runtime.AgentGatewayEvidenceRetrievalResult
  *
  * This class holds no reference to `ParkerRuntime`, `PermissionEngine`, or
  * any coordinator/storage type. [retrieveEvidenceAsAgent]/
- * [retrieveEvidenceManifestAsAgent] are the *only* two capabilities it can
- * ever invoke -- both supplied as individually bound functions at
- * construction (mirroring [OwnerEvidenceHttpServer]'s own established
- * "individually bound lambda parameters, never the raw runtime object"
- * construction pattern), each already performing its own complete,
- * Hermes-principal-bound [parker.core.interfaces.PermissionEngine]
- * evaluation internally (AG-1D). This class never constructs an
+ * [retrieveEvidenceManifestAsAgent]/[submitSourceAsAgent] are the *only*
+ * three capabilities it can ever invoke -- all supplied as individually
+ * bound functions at construction (mirroring [OwnerEvidenceHttpServer]'s
+ * own established "individually bound lambda parameters, never the raw
+ * runtime object" construction pattern), each already performing its own
+ * complete, Hermes-principal-bound [parker.core.interfaces.PermissionEngine]
+ * evaluation internally (AG-1D/AG-1F). This class never constructs an
  * `ExecutionRequest`, never references a `PrincipalId` other than what
- * [authentication] resolves, and never accepts a caller-supplied
- * `PrincipalId`, `AuthorizationPurposeId`, action, or resource of any kind.
+ * [authentication] resolves, never computes an authoritative source hash
+ * itself, never invents an `EvidenceArtifactId`, and never accepts a
+ * caller-supplied `PrincipalId`, `AuthorizationPurposeId`, action, or
+ * resource of any kind.
  *
- * ## Routes (GET only, R0 read-only)
+ * ## Routes
  *
  * - `GET /agent/evidence/{evidenceArtifactId}` → [retrieveEvidenceAsAgent]
  * - `GET /agent/evidence/{evidenceArtifactId}/manifest` → [retrieveEvidenceManifestAsAgent]
+ * - `POST /agent/evidence` (AG-1F) → [submitSourceAsAgent] -- raw request body bytes as the
+ *   candidate source, narrow headers for metadata (`Content-Type` → received media type,
+ *   `X-Parker-Original-Filename` → original filename, `X-Parker-Advisory-Sha256` → optional
+ *   advisory hash), never multipart -- one file per request, matching Hermes's own one-source-
+ *   at-a-time submission shape, never the Owner UI's own multi-file convenience-upload shape.
  *
- * No other method or path is recognised. No write, submission, or
- * acquisition route exists anywhere in this class.
+ * No other method or path is recognised. No acquisition, transcription, HFR, case, or deletion
+ * route exists anywhere in this class.
  */
 class AgentGatewayHttpServer(
     private val bindAddress: String,
@@ -69,6 +78,7 @@ class AgentGatewayHttpServer(
     private val authentication: AgentGatewayAuthentication,
     private val retrieveEvidenceAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayEvidenceRetrievalResult,
     private val retrieveEvidenceManifestAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayEvidenceManifestResult,
+    private val submitSourceAsAgent: suspend (CandidateEvidenceArtifact, String?) -> AgentGatewaySourceSubmissionResult,
     private val audit: AgentGatewayAccessAudit,
     private val logger: ParkerLogger,
 ) {
@@ -110,26 +120,33 @@ class AgentGatewayHttpServer(
         override fun handle(exchange: HttpExchange) {
             val correlationId = UUID.randomUUID().toString()
             try {
-                runCatching { exchange.requestBody.use { it.readBytes() } }
-
                 val token = bearerToken(exchange)
                 if (token == null) {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
                     recordAudit(correlationId, null, null, null, AgentGatewayAccessOutcome.UNAUTHENTICATED)
                     writeJson(exchange, 401, jsonObject("error" to "unauthorised"))
                     return
                 }
                 val principalId = authentication.authenticate(token)
                 if (principalId == null) {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
                     recordAudit(correlationId, null, null, null, AgentGatewayAccessOutcome.AUTHENTICATION_FAILED)
                     writeJson(exchange, 401, jsonObject("error" to "unauthorised"))
                     return
                 }
 
+                if (exchange.requestMethod == "POST" && exchange.requestURI.path == "/agent/evidence") {
+                    handleSubmit(exchange, correlationId, principalId)
+                    return
+                }
+
                 if (exchange.requestMethod != "GET") {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
                     recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.NOT_FOUND_ROUTE)
                     writeJson(exchange, 404, jsonObject("error" to "not found"))
                     return
                 }
+                runCatching { exchange.requestBody.use { it.readBytes() } }
 
                 val segments = exchange.requestURI.path.removePrefix("/agent/evidence/").split('/').filter { it.isNotEmpty() }
                 when (segments.size) {
@@ -215,6 +232,80 @@ class AgentGatewayHttpServer(
                 }
             }
         }
+
+        /**
+         * Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission). Raw request body bytes
+         * are the candidate source; `Content-Type`/`X-Parker-Original-Filename`/
+         * `X-Parker-Advisory-Sha256` are the only metadata read. Enforces size and shape
+         * constraints -- oversized body, empty body, malformed advisory-hash header -- *before*
+         * [submitSourceAsAgent] is ever called, exactly as [parseEvidenceId] already rejects a
+         * malformed identifier before either GET operation runs. Never computes a hash itself,
+         * never invents an [EvidenceArtifactId] -- both remain entirely
+         * [parker.core.interfaces.EvidenceCustodian]'s own responsibility, reached only through
+         * [submitSourceAsAgent].
+         */
+        private fun handleSubmit(exchange: HttpExchange, correlationId: String, principalId: PrincipalId) {
+            val advisorySha256Raw = exchange.requestHeaders.getFirst(ADVISORY_SHA256_HEADER)?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            if (advisorySha256Raw != null && !SHA256_PATTERN.matches(advisorySha256Raw)) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, null, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid advisory sha256"))
+                return
+            }
+
+            val content = try {
+                readBounded(exchange.requestBody, MAX_SUBMISSION_BYTES)
+            } catch (_: RequestBodyTooLargeException) {
+                recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, null, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 413, jsonObject("error" to "request body too large"))
+                return
+            }
+            if (content.isEmpty()) {
+                recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, null, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid source"))
+                return
+            }
+
+            val receivedMediaType = exchange.requestHeaders.getFirst("Content-Type")?.trim()?.takeIf { it.isNotEmpty() }
+            val originalFileName = exchange.requestHeaders.getFirst(ORIGINAL_FILENAME_HEADER)?.trim()?.takeIf { it.isNotEmpty() }
+            val candidate = CandidateEvidenceArtifact(content, receivedMediaType, originalFileName)
+
+            when (val result = runBlocking { submitSourceAsAgent(candidate, advisorySha256Raw) }) {
+                is AgentGatewaySourceSubmissionResult.Registered -> {
+                    recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, result.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 201, submissionJson("REGISTERED", result.projection))
+                }
+                is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> {
+                    recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, result.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.ALREADY_REGISTERED)
+                    writeJson(exchange, 200, submissionJson("ALREADY_REGISTERED", result.projection))
+                }
+                is AgentGatewaySourceSubmissionResult.HashMismatch -> {
+                    recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, null, AgentGatewayAccessOutcome.HASH_MISMATCH)
+                    writeJson(exchange, 409, jsonObject(
+                        "error" to "hash mismatch",
+                        "computedSha256" to result.computedSha256,
+                        "advisorySha256" to result.advisorySha256,
+                    ))
+                }
+                is AgentGatewaySourceSubmissionResult.Denied -> {
+                    recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, null, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied"))
+                }
+                is AgentGatewaySourceSubmissionResult.Conflict -> {
+                    recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, result.evidenceArtifactId.value, AgentGatewayAccessOutcome.SOURCE_IDENTITY_CONFLICT)
+                    writeJson(exchange, 500, jsonObject("error" to "source identity conflict"))
+                }
+            }
+        }
+
+        private fun submissionJson(status: String, projection: parker.core.runtime.AgentGatewayEvidenceManifestProjection) = jsonObject(
+            "status" to status,
+            "evidenceArtifactId" to projection.evidenceArtifactId.value,
+            "sha256" to projection.sha256,
+            "byteLength" to projection.byteLength,
+            "receivedMediaType" to projection.receivedMediaType,
+            "originalFileName" to projection.originalFileName,
+        )
     }
 
     private fun recordAudit(
@@ -296,7 +387,18 @@ class AgentGatewayHttpServer(
 
     private companion object {
         val SAFE_ROUTE_ID = Regex("^[A-Za-z0-9._-]{1,1024}$")
+        val SHA256_PATTERN = Regex("^[0-9a-f]{64}$")
         const val RETRIEVE_ACTION_NAME = "agent-gateway.evidence.retrieve"
         const val RETRIEVE_MANIFEST_ACTION_NAME = "agent-gateway.evidence.retrieve-manifest"
+        const val SUBMIT_ACTION_NAME = "agent-gateway.evidence.submit"
+        const val ORIGINAL_FILENAME_HEADER = "X-Parker-Original-Filename"
+        const val ADVISORY_SHA256_HEADER = "X-Parker-Advisory-Sha256"
+
+        /**
+         * Mirrors `OwnerEvidenceHttpServer.MAX_PART_BYTES` -- the same 64 MiB ingress bound
+         * Section 8's own text cites ("the 64 MiB `MAX_SOURCE_BYTES` bound already present for
+         * owner-local ingress"). No larger allowance is invented for the Agent Gateway.
+         */
+        const val MAX_SUBMISSION_BYTES: Long = 64L * 1024L * 1024L
     }
 }

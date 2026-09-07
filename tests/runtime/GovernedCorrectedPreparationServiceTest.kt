@@ -59,6 +59,8 @@ class GovernedCorrectedPreparationServiceTest {
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
                 if (missing) EvidenceManifestRetrievalResult.NotFound(evidenceArtifactId) else EvidenceManifestRetrievalResult.Found(
                     EvidenceSourceManifest(evidenceArtifactId, sha, bytes.size.toLong(), mediaType, "synthetic.pdf"))
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+                throw UnsupportedOperationException("submitSource not supported by this fake")
         }
         return GovernedCorrectedPreparationService(custodian, owner, FileSystemFullPageAchromaticPreparationStore(root))
     }

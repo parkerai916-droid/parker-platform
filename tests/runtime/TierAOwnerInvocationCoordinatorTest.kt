@@ -18,6 +18,7 @@ import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.TierADocumentIngestionRouter
 import parker.core.interfaces.TierADocumentRoutingResult
@@ -427,6 +428,9 @@ private class FakeEvidenceCustodianForTierA(
 
     override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
         onRetrieveManifest(requestingPrincipalId, evidenceArtifactId)
+
+    override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+        throw UnsupportedOperationException("submitSource not supported by this fake")
 }
 
 /** Records call count and the last [TierADocumentSourceContext] it was invoked with; returns a caller-configured stub result. */

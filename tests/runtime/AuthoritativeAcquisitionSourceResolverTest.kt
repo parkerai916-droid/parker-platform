@@ -180,6 +180,8 @@ class AuthoritativeAcquisitionSourceResolverTest {
             EvidenceManifestRetrievalResult.Found(
                 EvidenceSourceManifest(manifestId, manifestDigest, manifestLength, mediaType),
             )
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     })
 
     private fun digest(value: ByteArray): String = MessageDigest.getInstance("SHA-256")

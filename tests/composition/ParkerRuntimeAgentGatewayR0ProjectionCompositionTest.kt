@@ -127,6 +127,16 @@ class ParkerRuntimeAgentGatewayR0ProjectionCompositionTest {
         assertEquals(listOf(EvidenceArtifactId::class), valueParameterTypes)
     }
 
+    @Test
+    fun `submitSourceAsAgent declares only a CandidateEvidenceArtifact and an advisory hash -- no principal, purpose, action, or resource parameter (AG-1F)`() {
+        val function = ParkerRuntime::class.declaredFunctions.single { it.name == "submitSourceAsAgent" }
+        val valueParameterTypes = function.parameters
+            .filter { it.kind == kotlin.reflect.KParameter.Kind.VALUE }
+            .map { it.type.classifier }
+
+        assertEquals(listOf(CandidateEvidenceArtifact::class, String::class), valueParameterTypes)
+    }
+
     // ================= B/C. Composed projection is fixed to Hermes's principal and the gateway purpose =================
 
     @Test
@@ -185,6 +195,19 @@ class ParkerRuntimeAgentGatewayR0ProjectionCompositionTest {
         assertEquals(PermissionDecisionOutcome.DENIED, deniedRetrieve.decision)
         val deniedManifest = assertIs<AgentGatewayEvidenceManifestResult.Denied>(manifestResult)
         assertEquals(PermissionDecisionOutcome.DENIED, deniedManifest.decision)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `submitSourceAsAgent also resolves Denied while Hermes remains CREATED -- no source is registered (AG-1F)`() = runTest {
+        val runtime = ParkerRuntime(config(), RecordingParkerLogger())
+        runtime.start()
+
+        val result = runtime.submitSourceAsAgent(CandidateEvidenceArtifact("agent gateway r1 submission test content".toByteArray()), null)
+
+        val denied = assertIs<parker.core.runtime.AgentGatewaySourceSubmissionResult.Denied>(result)
+        assertEquals(PermissionDecisionOutcome.DENIED, denied.decision)
 
         runtime.shutdown()
     }

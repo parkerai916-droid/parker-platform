@@ -10,6 +10,7 @@ import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.MemoryCoreRecord
 import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.PrincipalId
@@ -627,6 +628,12 @@ class DefaultEvidenceIntelligenceTest {
                 ),
             )
         }
+
+        override suspend fun submitSource(
+            requestingPrincipalId: PrincipalId,
+            candidate: CandidateEvidenceArtifact,
+            advisorySha256: String?,
+        ): EvidenceSourceSubmissionResult = throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private class FakeEvidenceCustodianForUnit5(
@@ -646,6 +653,12 @@ class DefaultEvidenceIntelligenceTest {
             requestingPrincipalId: PrincipalId,
             evidenceArtifactId: EvidenceArtifactId,
         ): EvidenceManifestRetrievalResult = throw UnsupportedOperationException("Unit 5 must never call EvidenceCustodian.retrieveManifest")
+
+        override suspend fun submitSource(
+            requestingPrincipalId: PrincipalId,
+            candidate: CandidateEvidenceArtifact,
+            advisorySha256: String?,
+        ): EvidenceSourceSubmissionResult = throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private class FakeMemoryRetrievalForUnit5(

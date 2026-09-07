@@ -27,6 +27,7 @@ import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.MemoryCore
 import parker.core.interfaces.MemoryCoreRecord
@@ -130,6 +131,12 @@ class EvidenceRegistrationCoordinatorTest {
             requestingPrincipalId: PrincipalId,
             evidenceArtifactId: EvidenceArtifactId,
         ): EvidenceManifestRetrievalResult = throw UnsupportedOperationException("not used by EvidenceRegistrationCoordinator")
+
+        override suspend fun submitSource(
+            requestingPrincipalId: PrincipalId,
+            candidate: CandidateEvidenceArtifact,
+            advisorySha256: String?,
+        ): EvidenceSourceSubmissionResult = throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     /**

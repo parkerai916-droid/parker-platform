@@ -1,5 +1,6 @@
 package parker.composition
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
@@ -175,6 +176,7 @@ import parker.core.runtime.FileSystemDerivativeGenerationStorage
 import parker.core.runtime.FileSystemDocumentIngestionAudit
 import parker.core.runtime.FileSystemEvidenceArtifactStorage
 import parker.core.runtime.FileSystemEvidenceDeletionAudit
+import parker.core.runtime.FileSystemEvidenceSourceIdentityIndex
 import parker.core.runtime.FileSystemEvidenceSourceManifestStorage
 import parker.core.runtime.FileSystemMemoryCoreDurabilityLog
 import parker.core.runtime.FileSystemKnowledgeItemDurabilityLog
@@ -813,6 +815,9 @@ class ParkerRuntime(
             listOf(
                 Triple(AGENT_GATEWAY_EVIDENCE_RETRIEVAL_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Retrieval"),
                 Triple(AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Manifest Retrieval"),
+                // Parker Agent Gateway, AG-1F: the submission counterpart's own fixed resource --
+                // still ResourceType.DOCUMENT, still no new ResourceType.
+                Triple(AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Submission"),
             ).forEach { (resourceId, resourceType, displayName) ->
                 resourceRegistry.register(
                     Resource(
@@ -966,6 +971,19 @@ class ParkerRuntime(
                 ActionVocabularyEntry(
                     verbPhrase = AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME,
                     mappings = setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
+                ),
+            )
+            // Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission, Section 8, Section 11,
+            // Section 20): one new, distinct verb phrase for candidate-source submission -- a
+            // write/create operation, separately explicit from the two read verbs above. Reuses
+            // the identical existing (WRITE, DOCUMENT) pair evidence.accept already uses -- no
+            // new PermissionAction or ResourceType is introduced. See the exact-verb DENIED guard
+            // below, which prevents this from silently resolving through the pre-existing coarse
+            // (WRITE, DOCUMENT) approval.
+            vocabulary.register(
+                ActionVocabularyEntry(
+                    verbPhrase = AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME,
+                    mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
                 ),
             )
         }
@@ -1259,6 +1277,34 @@ class ParkerRuntime(
                     authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
                     proposedAction = AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME,
                 ),
+                // Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission, Section 8, Section
+                // 11, Section 20): the same fail-closed guard-then-override shape as the two R0
+                // read rules immediately above, applied to the one new submission verb --
+                // specificity 1 (the guard) outranks the pre-existing coarse (WRITE, DOCUMENT)
+                // approval (specificity 0) for this verb only, leaving that coarse rule, and
+                // every other verb it still governs (including Owner's own evidence.accept),
+                // completely unchanged. Specificity 2 (the override) outranks the guard only for
+                // a request carrying the exact, active, gateway-originated Authorization Purpose.
+                // Every principal-binding invariant documented on the two rules above applies
+                // identically here -- this rule alone grants Hermes nothing: the actual
+                // idempotent submission logic lives entirely inside
+                // `DefaultEvidenceCustodian.submitSource` (Section 8's own "EvidenceCustodian-
+                // owned addition"), unchanged by this policy rule's mere existence.
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME,
+                ),
             ) + (if (humanFidelityReviewConfigured) listOf(
                 PermissionPolicyRule(
                     action = PermissionAction.WRITE,
@@ -1371,6 +1417,23 @@ class ParkerRuntime(
             FileSystemEvidenceSourceManifestStorage(Path.of(config.evidenceSourceManifestStorageRootPath))
         }
 
+        // Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission, Section 8, Section 16):
+        // the "separate, narrow, EvidenceCustodian-owned addition -- a source-identity-by-hash
+        // lookup" Section 8 requires as a hard prerequisite for idempotent submission. A
+        // subdirectory of the existing evidenceSourceManifestStorageRootPath -- not a new
+        // required configuration field, and not "a second hash registry outside EvidenceCustodian
+        // governance": this remains DefaultEvidenceCustodian's own third storage dependency,
+        // constructed here alongside its other two. Safe to nest: FileSystemEvidenceSourceManifestStorage
+        // itself performs no directory-listing/scanning of its own root (confirmed by inspection --
+        // it reads/writes only exact, evidenceArtifactId-derived file names), so an extra,
+        // distinctly-named subdirectory is inert to it, exactly as that class's own
+        // TEMP_DIRECTORY_NAME subdirectory already coexists there today.
+        val evidenceSourceIdentityIndex = stage("Evidence Custodian source identity index construction") {
+            val root = Path.of(config.evidenceSourceManifestStorageRootPath).resolve("source-identity-index")
+            Files.createDirectories(root)
+            FileSystemEvidenceSourceIdentityIndex(root)
+        }
+
         // Memory Core Durability Unit 8 (Runtime Composition). The filesystem durability log and
         // the recovery it drives are both genuinely suspending (file I/O), so both are constructed
         // inside two stage() calls here in start(), never in a synchronous constructor -- the same
@@ -1394,6 +1457,7 @@ class ParkerRuntime(
             evidenceArtifactStorage,
             permissionEngine,
             evidenceSourceManifestStorage,
+            evidenceSourceIdentityIndex,
         )
         evidenceCustodian = defaultEvidenceCustodian
         ownerEvidenceListing = parker.core.runtime.FileSystemOwnerEvidenceListing(
@@ -2701,6 +2765,35 @@ class ParkerRuntime(
     }
 
     /**
+     * Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission,
+     * `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 8, Section 20). The
+     * submission counterpart to [retrieveEvidenceAsAgent]/[retrieveEvidenceManifestAsAgent]
+     * immediately above -- every guarantee documented there applies identically here: no
+     * caller-supplied principal/purpose/action/resource (this method takes only the candidate
+     * bytes/metadata and an optional advisory hash -- never a `PrincipalId`), the same shared
+     * [permissionEngine], Hermes's own fixed principal only, `internal` visibility for the same
+     * defence-in-depth reason, and an expected `Denied` outcome while Hermes remains status
+     * `CREATED`.
+     *
+     * Delegates unchanged to [agentGatewayEvidenceProjection], which itself delegates unchanged
+     * to [EvidenceCustodian.submitSource] (the idempotent, `EvidenceCustodian`-owned addition
+     * Section 8 requires) -- this method never computes a hash, never checks for duplicates,
+     * and never mints an [EvidenceArtifactId] itself.
+     *
+     * Throws [ParkerRuntimeException.NotRunning] if [state] is not [RuntimeLifecycleState.RUNNING].
+     */
+    internal suspend fun submitSourceAsAgent(
+        candidate: CandidateEvidenceArtifact,
+        advisorySha256: String?,
+    ): parker.core.runtime.AgentGatewaySourceSubmissionResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        logger.info("Agent Gateway candidate-source submission requested")
+        return agentGatewayEvidenceProjection.submitSource(candidate, advisorySha256)
+    }
+
+    /**
      * Evidence Custodian Runtime Integration (Implementation Plan Phase 10).
      * The one production entry point capable of ending Evidence Custodian
      * custody. Deliberately takes **no** `requestingPrincipalId` parameter
@@ -3639,6 +3732,18 @@ class ParkerRuntime(
         val AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID = ResourceId("agent-gateway-evidence-manifest-retrieval")
         const val AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME = "agent-gateway.evidence.retrieve"
         const val AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME = "agent-gateway.evidence.retrieve-manifest"
+
+        // Parker Agent Gateway, AG-1F (R1 Candidate-Source Submission,
+        // `docs/architecture/PARKER_AGENT_GATEWAY_SCOPE_LOCK.md` Section 8, Section 11, Section
+        // 20): one new, distinct, narrow, operation-specific verb phrase and one new, distinct,
+        // fixed, opaque ResourceId for candidate-source submission -- a write/create operation,
+        // separately explicit from the R0 read verbs above (never folded into them). Reuses the
+        // identical existing (PermissionAction.WRITE, ResourceType.DOCUMENT) pair Owner's own
+        // evidence.accept already uses -- no new PermissionAction or ResourceType is introduced.
+        // Still AG-1B's own agent-gateway.hermes-ingestion purpose -- no second or "write" Agent
+        // Gateway purpose is created.
+        val AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-evidence-submit")
+        const val AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME = "agent-gateway.evidence.submit"
 
         // Controlled Agent Run Submission (docs/implementation/
         // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and

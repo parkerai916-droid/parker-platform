@@ -132,6 +132,8 @@ class PdfSourceCharacteristicsInspectorTest {
             EvidenceRetrievalResult.Found(id, bytes)
         override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
             EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(id, manifestDigest, bytes.size.toLong(), "application/pdf"))
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     private fun pdf(textPages: Int, imagePages: Int, encrypted: Boolean = false): ByteArray {

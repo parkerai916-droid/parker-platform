@@ -15,6 +15,7 @@ import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.EvidenceSourceManifest
 import parker.core.interfaces.EvidenceSourceManifestStorage
 import parker.core.interfaces.EvidenceSourceManifestStorageException
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecision
@@ -689,6 +690,149 @@ class DefaultEvidenceCustodianTest {
     private fun sha256Hex(bytes: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
         return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    }
+
+    // ================= Parker Agent Gateway, AG-1F -- submitSource idempotency =================
+    //
+    // Section 8's own "hard prerequisite, not optional": accept() mints a fresh identity on
+    // every call, unconditionally, and remains completely unchanged by this Unit. These tests
+    // prove submitSource() closes exactly the gap Section 8/16 name, directly at the
+    // EvidenceCustodian level -- never relying only on HTTP-level duplicate testing.
+
+    @Test
+    fun `IDEMPOTENCY REGRESSION -- submitting identical bytes twice returns the same EvidenceArtifactId, never a second identity`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+        val content = "identical source bytes".toByteArray()
+
+        val first = assertIs<EvidenceSourceSubmissionResult.Registered>(
+            custodian.submitSource(principalId, CandidateEvidenceArtifact(content)),
+        )
+        val second = assertIs<EvidenceSourceSubmissionResult.AlreadyRegistered>(
+            custodian.submitSource(principalId, CandidateEvidenceArtifact(content)),
+        )
+
+        assertEquals(first.evidenceArtifactId, second.evidenceArtifactId, "identical bytes must never mint a second, distinct EvidenceArtifactId")
+    }
+
+    @Test
+    fun `first submission is Registered, second identical submission is AlreadyRegistered -- never Registered twice`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+        val content = "first then duplicate".toByteArray()
+
+        val first = custodian.submitSource(principalId, CandidateEvidenceArtifact(content))
+        val second = custodian.submitSource(principalId, CandidateEvidenceArtifact(content))
+
+        assertIs<EvidenceSourceSubmissionResult.Registered>(first)
+        assertIs<EvidenceSourceSubmissionResult.AlreadyRegistered>(second)
+    }
+
+    @Test
+    fun `submitSource computes the authoritative SHA-256 from the submitted bytes -- the manifest sha256 matches an independent computation`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+        val content = "authoritative hash source".toByteArray()
+
+        val result = assertIs<EvidenceSourceSubmissionResult.Registered>(custodian.submitSource(principalId, CandidateEvidenceArtifact(content)))
+
+        assertEquals(sha256Hex(content), result.manifest.sha256)
+    }
+
+    @Test
+    fun `different bytes produce different authoritative identity and are both Registered`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+
+        val first = assertIs<EvidenceSourceSubmissionResult.Registered>(
+            custodian.submitSource(principalId, CandidateEvidenceArtifact("source A".toByteArray())),
+        )
+        val second = assertIs<EvidenceSourceSubmissionResult.Registered>(
+            custodian.submitSource(principalId, CandidateEvidenceArtifact("source B".toByteArray())),
+        )
+
+        assertNotEquals(first.evidenceArtifactId, second.evidenceArtifactId)
+        assertNotEquals(first.manifest.sha256, second.manifest.sha256)
+    }
+
+    @Test
+    fun `a matching advisory sha256 is accepted and registration proceeds`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+        val content = "advisory matches".toByteArray()
+
+        val result = custodian.submitSource(principalId, CandidateEvidenceArtifact(content), sha256Hex(content))
+
+        assertIs<EvidenceSourceSubmissionResult.Registered>(result)
+    }
+
+    @Test
+    fun `advisory sha256 is case-insensitively compared against the computed hash`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+        val content = "case insensitive advisory".toByteArray()
+
+        val result = custodian.submitSource(principalId, CandidateEvidenceArtifact(content), sha256Hex(content).uppercase())
+
+        assertIs<EvidenceSourceSubmissionResult.Registered>(result)
+    }
+
+    @Test
+    fun `a mismatched advisory sha256 fails closed with HashMismatch and registers nothing`() = runTest {
+        val storage = FakeEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine())
+        val content = "real content".toByteArray()
+        val wrongAdvisory = sha256Hex("completely different content".toByteArray())
+
+        val result = custodian.submitSource(principalId, CandidateEvidenceArtifact(content), wrongAdvisory)
+
+        val mismatch = assertIs<EvidenceSourceSubmissionResult.HashMismatch>(result)
+        assertEquals(sha256Hex(content), mismatch.computedSha256)
+        assertEquals(wrongAdvisory, mismatch.advisorySha256)
+        assertEquals(0, storage.writeCallCount, "a hash mismatch must never reach storage.write")
+    }
+
+    @Test
+    fun `a mismatched advisory sha256 does not disturb a pre-existing registration under the authoritative hash`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+        val content = "already registered content".toByteArray()
+        val registered = assertIs<EvidenceSourceSubmissionResult.Registered>(custodian.submitSource(principalId, CandidateEvidenceArtifact(content)))
+
+        val mismatchResult = custodian.submitSource(principalId, CandidateEvidenceArtifact(content), sha256Hex("unrelated bytes".toByteArray()))
+
+        assertIs<EvidenceSourceSubmissionResult.HashMismatch>(mismatchResult)
+        // The pre-existing registration is unaffected -- a fresh, purely observational retrieve
+        // by manifest still finds exactly what was already registered.
+        val stillThere = custodian.retrieveManifest(principalId, registered.evidenceArtifactId)
+        assertIs<EvidenceManifestRetrievalResult.Found>(stillThere)
+        assertEquals(registered.manifest.sha256, stillThere.manifest.sha256)
+    }
+
+    @Test
+    fun `submitSource requires an actual Permission Engine call -- it is not bypassed`() = runTest {
+        val engine = approvingEngine()
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), engine)
+
+        custodian.submitSource(principalId, CandidateEvidenceArtifact("content".toByteArray()))
+
+        assertTrue(engine.evaluateCallCount >= 1)
+    }
+
+    @Test
+    fun `a DENIED decision results in Rejected and never reaches storage_write`() = runTest {
+        val storage = FakeEvidenceArtifactStorage()
+        val custodian = DefaultEvidenceCustodian(storage, approvingEngine(PermissionDecisionOutcome.DENIED))
+
+        val result = custodian.submitSource(principalId, CandidateEvidenceArtifact("content".toByteArray()))
+
+        assertIs<EvidenceSourceSubmissionResult.Rejected>(result)
+        assertEquals(0, storage.writeCallCount, "a denied decision must never reach storage.write")
+    }
+
+    @Test
+    fun `submitSource carries no metadata for evidence deletion, acquisition, HFR, or case assignment -- registration returns only identity and manifest facts`() = runTest {
+        val custodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), approvingEngine())
+
+        val result = assertIs<EvidenceSourceSubmissionResult.Registered>(
+            custodian.submitSource(principalId, CandidateEvidenceArtifact("content".toByteArray(), "application/pdf", "source.pdf")),
+        )
+
+        assertEquals("application/pdf", result.manifest.receivedMediaType)
+        assertEquals("source.pdf", result.manifest.originalFileName)
     }
 }
 

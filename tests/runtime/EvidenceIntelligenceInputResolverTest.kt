@@ -18,6 +18,7 @@ import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
+import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.MemoryCoreRecord
 import parker.core.interfaces.MemoryRetrieval
 import parker.core.interfaces.MetadataLookupQuery
@@ -300,6 +301,12 @@ class EvidenceIntelligenceInputResolverTest {
             requestingPrincipalId: PrincipalId,
             evidenceArtifactId: EvidenceArtifactId,
         ): EvidenceManifestRetrievalResult = throw UnsupportedOperationException("not used by EvidenceIntelligenceInputResolver")
+
+        override suspend fun submitSource(
+            requestingPrincipalId: PrincipalId,
+            candidate: CandidateEvidenceArtifact,
+            advisorySha256: String?,
+        ): EvidenceSourceSubmissionResult = throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
     /**
