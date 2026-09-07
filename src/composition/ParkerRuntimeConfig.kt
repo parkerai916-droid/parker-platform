@@ -274,6 +274,20 @@ import java.nio.file.Path
  *   ([parker.core.runtime.FileSystemAgentGatewayAccessAudit]) -- additive to, never a
  *   replacement for, the existing per-domain audits. [ParkerRuntimeConfigLoader.load] enforces
  *   this is set whenever [agentGatewayHttpPort] is set.
+ * @param agentGatewayHermesActive Parker Agent Gateway, production enablement. `false` by
+ *   default -- Hermes's own `Principal` (`agent.hermes-ingestion-operator`) is always registered
+ *   at status `CREATED` on every startup regardless of this setting (unchanged, AG-1B); this
+ *   flag governs only whether that exact same principal is *also* explicitly transitioned to
+ *   `ACTIVE` immediately afterward, via the same sanctioned `IdentityService.updateStatus`
+ *   lifecycle transition every other startup-activated principal already uses. Never inferred
+ *   from [agentGatewayHttpPort]/[agentGatewayHttpToken] being configured -- an operator can open
+ *   the Gateway's HTTP surface with Hermes still `CREATED` (every request then structurally
+ *   `DENIED`, exactly as before this setting existed), and must set this flag explicitly, and
+ *   separately, to grant Hermes anything. Affects no other principal -- Owner, Plugin, Internal
+ *   Agent, Tool, and every system principal are provisioned exactly as before, unconditionally.
+ *   [ParkerRuntimeConfigLoader.load] requires [agentGatewayHttpPort] to also be configured
+ *   whenever this is `true`: activating Hermes with no Gateway HTTP surface for it to reach would
+ *   be a silently pointless state, never a useful one.
  */
 data class ParkerRuntimeConfig(
     val modelEndpointUrl: String,
@@ -352,6 +366,7 @@ data class ParkerRuntimeConfig(
     val agentGatewayHttpPort: Int? = null,
     val agentGatewayHttpToken: String? = null,
     val agentGatewayAccessAuditLogPath: String? = null,
+    val agentGatewayHermesActive: Boolean = false,
 )
 
 /**
@@ -429,6 +444,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_AGENT_GATEWAY_HTTP_PORT = "PARKER_AGENT_GATEWAY_HTTP_PORT"
     const val KEY_AGENT_GATEWAY_HTTP_TOKEN = "PARKER_AGENT_GATEWAY_HTTP_TOKEN"
     const val KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH = "PARKER_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH"
+    const val KEY_AGENT_GATEWAY_HERMES_ACTIVE = "PARKER_AGENT_GATEWAY_HERMES_ACTIVE"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -591,6 +607,27 @@ object ParkerRuntimeConfigLoader {
             )
         }
 
+        // Parker Agent Gateway, production enablement: the narrowest explicit,
+        // owner-controlled production activation for Hermes's own principal --
+        // `agent.hermes-ingestion-operator` is always registered CREATED on every startup
+        // (unconditional, unchanged, AG-1B); this flag governs only whether that exact principal
+        // is *also* explicitly transitioned to ACTIVE via IdentityService.updateStatus. `false`
+        // if the raw value is absent (the safe default); any other non-blank value that is not
+        // exactly "true"/"false" fails startup, mirroring externalTranscriptionEnabled's own
+        // identical strict-boolean-parsing discipline immediately below.
+        val agentGatewayHermesActiveRaw = environment[KEY_AGENT_GATEWAY_HERMES_ACTIVE]?.takeIf { it.isNotBlank() }
+        val agentGatewayHermesActive = agentGatewayHermesActiveRaw?.trim()?.toBooleanStrictOrNull()
+            ?: if (agentGatewayHermesActiveRaw == null) false else throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_AGENT_GATEWAY_HERMES_ACTIVE,
+                "must be true or false; was '$agentGatewayHermesActiveRaw'",
+            )
+        if (agentGatewayHermesActive && agentGatewayHttpPort == null) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_AGENT_GATEWAY_HERMES_ACTIVE,
+                "requires the Agent Gateway HTTP port to be configured -- activating Hermes with no Gateway HTTP surface for it to reach is never a useful state",
+            )
+        }
+
         val externalTranscriptionEnabledRaw = environment[KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED]?.takeIf { it.isNotBlank() }
         val externalTranscriptionEnabled = externalTranscriptionEnabledRaw?.trim()?.toBooleanStrictOrNull()
             ?: if (externalTranscriptionEnabledRaw == null) false else throw ParkerRuntimeException.InvalidConfiguration(
@@ -719,6 +756,7 @@ object ParkerRuntimeConfigLoader {
             agentGatewayHttpPort = agentGatewayHttpPort,
             agentGatewayHttpToken = agentGatewayHttpToken,
             agentGatewayAccessAuditLogPath = agentGatewayAccessAuditLogPath,
+            agentGatewayHermesActive = agentGatewayHermesActive,
         )
     }
 

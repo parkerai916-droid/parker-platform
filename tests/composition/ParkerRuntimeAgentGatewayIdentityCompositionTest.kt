@@ -61,7 +61,11 @@ import kotlin.test.assertTrue
  */
 class ParkerRuntimeAgentGatewayIdentityCompositionTest {
 
-    private fun config(localTextChannelModuleId: String = "channel.local-text-agent-gateway-identity-test") = ParkerRuntimeConfig(
+    private fun config(
+        localTextChannelModuleId: String = "channel.local-text-agent-gateway-identity-test",
+        agentGatewayHermesActive: Boolean = false,
+        agentGatewayHttpConfigured: Boolean = false,
+    ) = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by these tests
         modelName = "test-model",
         ownerPrincipalId = "user.owner-agent-gateway-identity-test",
@@ -75,6 +79,13 @@ class ParkerRuntimeAgentGatewayIdentityCompositionTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("agent-gateway-identity-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("agent-gateway-identity-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("agent-gateway-identity-knowledge-items").resolve("items.log").toString(),
+        agentGatewayHttpBindAddress = if (agentGatewayHttpConfigured) "127.0.0.1" else null,
+        agentGatewayHttpPort = if (agentGatewayHttpConfigured) 0 else null,
+        agentGatewayHttpToken = if (agentGatewayHttpConfigured) "test-hermes-bearer-token" else null,
+        agentGatewayAccessAuditLogPath = if (agentGatewayHttpConfigured) {
+            Files.createTempDirectory("agent-gateway-identity-access-audit").resolve("audit.log").toString()
+        } else null,
+        agentGatewayHermesActive = agentGatewayHermesActive,
     )
 
     private fun <T> Any.privateField(name: String): T {
@@ -307,5 +318,91 @@ class ParkerRuntimeAgentGatewayIdentityCompositionTest {
         assertEquals(PrincipalId("user.owner-agent-gateway-identity-test"), hermes.owner)
 
         runtime.shutdown()
+    }
+
+    // ================= Production Hermes activation (PARKER_AGENT_GATEWAY_HERMES_ACTIVE) =================
+    //
+    // Deployment Tests B/C/D/E: the composed runtime's own real startup sequence, exercised
+    // directly through ParkerRuntimeConfig.agentGatewayHermesActive (never through
+    // docker-compose/env-var parsing, which ParkerRuntimeConfigLoaderTest already covers
+    // separately). The composed runtime constructed by [ParkerRuntime.start] always uses the real
+    // `InMemoryIdentityService.updateStatus` -- there is no second, alternate activation path.
+
+    @Test
+    fun `B - default deployment (activation absent-or-false) leaves Hermes CREATED even with the Gateway HTTP surface fully configured`() = runTest {
+        val runtime = ParkerRuntime(config(agentGatewayHermesActive = false, agentGatewayHttpConfigured = true), RecordingParkerLogger())
+        runtime.start()
+
+        val hermes = composedIdentityService(runtime).resolve(hermesPrincipalId)
+
+        assertTrue(hermes != null)
+        assertEquals(PrincipalStatus.CREATED, hermes!!.status)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `C - explicit activation transitions exactly Hermes to ACTIVE, reachable through the real composed IdentityService`() = runTest {
+        val runtime = ParkerRuntime(config(agentGatewayHermesActive = true, agentGatewayHttpConfigured = true), RecordingParkerLogger())
+        runtime.start()
+
+        val identityService = composedIdentityService(runtime)
+        val hermes = identityService.resolve(hermesPrincipalId)
+
+        assertTrue(hermes != null)
+        assertEquals(PrincipalStatus.ACTIVE, hermes!!.status)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `explicit activation affects only Hermes -- Owner's own status is unaffected either way`() = runTest {
+        val inactiveRuntime = ParkerRuntime(config(agentGatewayHermesActive = false), RecordingParkerLogger())
+        inactiveRuntime.start()
+        val ownerWithoutActivation = composedIdentityService(inactiveRuntime).resolve(PrincipalId("user.owner-agent-gateway-identity-test"))
+        inactiveRuntime.shutdown()
+
+        val activeRuntime = ParkerRuntime(config(agentGatewayHermesActive = true, agentGatewayHttpConfigured = true), RecordingParkerLogger())
+        activeRuntime.start()
+        val ownerWithActivation = composedIdentityService(activeRuntime).resolve(PrincipalId("user.owner-agent-gateway-identity-test"))
+        activeRuntime.shutdown()
+
+        assertTrue(ownerWithoutActivation != null && ownerWithActivation != null)
+        assertEquals(ownerWithoutActivation!!.status, ownerWithActivation!!.status)
+        assertEquals(PrincipalStatus.ACTIVE, ownerWithActivation.status, "Owner's own activation is unrelated to, and unaffected by, this flag")
+    }
+
+    @Test
+    fun `D - a second, independent startup with activation true registers Hermes CREATED then explicitly transitions it ACTIVE again -- freshly re-derived, never a persisted one-time state`() = runTest {
+        val cfg = config(agentGatewayHermesActive = true, agentGatewayHttpConfigured = true)
+
+        val first = ParkerRuntime(cfg, RecordingParkerLogger())
+        first.start()
+        assertEquals(PrincipalStatus.ACTIVE, composedIdentityService(first).resolve(hermesPrincipalId)!!.status)
+        first.shutdown()
+
+        // A second, wholly separate ParkerRuntime/IdentityService instance, simulating a fresh
+        // process restart against the identical activation setting -- proves the transition is
+        // performed again on this startup, not merely inherited from state that happened to
+        // already exist (InMemoryIdentityService itself holds no state across instances at all).
+        val second = ParkerRuntime(cfg, RecordingParkerLogger())
+        second.start()
+        assertEquals(PrincipalStatus.ACTIVE, composedIdentityService(second).resolve(hermesPrincipalId)!!.status)
+        second.shutdown()
+    }
+
+    @Test
+    fun `E - a second, independent startup with activation false (or absent) leaves Hermes CREATED again -- restart never inherits a prior run's activation`() = runTest {
+        val cfg = config(agentGatewayHermesActive = false, agentGatewayHttpConfigured = true)
+
+        val first = ParkerRuntime(cfg, RecordingParkerLogger())
+        first.start()
+        assertEquals(PrincipalStatus.CREATED, composedIdentityService(first).resolve(hermesPrincipalId)!!.status)
+        first.shutdown()
+
+        val second = ParkerRuntime(cfg, RecordingParkerLogger())
+        second.start()
+        assertEquals(PrincipalStatus.CREATED, composedIdentityService(second).resolve(hermesPrincipalId)!!.status)
+        second.shutdown()
     }
 }

@@ -116,6 +116,41 @@ services:
       PARKER_OWNER_HTTP_BIND_ADDRESS: "${PARKER_OWNER_HTTP_BIND_ADDRESS:-0.0.0.0}"
       PARKER_OWNER_HTTP_PORT: "${PARKER_OWNER_HTTP_PORT:-}"
       PARKER_OWNER_UI_AUTHENTICATION_ROOT: "/data/owner-ui-authentication"
+
+      # Parker Agent Gateway (Section 10, Section 18, production enablement). Structurally
+      # separate from Owner LAN Evidence Upload immediately above -- its own bind address, port,
+      # bearer token, and audit log path, never derived from Owner's. Opt-in and off by default:
+      # PARKER_AGENT_GATEWAY_HTTP_PORT is blank unless set in a local, git-ignored .env file, and
+      # ParkerRuntimeConfigLoader.load collapses a blank value to `null` -- with it null, Main.kt
+      # never constructs AgentGatewayHttpServer at all, so an unmodified .env leaves this
+      # deployment exactly as it was before this feature existed. To enable it, set
+      # PARKER_AGENT_GATEWAY_HTTP_PORT, PARKER_AGENT_GATEWAY_HTTP_BIND_ADDRESS (e.g. 0.0.0.0 --
+      # deliberately NOT defaulted here, unlike Owner's own bind address above: the loader
+      # requires this be explicit whenever the port is set, so a newly introduced authenticated
+      # Gateway can never silently bind to every interface), and PARKER_AGENT_GATEWAY_HTTP_TOKEN
+      # (a real secret, generated locally -- never committed to this repository) in .env; the
+      # loader enforces all three are set together or not at all and fails startup otherwise, so
+      # a port can never come up anonymous or unbound. The intended client is the Hermes VM on
+      # the same trusted local network, never the public internet.
+      PARKER_AGENT_GATEWAY_HTTP_BIND_ADDRESS: "${PARKER_AGENT_GATEWAY_HTTP_BIND_ADDRESS:-}"
+      PARKER_AGENT_GATEWAY_HTTP_PORT: "${PARKER_AGENT_GATEWAY_HTTP_PORT:-}"
+      PARKER_AGENT_GATEWAY_HTTP_TOKEN: "${PARKER_AGENT_GATEWAY_HTTP_TOKEN:-}"
+      # Fixed in-container path -- persistence is provided by the mounted volume below, not by
+      # this path being configurable per deployment, mirroring every other fixed audit/storage
+      # path above (e.g. PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH). Safe to set unconditionally
+      # even while the Gateway itself is disabled: ParkerRuntimeConfigLoader only requires this be
+      # present once PARKER_AGENT_GATEWAY_HTTP_PORT is set -- it never forbids setting it early.
+      PARKER_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH: /data/agent-gateway-audit/audit.log
+      # Production Hermes activation. Off (blank -> false) by default -- Hermes's own Principal
+      # (agent.hermes-ingestion-operator) is always registered CREATED on every startup regardless
+      # of this setting; only this one explicit flag additionally transitions that exact principal
+      # to ACTIVE, via IdentityService.updateStatus, the same sanctioned lifecycle transition
+      # every other startup-activated principal already uses. Affects no other principal.
+      # ParkerRuntimeConfigLoader.load requires PARKER_AGENT_GATEWAY_HTTP_PORT to also be set
+      # whenever this is true -- activating Hermes with no Gateway HTTP surface for it to reach is
+      # never a useful state. Never set true merely because the port/token above are configured;
+      # it is read, and enforced, entirely independently of them.
+      PARKER_AGENT_GATEWAY_HERMES_ACTIVE: "${PARKER_AGENT_GATEWAY_HERMES_ACTIVE:-}"
     ports:
       # Always published so `docker compose up` never fails on an empty
       # port spec; harmless while the feature above is disabled (nothing
@@ -124,6 +159,16 @@ services:
       # <Parker-server-LAN-IP>:8080 (or your own PARKER_OWNER_HTTP_PORT)
       # is what the owner's Windows laptop browser then opens.
       - "${PARKER_OWNER_HTTP_PORT:-8080}:${PARKER_OWNER_HTTP_PORT:-8080}"
+      # Same "always published, harmless while disabled" necessity as the Owner HTTP mapping
+      # immediately above -- docker compose has no way to conditionally omit a ports: entry based
+      # on whether an env var is set; a bare, default-less "${VAR}:${VAR}" fails `docker compose
+      # config` outright the moment the var is unset (verified directly against this compose
+      # file's own toolchain). 8090 is an inert placeholder, never a real default: nothing inside
+      # the container binds it unless PARKER_AGENT_GATEWAY_HTTP_PORT is explicitly set (see the
+      # environment: block above), in which case this mapping follows that value --
+      # <Parker-server-LAN-IP>:<your PARKER_AGENT_GATEWAY_HTTP_PORT> is what the Hermes VM then
+      # connects to.
+      - "${PARKER_AGENT_GATEWAY_HTTP_PORT:-8090}:${PARKER_AGENT_GATEWAY_HTTP_PORT:-8090}"
     volumes:
       - /mnt/parker-data/parker/evidence:/data/evidence
       - /mnt/parker-data/parker/evidence-audit:/data/evidence-audit
@@ -134,6 +179,9 @@ services:
       - /mnt/parker-data/parker/derivative-content:/data/derivative-content
       - /mnt/parker-data/parker/corrected-preparations:/data/corrected-preparations
       - /mnt/parker-data/parker/owner-ui-authentication:/data/owner-ui-authentication
+      # Parker Agent Gateway access audit -- a narrow, dedicated directory, additive to (never a
+      # replacement for, never nested inside) every existing per-domain audit volume above.
+      - /mnt/parker-data/parker/agent-gateway-audit:/data/agent-gateway-audit
       - /mnt/parker-data/parker/human-fidelity-reviews:/data/human-fidelity-reviews
       - /mnt/parker-data/parker/human-fidelity-review-audit:/data/human-fidelity-review-audit
       - /mnt/parker-data/parker/human-corrected-representations:/data/human-corrected-representations

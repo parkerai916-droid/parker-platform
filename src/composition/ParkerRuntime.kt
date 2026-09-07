@@ -2568,6 +2568,18 @@ class ParkerRuntime(
                     lastSeenAt = clock(),
                 ),
             )
+            // Parker Agent Gateway, production enablement (PARKER_AGENT_GATEWAY_HERMES_ACTIVE).
+            // Hermes is always registered CREATED, unconditionally, immediately above -- this is
+            // the one, narrow, explicit, owner-controlled additional step: the same sanctioned
+            // IdentityService.updateStatus lifecycle transition every other startup-activated
+            // principal already uses (see registerActive, below), applied to this exact principal
+            // and no other, only when the operator has explicitly set this one deployment flag.
+            // `false` (the default) leaves Hermes exactly as AG-1B originally left it -- CREATED,
+            // and therefore denied by DefaultPermissionEngine.evaluate before policy is even
+            // consulted -- unchanged from every prior Agent Gateway unit.
+            if (config.agentGatewayHermesActive) {
+                identityService.updateStatus(HERMES_INGESTION_OPERATOR_PRINCIPAL_ID, PrincipalStatus.ACTIVE)
+            }
         }
     }
 

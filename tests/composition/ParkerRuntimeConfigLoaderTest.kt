@@ -861,4 +861,61 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(null, config.ownerHttpToken)
         assertEquals(9090, config.agentGatewayHttpPort)
     }
+
+    // ================= Production Hermes activation (PARKER_AGENT_GATEWAY_HERMES_ACTIVE) =================
+
+    @Test
+    fun `8 - with PARKER_AGENT_GATEWAY_HERMES_ACTIVE unset, activation defaults to false, independent of whether the Gateway itself is configured`() {
+        val disabledConfig = ParkerRuntimeConfigLoader.load(fullEnvironment())
+        assertEquals(false, disabledConfig.agentGatewayHermesActive)
+
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-activation-default")
+        val configuredConfig = ParkerRuntimeConfigLoader.load(fullEnvironment(overrides = completeAgentGatewayOverrides(auditLogDir)))
+        assertEquals(false, configuredConfig.agentGatewayHermesActive)
+    }
+
+    @Test
+    fun `9 - PARKER_AGENT_GATEWAY_HERMES_ACTIVE=true with the Gateway fully configured is accepted`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-activation-true")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HERMES_ACTIVE to "true")
+        val environment = fullEnvironment(overrides = overrides)
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(true, config.agentGatewayHermesActive)
+    }
+
+    @Test
+    fun `10 - PARKER_AGENT_GATEWAY_HERMES_ACTIVE=true with no Gateway port configured throws InvalidConfiguration naming the activation key -- never inferred, never silently accepted`() {
+        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HERMES_ACTIVE to "true"))
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HERMES_ACTIVE, thrown.key)
+    }
+
+    @Test
+    fun `11 - a non-boolean PARKER_AGENT_GATEWAY_HERMES_ACTIVE throws InvalidConfiguration naming that key`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-activation-nonboolean")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HERMES_ACTIVE to "yes")
+        val environment = fullEnvironment(overrides = overrides)
+
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(environment)
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HERMES_ACTIVE, thrown.key)
+    }
+
+    @Test
+    fun `12 - PARKER_AGENT_GATEWAY_HERMES_ACTIVE=false with the Gateway fully configured is accepted -- Gateway open, activation still explicitly off`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-config-loader-test-activation-false")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + (ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_HERMES_ACTIVE to "false")
+        val environment = fullEnvironment(overrides = overrides)
+
+        val config = ParkerRuntimeConfigLoader.load(environment)
+
+        assertEquals(false, config.agentGatewayHermesActive)
+        assertEquals(9090, config.agentGatewayHttpPort)
+    }
 }
