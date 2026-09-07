@@ -40,6 +40,22 @@ services:
       PARKER_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT: /data/human-correction-audit
       PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE: /run/secrets/parker_owner_high_authority_verification
       PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID: "${PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID:?Set opaque owner high-authority PrincipalId}"
+      # UI-INGESTION-5: exact-target external-transcription egress authorization storage --
+      # together with the two high-authority values immediately above (both already
+      # unconditionally present), this is what ParkerRuntime.kt requires, all three, before it
+      # constructs ExternalTranscriptionOwnerAuthorizationCoordinator at all. A fixed in-container
+      # path, same convention as every other storage root on this page -- FileSystemExternalTranscriptionAuthorizationStore's
+      # own init requires this exact directory to already exist and be writable, which the mounted
+      # volume below provides; this class creates no directory of its own. This root existing does
+      # not itself enable external transcription (PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED, a
+      # real accepted provider profile, and a credential remain independently required) -- it only
+      # makes the owner's own separate, high-authority-gated, per-evidence egress authorization
+      # capability durable. Path and mount both named to match the exact directory already in real
+      # use on this host (previously wired only via a local, untracked compose override --
+      # /mnt/parker-data/parker/external-transcription-authorizations already holds real,
+      # previously-granted authorization records) -- this formally adopts that same directory into
+      # the tracked compose file rather than introducing a second, differently-named one.
+      PARKER_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT: /data/external-transcription-authorizations
       # Reviewed Analysis Result — Explicit Owner Save. A wholly separate storage root from every
       # other store above, never nested inside any of them -- a saved analysis is never Evidence,
       # a derivative, Memory, or Knowledge.
@@ -206,6 +222,11 @@ services:
       # Parker Agent Gateway access audit -- a narrow, dedicated directory, additive to (never a
       # replacement for, never nested inside) every existing per-domain audit volume above.
       - /mnt/parker-data/parker/agent-gateway-audit:/data/agent-gateway-audit
+      # UI-INGESTION-5: external-transcription egress authorization records -- one file per
+      # exact-target evidence artifact, written only by ExternalTranscriptionOwnerAuthorizationCoordinator
+      # under its own high-authority-verified, permission-gated owner action. Additive to, never
+      # nested inside, every other storage root above.
+      - /mnt/parker-data/parker/external-transcription-authorizations:/data/external-transcription-authorizations
       - /mnt/parker-data/parker/human-fidelity-reviews:/data/human-fidelity-reviews
       - /mnt/parker-data/parker/human-fidelity-review-audit:/data/human-fidelity-review-audit
       - /mnt/parker-data/parker/human-corrected-representations:/data/human-corrected-representations
