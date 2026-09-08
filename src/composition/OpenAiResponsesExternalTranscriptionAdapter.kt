@@ -47,8 +47,14 @@ internal const val FIDELITY_FIRST_SCHEMA_SHA256 = "7b46bdd6ce615592bb4e7cfee84f5
 // reproduce, rewrite, or retranscribe the email's own text (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §6.1).
 internal const val EML_TRANSCRIPTION_PROFILE_ID = "openai-eml-derived-text-verification-v1"
 internal const val EML_PROCESSING_PROFILE_IDENTITY = "external-transcription.eml-derived-text-v1"
-internal const val EML_VERIFICATION_INSTRUCTION = "Parker has already deterministically extracted and canonically projected this email's headers, MIME structure, body alternatives, and attachment manifest into the submitted text. Do not reproduce, rewrite, retranscribe, paraphrase, or invent the email's text content. For each MIME entity identified in the submitted MIME STRUCTURE section, verify that its corresponding content in the submitted BODY ALTERNATIVES, NESTED MESSAGES, or ATTACHMENT MANIFEST sections is coherent, complete, and internally consistent, and report a structured verification outcome per section using only the identifiers already present in the submission. Do not invent a MIME entity id that is not present in the submission. Do not omit a required section's verification outcome. Record every uncertainty or inconsistency using the structured warning and reason fields; omission with an explicit disclosure is preferable to invention. Echo the supplied profile, request, and attempt identifiers exactly. Return only the strict structured schema."
-internal const val EML_VERIFICATION_INSTRUCTION_SHA256 = "74ad9d762c9d8aa5e9cfa7f05bd3c4a56e7a44e776400ffcd9f4030510d42818"
+// EML ECHO-BINDING CORRECTION: the prior instruction's "Echo the supplied profile, request, and
+// attempt identifiers exactly" never named source_evidence_artifact_id, submitted_representation_sha256,
+// or processing_profile_identity -- the three other Parker-known values the response schema also
+// requires verbatim. This under-instruction is the most likely explanation for a live
+// MALFORMED_PROVIDER_RESPONSE at the (now-split) SUBMITTED_REPRESENTATION_SHA256 stage: nothing
+// told the model these three specific values were exact copies rather than content to summarize.
+internal const val EML_VERIFICATION_INSTRUCTION = "Parker has already deterministically extracted and canonically projected this email's headers, MIME structure, body alternatives, and attachment manifest into the submitted text. Do not reproduce, rewrite, retranscribe, paraphrase, or invent the email's text content. For each MIME entity identified in the submitted MIME STRUCTURE section, verify that its corresponding content in the submitted BODY ALTERNATIVES, NESTED MESSAGES, or ATTACHMENT MANIFEST sections is coherent, complete, and internally consistent, and report a structured verification outcome per section using only the identifiers already present in the submission. Do not invent a MIME entity id that is not present in the submission. Do not omit a required section's verification outcome. Record every uncertainty or inconsistency using the structured warning and reason fields; omission with an explicit disclosure is preferable to invention. The supplied profile identifier, request identifier, attempt identifier, source evidence artifact identifier, submitted representation digest, and processing profile identifier are all values Parker already supplied to you, not values for you to determine: echo every one of them back exactly as supplied, character-for-character, with no summarizing, no reformatting, no case change, no added or removed whitespace, no shortening, no interpretation, no regeneration, and no replacement value. The submitted representation digest is already the authoritative SHA-256 digest of the submitted representation: return exactly the supplied 64-character lowercase hexadecimal string, with no recalculation, no label, no \"sha256:\" prefix, no case change, and no surrounding prose. Return only the strict structured schema."
+internal const val EML_VERIFICATION_INSTRUCTION_SHA256 = "acee4a66c33e88b427e9b51323187f4f654194904f1fe20d82a1e58360afe398"
 internal val EML_VERIFICATION_SCHEMA_SOURCE = """{"type":"object","additionalProperties":false,"required":["profile_id","request_id","attempt_id","source_evidence_artifact_id","submitted_representation_sha256","processing_profile_identity","message_outcome","completeness_state","sections","warnings"],"properties":{"profile_id":{"type":"string"},"request_id":{"type":"string"},"attempt_id":{"type":"string"},"source_evidence_artifact_id":{"type":"string"},"submitted_representation_sha256":{"type":"string"},"processing_profile_identity":{"type":"string"},"message_outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","FAILED"]},"completeness_state":{"type":"string","enum":["COMPLETE","INCOMPLETE","UNDETERMINED"]},"sections":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["mime_entity_id","outcome","reason_classification","reason_detail","warnings"],"properties":{"mime_entity_id":{"type":"string"},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}}}}},"warnings":{"type":"array","items":{"type":"string"}}}}"""
 internal val EML_VERIFICATION_SCHEMA_CANONICAL = canonicalizeStructuredSchema(EML_VERIFICATION_SCHEMA_SOURCE)
 internal val EML_VERIFICATION_SCHEMA_SHA256 = sha256Hex(EML_VERIFICATION_SCHEMA_CANONICAL.toByteArray(StandardCharsets.UTF_8))
@@ -345,26 +351,47 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
                 else -> throw OpenAiResponseParseException("COMPLETENESS_STATE", IllegalArgumentException("unrecognised completeness_state"))
             }
         }
-        return responseParseStage("CANDIDATE") { parker.core.interfaces.EmlStructuredTranscriptionCandidate(
-            profileId = result.requiredString("profile_id"),
-            requestId = result.requiredString("request_id"),
-            attemptId = result.requiredString("attempt_id"),
-            sourceEvidenceArtifactId = EvidenceArtifactId(result.requiredString("source_evidence_artifact_id")),
-            submittedRepresentationSha256 = OcrSha256Digest(result.requiredString("submitted_representation_sha256")),
-            processingProfileIdentity = result.requiredString("processing_profile_identity"),
-            messageOutcome = messageOutcome,
-            completenessState = completenessState,
-            sections = sections,
-            recognitionIdentity = OcrRecognitionIdentity("openai-responses", EML_TRANSCRIPTION_PROFILE_ID, adapterVersion),
-            providerProvenance = OcrProviderProvenance(
+        // EML ECHO-BINDING CORRECTION: each Parker-known echo field its own responseParseStage --
+        // the CANDIDATE stage below is left performing only final object assembly from
+        // already-parsed values, so a future malformed echo names the exact field that failed
+        // (in the attempt ledger, via the diagnostic-visibility mechanism) instead of the generic
+        // "CANDIDATE" this same live defect previously collapsed into. No normalization, trimming,
+        // case change, or repair is performed anywhere here -- a malformed value still throws and
+        // still fails closed; a well-formed-but-wrong value still passes through unaltered to
+        // EmlStructuredResultValidator, which alone determines contradiction.
+        val sourceEvidenceArtifactId = responseParseStage("SOURCE_EVIDENCE_ARTIFACT_ID") {
+            EvidenceArtifactId(result.requiredString("source_evidence_artifact_id"))
+        }
+        val submittedRepresentationSha256 = responseParseStage("SUBMITTED_REPRESENTATION_SHA256") {
+            OcrSha256Digest(result.requiredString("submitted_representation_sha256"))
+        }
+        val processingProfileIdentity = responseParseStage("PROCESSING_PROFILE_IDENTITY") {
+            result.requiredString("processing_profile_identity")
+        }
+        val warnings = responseParseStage("WARNINGS") { result.requiredStringArray("warnings") }
+        val providerProvenance = responseParseStage("PROVIDER_PROVENANCE") {
+            OcrProviderProvenance(
                 "OpenAI", "openai-responses-adapter", adapterVersion, EML_TRANSCRIPTION_PROFILE_ID,
                 model, OcrModelSnapshot.NotExposed, responseId,
                 OcrTranscriptionConfiguration.DigestedConfiguration(
                     EML_TRANSCRIPTION_PROFILE_ID, OcrSha256Digest(instructionSha256), OcrSha256Digest(schemaSha256),
                 ),
-            ),
+            )
+        }
+        return responseParseStage("CANDIDATE") { parker.core.interfaces.EmlStructuredTranscriptionCandidate(
+            profileId = result.requiredString("profile_id"),
+            requestId = result.requiredString("request_id"),
+            attemptId = result.requiredString("attempt_id"),
+            sourceEvidenceArtifactId = sourceEvidenceArtifactId,
+            submittedRepresentationSha256 = submittedRepresentationSha256,
+            processingProfileIdentity = processingProfileIdentity,
+            messageOutcome = messageOutcome,
+            completenessState = completenessState,
+            sections = sections,
+            recognitionIdentity = OcrRecognitionIdentity("openai-responses", EML_TRANSCRIPTION_PROFILE_ID, adapterVersion),
+            providerProvenance = providerProvenance,
             recognisedAt = Instant.now(),
-            warnings = result.requiredStringArray("warnings"),
+            warnings = warnings,
         ) }
     }
 

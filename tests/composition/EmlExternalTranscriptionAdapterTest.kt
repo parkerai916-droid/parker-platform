@@ -67,14 +67,19 @@ class EmlExternalTranscriptionAdapterTest {
         OpenAiExternalTranscriptionEffectiveLimits(1_000_000, 1_000_000, 1_000_000, 30_000),
     )
 
-    private fun successPayload(representation: EmlDerivedRepresentation, binding: ExternalTranscriptionExecutionBinding) =
-        """{"profile_id":"${binding.profileId}","request_id":"${binding.requestId}","attempt_id":"${binding.attemptId}",""" +
-            """"source_evidence_artifact_id":"${representation.sourceEvidenceArtifactId.value}",""" +
-            """"submitted_representation_sha256":"${representation.representationSha256.value}",""" +
-            """"processing_profile_identity":"${representation.transformationProfileIdentity}",""" +
+    private fun successPayload(
+        representation: EmlDerivedRepresentation, binding: ExternalTranscriptionExecutionBinding,
+        sourceEvidenceArtifactId: String = representation.sourceEvidenceArtifactId.value,
+        submittedRepresentationSha256: String = representation.representationSha256.value,
+        processingProfileIdentity: String = representation.transformationProfileIdentity,
+        warningsJson: String = "[]",
+    ) = """{"profile_id":"${binding.profileId}","request_id":"${binding.requestId}","attempt_id":"${binding.attemptId}",""" +
+            """"source_evidence_artifact_id":"$sourceEvidenceArtifactId",""" +
+            """"submitted_representation_sha256":"$submittedRepresentationSha256",""" +
+            """"processing_profile_identity":"$processingProfileIdentity",""" +
             """"message_outcome":"TRANSCRIBED","completeness_state":"COMPLETE",""" +
             """"sections":[${representation.provenance.bodyAlternativesIncluded.joinToString(",") { """{"mime_entity_id":"$it","outcome":"TRANSCRIBED","reason_classification":null,"reason_detail":null,"warnings":[]}""" }}],""" +
-            """"warnings":[]}"""
+            """"warnings":$warningsJson}"""
 
     private fun envelope(payload: String) =
         """{"id":"resp_eml_1","model":"gpt-5.6-sol","output":[{"type":"message","content":[{"type":"output_text","text":"${escape(payload)}"}]}]}"""
@@ -206,6 +211,118 @@ class EmlExternalTranscriptionAdapterTest {
         assertEquals(EML_VERIFICATION_INSTRUCTION_SHA256, sha256Hex(EML_VERIFICATION_INSTRUCTION.toByteArray()))
         assertContains(EML_VERIFICATION_SCHEMA_CANONICAL, "mime_entity_id")
         assertContains(EML_VERIFICATION_SCHEMA_CANONICAL, "message_outcome")
+    }
+
+    // ================= EML echo-binding correction: precise CANDIDATE field stages =================
+
+    @Test fun `L -- the strengthened instruction explicitly names all three echo fields and the exact-copy requirement`() {
+        assertContains(EML_VERIFICATION_INSTRUCTION, "source evidence artifact identifier")
+        assertContains(EML_VERIFICATION_INSTRUCTION, "submitted representation digest")
+        assertContains(EML_VERIFICATION_INSTRUCTION, "processing profile identifier")
+        assertContains(EML_VERIFICATION_INSTRUCTION, "character-for-character")
+        assertContains(EML_VERIFICATION_INSTRUCTION, "64-character lowercase hexadecimal")
+        assertContains(EML_VERIFICATION_INSTRUCTION, "no recalculation")
+    }
+
+    private suspend fun candidateFieldProbe(payload: String): Pair<ExternalTranscriptionMechanismOutcome, OpenAiResponseFailureFingerprint?> {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val transport = FakeTransport { envelope(payload) }
+        var captured: OpenAiResponseFailureFingerprint? = null
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+        return outcome to captured
+    }
+
+    @Test fun `A -- a malformed source_evidence_artifact_id (blank) records SOURCE_EVIDENCE_ARTIFACT_ID`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, sourceEvidenceArtifactId = ""))
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("SOURCE_EVIDENCE_ARTIFACT_ID", captured?.parkerParseStage)
+    }
+
+    @Test fun `B -- every malformed submitted_representation_sha256 variant records SUBMITTED_REPRESENTATION_SHA256`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val variants = listOf(
+            "blank" to "",
+            "63 lowercase hex chars" to "a".repeat(63),
+            "64 uppercase hex chars" to "A".repeat(64),
+            "64 non-hex chars" to "g".repeat(64),
+            "ordinary prose" to "I have verified this message and it is authentic.",
+        )
+        variants.forEach { (label, value) ->
+            val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, submittedRepresentationSha256 = value))
+            assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason, label)
+            assertEquals("SUBMITTED_REPRESENTATION_SHA256", captured?.parkerParseStage, label)
+        }
+    }
+
+    @Test fun `C -- a malformed processing_profile_identity (blank) records PROCESSING_PROFILE_IDENTITY`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, processingProfileIdentity = ""))
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("PROCESSING_PROFILE_IDENTITY", captured?.parkerParseStage)
+    }
+
+    @Test fun `D -- malformed warnings (wrong element type) records WARNINGS`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, warningsJson = "[123]"))
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("WARNINGS", captured?.parkerParseStage)
+    }
+
+    @Test fun `F -- a residual final-assembly failure still names CANDIDATE (missing top-level required field)`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        // profile_id is required by EXECUTION_BINDING already; omitting an unrelated-but-required
+        // top-level field the schema demands (message_outcome) still fails earlier, at
+        // MESSAGE_OUTCOME -- confirming CANDIDATE itself is unreachable without every prior stage
+        // succeeding, and is now reached only for true final-assembly problems, not echo fields.
+        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding).replace("\"message_outcome\":\"TRANSCRIBED\",", ""))
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("MESSAGE_OUTCOME", captured?.parkerParseStage)
+    }
+
+    @Test fun `E -- an overlong provider-reported model identifier records PROVIDER_PROVENANCE`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val payload = successPayload(representation, binding)
+        val overlongModel = "gpt-5.6-sol-" + "x".repeat(1_100)
+        val envelopeWithOverlongModel =
+            """{"id":"resp_eml_1","model":"$overlongModel","output":[{"type":"message","content":[{"type":"output_text","text":"${escape(payload)}"}]}]}"""
+        val transport = FakeTransport { envelopeWithOverlongModel }
+        var captured: OpenAiResponseFailureFingerprint? = null
+        val outcome = adapter(transport, responseFailureObserver = { captured = it })
+            .transcribe(ExternalTranscriptionRequest(representation, 200, executionBinding = binding))
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("PROVIDER_PROVENANCE", captured?.parkerParseStage)
+    }
+
+    @Test fun `G -- a valid 64-char lowercase digest succeeds through parsing`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val (outcome, _) = candidateFieldProbe(successPayload(representation, binding))
+        val candidate = assertIs<EmlStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome).candidate)
+        assertEquals(representation.representationSha256, candidate.submittedRepresentationSha256)
+    }
+
+    @Test fun `H -- a well-formed but wrong digest reaches the validator and is rejected as a contradiction, not a parse failure`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val wrongButWellFormed = "b".repeat(64)
+        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, submittedRepresentationSha256 = wrongButWellFormed))
+        // Parsing must succeed -- the value is syntactically valid, so this is not a parse failure.
+        val candidate = assertIs<EmlStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome).candidate)
+        assertEquals(OcrSha256Digest(wrongButWellFormed), candidate.submittedRepresentationSha256)
+        assertEquals(null, captured, "the observer must not fire when parsing succeeded")
+        // The validator -- never the parser -- is what must catch this contradiction.
+        val validated = EmlStructuredResultValidator().validate(candidate, representation, binding)
+        val rejected = assertIs<EmlStructuredValidationOutcome.Rejected>(validated)
+        assertContains(rejected.reason, "digest does not match")
     }
 
     private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
