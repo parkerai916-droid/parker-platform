@@ -31,6 +31,9 @@ services:
       PARKER_EVIDENCE_STORAGE_ROOT: /data/evidence
       PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH: /data/evidence-audit/deletion-audit.log
       PARKER_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT: /data/evidence-source-manifests
+      PARKER_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT: /data/external-transcription-acceptance-authorities
+      PARKER_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT: /data/external-transcription-attempts
+      PARKER_PRODUCTION_COMMIT: "${PARKER_PRODUCTION_COMMIT:?Set exact production commit}"
       PARKER_CASE_STORAGE_ROOT: /data/cases
       PARKER_CASE_ASSIGNMENT_STORAGE_ROOT: /data/case-assignments
       PARKER_CASE_GOVERNANCE_AUDIT_LOG_PATH: /data/case-governance-audit/case-audit.log
@@ -222,6 +225,8 @@ services:
       - /mnt/parker-data/parker/memory-core:/data/memory-core
       - /mnt/parker-data/parker/knowledge-items:/data/knowledge-items
       - /mnt/parker-data/parker/evidence-source-manifests:/data/evidence-source-manifests
+      - /mnt/parker-data/parker/external-transcription-acceptance-authorities:/data/external-transcription-acceptance-authorities
+      - /mnt/parker-data/parker/external-transcription-attempts:/data/external-transcription-attempts
       - /mnt/parker-data/parker/cases:/data/cases
       - /mnt/parker-data/parker/case-assignments:/data/case-assignments
       - /mnt/parker-data/parker/case-governance-audit:/data/case-governance-audit
