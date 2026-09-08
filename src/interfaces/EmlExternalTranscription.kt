@@ -28,14 +28,18 @@ enum class EmlMessageOutcomeKind { TRANSCRIBED, TRANSCRIBED_WITH_QUALIFICATIONS,
  * Non-paginated structured receipt over an already-deterministic [parker.core.runtime.EmlDerivedRepresentation].
  * The provider is never asked to reproduce or rewrite the email text Parker already knows --
  * [sections] carries verification outcomes keyed by MIME entity id, never returned full text.
+ *
+ * EML TRANSPORT-BINDING CORRECTION: this candidate no longer carries `profileId`/`requestId`/
+ * `attemptId`/`sourceEvidenceArtifactId`/`submittedRepresentationSha256`/`processingProfileIdentity`.
+ * Those six values are Parker-known before the provider call and are no longer requested from
+ * the model at all -- two live invocations proved the model does not reliably echo them even
+ * after explicit instruction strengthening (a different field failed each time). They are now
+ * carried and verified as Responses API request/response `metadata`
+ * (see [parker.composition.OpenAiResponsesExternalTranscriptionAdapter]'s
+ * `requireEmlResponseMetadataBinding`), never as model-generated output. This candidate
+ * represents only the facts the model is actually responsible for producing.
  */
 data class EmlStructuredTranscriptionCandidate(
-    val profileId: String,
-    val requestId: String,
-    val attemptId: String,
-    val sourceEvidenceArtifactId: EvidenceArtifactId,
-    val submittedRepresentationSha256: OcrSha256Digest,
-    val processingProfileIdentity: String,
     val messageOutcome: EmlMessageOutcomeKind,
     val completenessState: DerivativeCompletenessState,
     val sections: List<EmlVerifiedSectionOutcome>,

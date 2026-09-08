@@ -47,15 +47,19 @@ internal const val FIDELITY_FIRST_SCHEMA_SHA256 = "7b46bdd6ce615592bb4e7cfee84f5
 // reproduce, rewrite, or retranscribe the email's own text (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §6.1).
 internal const val EML_TRANSCRIPTION_PROFILE_ID = "openai-eml-derived-text-verification-v1"
 internal const val EML_PROCESSING_PROFILE_IDENTITY = "external-transcription.eml-derived-text-v1"
-// EML ECHO-BINDING CORRECTION: the prior instruction's "Echo the supplied profile, request, and
-// attempt identifiers exactly" never named source_evidence_artifact_id, submitted_representation_sha256,
-// or processing_profile_identity -- the three other Parker-known values the response schema also
-// requires verbatim. This under-instruction is the most likely explanation for a live
-// MALFORMED_PROVIDER_RESPONSE at the (now-split) SUBMITTED_REPRESENTATION_SHA256 stage: nothing
-// told the model these three specific values were exact copies rather than content to summarize.
-internal const val EML_VERIFICATION_INSTRUCTION = "Parker has already deterministically extracted and canonically projected this email's headers, MIME structure, body alternatives, and attachment manifest into the submitted text. Do not reproduce, rewrite, retranscribe, paraphrase, or invent the email's text content. For each MIME entity identified in the submitted MIME STRUCTURE section, verify that its corresponding content in the submitted BODY ALTERNATIVES, NESTED MESSAGES, or ATTACHMENT MANIFEST sections is coherent, complete, and internally consistent, and report a structured verification outcome per section using only the identifiers already present in the submission. Do not invent a MIME entity id that is not present in the submission. Do not omit a required section's verification outcome. Record every uncertainty or inconsistency using the structured warning and reason fields; omission with an explicit disclosure is preferable to invention. The supplied profile identifier, request identifier, attempt identifier, source evidence artifact identifier, submitted representation digest, and processing profile identifier are all values Parker already supplied to you, not values for you to determine: echo every one of them back exactly as supplied, character-for-character, with no summarizing, no reformatting, no case change, no added or removed whitespace, no shortening, no interpretation, no regeneration, and no replacement value. The submitted representation digest is already the authoritative SHA-256 digest of the submitted representation: return exactly the supplied 64-character lowercase hexadecimal string, with no recalculation, no label, no \"sha256:\" prefix, no case change, and no surrounding prose. Return only the strict structured schema."
-internal const val EML_VERIFICATION_INSTRUCTION_SHA256 = "acee4a66c33e88b427e9b51323187f4f654194904f1fe20d82a1e58360afe398"
-internal val EML_VERIFICATION_SCHEMA_SOURCE = """{"type":"object","additionalProperties":false,"required":["profile_id","request_id","attempt_id","source_evidence_artifact_id","submitted_representation_sha256","processing_profile_identity","message_outcome","completeness_state","sections","warnings"],"properties":{"profile_id":{"type":"string"},"request_id":{"type":"string"},"attempt_id":{"type":"string"},"source_evidence_artifact_id":{"type":"string"},"submitted_representation_sha256":{"type":"string"},"processing_profile_identity":{"type":"string"},"message_outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","FAILED"]},"completeness_state":{"type":"string","enum":["COMPLETE","INCOMPLETE","UNDETERMINED"]},"sections":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["mime_entity_id","outcome","reason_classification","reason_detail","warnings"],"properties":{"mime_entity_id":{"type":"string"},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}}}}},"warnings":{"type":"array","items":{"type":"string"}}}}"""
+// EML TRANSPORT-BINDING CORRECTION: two live invocations proved the provider does not reliably
+// echo Parker-known binding metadata even after explicit instruction strengthening (attempt 3:
+// SUBMITTED_REPRESENTATION_SHA256; attempt 4: SOURCE_EVIDENCE_ARTIFACT_ID -- a different field
+// each time). Model-generated echoes of Parker-known values are retired entirely: profile_id,
+// request_id, attempt_id, source_evidence_artifact_id, submitted_representation_sha256, and
+// processing_profile_identity are no longer requested from the model at all -- they are Parker's
+// own values, carried instead as Responses API request `metadata` (never model-generated,
+// verified in requireEmlResponseMetadataBinding() before the model's own structured output is
+// even parsed). The instruction below is correspondingly narrowed to only what the model is
+// actually responsible for producing: section-level verification facts.
+internal const val EML_VERIFICATION_INSTRUCTION = "Parker has already deterministically extracted and canonically projected this email's headers, MIME structure, body alternatives, and attachment manifest into the submitted text. Do not reproduce, rewrite, retranscribe, paraphrase, or invent the email's text content. For each MIME entity identified in the submitted MIME STRUCTURE section, verify that its corresponding content in the submitted BODY ALTERNATIVES, NESTED MESSAGES, or ATTACHMENT MANIFEST sections is coherent, complete, and internally consistent, and report a structured verification outcome per section using only the identifiers already present in the submission. Do not invent a MIME entity id that is not present in the submission. Do not omit a required section's verification outcome. Record every uncertainty or inconsistency using the structured warning and reason fields; omission with an explicit disclosure is preferable to invention. Return only the strict structured schema."
+internal const val EML_VERIFICATION_INSTRUCTION_SHA256 = "6e6841a9957cdd90537442a6a309723050be58f5aff210aa1e2285db9bb82c53"
+internal val EML_VERIFICATION_SCHEMA_SOURCE = """{"type":"object","additionalProperties":false,"required":["message_outcome","completeness_state","sections","warnings"],"properties":{"message_outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","FAILED"]},"completeness_state":{"type":"string","enum":["COMPLETE","INCOMPLETE","UNDETERMINED"]},"sections":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["mime_entity_id","outcome","reason_classification","reason_detail","warnings"],"properties":{"mime_entity_id":{"type":"string"},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}}}}},"warnings":{"type":"array","items":{"type":"string"}}}}"""
 internal val EML_VERIFICATION_SCHEMA_CANONICAL = canonicalizeStructuredSchema(EML_VERIFICATION_SCHEMA_SOURCE)
 internal val EML_VERIFICATION_SCHEMA_SHA256 = sha256Hex(EML_VERIFICATION_SCHEMA_CANONICAL.toByteArray(StandardCharsets.UTF_8))
 
@@ -207,10 +211,9 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
                 if (isEml) parseEmlResponse(request, raw) else parseResponse(request, raw)
             ExternalTranscriptionMechanismOutcome.Candidate(candidate)
         } catch (e: Exception) {
-            runCatching {
-                responseFailureObserver(fingerprintOpenAiResponseFailure(response, e))
-            }
-            failure("MALFORMED_PROVIDER_RESPONSE")
+            val fingerprint = fingerprintOpenAiResponseFailure(response, e)
+            runCatching { responseFailureObserver(fingerprint) }
+            failure(fingerprint.category)
         }
     }
 
@@ -239,6 +242,22 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         }
         val identityText = if (binding == null) "Maximum page count: ${request.maximumPageCount}." else
             "Profile ID: ${binding.profileId}. Request ID: ${binding.requestId}. Attempt ID: ${binding.attemptId}. Maximum page count: ${request.maximumPageCount}. Expected page count: ${request.expectedPageCount?.toString() ?: "not independently established"}."
+        // EML TRANSPORT-BINDING CORRECTION: for EML only, Parker's own six binding identities are
+        // carried as Responses API request metadata -- never model-generated, never part of the
+        // JSON schema the model fills in. `binding` is guaranteed non-null here (required above
+        // for isEml). Verified back in requireEmlResponseMetadataBinding() before the model's own
+        // structured output is even parsed.
+        val metadataPart = if (isEml) {
+            val emlBinding = requireNotNull(binding)
+            ",\"metadata\":{" +
+                "\"$PARKER_METADATA_KEY_PROFILE_ID\":\"${jsonEscape(emlBinding.profileId)}\"," +
+                "\"$PARKER_METADATA_KEY_REQUEST_ID\":\"${jsonEscape(emlBinding.requestId)}\"," +
+                "\"$PARKER_METADATA_KEY_ATTEMPT_ID\":\"${jsonEscape(emlBinding.attemptId)}\"," +
+                "\"$PARKER_METADATA_KEY_EVIDENCE_ARTIFACT_ID\":\"${jsonEscape(request.sourceEvidenceArtifactId.value)}\"," +
+                "\"$PARKER_METADATA_KEY_REPRESENTATION_SHA256\":\"${jsonEscape(request.representation.representationSha256.value)}\"," +
+                "\"$PARKER_METADATA_KEY_PROCESSING_PROFILE_IDENTITY\":\"${jsonEscape(request.representation.transformationProfileIdentity)}\"" +
+                "}"
+        } else ""
         return "{" +
             "\"model\":\"${jsonEscape(profile.modelSelectionRule)}\"," +
             "\"store\":false,\"stream\":false," +
@@ -247,7 +266,8 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             "\"input\":[{\"role\":\"user\",\"content\":[" +
             "{\"type\":\"input_text\",\"text\":\"Transcribe this source under the developer instruction. ${jsonEscape(identityText)}\"}," +
             mediaPart + "]}]," +
-            "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"parker_page_transcription\",\"strict\":true,\"schema\":" + schemaCanonical + "}}}"
+            "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"parker_page_transcription\",\"strict\":true,\"schema\":" + schemaCanonical + "}}" +
+            metadataPart + "}"
     }
 
     private fun parseResponse(request: ExternalTranscriptionRequest, raw: String): OcrStructuredTranscriptionCandidate {
@@ -312,6 +332,13 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
      */
     private fun parseEmlResponse(request: ExternalTranscriptionRequest, raw: String): parker.core.interfaces.EmlStructuredTranscriptionCandidate {
         val envelope = responseParseStage("ENVELOPE_JSON") { Json.parse(raw).objectValue() }
+        // EML TRANSPORT-BINDING CORRECTION: verified before anything about the model's own
+        // structured output is even inspected. The six Parker-known values are never requested
+        // from the model at all any more -- they are checked here, against Responses API
+        // `metadata` (server-carried, never model-generated), or this call fails closed before
+        // OUTPUT_TEXT/STRUCTURED_PAYLOAD are ever reached.
+        val binding = requireNotNull(request.executionBinding) { "EML response parsing requires an execution binding" }
+        requireEmlResponseMetadataBinding(envelope, request, binding)
         val responseId = responseParseStage("RESPONSE_ID") {
             envelope.requiredString("id").also { require(ID_PATTERN.matches(it)) }
         }
@@ -323,12 +350,6 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
                 .map { it.objectValue() }.single { it.requiredString("type") == "output_text" }.requiredString("text")
         }
         val result = responseParseStage("STRUCTURED_PAYLOAD") { Json.parse(outputText).objectValue() }
-        val binding = requireNotNull(request.executionBinding) { "EML response parsing requires an execution binding" }
-        responseParseStage("EXECUTION_BINDING") {
-            require(result.requiredString("profile_id") == binding.profileId)
-            require(result.requiredString("request_id") == binding.requestId)
-            require(result.requiredString("attempt_id") == binding.attemptId)
-        }
         val sections = responseParseStage("SECTIONS") { result.requiredArray("sections").map { value ->
             val section = value.objectValue()
             val classification = section.nullableString("reason_classification")
@@ -351,23 +372,6 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
                 else -> throw OpenAiResponseParseException("COMPLETENESS_STATE", IllegalArgumentException("unrecognised completeness_state"))
             }
         }
-        // EML ECHO-BINDING CORRECTION: each Parker-known echo field its own responseParseStage --
-        // the CANDIDATE stage below is left performing only final object assembly from
-        // already-parsed values, so a future malformed echo names the exact field that failed
-        // (in the attempt ledger, via the diagnostic-visibility mechanism) instead of the generic
-        // "CANDIDATE" this same live defect previously collapsed into. No normalization, trimming,
-        // case change, or repair is performed anywhere here -- a malformed value still throws and
-        // still fails closed; a well-formed-but-wrong value still passes through unaltered to
-        // EmlStructuredResultValidator, which alone determines contradiction.
-        val sourceEvidenceArtifactId = responseParseStage("SOURCE_EVIDENCE_ARTIFACT_ID") {
-            EvidenceArtifactId(result.requiredString("source_evidence_artifact_id"))
-        }
-        val submittedRepresentationSha256 = responseParseStage("SUBMITTED_REPRESENTATION_SHA256") {
-            OcrSha256Digest(result.requiredString("submitted_representation_sha256"))
-        }
-        val processingProfileIdentity = responseParseStage("PROCESSING_PROFILE_IDENTITY") {
-            result.requiredString("processing_profile_identity")
-        }
         val warnings = responseParseStage("WARNINGS") { result.requiredStringArray("warnings") }
         val providerProvenance = responseParseStage("PROVIDER_PROVENANCE") {
             OcrProviderProvenance(
@@ -379,12 +383,6 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             )
         }
         return responseParseStage("CANDIDATE") { parker.core.interfaces.EmlStructuredTranscriptionCandidate(
-            profileId = result.requiredString("profile_id"),
-            requestId = result.requiredString("request_id"),
-            attemptId = result.requiredString("attempt_id"),
-            sourceEvidenceArtifactId = sourceEvidenceArtifactId,
-            submittedRepresentationSha256 = submittedRepresentationSha256,
-            processingProfileIdentity = processingProfileIdentity,
             messageOutcome = messageOutcome,
             completenessState = completenessState,
             sections = sections,
@@ -503,6 +501,51 @@ private inline fun <T> responseParseStage(stage: String, block: () -> T): T = tr
     throw OpenAiResponseParseException(stage, e)
 }
 
+// EML TRANSPORT-BINDING CORRECTION: the six Parker-known binding identities, carried as Responses
+// API request metadata (never model-generated output) and verified against the response's own
+// echoed metadata before any model-generated content is parsed. Named as constants so the request
+// side (buildRequestBody) and the response side (requireEmlResponseMetadataBinding) can never drift.
+internal const val PARKER_METADATA_KEY_PROFILE_ID = "parker_profile_id"
+internal const val PARKER_METADATA_KEY_REQUEST_ID = "parker_request_id"
+internal const val PARKER_METADATA_KEY_ATTEMPT_ID = "parker_attempt_id"
+internal const val PARKER_METADATA_KEY_EVIDENCE_ARTIFACT_ID = "parker_evidence_artifact_id"
+internal const val PARKER_METADATA_KEY_REPRESENTATION_SHA256 = "parker_representation_sha256"
+internal const val PARKER_METADATA_KEY_PROCESSING_PROFILE_IDENTITY = "parker_processing_profile_identity"
+
+/** Stage-name prefix for [OpenAiResponseFailureFingerprint.category] derivation -- see [fingerprintOpenAiResponseFailure]. */
+internal const val RESPONSE_METADATA_BINDING_STAGE = "RESPONSE_METADATA_BINDING"
+
+/**
+ * Fails closed if the response's own `metadata` is missing, incomplete, or does not exactly
+ * match what Parker submitted for this specific invocation -- before OUTPUT_TEXT/STRUCTURED_PAYLOAD
+ * (the model's own generated content) is ever parsed. No trimming, normalization, lowercasing,
+ * coercion, defaulting, or substitution. The stage name carries only the mismatched/missing key
+ * (one of the six fixed literals above) -- never the actual or expected value -- so the attempt
+ * ledger's content-free diagnostic can name exactly which binding failed without duplicating any
+ * governed identifier.
+ */
+private fun requireEmlResponseMetadataBinding(
+    envelope: Map<String, Json>,
+    request: ExternalTranscriptionRequest,
+    binding: ExternalTranscriptionExecutionBinding,
+) {
+    val metadata = (envelope["metadata"] as? Json.Obj)?.fields
+        ?: throw OpenAiResponseParseException(RESPONSE_METADATA_BINDING_STAGE, IllegalArgumentException("metadata object missing"))
+    fun expect(key: String, expected: String) {
+        val actual = (metadata[key] as? Json.Str)?.value
+            ?: throw OpenAiResponseParseException("$RESPONSE_METADATA_BINDING_STAGE:$key", IllegalArgumentException("metadata key missing"))
+        if (actual != expected) {
+            throw OpenAiResponseParseException("$RESPONSE_METADATA_BINDING_STAGE:$key", IllegalArgumentException("metadata mismatch"))
+        }
+    }
+    expect(PARKER_METADATA_KEY_PROFILE_ID, binding.profileId)
+    expect(PARKER_METADATA_KEY_REQUEST_ID, binding.requestId)
+    expect(PARKER_METADATA_KEY_ATTEMPT_ID, binding.attemptId)
+    expect(PARKER_METADATA_KEY_EVIDENCE_ARTIFACT_ID, request.sourceEvidenceArtifactId.value)
+    expect(PARKER_METADATA_KEY_REPRESENTATION_SHA256, request.representation.representationSha256.value)
+    expect(PARKER_METADATA_KEY_PROCESSING_PROFILE_IDENTITY, request.representation.transformationProfileIdentity)
+}
+
 /** Detached-acceptance-only structural projection of a 2xx response; values never include content. */
 internal data class OpenAiResponseFailureFingerprint(
     val httpStatus: Int,
@@ -556,6 +599,12 @@ internal fun fingerprintOpenAiResponseFailure(
         val text = (item.fields["text"] as? Json.Str)?.value ?: return@any false
         runCatching { Json.parse(text) is Json.Obj }.getOrDefault(false)
     }
+    val parkerParseStage = (error as? OpenAiResponseParseException)?.stage ?: "UNKNOWN"
+    // EML TRANSPORT-BINDING CORRECTION: a metadata-binding failure is a distinct category from an
+    // ordinary malformed/unparseable model response -- the model's own output was never even
+    // reached. Recognised purely by the stage-name prefix requireEmlResponseMetadataBinding()
+    // throws with; every other stage keeps today's existing category unchanged.
+    val category = if (parkerParseStage.startsWith(RESPONSE_METADATA_BINDING_STAGE)) "RESPONSE_BINDING_MISMATCH" else "MALFORMED_PROVIDER_RESPONSE"
     return OpenAiResponseFailureFingerprint(
         httpStatus = response.statusCode,
         responseJsonParseable = envelope != null,
@@ -570,7 +619,8 @@ internal fun fingerprintOpenAiResponseFailure(
         refusalPresent = contentObjects.any { (it.fields["type"] as? Json.Str)?.value == "refusal" },
         incompleteReasonPresent = (fields?.get("incomplete_details") as? Json.Obj)?.fields?.get("reason") is Json.Str,
         structuredPayloadPresent = structuredPayloadPresent,
-        parkerParseStage = (error as? OpenAiResponseParseException)?.stage ?: "UNKNOWN",
+        parkerParseStage = parkerParseStage,
+        category = category,
     )
 }
 

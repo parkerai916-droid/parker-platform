@@ -311,6 +311,19 @@ class OwnerUiEvidenceRuntimeAdapterTest {
     }
 
     @Test
+    fun `O -- a transport-binding mismatch (RESPONSE_BINDING_MISMATCH) maps to the existing generic safe message`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("o-binding-mismatch-evidence")
+        val mapped = assertIs<EnhancedTranscriptionOutcome.Failed>(
+            adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = { ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("RESPONSE_BINDING_MISMATCH") }).transcribeExternal(id),
+        )
+        assertEquals("Enhanced transcription failed safely.", mapped.safeMessage)
+        runtime.shutdown()
+    }
+
+    @Test
     fun `A B -- AdmissionFailed reason reaches the owner-facing result behind the existing generic prefix`() = runTest {
         val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
         val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())

@@ -6,9 +6,18 @@ import kotlin.test.*
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.*
 
+/**
+ * EML TRANSPORT-BINDING CORRECTION: this validator no longer receives or checks profile/request/
+ * attempt identity, Evidence ID, representation digest, or processing profile identity -- those
+ * six values are no longer part of the model-generated candidate at all (moved to Responses API
+ * request/response metadata, verified in OpenAiResponsesExternalTranscriptionAdapter's
+ * requireEmlResponseMetadataBinding before the candidate is ever parsed). This file therefore no
+ * longer contains "wrong request/attempt ID"/"wrong Evidence ID"/"wrong digest"/"wrong processing
+ * profile" tests -- the equivalent coverage now lives in EmlExternalTranscriptionAdapterTest's
+ * transport-binding tests, at the layer that actually performs those checks now.
+ */
 class EmlStructuredResultValidatorTest {
     private val evidenceId = EvidenceArtifactId("eml-validator-evidence")
-    private val binding = ExternalTranscriptionExecutionBinding("request-1", "attempt-1", "eml-profile-1")
 
     private suspend fun representation(source: ByteArray = plainEml()): EmlDerivedRepresentation {
         val structural = assertIs<EmlStructuralExtractionOutcome.Extracted>(ApacheJamesMime4jExtractor().extract(source)).result
@@ -34,11 +43,7 @@ class EmlStructuredResultValidatorTest {
         ).input
     }
 
-    private fun candidateFor(representation: EmlDerivedRepresentation, sections: List<EmlVerifiedSectionOutcome>) = EmlStructuredTranscriptionCandidate(
-        profileId = binding.profileId, requestId = binding.requestId, attemptId = binding.attemptId,
-        sourceEvidenceArtifactId = representation.sourceEvidenceArtifactId,
-        submittedRepresentationSha256 = representation.representationSha256,
-        processingProfileIdentity = representation.transformationProfileIdentity,
+    private fun candidateFor(sections: List<EmlVerifiedSectionOutcome>) = EmlStructuredTranscriptionCandidate(
         messageOutcome = EmlMessageOutcomeKind.TRANSCRIBED,
         completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
         sections = sections,
@@ -50,91 +55,53 @@ class EmlStructuredResultValidatorTest {
     @Test fun `a fully covered, clean candidate validates`() = runTest {
         val representation = representation()
         val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED)))
-        val outcome = EmlStructuredResultValidator().validate(candidate, representation, binding)
+        val candidate = candidateFor(listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED)))
+        val outcome = EmlStructuredResultValidator().validate(candidate, representation)
         val validated = assertIs<EmlStructuredValidationOutcome.Validated>(outcome)
         assertEquals(listOf(entityId), validated.verifiedSectionIds)
     }
 
-    @Test fun `wrong request ID is rejected`() = runTest {
-        val representation = representation()
-        val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED))).copy(requestId = "other-request")
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
-    }
-
-    @Test fun `wrong attempt ID is rejected`() = runTest {
-        val representation = representation()
-        val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED))).copy(attemptId = "other-attempt")
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
-    }
-
-    @Test fun `wrong Evidence ID is rejected`() = runTest {
-        val representation = representation()
-        val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED)))
-            .copy(sourceEvidenceArtifactId = EvidenceArtifactId("someone-elses-evidence"))
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
-    }
-
-    @Test fun `wrong representation digest is rejected`() = runTest {
-        val representation = representation()
-        val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED)))
-            .copy(submittedRepresentationSha256 = OcrSha256Digest("0".repeat(64)))
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
-    }
-
-    @Test fun `wrong processing profile is rejected`() = runTest {
-        val representation = representation()
-        val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED)))
-            .copy(processingProfileIdentity = "some-other-profile")
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
-    }
-
     @Test fun `unknown or invented MIME entity IDs are rejected`() = runTest {
         val representation = representation()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome("9.9.9-invented", OcrPageOutcomeKind.TRANSCRIBED)))
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
+        val candidate = candidateFor(listOf(EmlVerifiedSectionOutcome("9.9.9-invented", OcrPageOutcomeKind.TRANSCRIBED)))
+        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation))
     }
 
     @Test fun `omitted required MIME entities are rejected`() = runTest {
         val representation = representation()
-        val candidate = candidateFor(representation, emptyList()).copy(sections = emptyList())
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
+        val candidate = candidateFor(emptyList()).copy(sections = emptyList())
+        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation))
     }
 
     @Test fun `duplicate section identities are rejected`() = runTest {
         val representation = representation()
         val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(
+        val candidate = candidateFor(listOf(
             EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED),
             EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED),
         ))
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
+        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation))
     }
 
     @Test fun `malformed response with no sections is rejected`() = runTest {
         val representation = representation()
-        val candidate = candidateFor(representation, emptyList())
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
+        val candidate = candidateFor(emptyList())
+        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation))
     }
 
     @Test fun `contradictory outcome -- FAILED declared but section clean-transcribed -- is rejected`() = runTest {
         val representation = representation()
         val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED)))
+        val candidate = candidateFor(listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED)))
             .copy(messageOutcome = EmlMessageOutcomeKind.FAILED)
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
+        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation))
     }
 
     @Test fun `a section qualification without reason or warnings is rejected`() = runTest {
         val representation = representation()
         val entityId = representation.provenance.bodyAlternativesIncluded.single()
-        val candidate = candidateFor(representation, listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED_WITH_QUALIFICATIONS)))
-        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation, binding))
+        val candidate = candidateFor(listOf(EmlVerifiedSectionOutcome(entityId, OcrPageOutcomeKind.TRANSCRIBED_WITH_QUALIFICATIONS)))
+        assertIs<EmlStructuredValidationOutcome.Rejected>(EmlStructuredResultValidator().validate(candidate, representation))
     }
 
     private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

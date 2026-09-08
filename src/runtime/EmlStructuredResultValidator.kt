@@ -4,29 +4,29 @@ import parker.core.interfaces.EmlDerivedRepresentation
 import parker.core.interfaces.EmlMessageOutcomeKind
 import parker.core.interfaces.EmlStructuredTranscriptionCandidate
 import parker.core.interfaces.EmlStructuredValidationOutcome
-import parker.core.interfaces.ExternalTranscriptionExecutionBinding
 import parker.core.interfaces.OcrPageOutcomeKind
 
 /**
- * Pure deterministic reconciliation of a non-paginated EML verification candidate against the
- * exact representation Parker submitted. No "best effort" acceptance: any contradiction, any
- * omitted required section, any invented section, or any duplicate identity is a hard rejection.
- * This class has no custodian, permission, network, filesystem, provider, UI, store, Memory,
- * Knowledge, or analysis dependency.
+ * Pure deterministic reconciliation of a non-paginated EML verification candidate's own
+ * model-generated facts against the exact representation Parker submitted. No "best effort"
+ * acceptance: any contradiction, any omitted required section, any invented section, or any
+ * duplicate identity is a hard rejection. This class has no custodian, permission, network,
+ * filesystem, provider, UI, store, Memory, Knowledge, or analysis dependency.
+ *
+ * EML TRANSPORT-BINDING CORRECTION: this validator no longer checks profile/request/attempt
+ * identity or Evidence ID/representation-digest/processing-profile equality -- those six values
+ * are no longer part of the model-generated candidate at all (they are Parker-known, carried and
+ * verified as Responses API request/response `metadata` before the candidate is ever parsed; see
+ * [parker.composition.OpenAiResponsesExternalTranscriptionAdapter]'s
+ * `requireEmlResponseMetadataBinding`). This class now validates only the facts the model is
+ * actually responsible for producing: section identity/accounting and outcome consistency.
  */
 class EmlStructuredResultValidator {
     fun validate(
         candidate: EmlStructuredTranscriptionCandidate,
         submittedRepresentation: EmlDerivedRepresentation,
-        executionBinding: ExternalTranscriptionExecutionBinding,
     ): EmlStructuredValidationOutcome {
         val provenance = submittedRepresentation.provenance
-        if (candidate.requestId != executionBinding.requestId) return rejected("Candidate request ID does not match the execution binding")
-        if (candidate.attemptId != executionBinding.attemptId) return rejected("Candidate attempt ID does not match the execution binding")
-        if (candidate.profileId != executionBinding.profileId) return rejected("Candidate profile ID does not match the execution binding")
-        if (candidate.sourceEvidenceArtifactId != provenance.sourceEvidenceArtifactId) return rejected("Candidate source Evidence ID does not match the submitted representation")
-        if (candidate.submittedRepresentationSha256 != provenance.representationSha256) return rejected("Candidate representation digest does not match the submitted representation")
-        if (candidate.processingProfileIdentity != provenance.representationGenerationProfileIdentity) return rejected("Candidate processing profile identity does not match the submitted representation")
 
         if (candidate.sections.isEmpty()) return rejected("Malformed response: no sections were returned")
         val returnedIds = candidate.sections.map { it.mimeEntityId }

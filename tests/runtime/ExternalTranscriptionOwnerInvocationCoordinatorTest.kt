@@ -348,11 +348,14 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         correlationFactory = { "eml-correlation-1" }, executionBinding = emlBinding, emlDurableAdmission = emlAdmission,
     )
 
-    private fun emlCandidateFor(sectionIds: List<String>, sourceEvidenceArtifactId: EvidenceArtifactId, representationSha256: OcrSha256Digest, processingProfileIdentity: String) =
+    // EML TRANSPORT-BINDING CORRECTION: sourceEvidenceArtifactId/representationSha256/
+    // processingProfileIdentity are no longer candidate fields at all -- Parker-known binding
+    // identities are verified as Responses API metadata inside the adapter, before this
+    // candidate is ever constructed. This fake mechanism (bypassing the real adapter entirely)
+    // has no metadata-binding step to exercise, so this helper only needs section identities.
+    private fun emlCandidateFor(sectionIds: List<String>) =
         EmlStructuredTranscriptionCandidate(
-            profileId = emlBinding.profileId, requestId = emlBinding.requestId, attemptId = emlBinding.attemptId,
-            sourceEvidenceArtifactId = sourceEvidenceArtifactId, submittedRepresentationSha256 = representationSha256,
-            processingProfileIdentity = processingProfileIdentity, messageOutcome = EmlMessageOutcomeKind.TRANSCRIBED,
+            messageOutcome = EmlMessageOutcomeKind.TRANSCRIBED,
             completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
             sections = sectionIds.map { EmlVerifiedSectionOutcome(it, OcrPageOutcomeKind.TRANSCRIBED) },
             recognitionIdentity = OcrRecognitionIdentity("openai-responses", "eml-profile-1", "2.0.0"),
@@ -371,7 +374,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
                 submittedText = String(request.content, Charsets.UTF_8)
                 val eml = request.representation as EmlDerivedRepresentation
                 return ExternalTranscriptionMechanismOutcome.Candidate(
-                    emlCandidateFor(eml.provenance.bodyAlternativesIncluded, eml.sourceEvidenceArtifactId, eml.representationSha256, eml.transformationProfileIdentity),
+                    emlCandidateFor(eml.provenance.bodyAlternativesIncluded),
                 )
             }
         }
@@ -432,24 +435,16 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         assertIs<ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected>(outcome)
     }
 
-    @Test fun `STEP 4G -- wrong response IDs, digest, or profile identity are rejected, never admitted`() = runTest {
-        val custodian = FakeCustodian(
-            source = EvidenceRetrievalResult.Found(evidenceId, plainEmlBytes),
-            manifest = EvidenceManifestRetrievalResult.Found(emlManifest(plainEmlBytes)),
-        )
-        val mechanism = object : ExternalTranscriptionMechanism {
-            override suspend fun transcribe(request: ExternalTranscriptionRequest): ExternalTranscriptionMechanismOutcome {
-                val eml = request.representation as EmlDerivedRepresentation
-                return ExternalTranscriptionMechanismOutcome.Candidate(
-                    emlCandidateFor(eml.provenance.bodyAlternativesIncluded, EvidenceArtifactId("wrong-evidence"), eml.representationSha256, eml.transformationProfileIdentity),
-                )
-            }
-        }
-        val outcome = emlCoordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), custodian, mechanism).invoke(owner, evidenceId)
-        assertIs<ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected>(outcome)
-    }
+    // EML TRANSPORT-BINDING CORRECTION: the removed "wrong response IDs, digest, or profile
+    // identity are rejected" test exercised equality checks that lived in EmlStructuredResultValidator.
+    // Those checks (and the candidate fields they compared) no longer exist -- Parker-known binding
+    // identities are now verified as Responses API metadata inside the real adapter, before a
+    // candidate is ever constructed, which this coordinator-level fake-mechanism test cannot
+    // exercise (it bypasses the adapter entirely). The equivalent coverage is
+    // EmlExternalTranscriptionAdapterTest's transport-binding mismatch tests, at the layer that
+    // actually performs these checks now.
 
-    @Test fun `STEP 4G -- provider failure surfaces as MechanismFailure, no fallback to native or local`() = runTest {
+@Test fun `STEP 4G -- provider failure surfaces as MechanismFailure, no fallback to native or local`() = runTest {
         val custodian = FakeCustodian(
             source = EvidenceRetrievalResult.Found(evidenceId, plainEmlBytes),
             manifest = EvidenceManifestRetrievalResult.Found(emlManifest(plainEmlBytes)),
@@ -468,7 +463,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
             override suspend fun transcribe(request: ExternalTranscriptionRequest): ExternalTranscriptionMechanismOutcome {
                 val eml = request.representation as EmlDerivedRepresentation
                 return ExternalTranscriptionMechanismOutcome.Candidate(
-                    emlCandidateFor(eml.provenance.bodyAlternativesIncluded, eml.sourceEvidenceArtifactId, eml.representationSha256, eml.transformationProfileIdentity),
+                    emlCandidateFor(eml.provenance.bodyAlternativesIncluded),
                 )
             }
         }
@@ -490,7 +485,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
             override suspend fun transcribe(request: ExternalTranscriptionRequest): ExternalTranscriptionMechanismOutcome {
                 val eml = request.representation as EmlDerivedRepresentation
                 return ExternalTranscriptionMechanismOutcome.Candidate(
-                    emlCandidateFor(eml.provenance.bodyAlternativesIncluded, eml.sourceEvidenceArtifactId, eml.representationSha256, eml.transformationProfileIdentity),
+                    emlCandidateFor(eml.provenance.bodyAlternativesIncluded),
                 )
             }
         }

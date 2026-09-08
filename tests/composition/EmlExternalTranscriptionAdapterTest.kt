@@ -1,7 +1,6 @@
 package parker.core.runtime
 
 import java.security.MessageDigest
-import java.time.Instant
 import java.time.LocalDate
 import kotlinx.coroutines.test.runTest
 import kotlin.test.*
@@ -9,10 +8,21 @@ import parker.composition.*
 import parker.core.interfaces.*
 
 /**
- * STEP 4G -- the EML verification request/response shape at the adapter boundary. No network: a
- * fake transport only. Proves the adapter submits the exact EmlDerivedRepresentation.content()
- * bytes as input_text (never re-parsed, re-rendered, or stripped), and that a valid structured
+ * The EML verification request/response shape at the adapter boundary. No network: a fake
+ * transport only. Proves the adapter submits the exact EmlDerivedRepresentation.content() bytes
+ * as input_text (never re-parsed, re-rendered, or stripped), and that a valid structured
  * verification response is accepted while malformed/contradictory ones are rejected.
+ *
+ * EML TRANSPORT-BINDING CORRECTION: two live invocations proved the provider does not reliably
+ * echo Parker-known binding metadata as model-generated structured output, even after explicit
+ * instruction strengthening (attempt 3 failed at the digest field; attempt 4 failed at the
+ * Evidence ID field). Model-generated echoes of profile_id/request_id/attempt_id/
+ * source_evidence_artifact_id/submitted_representation_sha256/processing_profile_identity are
+ * retired entirely. These six Parker-known values are now carried as Responses API request
+ * `metadata` -- never model-generated -- and verified against the response's own echoed metadata
+ * (requireEmlResponseMetadataBinding) before the model's own structured output is parsed at all.
+ * The model-generated structured output now contains only message_outcome/completeness_state/
+ * sections/warnings -- the facts the model is actually responsible for producing.
  */
 class EmlExternalTranscriptionAdapterTest {
     private class FakeTransport(private val response: (OpenAiResponsesTransportRequest) -> String) : OpenAiResponsesTransport {
@@ -28,19 +38,19 @@ class EmlExternalTranscriptionAdapterTest {
     private val plainEmlBytes = ("From: a@invalid\r\nTo: b@invalid\r\nMIME-Version: 1.0\r\n" +
         "Content-Type: text/plain; charset=utf-8\r\n\r\nHello body\r\n").toByteArray()
 
-    private suspend fun emlRepresentation(bytes: ByteArray = plainEmlBytes): EmlDerivedRepresentation {
+    private suspend fun emlRepresentation(bytes: ByteArray = plainEmlBytes, id: EvidenceArtifactId = evidenceId): EmlDerivedRepresentation {
         val structural = assertIs<EmlStructuralExtractionOutcome.Extracted>(ApacheJamesMime4jExtractor().extract(bytes)).result
         val digest = sha256(bytes)
         val custodian = object : EvidenceCustodian {
             override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact) = EvidenceAcceptanceResult.Rejected("unused")
-            override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = EvidenceRetrievalResult.Found(evidenceId, bytes)
+            override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = EvidenceRetrievalResult.Found(id, bytes)
             override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
-                EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(evidenceId, digest, bytes.size.toLong(), "message/rfc822"))
+                EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(id, digest, bytes.size.toLong(), "message/rfc822"))
             override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
                 throw UnsupportedOperationException("not used")
         }
         val trusted = assertIs<AuthoritativeAcquisitionResolution.Verified>(
-            AuthoritativeAcquisitionSourceResolver(custodian).resolve(PrincipalId("owner"), evidenceId),
+            AuthoritativeAcquisitionSourceResolver(custodian).resolve(PrincipalId("owner"), id),
         ).input
         return assertIs<EmlDerivedRepresentationOutcome.Created>(EmlDerivedRepresentationFactory().create(trusted, structural)).representation
     }
@@ -55,42 +65,63 @@ class EmlExternalTranscriptionAdapterTest {
 
     private fun ready() = OpenAiExternalTranscriptionReadiness.Ready(
         OpenAiExternalTranscriptionProviderProfile(
-            "3", "OpenAI", "/v1/responses", false, "gpt-5.6-sol", "RECORD_PRESENT_OR_NOT_EXPOSED",
+            "4", "OpenAI", "/v1/responses", false, "gpt-5.6-sol", "RECORD_PRESENT_OR_NOT_EXPOSED",
             1_000_000, 1_000_000, 1_000_000, 30_000, "https://api.openai.com", "reviewed", "reviewed", "not enabled",
             "reviewed", "reviewed", "BEARER_API_CREDENTIAL", "reviewed", "reviewed", LocalDate.parse("2026-08-28"),
             "owner", LocalDate.parse("2026-09-28"), listOf("reference"), listOf("change"),
             transcriptionProfileId = EML_TRANSCRIPTION_PROFILE_ID, instructionSha256 = EML_VERIFICATION_INSTRUCTION_SHA256,
             structuredSchemaSha256 = EML_VERIFICATION_SCHEMA_SHA256, processingProfileIdentity = EML_PROCESSING_PROFILE_IDENTITY,
-            acceptanceState = ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING,
+            acceptanceState = ExternalTranscriptionAcceptanceState.ACCEPTED,
             reasoningEffort = "none", pdfDetail = "NOT_APPLICABLE", imageDetail = "NOT_APPLICABLE",
         ),
         OpenAiExternalTranscriptionEffectiveLimits(1_000_000, 1_000_000, 1_000_000, 30_000),
     )
 
-    private fun successPayload(
-        representation: EmlDerivedRepresentation, binding: ExternalTranscriptionExecutionBinding,
-        sourceEvidenceArtifactId: String = representation.sourceEvidenceArtifactId.value,
-        submittedRepresentationSha256: String = representation.representationSha256.value,
-        processingProfileIdentity: String = representation.transformationProfileIdentity,
-        warningsJson: String = "[]",
-    ) = """{"profile_id":"${binding.profileId}","request_id":"${binding.requestId}","attempt_id":"${binding.attemptId}",""" +
-            """"source_evidence_artifact_id":"$sourceEvidenceArtifactId",""" +
-            """"submitted_representation_sha256":"$submittedRepresentationSha256",""" +
-            """"processing_profile_identity":"$processingProfileIdentity",""" +
-            """"message_outcome":"TRANSCRIBED","completeness_state":"COMPLETE",""" +
+    /** Only the facts the model is actually responsible for producing -- no Parker-known echo field. */
+    private fun successPayload(representation: EmlDerivedRepresentation, warningsJson: String = "[]", extraJson: String = "") =
+        """{"message_outcome":"TRANSCRIBED","completeness_state":"COMPLETE",""" +
             """"sections":[${representation.provenance.bodyAlternativesIncluded.joinToString(",") { """{"mime_entity_id":"$it","outcome":"TRANSCRIBED","reason_classification":null,"reason_detail":null,"warnings":[]}""" }}],""" +
-            """"warnings":$warningsJson}"""
+            """"warnings":$warningsJson$extraJson}"""
 
-    private fun envelope(payload: String) =
-        """{"id":"resp_eml_1","model":"gpt-5.6-sol","output":[{"type":"message","content":[{"type":"output_text","text":"${escape(payload)}"}]}]}"""
+    /** Builds the exact metadata object a correctly-behaving transport would echo back. */
+    private fun matchingMetadata(
+        binding: ExternalTranscriptionExecutionBinding,
+        representation: EmlDerivedRepresentation,
+        profileId: String = binding.profileId,
+        requestId: String = binding.requestId,
+        attemptId: String = binding.attemptId,
+        evidenceArtifactId: String = representation.sourceEvidenceArtifactId.value,
+        representationSha256: String = representation.representationSha256.value,
+        processingProfileIdentity: String = representation.transformationProfileIdentity,
+        omit: Set<String> = emptySet(),
+    ): String {
+        val pairs = linkedMapOf(
+            PARKER_METADATA_KEY_PROFILE_ID to profileId,
+            PARKER_METADATA_KEY_REQUEST_ID to requestId,
+            PARKER_METADATA_KEY_ATTEMPT_ID to attemptId,
+            PARKER_METADATA_KEY_EVIDENCE_ARTIFACT_ID to evidenceArtifactId,
+            PARKER_METADATA_KEY_REPRESENTATION_SHA256 to representationSha256,
+            PARKER_METADATA_KEY_PROCESSING_PROFILE_IDENTITY to processingProfileIdentity,
+        )
+        omit.forEach { pairs.remove(it) }
+        return pairs.entries.joinToString(",", prefix = "{", postfix = "}") { "\"${it.key}\":\"${escape(it.value)}\"" }
+    }
+
+    private fun envelope(payload: String, metadataJson: String? = "{}") =
+        """{"id":"resp_eml_1","model":"gpt-5.6-sol",""" +
+            (metadataJson?.let { "\"metadata\":$it," } ?: "") +
+            """"output":[{"type":"message","content":[{"type":"output_text","text":"${escape(payload)}"}]}]}"""
 
     private fun escape(value: String) = buildString { value.forEach { if (it == '\\' || it == '"') append('\\'); append(it) } }
+    private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    // ================= request shape =================
 
     @Test fun `EML request uses input_text with the exact canonical representation bytes, never file or image wrapping`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val transport = FakeTransport { envelope(successPayload(representation, binding)) }
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation)) }
 
         adapter(transport).transcribe(request)
         val body = transport.request.body
@@ -103,51 +134,223 @@ class EmlExternalTranscriptionAdapterTest {
         assertContains(body, "\"reasoning\":{\"effort\":\"none\"}")
     }
 
-    @Test fun `a valid structured verification response is accepted as an EmlStructuredTranscriptionCandidate`() = runTest {
+    // ================= A. request metadata contains exactly the six expected Parker keys =================
+
+    @Test fun `A -- the request body's metadata object contains exactly the six expected Parker keys with the correct values`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val transport = FakeTransport { envelope(successPayload(representation, binding)) }
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation)) }
+
+        adapter(transport).transcribe(request)
+        val body = transport.request.body
+        val metadataObject = Regex(""""metadata":(\{[^}]*\})""").find(body)?.groupValues?.get(1)
+        assertNotNull(metadataObject, "request body must contain a metadata object")
+
+        assertContains(body, "\"$PARKER_METADATA_KEY_PROFILE_ID\":\"${binding.profileId}\"")
+        assertContains(body, "\"$PARKER_METADATA_KEY_REQUEST_ID\":\"${binding.requestId}\"")
+        assertContains(body, "\"$PARKER_METADATA_KEY_ATTEMPT_ID\":\"${binding.attemptId}\"")
+        assertContains(body, "\"$PARKER_METADATA_KEY_EVIDENCE_ARTIFACT_ID\":\"${representation.sourceEvidenceArtifactId.value}\"")
+        assertContains(body, "\"$PARKER_METADATA_KEY_REPRESENTATION_SHA256\":\"${representation.representationSha256.value}\"")
+        assertContains(body, "\"$PARKER_METADATA_KEY_PROCESSING_PROFILE_IDENTITY\":\"${representation.transformationProfileIdentity}\"")
+        // None of these six keys are model-generated schema fields any more.
+        assertFalse(body.contains("\"source_evidence_artifact_id\""))
+        assertFalse(body.contains("\"submitted_representation_sha256\""))
+        assertFalse(body.contains("\"processing_profile_identity\""))
+    }
+
+    // ================= B. exact metadata round-trip succeeds =================
+
+    @Test fun `B -- an exact metadata round-trip succeeds as an EmlStructuredTranscriptionCandidate`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation)) }
 
         val outcome = adapter(transport).transcribe(request)
+
         val candidate = assertIs<EmlStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome).candidate)
-        assertEquals(representation.sourceEvidenceArtifactId, candidate.sourceEvidenceArtifactId)
-        assertEquals(representation.representationSha256, candidate.submittedRepresentationSha256)
         assertEquals(EmlMessageOutcomeKind.TRANSCRIBED, candidate.messageOutcome)
         assertEquals(representation.provenance.bodyAlternativesIncluded, candidate.sections.map { it.mimeEntityId })
     }
 
-    @Test fun `a response missing required fields fails as MALFORMED_PROVIDER_RESPONSE`() = runTest {
+    // ================= C. missing metadata object fails closed =================
+
+    @Test fun `C -- a response with no metadata object at all fails closed as RESPONSE_BINDING_MISMATCH`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val transport = FakeTransport { envelope("""{"profile_id":"${binding.profileId}"}""") }
+        val transport = FakeTransport { envelope(successPayload(representation), metadataJson = null) }
+        var captured: OpenAiResponseFailureFingerprint? = null
 
-        val outcome = adapter(transport).transcribe(request)
-        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        assertEquals("RESPONSE_BINDING_MISMATCH", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals(RESPONSE_METADATA_BINDING_STAGE, captured?.parkerParseStage)
+        assertEquals("RESPONSE_BINDING_MISMATCH", captured?.category)
     }
 
-    // ================= Live EML response-parse diagnostics =================
+    // ================= D. each required metadata key missing individually fails closed =================
 
-    @Test fun `A -- a malformed response at MESSAGE_OUTCOME fails as MALFORMED_PROVIDER_RESPONSE and the observer receives that exact stage`() = runTest {
+    @Test fun `D -- each required metadata key missing individually fails closed and names that exact key`() = runTest {
+        val keys = listOf(
+            PARKER_METADATA_KEY_PROFILE_ID, PARKER_METADATA_KEY_REQUEST_ID, PARKER_METADATA_KEY_ATTEMPT_ID,
+            PARKER_METADATA_KEY_EVIDENCE_ARTIFACT_ID, PARKER_METADATA_KEY_REPRESENTATION_SHA256, PARKER_METADATA_KEY_PROCESSING_PROFILE_IDENTITY,
+        )
+        keys.forEach { missingKey ->
+            val representation = emlRepresentation()
+            val binding = binding()
+            val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+            val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation, omit = setOf(missingKey))) }
+            var captured: OpenAiResponseFailureFingerprint? = null
+
+            val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+            assertEquals("RESPONSE_BINDING_MISMATCH", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason, missingKey)
+            assertEquals("$RESPONSE_METADATA_BINDING_STAGE:$missingKey", captured?.parkerParseStage, missingKey)
+        }
+    }
+
+    // ================= E, F, G, H. mismatched metadata values are rejected =================
+
+    @Test fun `E -- an Evidence ID mismatch in metadata is rejected`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val payload = successPayload(representation, binding).replace("\"message_outcome\":\"TRANSCRIBED\",", "")
-        val transport = FakeTransport { envelope(payload) }
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation, evidenceArtifactId = "someone-elses-evidence")) }
+        var captured: OpenAiResponseFailureFingerprint? = null
+
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        assertEquals("RESPONSE_BINDING_MISMATCH", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("$RESPONSE_METADATA_BINDING_STAGE:$PARKER_METADATA_KEY_EVIDENCE_ARTIFACT_ID", captured?.parkerParseStage)
+    }
+
+    @Test fun `F -- a representation SHA-256 mismatch in metadata is rejected`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation, representationSha256 = "b".repeat(64))) }
+        var captured: OpenAiResponseFailureFingerprint? = null
+
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        assertEquals("RESPONSE_BINDING_MISMATCH", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("$RESPONSE_METADATA_BINDING_STAGE:$PARKER_METADATA_KEY_REPRESENTATION_SHA256", captured?.parkerParseStage)
+    }
+
+    @Test fun `G -- a processing profile identity mismatch in metadata is rejected`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation, processingProfileIdentity = "some-other-profile")) }
+        var captured: OpenAiResponseFailureFingerprint? = null
+
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        assertEquals("RESPONSE_BINDING_MISMATCH", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("$RESPONSE_METADATA_BINDING_STAGE:$PARKER_METADATA_KEY_PROCESSING_PROFILE_IDENTITY", captured?.parkerParseStage)
+    }
+
+    @Test fun `H -- profile_id, request_id, or attempt_id mismatch in metadata is rejected`() = runTest {
+        data class Case(val label: String, val key: String, val override: (ExternalTranscriptionExecutionBinding, EmlDerivedRepresentation) -> String)
+        val cases = listOf(
+            Case("profile_id", PARKER_METADATA_KEY_PROFILE_ID) { b, r -> matchingMetadata(b, r, profileId = "wrong-profile-id") },
+            Case("request_id", PARKER_METADATA_KEY_REQUEST_ID) { b, r -> matchingMetadata(b, r, requestId = "wrong-request-id") },
+            Case("attempt_id", PARKER_METADATA_KEY_ATTEMPT_ID) { b, r -> matchingMetadata(b, r, attemptId = "wrong-attempt-id") },
+        )
+        cases.forEach { case ->
+            val representation = emlRepresentation()
+            val binding = binding()
+            val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+            val transport = FakeTransport { envelope(successPayload(representation), case.override(binding, representation)) }
+            var captured: OpenAiResponseFailureFingerprint? = null
+
+            val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+            assertEquals("RESPONSE_BINDING_MISMATCH", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason, case.label)
+            assertEquals("$RESPONSE_METADATA_BINDING_STAGE:${case.key}", captured?.parkerParseStage, case.label)
+        }
+    }
+
+    // ================= I. concurrent fake invocations with different metadata cannot cross-bind =================
+
+    @Test fun `I -- two invocations with different Parker-known identities do not cross-bind`() = runTest {
+        val representationOne = emlRepresentation(bytes = plainEmlBytes, id = EvidenceArtifactId("evidence-one"))
+        val bindingOne = ExternalTranscriptionExecutionBinding("req-one", "attempt-one", EML_TRANSCRIPTION_PROFILE_ID)
+        val secondBytes = ("From: c@invalid\r\nTo: d@invalid\r\nMIME-Version: 1.0\r\n" +
+            "Content-Type: text/plain; charset=utf-8\r\n\r\nDifferent body\r\n").toByteArray()
+        val representationTwo = emlRepresentation(bytes = secondBytes, id = EvidenceArtifactId("evidence-two"))
+        val bindingTwo = ExternalTranscriptionExecutionBinding("req-two", "attempt-two", EML_TRANSCRIPTION_PROFILE_ID)
+
+        val requestOne = ExternalTranscriptionRequest(representationOne, 200, executionBinding = bindingOne)
+        val transportOne = FakeTransport { envelope(successPayload(representationOne), matchingMetadata(bindingOne, representationOne)) }
+        val outcomeOne = adapter(transportOne).transcribe(requestOne)
+        assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcomeOne)
+
+        val requestTwo = ExternalTranscriptionRequest(representationTwo, 200, executionBinding = bindingTwo)
+        val transportTwo = FakeTransport { envelope(successPayload(representationTwo), matchingMetadata(bindingTwo, representationTwo)) }
+        val outcomeTwo = adapter(transportTwo).transcribe(requestTwo)
+        assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcomeTwo)
+
+        // Cross-wiring proves no shared/global state: request one's metadata does not satisfy request two's binding.
+        val transportCross = FakeTransport { envelope(successPayload(representationTwo), matchingMetadata(bindingOne, representationOne)) }
+        val crossOutcome = adapter(transportCross).transcribe(requestTwo)
+        assertEquals("RESPONSE_BINDING_MISMATCH", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(crossOutcome).reason)
+    }
+
+    // ================= J. model output cannot override transport metadata =================
+
+    @Test fun `J -- a model-generated field that looks like a provenance echo has zero effect on the outcome`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        // The schema no longer declares this field at all; Parker's parser never reads it even if
+        // present -- proving the model has no path to influence binding via its own output.
+        val payloadWithInjectedField = successPayload(representation, extraJson = ""","source_evidence_artifact_id":"attacker-supplied-id"""")
+        val transport = FakeTransport { envelope(payloadWithInjectedField, matchingMetadata(binding, representation)) }
+
+        val outcome = adapter(transport).transcribe(request)
+
+        val candidate = assertIs<EmlStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome).candidate)
+        assertEquals(EmlMessageOutcomeKind.TRANSCRIBED, candidate.messageOutcome)
+    }
+
+    // ================= K. minimal valid model output (only the four remaining fields) succeeds =================
+
+    @Test fun `K -- minimal valid model output containing only message_outcome, completeness_state, sections, and warnings succeeds`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val minimalPayload = successPayload(representation)
+        val transport = FakeTransport { envelope(minimalPayload, matchingMetadata(binding, representation)) }
+
+        val outcome = adapter(transport).transcribe(request)
+        assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome)
+    }
+
+    // ================= L. malformed model-generated facts still fail closed =================
+
+    @Test fun `L -- malformed model-generated facts still produce MALFORMED_PROVIDER_RESPONSE, distinct from binding mismatch`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val payload = successPayload(representation).replace("\"message_outcome\":\"TRANSCRIBED\",", "")
+        val transport = FakeTransport { envelope(payload, matchingMetadata(binding, representation)) }
         var captured: OpenAiResponseFailureFingerprint? = null
 
         val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
 
         assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
         assertEquals("MESSAGE_OUTCOME", captured?.parkerParseStage)
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", captured?.category)
     }
 
-    @Test fun `B -- a malformed response at STRUCTURED_PAYLOAD (invalid JSON in the structured text) records that exact stage`() = runTest {
+    @Test fun `a malformed structured payload (invalid JSON) still fails as MALFORMED_PROVIDER_RESPONSE at STRUCTURED_PAYLOAD`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val transport = FakeTransport { envelope("""{"profile_id": "not closed properly....""") }
+        val transport = FakeTransport { envelope("""not closed properly....""", matchingMetadata(binding, representation)) }
         var captured: OpenAiResponseFailureFingerprint? = null
 
         val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
@@ -156,7 +359,7 @@ class EmlExternalTranscriptionAdapterTest {
         assertEquals("STRUCTURED_PAYLOAD", captured?.parkerParseStage)
     }
 
-    @Test fun `C -- a failure at ENVELOPE_JSON (top-level response not an object) records that exact stage`() = runTest {
+    @Test fun `a top-level response that is not an object still fails at ENVELOPE_JSON, before metadata is even checked`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
@@ -169,12 +372,13 @@ class EmlExternalTranscriptionAdapterTest {
         assertEquals("ENVELOPE_JSON", captured?.parkerParseStage)
     }
 
-    @Test fun `F -- the captured diagnostic fingerprint never carries source or provider response content`() = runTest {
+    // ================= O. the diagnostic fingerprint stays content-free and bounded =================
+
+    @Test fun `the captured diagnostic fingerprint never carries source or provider response content, for either failure category`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val payload = successPayload(representation, binding).replace("\"message_outcome\":\"TRANSCRIBED\",", "")
-        val transport = FakeTransport { envelope(payload) }
+        val transport = FakeTransport { envelope(successPayload(representation), metadataJson = null) }
         var captured: OpenAiResponseFailureFingerprint? = null
 
         adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
@@ -186,11 +390,11 @@ class EmlExternalTranscriptionAdapterTest {
         assertTrue(rendered.length < 500)
     }
 
-    @Test fun `G -- a successful EML invocation is unaffected by the observer being wired`() = runTest {
+    @Test fun `a successful EML invocation is unaffected by the observer being wired`() = runTest {
         val representation = emlRepresentation()
         val binding = binding()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val transport = FakeTransport { envelope(successPayload(representation, binding)) }
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding, representation)) }
         var observerCalled = false
 
         val outcome = adapter(transport, responseFailureObserver = { observerCalled = true }).transcribe(request)
@@ -202,128 +406,26 @@ class EmlExternalTranscriptionAdapterTest {
     @Test fun `missing execution binding fails closed before transport for the EML profile`() = runTest {
         val representation = emlRepresentation()
         val request = ExternalTranscriptionRequest(representation, 200, executionBinding = null)
-        val transport = FakeTransport { envelope(successPayload(representation, binding())) }
+        val transport = FakeTransport { envelope(successPayload(representation), matchingMetadata(binding(), representation)) }
         assertFailsWith<IllegalArgumentException> { adapter(transport).transcribe(request) }
         assertEquals(0, transport.calls)
     }
 
-    @Test fun `frozen EML instruction and schema identities are deterministic`() {
-        assertEquals(EML_VERIFICATION_INSTRUCTION_SHA256, sha256Hex(EML_VERIFICATION_INSTRUCTION.toByteArray()))
+    // ================= Q, R. schema/instruction digests =================
+
+    @Test fun `Q -- the narrowed EML schema requires only message_outcome, completeness_state, sections, and warnings`() {
+        assertContains(EML_VERIFICATION_SCHEMA_SOURCE, "\"required\":[\"message_outcome\",\"completeness_state\",\"sections\",\"warnings\"]")
+        listOf("profile_id", "request_id", "attempt_id", "source_evidence_artifact_id", "submitted_representation_sha256", "processing_profile_identity").forEach {
+            assertFalse(EML_VERIFICATION_SCHEMA_SOURCE.contains("\"$it\""), "schema must no longer declare $it")
+        }
         assertContains(EML_VERIFICATION_SCHEMA_CANONICAL, "mime_entity_id")
         assertContains(EML_VERIFICATION_SCHEMA_CANONICAL, "message_outcome")
     }
 
-    // ================= EML echo-binding correction: precise CANDIDATE field stages =================
-
-    @Test fun `L -- the strengthened instruction explicitly names all three echo fields and the exact-copy requirement`() {
-        assertContains(EML_VERIFICATION_INSTRUCTION, "source evidence artifact identifier")
-        assertContains(EML_VERIFICATION_INSTRUCTION, "submitted representation digest")
-        assertContains(EML_VERIFICATION_INSTRUCTION, "processing profile identifier")
-        assertContains(EML_VERIFICATION_INSTRUCTION, "character-for-character")
-        assertContains(EML_VERIFICATION_INSTRUCTION, "64-character lowercase hexadecimal")
-        assertContains(EML_VERIFICATION_INSTRUCTION, "no recalculation")
-    }
-
-    private suspend fun candidateFieldProbe(payload: String): Pair<ExternalTranscriptionMechanismOutcome, OpenAiResponseFailureFingerprint?> {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
-        val transport = FakeTransport { envelope(payload) }
-        var captured: OpenAiResponseFailureFingerprint? = null
-        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
-        return outcome to captured
-    }
-
-    @Test fun `A -- a malformed source_evidence_artifact_id (blank) records SOURCE_EVIDENCE_ARTIFACT_ID`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, sourceEvidenceArtifactId = ""))
-        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
-        assertEquals("SOURCE_EVIDENCE_ARTIFACT_ID", captured?.parkerParseStage)
-    }
-
-    @Test fun `B -- every malformed submitted_representation_sha256 variant records SUBMITTED_REPRESENTATION_SHA256`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val variants = listOf(
-            "blank" to "",
-            "63 lowercase hex chars" to "a".repeat(63),
-            "64 uppercase hex chars" to "A".repeat(64),
-            "64 non-hex chars" to "g".repeat(64),
-            "ordinary prose" to "I have verified this message and it is authentic.",
-        )
-        variants.forEach { (label, value) ->
-            val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, submittedRepresentationSha256 = value))
-            assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason, label)
-            assertEquals("SUBMITTED_REPRESENTATION_SHA256", captured?.parkerParseStage, label)
+    @Test fun `R -- the frozen EML instruction digest matches the current canonical instruction text and no longer requests any echo`() {
+        assertEquals(EML_VERIFICATION_INSTRUCTION_SHA256, sha256Hex(EML_VERIFICATION_INSTRUCTION.toByteArray()))
+        listOf("echo", "Echo", "character-for-character", "sha256:").forEach {
+            assertFalse(EML_VERIFICATION_INSTRUCTION.contains(it), "instruction must no longer ask the model to echo anything ($it)")
         }
     }
-
-    @Test fun `C -- a malformed processing_profile_identity (blank) records PROCESSING_PROFILE_IDENTITY`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, processingProfileIdentity = ""))
-        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
-        assertEquals("PROCESSING_PROFILE_IDENTITY", captured?.parkerParseStage)
-    }
-
-    @Test fun `D -- malformed warnings (wrong element type) records WARNINGS`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, warningsJson = "[123]"))
-        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
-        assertEquals("WARNINGS", captured?.parkerParseStage)
-    }
-
-    @Test fun `F -- a residual final-assembly failure still names CANDIDATE (missing top-level required field)`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        // profile_id is required by EXECUTION_BINDING already; omitting an unrelated-but-required
-        // top-level field the schema demands (message_outcome) still fails earlier, at
-        // MESSAGE_OUTCOME -- confirming CANDIDATE itself is unreachable without every prior stage
-        // succeeding, and is now reached only for true final-assembly problems, not echo fields.
-        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding).replace("\"message_outcome\":\"TRANSCRIBED\",", ""))
-        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
-        assertEquals("MESSAGE_OUTCOME", captured?.parkerParseStage)
-    }
-
-    @Test fun `E -- an overlong provider-reported model identifier records PROVIDER_PROVENANCE`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val payload = successPayload(representation, binding)
-        val overlongModel = "gpt-5.6-sol-" + "x".repeat(1_100)
-        val envelopeWithOverlongModel =
-            """{"id":"resp_eml_1","model":"$overlongModel","output":[{"type":"message","content":[{"type":"output_text","text":"${escape(payload)}"}]}]}"""
-        val transport = FakeTransport { envelopeWithOverlongModel }
-        var captured: OpenAiResponseFailureFingerprint? = null
-        val outcome = adapter(transport, responseFailureObserver = { captured = it })
-            .transcribe(ExternalTranscriptionRequest(representation, 200, executionBinding = binding))
-        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
-        assertEquals("PROVIDER_PROVENANCE", captured?.parkerParseStage)
-    }
-
-    @Test fun `G -- a valid 64-char lowercase digest succeeds through parsing`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val (outcome, _) = candidateFieldProbe(successPayload(representation, binding))
-        val candidate = assertIs<EmlStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome).candidate)
-        assertEquals(representation.representationSha256, candidate.submittedRepresentationSha256)
-    }
-
-    @Test fun `H -- a well-formed but wrong digest reaches the validator and is rejected as a contradiction, not a parse failure`() = runTest {
-        val representation = emlRepresentation()
-        val binding = binding()
-        val wrongButWellFormed = "b".repeat(64)
-        val (outcome, captured) = candidateFieldProbe(successPayload(representation, binding, submittedRepresentationSha256 = wrongButWellFormed))
-        // Parsing must succeed -- the value is syntactically valid, so this is not a parse failure.
-        val candidate = assertIs<EmlStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome).candidate)
-        assertEquals(OcrSha256Digest(wrongButWellFormed), candidate.submittedRepresentationSha256)
-        assertEquals(null, captured, "the observer must not fire when parsing succeeded")
-        // The validator -- never the parser -- is what must catch this contradiction.
-        val validated = EmlStructuredResultValidator().validate(candidate, representation, binding)
-        val rejected = assertIs<EmlStructuredValidationOutcome.Rejected>(validated)
-        assertContains(rejected.reason, "digest does not match")
-    }
-
-    private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }

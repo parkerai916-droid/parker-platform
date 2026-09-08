@@ -199,10 +199,10 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         }
         val emlCandidate = candidate as? EmlStructuredTranscriptionCandidate
             ?: return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Mechanism returned a non-EML-shaped candidate for an EML-shaped request")
-        val binding = executionBinding
+        executionBinding
             ?: return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("EML verification requires an execution binding")
 
-        return when (val validated = emlValidator.validate(emlCandidate, representation, binding)) {
+        return when (val validated = emlValidator.validate(emlCandidate, representation)) {
             is EmlStructuredValidationOutcome.Validated -> {
                 val receipt = EmlExternalVerificationReceipt(
                     sourceEvidenceArtifactId = evidenceArtifactId,
