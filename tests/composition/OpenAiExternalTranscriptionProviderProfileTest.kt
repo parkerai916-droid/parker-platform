@@ -6,6 +6,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import parker.core.runtime.EML_PROCESSING_PROFILE_IDENTITY
+import parker.core.runtime.EML_TRANSCRIPTION_PROFILE_ID
+import parker.core.runtime.EML_VERIFICATION_INSTRUCTION_SHA256
+import parker.core.runtime.EML_VERIFICATION_SCHEMA_SHA256
 
 class OpenAiExternalTranscriptionProviderProfileTest {
     private val today = LocalDate.parse("2026-08-26")
@@ -141,6 +145,47 @@ class OpenAiExternalTranscriptionProviderProfileTest {
         assertInvalid(overrides + ("reasoningEffort" to "low"))
         assertInvalid(overrides + ("imageDetail" to "high"))
     }
+
+    @Test
+    fun `EML v4 pins gpt-5-6-sol derived-text verification identity, is distinct from v3, and rejects every deviation`() {
+        val overrides = emlV4Overrides()
+        val profile = assertIs<OpenAiExternalTranscriptionReadiness.Ready>(
+            evaluator.evaluate(true, profileFile(overrides).toString()),
+        ).profile
+        assertEquals(EML_TRANSCRIPTION_PROFILE_ID, profile.transcriptionProfileId)
+        assertEquals(EML_PROCESSING_PROFILE_IDENTITY, profile.processingProfileIdentity)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING, profile.acceptanceState)
+        assertEquals("NOT_APPLICABLE", profile.pdfDetail)
+        assertEquals("NOT_APPLICABLE", profile.imageDetail)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTED,
+            assertIs<OpenAiExternalTranscriptionReadiness.Ready>(evaluator.evaluate(true,
+                profileFile(overrides + ("acceptanceState" to "ACCEPTED")).toString())).profile.acceptanceState)
+
+        // v4's own identity must never collide with v3's fidelity-first identity.
+        assertNotEqualsIdentity(EML_TRANSCRIPTION_PROFILE_ID, FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID)
+        assertNotEqualsIdentity(EML_PROCESSING_PROFILE_IDENTITY, DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID)
+
+        assertInvalid(overrides + ("transcriptionProfileId" to FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID))
+        assertInvalid(overrides + ("instructionSha256" to "c".repeat(64)))
+        assertInvalid(overrides + ("structuredSchemaSha256" to "d".repeat(64)))
+        assertInvalid(overrides + ("processingProfileIdentity" to DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID))
+        assertInvalid(overrides + ("modelSelectionRule" to "gpt-4o"))
+        assertInvalid(overrides + ("reasoningEffort" to "low"))
+        assertInvalid(overrides + ("pdfDetail" to "high"))
+        assertInvalid(overrides + ("imageDetail" to "original"))
+    }
+
+    private fun assertNotEqualsIdentity(a: String, b: String) = assertTrue(a != b, "$a must differ from $b")
+
+    private fun emlV4Overrides(): Map<String, String?> = mapOf(
+        "schemaVersion" to "4", "modelSelectionRule" to "gpt-5.6-sol",
+        "transcriptionProfileId" to EML_TRANSCRIPTION_PROFILE_ID,
+        "instructionSha256" to EML_VERIFICATION_INSTRUCTION_SHA256,
+        "structuredSchemaSha256" to EML_VERIFICATION_SCHEMA_SHA256,
+        "processingProfileIdentity" to EML_PROCESSING_PROFILE_IDENTITY,
+        "acceptanceState" to "ACCEPTANCE_PENDING", "reasoningEffort" to "none",
+        "pdfDetail" to "NOT_APPLICABLE", "imageDetail" to "NOT_APPLICABLE",
+    )
 
     private fun literalV2Overrides(state: ExternalTranscriptionAcceptanceState): Map<String, String?> = mapOf(
         "schemaVersion" to "2",

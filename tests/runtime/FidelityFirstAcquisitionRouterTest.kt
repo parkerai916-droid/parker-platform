@@ -121,4 +121,123 @@ class FidelityFirstAcquisitionRouterTest {
         assertEquals(ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID, selected.decision.capability.capabilityId)
         assertNotEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
     }
+
+    private val emlSource = AcquisitionSource(
+        EvidenceArtifactId("synthetic-eml"), "a".repeat(64), 100, "message/rfc822",
+        AcquisitionPageCount.Unknown, AcquisitionSourceCharacteristics(
+            AcquisitionCharacteristicState.PRESENT, AcquisitionCharacteristicState.ABSENT,
+            AcquisitionCharacteristicState.ABSENT, AcquisitionCharacteristicState.ABSENT,
+            AcquisitionCharacteristicState.ABSENT, AcquisitionCharacteristicState.ABSENT,
+        ), HumanAuthorisedCustody.CONFIRMED,
+    )
+
+    private fun available(template: EvidenceAcquisitionCapability) = EvidenceAcquisitionCapability(
+        template.capabilityId, template.mechanism, template.supportedMediaTypes, template.supportedSourceForms,
+        template.fidelity, template.supportedRepresentations, template.egress, template.providerConfiguration,
+        AcquisitionAvailability.Available, template.limits, template.fidelitySuitabilityByMediaType,
+    )
+
+    // Three narrow acceptance extensions -- the two accepted profiles project two independent
+    // capabilities in the same registered catalogue; neither's acceptance leaks into the other.
+    @Test fun `accepting fidelity-first alone leaves the EML capability at its own unavailable default`() {
+        val fidelityFirstAvailable = available(ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability())
+        val catalogue = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = fidelityFirstAvailable,
+            emlExternalCapabilityProjection = ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability(),
+        )
+        val eml = catalogue.capabilities().single { it.capabilityId == ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID }
+        assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED), eml.availability)
+
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(emlSource, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
+        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+    }
+
+    @Test fun `accepting EML alone leaves the fidelity-first capability at its own unavailable default`() {
+        val emlAvailable = available(ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability())
+        val catalogue = ProductionAcquisitionCapabilityCatalogue.create(emlExternalCapabilityProjection = emlAvailable)
+        val fidelityFirst = catalogue.capabilities().single { it.capabilityId == ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID }
+        assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED), fidelityFirst.availability)
+
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(source, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
+        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+    }
+
+    @Test fun `fidelity-first and EML accepted profiles coexist -- each routes independently for its own media type`() {
+        val fidelityFirstAvailable = available(ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability())
+        val emlAvailable = available(ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability())
+        val catalogue = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = fidelityFirstAvailable,
+            emlExternalCapabilityProjection = emlAvailable,
+        )
+
+        val pdfOutcome = DeterministicEvidenceAcquisitionRouter().route(source, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
+        assertEquals(
+            ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
+            assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(pdfOutcome).decision.capability.capabilityId,
+        )
+
+        val emlOutcome = DeterministicEvidenceAcquisitionRouter().route(emlSource, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
+        assertEquals(
+            ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID,
+            assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(emlOutcome).decision.capability.capabilityId,
+        )
+
+        // No side-effect on native's own per-media-type fidelity suitability from accepting either
+        // or both externals -- native remains NOT_ACCEPTED for every media type regardless.
+        val native = catalogue.capabilities().single { it.capabilityId == ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID }
+        assertEquals(AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType["message/rfc822"])
+        assertEquals(AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
+    }
+
+    // Three narrow acceptance extensions -- projectExternalTranscriptionCapability (the shared,
+    // extracted acceptance-gate ParkerRuntime now uses for both the fidelity-first and EML
+    // capabilities) must project Available only for Ready+ACCEPTED, and leave every other
+    // readiness/acceptance-state combination at the template's own existing availability.
+    @Test fun `projectExternalTranscriptionCapability gates on Ready and ACCEPTED only`() {
+        val template = ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability()
+        assertEquals(template, parker.composition.projectExternalTranscriptionCapability(template, parker.composition.OpenAiExternalTranscriptionReadiness.Disabled))
+        assertEquals(template, parker.composition.projectExternalTranscriptionCapability(template, parker.composition.OpenAiExternalTranscriptionReadiness.InvalidProfile("missing/invalid EML profile")))
+        assertEquals(template, parker.composition.projectExternalTranscriptionCapability(template, parker.composition.OpenAiExternalTranscriptionReadiness.StaleProfile(java.time.LocalDate.parse("2026-01-01"))))
+
+        val basisProfile = ProfileFixtures.eml(parker.composition.ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING)
+        val pendingReady = parker.composition.OpenAiExternalTranscriptionReadiness.Ready(basisProfile, ProfileFixtures.LIMITS)
+        assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
+            parker.composition.projectExternalTranscriptionCapability(template, pendingReady).availability)
+
+        val suspendedReady = parker.composition.OpenAiExternalTranscriptionReadiness.Ready(
+            ProfileFixtures.eml(parker.composition.ExternalTranscriptionAcceptanceState.SUSPENDED), ProfileFixtures.LIMITS,
+        )
+        assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
+            parker.composition.projectExternalTranscriptionCapability(template, suspendedReady).availability)
+
+        val acceptedReady = parker.composition.OpenAiExternalTranscriptionReadiness.Ready(
+            ProfileFixtures.eml(parker.composition.ExternalTranscriptionAcceptanceState.ACCEPTED), ProfileFixtures.LIMITS,
+        )
+        val projected = parker.composition.projectExternalTranscriptionCapability(template, acceptedReady)
+        assertEquals(AcquisitionAvailability.Available, projected.availability)
+        assertEquals(template.capabilityId, projected.capabilityId)
+    }
+
+    private object ProfileFixtures {
+        val LIMITS = parker.composition.OpenAiExternalTranscriptionEffectiveLimits(
+            maximumPdfBytes = 1, maximumImageBytes = 1, maximumOutputBytes = 1, timeoutMillis = 1,
+        )
+        fun eml(state: parker.composition.ExternalTranscriptionAcceptanceState) = parker.composition.OpenAiExternalTranscriptionProviderProfile(
+            schemaVersion = "4", providerIdentity = "OpenAI", apiProductPath = "/v1/responses", store = false,
+            modelSelectionRule = "gpt-5.6-sol", modelSnapshotPolicy = "RECORD_PRESENT_OR_NOT_EXPOSED",
+            maximumPdfBytes = 1, maximumImageBytes = 1, maximumOutputBytes = 1, timeoutMillis = 1,
+            allowedNetworkDestination = "https://api.openai.com", retentionTreatment = "x", dataUseTrainingTreatment = "x",
+            zdrMamStatus = "x", projectAccountStatus = "x", projectAccountControls = "x",
+            authenticationMechanism = "BEARER_API_CREDENTIAL", requestLoggingConsiderations = "x", regionalStorageConsiderations = "x",
+            verifiedOn = java.time.LocalDate.parse("2026-01-01"), approvingOwnerReference = "x",
+            nextReviewDate = java.time.LocalDate.parse("2027-01-01"), verificationReferences = listOf("x"), reverificationTriggers = listOf("x"),
+            transcriptionProfileId = parker.core.runtime.EML_TRANSCRIPTION_PROFILE_ID,
+            instructionSha256 = parker.core.runtime.EML_VERIFICATION_INSTRUCTION_SHA256,
+            structuredSchemaSha256 = parker.core.runtime.EML_VERIFICATION_SCHEMA_SHA256,
+            processingProfileIdentity = parker.core.runtime.EML_PROCESSING_PROFILE_IDENTITY,
+            acceptanceState = state, reasoningEffort = "none", pdfDetail = "NOT_APPLICABLE", imageDetail = "NOT_APPLICABLE",
+        )
+    }
 }

@@ -6,6 +6,10 @@ import java.nio.file.Path
 import java.time.LocalDate
 import java.util.Properties
 import parker.core.interfaces.ExternalTranscriptionRequest
+import parker.core.runtime.EML_PROCESSING_PROFILE_IDENTITY
+import parker.core.runtime.EML_TRANSCRIPTION_PROFILE_ID
+import parker.core.runtime.EML_VERIFICATION_INSTRUCTION_SHA256
+import parker.core.runtime.EML_VERIFICATION_SCHEMA_SHA256
 
 data class OpenAiExternalTranscriptionProviderProfile(
     val schemaVersion: String,
@@ -133,9 +137,9 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
         acceptanceState = if (p.required("schemaVersion") == "1") ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING
         else try { enumValueOf<ExternalTranscriptionAcceptanceState>(p.required("acceptanceState")) }
         catch (_: IllegalArgumentException) { invalidValue("acceptanceState is invalid") },
-        reasoningEffort = if (p.required("schemaVersion") == "3") p.required("reasoningEffort") else "NOT_CONFIGURED_HISTORICAL",
-        pdfDetail = if (p.required("schemaVersion") == "3") p.required("pdfDetail") else "NOT_CONFIGURED_HISTORICAL",
-        imageDetail = if (p.required("schemaVersion") == "3") p.required("imageDetail") else "high",
+        reasoningEffort = if (p.required("schemaVersion") in setOf("3", "4")) p.required("reasoningEffort") else "NOT_CONFIGURED_HISTORICAL",
+        pdfDetail = if (p.required("schemaVersion") in setOf("3", "4")) p.required("pdfDetail") else "NOT_CONFIGURED_HISTORICAL",
+        imageDetail = if (p.required("schemaVersion") in setOf("3", "4")) p.required("imageDetail") else "high",
     )
 
     private fun validate(p: OpenAiExternalTranscriptionProviderProfile): String? {
@@ -147,7 +151,7 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
             p.regionalStorageConsiderations, p.approvingOwnerReference,
         ) + p.verificationReferences + p.reverificationTriggers
         if (bounded.any { it.length !in 1..MAX_FIELD_CHARACTERS }) return "Profile fields must be bounded"
-        if (p.schemaVersion !in setOf("1", "2", "3")) return "Unsupported provider profile schemaVersion"
+        if (p.schemaVersion !in setOf("1", "2", "3", "4")) return "Unsupported provider profile schemaVersion"
         if (p.providerIdentity != "OpenAI") return "Provider identity must be OpenAI"
         if (p.apiProductPath != "/v1/responses") return "API product path must be /v1/responses"
         if (p.store) return "Provider profile must require store=false"
@@ -170,7 +174,7 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
                 return "Profile schema v2 requires valid configuration SHA-256 digests"
             }
             if (p.processingProfileIdentity != BYTE_EXACT_PROCESSING_PROFILE_ID) return "Profile schema v2 requires byte-exact processing"
-        } else {
+        } else if (p.schemaVersion == "3") {
             if (p.transcriptionProfileId != FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID) return "Profile schema v3 requires fidelity-first identity"
             if (!SHA256.matches(p.instructionSha256.orEmpty()) || !SHA256.matches(p.structuredSchemaSha256.orEmpty())) {
                 return "Profile schema v3 requires valid configuration SHA-256 digests"
@@ -180,6 +184,18 @@ class OpenAiExternalTranscriptionProviderReadinessEvaluator(
             if (p.reasoningEffort != "none") return "Profile schema v3 requires reasoning effort none"
             if (p.pdfDetail != "high") return "Profile schema v3 requires PDF detail high"
             if (p.imageDetail != "original") return "Profile schema v3 requires image detail original"
+        } else {
+            if (p.transcriptionProfileId != EML_TRANSCRIPTION_PROFILE_ID) return "Profile schema v4 requires EML derived-text verification identity"
+            if (!SHA256.matches(p.instructionSha256.orEmpty()) || !SHA256.matches(p.structuredSchemaSha256.orEmpty())) {
+                return "Profile schema v4 requires valid configuration SHA-256 digests"
+            }
+            if (p.instructionSha256 != EML_VERIFICATION_INSTRUCTION_SHA256) return "Profile schema v4 requires the exact EML verification instruction digest"
+            if (p.structuredSchemaSha256 != EML_VERIFICATION_SCHEMA_SHA256) return "Profile schema v4 requires the exact EML verification schema digest"
+            if (p.processingProfileIdentity != EML_PROCESSING_PROFILE_IDENTITY) return "Profile schema v4 requires EML derived-text processing"
+            if (p.modelSelectionRule != "gpt-5.6-sol") return "Profile schema v4 requires gpt-5.6-sol"
+            if (p.reasoningEffort != "none") return "Profile schema v4 requires reasoning effort none"
+            if (p.pdfDetail != "NOT_APPLICABLE") return "Profile schema v4 requires PDF detail NOT_APPLICABLE"
+            if (p.imageDetail != "NOT_APPLICABLE") return "Profile schema v4 requires image detail NOT_APPLICABLE"
         }
         val destination = try { URI(p.allowedNetworkDestination) } catch (_: Exception) { return "Network destination is invalid" }
         if (destination.scheme != "https" || destination.host != "api.openai.com" ||

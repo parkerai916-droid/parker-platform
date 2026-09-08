@@ -55,6 +55,7 @@ class ParkerRuntimeStartupAndShutdownTest {
         localTextChannelModuleId: String = "channel.local-text-lifecycle-test",
         openAiExternalTranscriptionEnabled: Boolean = false,
         openAiExternalTranscriptionProviderProfilePath: String? = null,
+        openAiEmlExternalTranscriptionProviderProfilePath: String? = null,
         openAiApiCredential: OpenAiApiCredential? = null,
         fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
         fidelityFirstAttemptStorageRootPath: String? = null,
@@ -85,6 +86,7 @@ class ParkerRuntimeStartupAndShutdownTest {
         knowledgeItemDurabilityLogPath = testDirectory(testRoot, "knowledge-items").resolve("items.log").toString(),
         openAiExternalTranscriptionEnabled = openAiExternalTranscriptionEnabled,
         openAiExternalTranscriptionProviderProfilePath = openAiExternalTranscriptionProviderProfilePath,
+        openAiEmlExternalTranscriptionProviderProfilePath = openAiEmlExternalTranscriptionProviderProfilePath,
         openAiApiCredential = openAiApiCredential,
         fidelityFirstAcceptanceAuthorityStorageRootPath = fidelityFirstAcceptanceAuthorityStorageRootPath,
         fidelityFirstAttemptStorageRootPath = fidelityFirstAttemptStorageRootPath,
@@ -354,6 +356,36 @@ class ParkerRuntimeStartupAndShutdownTest {
         )
     }
 
+    /**
+     * STEP 4G ACCEPTANCE CORRECTION requirement 8 ("no wrong-profile OpenAI call can occur before
+     * EML validation"): proven structurally, the same literal-source-text way the sibling test
+     * immediately above proves its own fact -- by requiring the deterministic selector call to
+     * appear, lexically, strictly before the adapter construction line. Since the selector's own
+     * only non-null return path already requires Ready+ACCEPTED for message/rfc822 (proven
+     * behaviourally by SelectExternalTranscriptionReadinessTest), this ordering guarantees no
+     * code path reaches the adapter without having passed that check first -- never merely
+     * "discovered afterward" by a failed/mismatched provider call.
+     */
+    @Test
+    fun `the deterministic readiness selector runs strictly before adapter construction -- no wrong-profile call is possible`() {
+        val source = java.io.File("src/composition/ParkerRuntime.kt").readText()
+        val methodStart = source.indexOf("private suspend fun invokeExternalTranscriptionWithFreshBinding")
+        assertTrue(methodStart >= 0, "invokeExternalTranscriptionWithFreshBinding must exist")
+        val methodBody = source.substring(methodStart, source.indexOf("\n    }\n", methodStart))
+        val selectorIndex = methodBody.indexOf("selectExternalTranscriptionReadiness(")
+        val adapterIndex = methodBody.indexOf("OpenAiResponsesExternalTranscriptionAdapter(")
+        assertTrue(selectorIndex >= 0, "selectExternalTranscriptionReadiness must be called")
+        assertTrue(adapterIndex >= 0, "OpenAiResponsesExternalTranscriptionAdapter must still be constructed exactly once")
+        assertTrue(selectorIndex < adapterIndex, "the selector must run strictly before the adapter is constructed")
+        // The selector's own result must gate the return -- an early return sits directly between
+        // the call and the next statement, never a variable that is merely logged/ignored.
+        val betweenSelectorAndAdapter = methodBody.substring(selectorIndex, adapterIndex)
+        assertTrue(
+            "?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed" in betweenSelectorAndAdapter,
+            "a null selector result must fail closed before the adapter is reached",
+        )
+    }
+
     @Test
     fun `external transcription composition follows every fail-closed readiness state without startup egress`() = runTest {
         val validProfile = profileFile()
@@ -562,6 +594,127 @@ verificationReferences=provider-review
 reverificationTriggers=provider terms change
 """)
         }
+
+    // Three narrow acceptance extensions -- a schemaVersion 3 (fidelity-first) or 4 (EML)
+    // profile file with an explicit, caller-chosen acceptanceState, mirroring profileFile()'s own
+    // shape above but for the two governed-acceptance schema versions instead of historical v1.
+    private fun acceptanceProfileFile(
+        schemaVersion: String,
+        transcriptionProfileId: String,
+        instructionSha256: String,
+        structuredSchemaSha256: String,
+        processingProfileIdentity: String,
+        pdfDetail: String,
+        imageDetail: String,
+        acceptanceState: String,
+    ) = Files.createTempFile("openai-composition-profile-v$schemaVersion", ".properties").also { path ->
+        Files.writeString(
+            path,
+            """schemaVersion=$schemaVersion
+providerIdentity=OpenAI
+apiProductPath=/v1/responses
+store=false
+modelSelectionRule=gpt-5.6-sol
+modelSnapshotPolicy=RECORD_PRESENT_OR_NOT_EXPOSED
+maximumPdfBytes=67108864
+maximumImageBytes=16777216
+maximumOutputBytes=20971520
+timeoutMillis=120000
+allowedNetworkDestination=https://api.openai.com
+retentionTreatment=reviewed
+dataUseTrainingTreatment=reviewed
+zdrMamStatus=NOT_AVAILABLE_OR_ENABLED
+projectAccountStatus=reviewed
+projectAccountControls=reviewed
+authenticationMechanism=BEARER_API_CREDENTIAL
+requestLoggingConsiderations=reviewed
+regionalStorageConsiderations=reviewed
+verifiedOn=2026-08-01
+approvingOwnerReference=owner-review
+nextReviewDate=2027-09-01
+verificationReferences=provider-review
+reverificationTriggers=provider terms change
+transcriptionProfileId=$transcriptionProfileId
+instructionSha256=$instructionSha256
+structuredSchemaSha256=$structuredSchemaSha256
+processingProfileIdentity=$processingProfileIdentity
+acceptanceState=$acceptanceState
+reasoningEffort=none
+pdfDetail=$pdfDetail
+imageDetail=$imageDetail
+""",
+        )
+    }
+
+    private fun fidelityFirstProfileFile(acceptanceState: String) = acceptanceProfileFile(
+        schemaVersion = "3",
+        transcriptionProfileId = parker.composition.FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID,
+        instructionSha256 = "a".repeat(64),
+        structuredSchemaSha256 = "b".repeat(64),
+        processingProfileIdentity = parker.composition.DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID,
+        pdfDetail = "high", imageDetail = "original",
+        acceptanceState = acceptanceState,
+    )
+
+    private fun emlProfileFile(acceptanceState: String) = acceptanceProfileFile(
+        schemaVersion = "4",
+        transcriptionProfileId = parker.core.runtime.EML_TRANSCRIPTION_PROFILE_ID,
+        instructionSha256 = parker.core.runtime.EML_VERIFICATION_INSTRUCTION_SHA256,
+        structuredSchemaSha256 = parker.core.runtime.EML_VERIFICATION_SCHEMA_SHA256,
+        processingProfileIdentity = parker.core.runtime.EML_PROCESSING_PROFILE_IDENTITY,
+        pdfDetail = "NOT_APPLICABLE", imageDetail = "NOT_APPLICABLE",
+        acceptanceState = acceptanceState,
+    )
+
+    @Test
+    fun `three narrow acceptance extensions -- runtime holds separately accepted fidelity-first and EML profiles at once, neither leaking into the other`() = runTest {
+        val clock = { Instant.parse("2026-08-26T00:00:00Z") }
+
+        suspend fun readinessStates(
+            fidelityFirstState: String?,
+            emlState: String?,
+        ): Pair<ExternalTranscriptionAcceptanceState?, ExternalTranscriptionAcceptanceState?> {
+            val runtime = ParkerRuntime(
+                config(
+                    openAiExternalTranscriptionEnabled = true,
+                    openAiExternalTranscriptionProviderProfilePath = fidelityFirstState?.let { fidelityFirstProfileFile(it).toString() },
+                    openAiEmlExternalTranscriptionProviderProfilePath = emlState?.let { emlProfileFile(it).toString() },
+                ),
+                RecordingParkerLogger(),
+                clock = clock,
+            )
+            runtime.start()
+            val fidelityFirst = (runtime.openAiExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready)?.profile?.acceptanceState
+            val eml = (runtime.openAiEmlExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready)?.profile?.acceptanceState
+            runtime.shutdown()
+            return fidelityFirst to eml
+        }
+
+        // Missing/invalid EML profile leaves EML readiness un-Ready (not ACCEPTED), independent
+        // of fidelity-first's own state.
+        val (ffAcceptedOnly, emlMissing) = readinessStates("ACCEPTED", null)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTED, ffAcceptedOnly)
+        assertEquals(null, emlMissing)
+
+        // Accepting fidelity-first alone does not accept EML.
+        val (ffAccepted, emlPending) = readinessStates("ACCEPTED", "ACCEPTANCE_PENDING")
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTED, ffAccepted)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING, emlPending)
+
+        // Accepting EML alone does not accept fidelity-first.
+        val (ffPending, emlAccepted) = readinessStates("ACCEPTANCE_PENDING", "ACCEPTED")
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTANCE_PENDING, ffPending)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTED, emlAccepted)
+
+        // EML SUSPENDED is read faithfully (never silently upgraded).
+        val (_, emlSuspended) = readinessStates("ACCEPTED", "SUSPENDED")
+        assertEquals(ExternalTranscriptionAcceptanceState.SUSPENDED, emlSuspended)
+
+        // Both accepted simultaneously -- the production runtime can hold both at once.
+        val (ffBoth, emlBoth) = readinessStates("ACCEPTED", "ACCEPTED")
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTED, ffBoth)
+        assertEquals(ExternalTranscriptionAcceptanceState.ACCEPTED, emlBoth)
+    }
 
     private fun testDirectory(parent: java.nio.file.Path?, name: String): java.nio.file.Path =
         parent?.resolve(name)?.also { Files.createDirectories(it) } ?: Files.createTempDirectory("unused-$name")

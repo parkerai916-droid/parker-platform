@@ -329,6 +329,7 @@ data class ParkerRuntimeConfig(
     val ownerUiAuthenticationRootPath: String? = null,
     val openAiExternalTranscriptionEnabled: Boolean = false,
     val openAiExternalTranscriptionProviderProfilePath: String? = null,
+    val openAiEmlExternalTranscriptionProviderProfilePath: String? = null,
     val openAiApiCredential: OpenAiApiCredential? = null,
     val fidelityFirstAcceptanceAuthorityStorageRootPath: String? = null,
     val fidelityFirstAttemptStorageRootPath: String? = null,
@@ -418,6 +419,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_OWNER_UI_AUTHENTICATION_ROOT = "PARKER_OWNER_UI_AUTHENTICATION_ROOT"
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED"
     const val KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH = "PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH"
+    const val KEY_OPENAI_EML_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH = "PARKER_OPENAI_EML_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH"
     const val KEY_OPENAI_API_KEY = "PARKER_OPENAI_API_KEY"
     const val KEY_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ACCEPTANCE_AUTHORITY_STORAGE_ROOT"
     const val KEY_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT = "PARKER_FIDELITY_FIRST_ATTEMPT_STORAGE_ROOT"
@@ -724,6 +726,8 @@ object ParkerRuntimeConfigLoader {
             openAiExternalTranscriptionEnabled = externalTranscriptionEnabled,
             openAiExternalTranscriptionProviderProfilePath =
                 environment[KEY_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH]?.takeIf { it.isNotBlank() },
+            openAiEmlExternalTranscriptionProviderProfilePath =
+                environment[KEY_OPENAI_EML_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH]?.takeIf { it.isNotBlank() },
             openAiApiCredential = OpenAiApiCredential.fromEnvironment(environment[KEY_OPENAI_API_KEY]),
             fidelityFirstAcceptanceAuthorityStorageRootPath = acceptanceAuthorityRoot,
             fidelityFirstAttemptStorageRootPath = acceptanceAttemptRoot,

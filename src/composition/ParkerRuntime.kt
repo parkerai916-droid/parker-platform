@@ -350,6 +350,9 @@ class ParkerRuntime(
     var openAiExternalTranscriptionBackendReadiness: OpenAiExternalTranscriptionBackendReadiness =
         OpenAiExternalTranscriptionBackendReadiness.Disabled
         private set
+    var openAiEmlExternalTranscriptionReadiness: OpenAiExternalTranscriptionReadiness =
+        OpenAiExternalTranscriptionReadiness.Disabled
+        private set
 
     private lateinit var reasoningContextAssembler: ReasoningContextAssembler
     private lateinit var conversationEngine: ConversationEngine
@@ -622,6 +625,13 @@ class ParkerRuntime(
             openAiExternalTranscriptionReadiness,
             config.openAiApiCredential,
         )
+        openAiEmlExternalTranscriptionReadiness = stage("OpenAI EML external transcription provider profile readiness") {
+            OpenAiExternalTranscriptionProviderReadinessEvaluator { clock().atZone(java.time.ZoneOffset.UTC).toLocalDate() }
+                .evaluate(
+                    config.openAiExternalTranscriptionEnabled,
+                    config.openAiEmlExternalTranscriptionProviderProfilePath,
+                )
+        }
         val resourceRegistry = InMemoryResourceRegistry()
         val vocabulary = InMemoryActionVocabulary()
         val actionMapper = ActionMapper(vocabulary)
@@ -2178,25 +2188,20 @@ class ParkerRuntime(
         // profile (disabled/invalid/stale) has no acceptance state to read and correctly leaves the
         // template's own existing Unavailable(CONFIGURATION_NOT_ACCEPTED) default in place below.
         val fidelityFirstCapabilityTemplate = ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability()
-        val fidelityFirstAccepted = (openAiExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready)
-            ?.profile?.acceptanceState == ExternalTranscriptionAcceptanceState.ACCEPTED
-        val fidelityFirstExternalCapabilityProjection = if (fidelityFirstAccepted) {
-            EvidenceAcquisitionCapability(
-                fidelityFirstCapabilityTemplate.capabilityId, fidelityFirstCapabilityTemplate.mechanism,
-                fidelityFirstCapabilityTemplate.supportedMediaTypes, fidelityFirstCapabilityTemplate.supportedSourceForms,
-                fidelityFirstCapabilityTemplate.fidelity, fidelityFirstCapabilityTemplate.supportedRepresentations,
-                fidelityFirstCapabilityTemplate.egress, fidelityFirstCapabilityTemplate.providerConfiguration,
-                AcquisitionAvailability.Available, fidelityFirstCapabilityTemplate.limits,
-                fidelityFirstCapabilityTemplate.fidelitySuitabilityByMediaType,
-            )
-        } else fidelityFirstCapabilityTemplate
-        // STEP 4G: registered with the catalogue's own default Unavailable(CONFIGURATION_NOT_ACCEPTED)
-        // -- no acceptance-checking wiring exists for EML yet (unlike fidelityFirstExternalCapabilityProjection
-        // above); it stays unreachable until a separate, later governed acceptance decision.
+        val fidelityFirstExternalCapabilityProjection =
+            projectExternalTranscriptionCapability(fidelityFirstCapabilityTemplate, openAiExternalTranscriptionReadiness)
+        // Three narrow acceptance extensions: the EML derived-text external capability's own
+        // governed acceptance state -- read from the SECOND, EML-specific provider profile
+        // readiness (openAiEmlExternalTranscriptionReadiness, schemaVersion "4") -- mirroring
+        // fidelityFirstExternalCapabilityProjection above exactly. A missing/invalid/stale EML
+        // profile has no acceptance state to read and correctly leaves the template's own
+        // existing Unavailable(CONFIGURATION_NOT_ACCEPTED) default in place below.
         val emlExternalCapabilityTemplate = ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability()
+        val emlExternalCapabilityProjection =
+            projectExternalTranscriptionCapability(emlExternalCapabilityTemplate, openAiEmlExternalTranscriptionReadiness)
         val acquisitionRegistry = ProductionAcquisitionCapabilityCatalogue.create(
             externalCapabilityProjection = fidelityFirstExternalCapabilityProjection,
-            emlExternalCapabilityProjection = emlExternalCapabilityTemplate,
+            emlExternalCapabilityProjection = emlExternalCapabilityProjection,
             ordinaryRegionCapabilityProjection = ordinaryRegionIngestionWorkflow?.let {
                 ProductionAcquisitionCapabilityCatalogue.ordinaryRequestRegionV8Capability(
                     it.capabilityStatus().disposition == parker.core.runtime.OrdinaryRegionCapabilityDisposition.ACCEPTED,
@@ -3151,12 +3156,19 @@ class ParkerRuntime(
      * per call (never owner/browser-supplied, never reused across evidence artifacts or separate attempts);
      * profileId is read directly from the currently loaded, accepted profile. If the ledger is not configured,
      * this fails closed rather than proceeding without call-budget enforcement.
+     *
+     * STEP 4G ACCEPTANCE CORRECTION: [selectExternalTranscriptionReadiness] -- the authoritative
+     * source's own media type, resolved once via the manifest just above -- picks exactly one of
+     * the two independently-accepted readiness/profile values *before*
+     * [OpenAiResponsesExternalTranscriptionAdapter] is ever constructed. A `null` result (EML
+     * readiness not `Ready`, or `Ready` but not `ACCEPTED`, for `message/rfc822`) stops this
+     * method immediately -- before the manifest-derived identity, the ledger tracker, or the
+     * adapter are reached -- with zero fallback to the fidelity-first profile and zero provider
+     * call.
      */
     private suspend fun invokeExternalTranscriptionWithFreshBinding(
         evidenceArtifactId: EvidenceArtifactId,
     ): ExternalTranscriptionOwnerInvocationOutcome {
-        val readyProfile = openAiExternalTranscriptionReadiness as? OpenAiExternalTranscriptionReadiness.Ready
-            ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
         val ledger = fidelityFirstAttemptLedger
             ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
         val credential = config.openAiApiCredential
@@ -3170,6 +3182,9 @@ class ParkerRuntime(
         if (manifest.evidenceArtifactId != evidenceArtifactId) return ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected(evidenceArtifactId)
         val mediaType = manifest.receivedMediaType
             ?: return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
+        val readyProfile = selectExternalTranscriptionReadiness(
+            mediaType, openAiExternalTranscriptionReadiness, openAiEmlExternalTranscriptionReadiness,
+        ) ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
         val profile = readyProfile.profile
         val identity = try {
             parker.core.runtime.OrdinaryFidelityFirstExecutionIdentity.create(
@@ -4021,4 +4036,54 @@ internal suspend inline fun <T> stage(name: String, crossinline block: suspend (
     throw e
 } catch (e: Exception) {
     throw ParkerRuntimeException.DependencyConstructionFailed(name, e)
+}
+
+/**
+ * Three narrow acceptance extensions: the exact "if Ready AND profile.acceptanceState ==
+ * ACCEPTED then Available, otherwise the template's own existing (fail-closed) availability"
+ * projection, previously written inline and only once (for the fidelity-first external
+ * capability) inside [ParkerRuntime.buildAndRegisterRuntimeGraph]. Extracted to this top-level,
+ * `internal` function -- mirroring [stage]'s own extraction precedent immediately above -- so it
+ * is shared, byte-identical, between the fidelity-first and EML projections (never two
+ * independently-maintained copies of the same acceptance check), and so a focused test can
+ * exercise every readiness/acceptance-state combination directly, without needing a running
+ * [ParkerRuntime].
+ */
+/**
+ * STEP 4G ACCEPTANCE CORRECTION: the sole, deterministic selection point for which of the two
+ * independently-accepted external-transcription profiles governs one owner-manual invocation --
+ * [ParkerRuntime.invokeExternalTranscriptionWithFreshBinding]'s only caller, called once, before
+ * [OpenAiResponsesExternalTranscriptionAdapter] is ever constructed. Selection is keyed solely on
+ * the authoritative source's own media type (never a caller hint, never scattered into the
+ * coordinator or adapter): `message/rfc822` requires [emlReadiness] to be both `Ready` and
+ * `ACCEPTED` (mirroring [projectExternalTranscriptionCapability]'s own gate exactly) or this
+ * returns `null` -- there is no fallback to [fidelityFirstReadiness] for that media type, ever.
+ * Every other media type is unchanged: it resolves [fidelityFirstReadiness] alone. A `null`
+ * result means the caller must stop before any provider call -- never guess, never merge.
+ */
+internal fun selectExternalTranscriptionReadiness(
+    mediaType: String,
+    fidelityFirstReadiness: OpenAiExternalTranscriptionReadiness,
+    emlReadiness: OpenAiExternalTranscriptionReadiness,
+): OpenAiExternalTranscriptionReadiness.Ready? {
+    if (mediaType == "message/rfc822") {
+        val ready = emlReadiness as? OpenAiExternalTranscriptionReadiness.Ready ?: return null
+        return if (ready.profile.acceptanceState == ExternalTranscriptionAcceptanceState.ACCEPTED) ready else null
+    }
+    return fidelityFirstReadiness as? OpenAiExternalTranscriptionReadiness.Ready
+}
+
+internal fun projectExternalTranscriptionCapability(
+    template: EvidenceAcquisitionCapability,
+    readiness: OpenAiExternalTranscriptionReadiness,
+): EvidenceAcquisitionCapability {
+    val accepted = (readiness as? OpenAiExternalTranscriptionReadiness.Ready)
+        ?.profile?.acceptanceState == ExternalTranscriptionAcceptanceState.ACCEPTED
+    return if (accepted) {
+        EvidenceAcquisitionCapability(
+            template.capabilityId, template.mechanism, template.supportedMediaTypes, template.supportedSourceForms,
+            template.fidelity, template.supportedRepresentations, template.egress, template.providerConfiguration,
+            AcquisitionAvailability.Available, template.limits, template.fidelitySuitabilityByMediaType,
+        )
+    } else template
 }
