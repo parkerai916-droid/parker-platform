@@ -417,6 +417,42 @@ class ParkerRuntimeStartupAndShutdownTest {
         )
     }
 
+    /**
+     * Live EML response-parse diagnostics: proven structurally, the same literal-source-text way
+     * as the sibling test immediately above, because [openAiTransport] is a concrete, non-injectable
+     * type -- there is no seam to substitute a fake transport into a running [ParkerRuntime] and
+     * observe this wiring behaviourally. Proves (a) responseFailureObserver is actually wired to the
+     * adapter construction (not left at its no-op default), (b) its captured value is a fresh local
+     * declared inside this one method invocation -- never a class-level or companion var, so
+     * concurrent invocations cannot cross-contaminate each other's diagnostic -- and (c) that same
+     * local is threaded into both terminalFailure(...) call sites (the ordinary non-success branch
+     * and the outer catch), never silently dropped.
+     */
+    @Test
+    fun `the response-parse-failure diagnostic is captured as a local per-invocation variable and reaches both terminalFailure call sites`() {
+        val source = java.io.File("src/composition/ParkerRuntime.kt").readText()
+        val methodStart = source.indexOf("private suspend fun invokeExternalTranscriptionWithFreshBinding")
+        assertTrue(methodStart >= 0, "invokeExternalTranscriptionWithFreshBinding must exist")
+        val methodBody = source.substring(methodStart, source.indexOf("\n    }\n", methodStart))
+
+        assertTrue(
+            Regex("""var\s+responseParseFailureDiagnostic\s*:\s*String\?\s*=\s*null""").containsMatchIn(methodBody),
+            "the diagnostic must be a fresh local var (not a shared/global field) inside this one method",
+        )
+        assertFalse(
+            source.substring(0, methodStart).contains("var responseParseFailureDiagnostic"),
+            "responseParseFailureDiagnostic must not also be declared as a class-level field",
+        )
+        assertTrue(
+            "responseFailureObserver = { fingerprint -> responseParseFailureDiagnostic = fingerprint.render() }" in methodBody,
+            "the adapter must be constructed with responseFailureObserver wired to capture the fingerprint",
+        )
+        assertEquals(
+            2, Regex("""tracker\.terminalFailure\(responseParseFailureDiagnostic\)""").findAll(methodBody).count(),
+            "the captured diagnostic must reach both terminalFailure call sites (the outcome-else branch and the catch block)",
+        )
+    }
+
     @Test
     fun `external transcription composition follows every fail-closed readiness state without startup egress`() = runTest {
         val validProfile = profileFile()

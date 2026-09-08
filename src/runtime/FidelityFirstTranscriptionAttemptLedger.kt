@@ -243,6 +243,20 @@ class FidelityFirstAttemptTracker(
         identity, FidelityFirstAttemptStage.TERMINAL_SUCCESS,
         generationId?.let { listOf("generationId" to it) } ?: emptyList(),
     )
-    fun terminalFailure() = ledger.transition(identity, FidelityFirstAttemptStage.TERMINAL_FAILURE)
+    /**
+     * Live EML response-parse diagnostics: [reason], when supplied, must already be a bounded,
+     * content-free structural diagnostic (e.g. [parker.composition.OpenAiResponseFailureFingerprint.render])
+     * -- never source content, provider response body, credentials, cookies, or authorization
+     * secrets. Additive and optional: every existing caller passing no [reason] gets today's exact
+     * ledger shape unchanged, mirroring [terminalSuccess]'s own existing optional-metadata pattern.
+     * Truncated defensively to [MAX_TERMINAL_FAILURE_REASON_CHARS] here regardless of what the
+     * caller supplies, in addition to the ledger's own existing 1024-character metadata bound.
+     */
+    fun terminalFailure(reason: String? = null) = ledger.transition(
+        identity, FidelityFirstAttemptStage.TERMINAL_FAILURE,
+        reason?.take(MAX_TERMINAL_FAILURE_REASON_CHARS)?.let { listOf("reason" to it) } ?: emptyList(),
+    )
     fun snapshot() = ledger.open(identity)
 }
+
+private const val MAX_TERMINAL_FAILURE_REASON_CHARS = 500

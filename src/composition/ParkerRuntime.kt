@@ -3210,8 +3210,16 @@ class ParkerRuntime(
             return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
         }
         val binding = identity.toExecutionBinding()
+        // Live EML response-parse diagnostics: per-invocation local state only (a fresh local for
+        // this one call, never a shared/global var), so concurrent invocations cannot cross-
+        // contaminate each other's diagnostic. Populated only if the adapter's own response
+        // parsing fails; already bounded and content-free (OpenAiResponseFailureFingerprint.render()
+        // -- HTTP status, structural booleans/counts, and the parse stage name only, never source
+        // content, provider response body, credentials, cookies, or authorization secrets).
+        var responseParseFailureDiagnostic: String? = null
         val mechanism = OpenAiResponsesExternalTranscriptionAdapter(
             readiness = readyProfile, credential = credential, transport = openAiTransport, transportLifecycleObserver = tracker,
+            responseFailureObserver = { fingerprint -> responseParseFailureDiagnostic = fingerprint.render() },
         )
         val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(
             permissionEngine, evidenceCustodian, mechanism,
@@ -3232,10 +3240,10 @@ class ParkerRuntime(
                 is ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted -> {
                     tracker.terminalSuccess(outcome.record.derivativeGenerationId.value); outcome
                 }
-                else -> { runCatching { tracker.terminalFailure() }; outcome }
+                else -> { runCatching { tracker.terminalFailure(responseParseFailureDiagnostic) }; outcome }
             }
         } catch (e: Exception) {
-            runCatching { tracker.terminalFailure() }
+            runCatching { tracker.terminalFailure(responseParseFailureDiagnostic) }
             throw e
         }
     }

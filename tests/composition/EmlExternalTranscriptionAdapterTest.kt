@@ -47,8 +47,11 @@ class EmlExternalTranscriptionAdapterTest {
 
     private fun binding() = ExternalTranscriptionExecutionBinding("eml-req-1", "eml-attempt-1", EML_TRANSCRIPTION_PROFILE_ID)
 
-    private fun adapter(transport: OpenAiResponsesTransport) =
-        OpenAiResponsesExternalTranscriptionAdapter(ready(), OpenAiApiCredential.fromEnvironment("synthetic-secret")!!, transport)
+    private fun adapter(transport: OpenAiResponsesTransport, responseFailureObserver: (OpenAiResponseFailureFingerprint) -> Unit = {}) =
+        OpenAiResponsesExternalTranscriptionAdapter(
+            ready(), OpenAiApiCredential.fromEnvironment("synthetic-secret")!!, transport,
+            responseFailureObserver = responseFailureObserver,
+        )
 
     private fun ready() = OpenAiExternalTranscriptionReadiness.Ready(
         OpenAiExternalTranscriptionProviderProfile(
@@ -117,6 +120,78 @@ class EmlExternalTranscriptionAdapterTest {
 
         val outcome = adapter(transport).transcribe(request)
         assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+    }
+
+    // ================= Live EML response-parse diagnostics =================
+
+    @Test fun `A -- a malformed response at MESSAGE_OUTCOME fails as MALFORMED_PROVIDER_RESPONSE and the observer receives that exact stage`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val payload = successPayload(representation, binding).replace("\"message_outcome\":\"TRANSCRIBED\",", "")
+        val transport = FakeTransport { envelope(payload) }
+        var captured: OpenAiResponseFailureFingerprint? = null
+
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("MESSAGE_OUTCOME", captured?.parkerParseStage)
+    }
+
+    @Test fun `B -- a malformed response at STRUCTURED_PAYLOAD (invalid JSON in the structured text) records that exact stage`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val transport = FakeTransport { envelope("""{"profile_id": "not closed properly....""") }
+        var captured: OpenAiResponseFailureFingerprint? = null
+
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("STRUCTURED_PAYLOAD", captured?.parkerParseStage)
+    }
+
+    @Test fun `C -- a failure at ENVELOPE_JSON (top-level response not an object) records that exact stage`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val transport = FakeTransport { "[]" }
+        var captured: OpenAiResponseFailureFingerprint? = null
+
+        val outcome = adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        assertEquals("MALFORMED_PROVIDER_RESPONSE", assertIs<ExternalTranscriptionMechanismOutcome.Failure>(outcome).reason)
+        assertEquals("ENVELOPE_JSON", captured?.parkerParseStage)
+    }
+
+    @Test fun `F -- the captured diagnostic fingerprint never carries source or provider response content`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val payload = successPayload(representation, binding).replace("\"message_outcome\":\"TRANSCRIBED\",", "")
+        val transport = FakeTransport { envelope(payload) }
+        var captured: OpenAiResponseFailureFingerprint? = null
+
+        adapter(transport, responseFailureObserver = { captured = it }).transcribe(request)
+
+        val rendered = requireNotNull(captured).render()
+        assertFalse(rendered.contains("Hello body"))
+        assertFalse(rendered.contains(representation.representationSha256.value))
+        assertFalse(rendered.contains("synthetic-secret"))
+        assertTrue(rendered.length < 500)
+    }
+
+    @Test fun `G -- a successful EML invocation is unaffected by the observer being wired`() = runTest {
+        val representation = emlRepresentation()
+        val binding = binding()
+        val request = ExternalTranscriptionRequest(representation, 200, executionBinding = binding)
+        val transport = FakeTransport { envelope(successPayload(representation, binding)) }
+        var observerCalled = false
+
+        val outcome = adapter(transport, responseFailureObserver = { observerCalled = true }).transcribe(request)
+
+        assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(outcome)
+        assertFalse(observerCalled, "the response-failure observer must not fire on a valid response")
     }
 
     @Test fun `missing execution binding fails closed before transport for the EML profile`() = runTest {
