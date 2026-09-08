@@ -264,6 +264,10 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         runtime.start()
         val id = EvidenceArtifactId("external-failure-evidence")
         val sentinels = listOf("SOURCE_SECRET_SENTINEL", "TRANSCRIPT_SECRET_SENTINEL", "API_KEY_SENTINEL")
+        // AdmissionFailed is deliberately excluded from this list -- live EML failure visibility
+        // correction (F below) makes it the one case that intentionally surfaces a bounded amount
+        // of its own reason text, since that reason is Parker's own already-safe, curated durable-
+        // admission message, never raw provider/credential content. See the dedicated tests below.
         val failures = listOf<ExternalTranscriptionOwnerInvocationOutcome>(
             ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised,
             ExternalTranscriptionOwnerInvocationOutcome.SourceNotFound(id),
@@ -276,7 +280,6 @@ class OwnerUiEvidenceRuntimeAdapterTest {
             ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_NETWORK_FAILURE"),
             ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("MALFORMED_PROVIDER_RESPONSE"),
             ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(sentinels.joinToString("/")),
-            ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(sentinels.joinToString("/")),
         )
         failures.forEach { failure ->
             val mapped = assertIs<EnhancedTranscriptionOutcome.Failed>(
@@ -285,6 +288,58 @@ class OwnerUiEvidenceRuntimeAdapterTest {
             assertTrue(mapped.safeMessage.isNotBlank())
             sentinels.forEach { assertTrue(!mapped.safeMessage.contains(it)) }
         }
+        runtime.shutdown()
+    }
+
+    // ================= Live EML failure visibility correction =================
+
+    @Test
+    fun `F -- MechanismFailure and ValidationRejected behaviour is unchanged`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("f-unchanged-evidence")
+        val mechanism = assertIs<EnhancedTranscriptionOutcome.Failed>(
+            adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = { ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("PROVIDER_TIMEOUT") }).transcribeExternal(id),
+        )
+        assertEquals("Enhanced transcription timed out.", mechanism.safeMessage)
+        val rejected = assertIs<EnhancedTranscriptionOutcome.Failed>(
+            adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = { ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("anything") }).transcribeExternal(id),
+        )
+        assertEquals("The transcription result did not pass Parker validation.", rejected.safeMessage)
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `A B -- AdmissionFailed reason reaches the owner-facing result behind the existing generic prefix`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("admission-failed-evidence")
+        val mapped = assertIs<EnhancedTranscriptionOutcome.Failed>(
+            adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = {
+                ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("Failed to persist derivative content 'xyz'")
+            }).transcribeExternal(id),
+        )
+        assertTrue(mapped.safeMessage.startsWith("The validated transcription could not be durably admitted:"))
+        assertTrue(mapped.safeMessage.contains("Failed to persist derivative content 'xyz'"))
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `C -- AdmissionFailed diagnostic detail is bounded to MAX_ADMISSION_DIAGNOSTIC_REASON_CHARS`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("admission-failed-bound-evidence")
+        val overlong = "x".repeat(500)
+        val mapped = assertIs<EnhancedTranscriptionOutcome.Failed>(
+            adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = { ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(overlong) }).transcribeExternal(id),
+        )
+        val prefix = "The validated transcription could not be durably admitted: "
+        assertTrue(mapped.safeMessage.startsWith(prefix))
+        assertEquals(200, mapped.safeMessage.removePrefix(prefix).length)
+        assertTrue(mapped.safeMessage.length < prefix.length + overlong.length)
         runtime.shutdown()
     }
 

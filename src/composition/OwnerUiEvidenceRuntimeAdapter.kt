@@ -85,6 +85,21 @@ import parker.core.interfaces.*
 /** OCR Mechanism Unit 12's own, unmodified, already-governed analysisKind convention. */
 private const val OCR_ANALYSIS_KIND = "ocr-transcription"
 
+/**
+ * Live EML failure visibility correction: a defensive length bound only, for
+ * [ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed]'s [reason][ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed.reason]
+ * string. Unlike [safeExternalFailure] -- a closed allowlist mapping fixed provider-failure
+ * category codes to pre-written text, deliberately never surfacing arbitrary text -- durable
+ * admission's own reason strings are not a fixed set of category codes; they are the already-safe,
+ * Parker-authored messages [DerivativeContentStorageException]/[DerivativeGenerationStorageException]'s
+ * own sealed cases construct (e.g. "Failed to persist derivative content '<uuid>'"), which never embed
+ * credentials, request/response bodies, or raw stack traces (verified against every construction
+ * site in FileSystemDerivativeContentStorage.kt/FileSystemDerivativeGenerationStorage.kt). This
+ * bound exists purely so a future, currently-unanticipated reason string cannot grow this
+ * owner-facing message unboundedly.
+ */
+private const val MAX_ADMISSION_DIAGNOSTIC_REASON_CHARS = 200
+
 internal fun projectGovernedDecision(evaluation: GovernedAcquisitionOwnerEvaluation): OwnerAcquisitionDecisionView = when (evaluation) {
     is GovernedAcquisitionOwnerEvaluation.SourceUnavailable -> OwnerAcquisitionDecisionView.NoEligible(
         OwnerAcquisitionSourceFacts(evaluation.evidenceArtifactId.value, null, null, null, "UNKNOWN", "UNKNOWN", null, "UNKNOWN", "UNKNOWN", "UNKNOWN"),
@@ -407,7 +422,10 @@ class OwnerUiEvidenceRuntimeAdapter(
             is ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds -> EnhancedTranscriptionOutcome.Failed("This evidence type or size is not supported for enhanced transcription.")
             is ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure -> EnhancedTranscriptionOutcome.Failed(safeExternalFailure(outcome.reason))
             is ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected -> EnhancedTranscriptionOutcome.Failed("The transcription result did not pass Parker validation.")
-            is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed -> EnhancedTranscriptionOutcome.Failed("The validated transcription could not be durably admitted.")
+            is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed -> EnhancedTranscriptionOutcome.Failed(
+                "The validated transcription could not be durably admitted: " +
+                    outcome.reason.take(MAX_ADMISSION_DIAGNOSTIC_REASON_CHARS),
+            )
             // STEP 4G CORRECTION: genuinely admitted -- reported as success, never as Failed. No
             // dedicated content viewer exists yet, so no OwnerTierBOcrContent is fabricated; the
             // section count and message outcome are the honest, structured facts available.
