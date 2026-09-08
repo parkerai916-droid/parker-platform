@@ -558,7 +558,7 @@ class OwnerEvidenceHttpServerTest {
         val harness = startHarness("")
         try {
             val fn = executeAcquisitionFunctionBody(harness)
-            assertTrue(fn.contains("result.capability && result.capability.mechanism === 'Local OCR'"))
+            assertTrue(fn.contains("result.capability && (result.capability.mechanism === 'Local OCR' ||"))
             val branchIndex = fn.indexOf("result.capability.mechanism === 'Local OCR'")
             val ocrGenerationAssign = fn.indexOf("row.ocrDerivativeGenerationId = result.derivativeGenerationId;")
             val tierBStatusAssign = fn.indexOf("row.status = 'TIER_B_DURABLE_COMPLETE';", branchIndex)
@@ -582,7 +582,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `executeAcquisition preserves the existing Tier A region-transcription state for every other mechanism`() {
+    fun `executeAcquisition preserves the existing Tier A region-transcription state for a genuine Tier A mechanism`() {
         val harness = startHarness("")
         try {
             val fn = executeAcquisitionFunctionBody(harness)
@@ -595,6 +595,36 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(elseBranch.contains("row.status = 'TIER_A_COMPLETE';"))
             assertTrue(elseBranch.contains("row.tierAFormat = 'REGION_TRANSCRIPTION';"))
             assertTrue(elseBranch.contains("row.providerRegionTranscription = true;"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `executeAcquisition classifies governed external transcription as Tier B durable OCR state`() {
+        val harness = startHarness("")
+        try {
+            val fn = executeAcquisitionFunctionBody(harness)
+            val branchStart = fn.indexOf("if (result.capability && (result.capability.mechanism === 'Local OCR' ||")
+            assertTrue(branchStart >= 0)
+            assertTrue(fn.indexOf("result.capability.mechanism === 'External transcription'", branchStart) >= 0)
+            val branchEnd = fn.indexOf("} else {", branchStart)
+            val externalBranch = fn.substring(branchStart, branchEnd)
+            assertTrue(externalBranch.contains("row.ocrDerivativeGenerationId = result.derivativeGenerationId;"))
+            assertTrue(externalBranch.contains("row.status = 'TIER_B_DURABLE_COMPLETE';"))
+            assertFalse(externalBranch.contains("row.derivativeGenerationId = result.derivativeGenerationId;"))
+            assertFalse(externalBranch.contains("REGION_TRANSCRIPTION"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `governed external transcription state uses the exact OCR content retrieval route`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            val start = body.indexOf("async function viewOcrContent(index)")
+            assertTrue(start >= 0)
+            val fn = body.substring(start, body.indexOf("\nasync function ", start + 1))
+            assertTrue(fn.contains("/ocr-content/${'$'}{row.ocrDerivativeGenerationId}"))
+            assertTrue(body.contains("row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId"))
         } finally { harness.shutdown() }
     }
 

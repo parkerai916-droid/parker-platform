@@ -3871,15 +3871,17 @@ async function executeAcquisition(index, expectedCapabilityId) {
     else {
       row.acquisitionResult = result; row.acquisitionError = null;
       if (result.derivativeGenerationId) {
-        // REAL-DOCUMENT-2D: the selected mechanism decides which client-side derivative state this
-        // result is -- Local OCR is a Tier B durable OCR result (existing ocrDurableRow pattern) and
-        // must route "View Extracted Content" through /ocr-content/, never through the Tier A
-        // /content/ route, which explicitly rejects OCR-typed payloads. result.capability.mechanism
-        // is the same server-computed, governed label already rendered as 'Selected mechanism' above.
-        if (result.capability && result.capability.mechanism === 'Local OCR') {
+        // REAL-DOCUMENT-2D/6: the selected mechanism decides which client-side derivative state this
+        // result is. Local OCR and governed external transcription both produce the durable OCR-shaped
+        // payload and therefore must route "View Extracted Content" through /ocr-content/, never the
+        // Tier A /content/ route. result.capability.mechanism is the same server-computed, governed
+        // label already rendered as 'Selected mechanism' above.
+        if (result.capability && (result.capability.mechanism === 'Local OCR' ||
+            result.capability.mechanism === 'External transcription')) {
           row.ocrDerivativeGenerationId = result.derivativeGenerationId;
           row.status = 'TIER_B_DURABLE_COMPLETE';
-          row.message = 'Governed local OCR available';
+          row.message = result.capability.mechanism === 'External transcription'
+            ? 'Governed transcription available' : 'Governed local OCR available';
         } else {
           row.derivativeGenerationId = result.derivativeGenerationId;
           row.status = 'TIER_A_COMPLETE';
