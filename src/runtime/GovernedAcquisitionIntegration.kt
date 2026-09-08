@@ -245,8 +245,17 @@ internal class ExternalTranscriptionAcquisitionExecutor(
                 outcome.record.derivativeGenerationId, outcome.extracted.fidelity,
                 outcome.extracted.completenessState, outcome.extracted.processingProvenance,
             )
+            // STEP 4G: the EML sibling of Admitted above. BoundAcquisitionExecutorOutcome.Admitted's
+            // fidelity/processingProvenance fields are already nullable and unused by any
+            // downstream consumer (verified: no read site exists outside this file) -- completeness
+            // is the one fact genuinely carried through.
+            is ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted -> BoundAcquisitionExecutorOutcome.Admitted(
+                outcome.record.derivativeGenerationId, fidelity = null,
+                completeness = outcome.receipt.completenessState, processingProvenance = null,
+            )
             is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed,
             is ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired,
+            is ExternalTranscriptionOwnerInvocationOutcome.EmlReconciliationRequired,
             -> BoundAcquisitionExecutorOutcome.AdmissionFailed(AcquisitionExecutionFailureReason.DERIVATIVE_ADMISSION_FAILED)
             else -> failed()
         }

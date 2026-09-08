@@ -288,6 +288,63 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         runtime.shutdown()
     }
 
+    // ================= STEP 4G CORRECTION -- EML outcome projection =================
+
+    private fun emlReceipt(id: EvidenceArtifactId) = EmlExternalVerificationReceipt(
+        sourceEvidenceArtifactId = id,
+        submittedRepresentationSha256 = OcrSha256Digest("a".repeat(64)),
+        representationGenerationProfileIdentity = "parker.eml-canonical-text-projection-v1",
+        messageOutcome = EmlMessageOutcomeKind.TRANSCRIBED,
+        completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
+        verifiedSectionIds = listOf("0", "0.0"),
+        warnings = emptyList(),
+        producerIdentity = DerivativeProducerIdentity("openai-responses", "1.0", "eml-profile", "openai-responses-adapter", "2.0.0", "model", "model"),
+        providerProvenance = OcrProviderProvenance("OpenAI", "openai-responses-adapter", "2.0.0", "eml-profile", "model", OcrModelSnapshot.NotExposed, "corr-1"),
+        recognisedAt = java.time.Instant.EPOCH,
+    )
+
+    private fun emlRecord(id: EvidenceArtifactId, receipt: EmlExternalVerificationReceipt) = DerivativeGenerationRecord(
+        DerivativeGenerationId("eml-generation-ui-test"), id, listOf(DerivativeParentReference.RootEvidenceArtifact(id)),
+        "EML external verification receipt", receipt.producerIdentity,
+        listOf(DerivativeTransformation.MODEL_INFERENCE, DerivativeTransformation.STRUCTURAL_PARSING), receipt.recognisedAt,
+        DerivativeContentIdentity.NoCanonicalSerialization, receipt.completenessState, DerivativeOperationalOutcome.USABLE, receipt.warnings,
+    )
+
+    @Test
+    fun `a genuinely admitted EML verification is projected as success, never as Failed`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("eml-admitted-evidence")
+        val receipt = emlReceipt(id)
+        val outcome = ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted(id, emlRecord(id, receipt), receipt)
+
+        val mapped = adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = { outcome }).transcribeExternal(id)
+
+        val admitted = assertIs<EnhancedTranscriptionOutcome.EmlAdmitted>(mapped)
+        assertEquals(DerivativeGenerationId("eml-generation-ui-test"), admitted.derivativeGenerationId)
+        assertEquals(2, admitted.verifiedSectionCount)
+        assertEquals("TRANSCRIBED", admitted.messageOutcome)
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `EML durably admitted but audit-reconciliation-required is projected as reconciliation required, never as an ordinary admission failure`() = runTest {
+        val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        runtime.start()
+        val id = EvidenceArtifactId("eml-reconciliation-evidence")
+        val receipt = emlReceipt(id)
+        val outcome = ExternalTranscriptionOwnerInvocationOutcome.EmlReconciliationRequired(id, emlRecord(id, receipt), receipt, "AUDIT_WRITE_FAILED")
+
+        val mapped = adapterFor(runtime, EnhancedTranscriptionReadiness.Ready, external = { outcome }).transcribeExternal(id)
+
+        val reconciliation = assertIs<EnhancedTranscriptionOutcome.EmlReconciliationRequired>(mapped)
+        assertEquals(DerivativeGenerationId("eml-generation-ui-test"), reconciliation.derivativeGenerationId)
+        assertTrue(reconciliation.safeMessage.isNotBlank())
+        runtime.shutdown()
+    }
+
     // ================= Import =================
 
     @Test

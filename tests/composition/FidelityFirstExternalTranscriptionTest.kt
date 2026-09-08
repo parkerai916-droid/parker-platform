@@ -38,9 +38,9 @@ class FidelityFirstExternalTranscriptionTest {
 
     @Test fun `image uses original detail and ordered blocks map without losing uncertainty`() = runTest {
         val transport = FakeTransport(envelope(payload()))
-        val candidate = assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(
+        val candidate = assertIs<OcrStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(
             adapter(transport).transcribe(request("image/png")),
-        ).candidate
+        ).candidate)
         assertContains(transport.request.body, "\"detail\":\"original\"")
         assertEquals("Alpha\nBeta?", candidate.pages.single().text)
         assertEquals("UNCERTAIN_CHARACTER: final glyph unclear", candidate.pages.single().uncertaintySpans.single().disclosure)

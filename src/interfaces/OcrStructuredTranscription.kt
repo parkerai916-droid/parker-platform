@@ -42,7 +42,7 @@ data class OcrStructuredTranscriptionCandidate(
     val processingProvenance: OcrProcessingProvenance,
     val recognisedAt: Instant,
     val warnings: List<String> = emptyList(),
-) {
+) : ExternalTranscriptionResultCandidate {
     init {
         require(warnings.size <= MAX_STRUCTURED_PAGE_WARNINGS) {
             "OcrStructuredTranscriptionCandidate.warnings must contain at most $MAX_STRUCTURED_PAGE_WARNINGS entries"

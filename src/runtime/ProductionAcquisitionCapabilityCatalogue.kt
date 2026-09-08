@@ -7,6 +7,7 @@ object ProductionAcquisitionCapabilityCatalogue {
     const val NATIVE_CAPABILITY_ID = "parker-tier-a-native-v1"
     const val LOCAL_OCR_CAPABILITY_ID = "parker-docling-local-ocr-v1"
     const val FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID = "openai-gpt-5.6-sol-fidelity-first-v1"
+    const val EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID = "openai-gpt-5.6-sol-eml-derived-text-v1"
     const val ORDINARY_REGION_V5_CAPABILITY_ID = ORDINARY_REGION_CAPABILITY_ID
 
     fun create(externalCapabilityProjection: EvidenceAcquisitionCapability? = fidelityFirstExternalCapability(),
@@ -15,13 +16,23 @@ object ProductionAcquisitionCapabilityCatalogue {
         // (offline router/eligibility tests, synthetic acceptance, historical coverage) is
         // unaffected. The one real production composition root (ParkerRuntime) passes the owner's
         // governed production eligibility decision explicitly instead of relying on this default.
-        localOcrAvailability: AcquisitionAvailability = AcquisitionAvailability.Available): GovernedAcquisitionCapabilityRegistry {
-        listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection).forEach {
+        localOcrAvailability: AcquisitionAvailability = AcquisitionAvailability.Available,
+        // STEP 4G: a distinct capability record, never a widening of externalCapabilityProjection
+        // -- EML uses its own representation class, representation media type, processing profile,
+        // response schema, and acceptance evidence. Defaults to null (not registered), matching
+        // ordinaryRegionCapabilityProjection's own default, so every existing direct caller of
+        // this catalogue (offline router/eligibility tests, historical coverage, including tests
+        // that assert an exact external-capability count) is unaffected; the one real production
+        // composition root (ParkerRuntime) passes it explicitly.
+        emlExternalCapabilityProjection: EvidenceAcquisitionCapability? = null,
+    ): GovernedAcquisitionCapabilityRegistry {
+        listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection, emlExternalCapabilityProjection).forEach {
             require(it.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED)
             require(it.providerConfiguration != null)
         }
         return GovernedAcquisitionCapabilityRegistry(
-            listOf(nativeCapability(), localOcrCapability(localOcrAvailability)) + listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection),
+            listOf(nativeCapability(), localOcrCapability(localOcrAvailability)) +
+                listOfNotNull(externalCapabilityProjection, ordinaryRegionCapabilityProjection, emlExternalCapabilityProjection),
         )
     }
 
@@ -75,6 +86,33 @@ object ProductionAcquisitionCapabilityCatalogue {
         ),
         AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
         AcquisitionOperationalLimits(ExternalTranscriptionRequest.MAX_SOURCE_BYTES, ExternalTranscriptionRequest.MAX_PAGE_COUNT),
+    )
+
+    /**
+     * STEP 4G -- the distinct EML external capability (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md
+     * §6.1). Never a widening of [fidelityFirstExternalCapability]: separate source media type,
+     * representation class (`DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION`, never byte-exact),
+     * representation media type, processing profile, instruction/schema digests, and acceptance --
+     * reusing only the same provider/model/adapter implementation. No page limit is set: EML has
+     * no page concept, so none is fabricated (unlike CSV/PDF/image, which reuse `Known(1)`/real
+     * page counts).
+     */
+    fun emlDerivedTextExternalCapability() = EvidenceAcquisitionCapability(
+        EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID, EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
+        setOf("message/rfc822"),
+        setOf(AcquisitionSourceForm.NATIVE_SEARCHABLE),
+        AcquisitionFidelityCapabilities(true, false, false, false, false, false,
+            pageAssociation = false, regionAssociation = false, uncertaintyReporting = true, structuredOutput = true),
+        setOf(AcquisitionRepresentationClass.DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION),
+        AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+        AcquisitionProviderConfiguration(
+            "OpenAI", "gpt-5.6-sol", EML_TRANSCRIPTION_PROFILE_ID,
+            EML_TRANSCRIPTION_PROFILE_ID, EML_VERIFICATION_INSTRUCTION_SHA256,
+            EML_VERIFICATION_SCHEMA_SHA256, "openai-responses-adapter", "2.0.0",
+            EML_PROCESSING_PROFILE_IDENTITY, "none", false, "NOT_APPLICABLE", "NOT_APPLICABLE",
+        ),
+        AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED),
+        AcquisitionOperationalLimits(ExternalTranscriptionRequest.MAX_SOURCE_BYTES, null),
     )
 
     /** Dynamic acceptance evaluation chooses [accepted] on every projection; no lifecycle snapshot is retained here. */

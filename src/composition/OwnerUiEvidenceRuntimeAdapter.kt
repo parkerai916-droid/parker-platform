@@ -408,6 +408,18 @@ class OwnerUiEvidenceRuntimeAdapter(
             is ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure -> EnhancedTranscriptionOutcome.Failed(safeExternalFailure(outcome.reason))
             is ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected -> EnhancedTranscriptionOutcome.Failed("The transcription result did not pass Parker validation.")
             is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed -> EnhancedTranscriptionOutcome.Failed("The validated transcription could not be durably admitted.")
+            // STEP 4G CORRECTION: genuinely admitted -- reported as success, never as Failed. No
+            // dedicated content viewer exists yet, so no OwnerTierBOcrContent is fabricated; the
+            // section count and message outcome are the honest, structured facts available.
+            is ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted -> EnhancedTranscriptionOutcome.EmlAdmitted(
+                outcome.record.derivativeGenerationId, outcome.receipt.verifiedSectionIds.size, outcome.receipt.messageOutcome.name,
+            )
+            // STEP 4G CORRECTION: durably admitted, but the final audit entry requires
+            // reconciliation -- never reported as an ordinary failure.
+            is ExternalTranscriptionOwnerInvocationOutcome.EmlReconciliationRequired -> EnhancedTranscriptionOutcome.EmlReconciliationRequired(
+                outcome.record.derivativeGenerationId, outcome.receipt.verifiedSectionIds.size, outcome.receipt.messageOutcome.name,
+                "The EML verification was admitted, but its final audit entry requires reconciliation.",
+            )
         }
     }
 

@@ -329,6 +329,31 @@ class ParkerRuntimeStartupAndShutdownTest {
         runtime.shutdown()
     }
 
+    /**
+     * STEP 4G CORRECTION: invokeExternalTranscriptionWithFreshBinding constructs its own
+     * per-call ExternalTranscriptionOwnerInvocationCoordinator (a fresh executionBinding is the
+     * whole point of that method, per its own UI-INGESTION-6 docstring) -- it cannot reuse the
+     * shared externalTranscriptionOwnerInvocationCoordinator field directly, so this cannot be
+     * proven by reflecting on a stored field the way the sibling test above does. It also cannot
+     * be proven behaviourally without actually reaching a real OpenAI network call (forbidden
+     * here), since every earlier readiness gate must be satisfied first. This is therefore proven
+     * the same way this codebase already proves other composition-wiring facts that resist both
+     * reflection and safe behavioural execution: literal source-text verification (see
+     * AuthoritativeAcquisitionSourceResolverTest's own "E F G composed acquisition boundaries"
+     * test for the established precedent).
+     */
+    @Test
+    fun `owner-manual fresh-binding external transcription wires the real EML durable admission, never the default no-op`() {
+        val source = java.io.File("src/composition/ParkerRuntime.kt").readText()
+        val methodStart = source.indexOf("private suspend fun invokeExternalTranscriptionWithFreshBinding")
+        assertTrue(methodStart >= 0, "invokeExternalTranscriptionWithFreshBinding must exist")
+        val methodBody = source.substring(methodStart, source.indexOf("\n    }\n", methodStart))
+        assertTrue(
+            "emlDurableAdmission = tierBDerivativeGenerationCoordinator" in methodBody,
+            "the fresh-binding coordinator must wire the real EML durable admission, not the coordinator's own fail-closed default",
+        )
+    }
+
     @Test
     fun `external transcription composition follows every fail-closed readiness state without startup egress`() = runTest {
         val validProfile = profileFile()

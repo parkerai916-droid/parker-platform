@@ -1976,6 +1976,10 @@ class ParkerRuntime(
             externalMechanism = externalTranscriptionMechanism,
             validator = OcrStructuredResultValidator(),
             durableAdmission = tierBDerivativeGenerationCoordinator,
+            // STEP 4G: the same shared coordinator instance now also carries the EML sibling's own
+            // durable admission, reusing this same DerivativeGenerationCoordinator instance -- no
+            // second admission mechanism.
+            emlDurableAdmission = tierBDerivativeGenerationCoordinator,
         )
         // UI-INGESTION-5: optional/additive -- absent unless the new storage root is configured,
         // in which case it also requires the already-mandatory high-authority verification
@@ -2186,8 +2190,13 @@ class ParkerRuntime(
                 fidelityFirstCapabilityTemplate.fidelitySuitabilityByMediaType,
             )
         } else fidelityFirstCapabilityTemplate
+        // STEP 4G: registered with the catalogue's own default Unavailable(CONFIGURATION_NOT_ACCEPTED)
+        // -- no acceptance-checking wiring exists for EML yet (unlike fidelityFirstExternalCapabilityProjection
+        // above); it stays unreachable until a separate, later governed acceptance decision.
+        val emlExternalCapabilityTemplate = ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability()
         val acquisitionRegistry = ProductionAcquisitionCapabilityCatalogue.create(
             externalCapabilityProjection = fidelityFirstExternalCapabilityProjection,
+            emlExternalCapabilityProjection = emlExternalCapabilityTemplate,
             ordinaryRegionCapabilityProjection = ordinaryRegionIngestionWorkflow?.let {
                 ProductionAcquisitionCapabilityCatalogue.ordinaryRequestRegionV8Capability(
                     it.capabilityStatus().disposition == parker.core.runtime.OrdinaryRegionCapabilityDisposition.ACCEPTED,
@@ -2242,6 +2251,18 @@ class ParkerRuntime(
                         ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
                         EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
                         fidelityFirstCapabilityTemplate.providerConfiguration?.configurationIdentity,
+                    ),
+                    externalTranscriptionOwnerInvocationCoordinator,
+                ),
+                // STEP 4G: the EML sibling, bound to its own distinct capability id and reusing
+                // this exact same, already-shared coordinator instance -- one execution pipeline,
+                // two capability bindings. Unreachable in practice today: the capability above
+                // remains Unavailable until a separate governed acceptance decision.
+                ExternalTranscriptionAcquisitionExecutor(
+                    AcquisitionExecutorBinding(
+                        ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID,
+                        EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
+                        emlExternalCapabilityTemplate.providerConfiguration?.configurationIdentity,
                     ),
                     externalTranscriptionOwnerInvocationCoordinator,
                 ),
@@ -3181,10 +3202,19 @@ class ParkerRuntime(
             permissionEngine, evidenceCustodian, mechanism,
             OcrStructuredResultValidator(), tierBDerivativeGenerationCoordinator,
             invocationObserver = tracker, executionBinding = binding,
+            // STEP 4G CORRECTION: this method needs a fresh per-call coordinator for its own fresh
+            // executionBinding (UI-INGESTION-6), so it cannot reuse the shared
+            // externalTranscriptionOwnerInvocationCoordinator instance directly -- but it must
+            // still use the real EML durable admission, the same tierBDerivativeGenerationCoordinator
+            // instance already wired above, never a second admission implementation.
+            emlDurableAdmission = tierBDerivativeGenerationCoordinator,
         )
         return try {
             when (val outcome = coordinator.invoke(ownerPrincipalId, evidenceArtifactId)) {
                 is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> {
+                    tracker.terminalSuccess(outcome.record.derivativeGenerationId.value); outcome
+                }
+                is ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted -> {
                     tracker.terminalSuccess(outcome.record.derivativeGenerationId.value); outcome
                 }
                 else -> { runCatching { tracker.terminalFailure() }; outcome }

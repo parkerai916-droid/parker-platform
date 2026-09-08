@@ -42,6 +42,17 @@ internal val FIDELITY_FIRST_SCHEMA_CANONICAL = canonicalizeStructuredSchema(FIDE
 internal const val FIDELITY_FIRST_INSTRUCTION_SHA256 = "38e4b87e3a429dac8ed5de91e5e2c94ad3d10cd739db186d41d09ed940b11b88"
 internal const val FIDELITY_FIRST_SCHEMA_SHA256 = "7b46bdd6ce615592bb4e7cfee84f5ec5f6fde546d678e13bdad0555f829a3313"
 
+// STEP 4G -- EML derived-text verification. Parker has already deterministically produced the
+// canonical text; the model is asked only to verify structured section coverage, never to
+// reproduce, rewrite, or retranscribe the email's own text (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §6.1).
+internal const val EML_TRANSCRIPTION_PROFILE_ID = "openai-eml-derived-text-verification-v1"
+internal const val EML_PROCESSING_PROFILE_IDENTITY = "external-transcription.eml-derived-text-v1"
+internal const val EML_VERIFICATION_INSTRUCTION = "Parker has already deterministically extracted and canonically projected this email's headers, MIME structure, body alternatives, and attachment manifest into the submitted text. Do not reproduce, rewrite, retranscribe, paraphrase, or invent the email's text content. For each MIME entity identified in the submitted MIME STRUCTURE section, verify that its corresponding content in the submitted BODY ALTERNATIVES, NESTED MESSAGES, or ATTACHMENT MANIFEST sections is coherent, complete, and internally consistent, and report a structured verification outcome per section using only the identifiers already present in the submission. Do not invent a MIME entity id that is not present in the submission. Do not omit a required section's verification outcome. Record every uncertainty or inconsistency using the structured warning and reason fields; omission with an explicit disclosure is preferable to invention. Echo the supplied profile, request, and attempt identifiers exactly. Return only the strict structured schema."
+internal const val EML_VERIFICATION_INSTRUCTION_SHA256 = "74ad9d762c9d8aa5e9cfa7f05bd3c4a56e7a44e776400ffcd9f4030510d42818"
+internal val EML_VERIFICATION_SCHEMA_SOURCE = """{"type":"object","additionalProperties":false,"required":["profile_id","request_id","attempt_id","source_evidence_artifact_id","submitted_representation_sha256","processing_profile_identity","message_outcome","completeness_state","sections","warnings"],"properties":{"profile_id":{"type":"string"},"request_id":{"type":"string"},"attempt_id":{"type":"string"},"source_evidence_artifact_id":{"type":"string"},"submitted_representation_sha256":{"type":"string"},"processing_profile_identity":{"type":"string"},"message_outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","FAILED"]},"completeness_state":{"type":"string","enum":["COMPLETE","INCOMPLETE","UNDETERMINED"]},"sections":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["mime_entity_id","outcome","reason_classification","reason_detail","warnings"],"properties":{"mime_entity_id":{"type":"string"},"outcome":{"type":"string","enum":["TRANSCRIBED","TRANSCRIBED_WITH_QUALIFICATIONS","ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT","FAILED","NOT_RETURNED"]},"reason_classification":{"type":["string","null"]},"reason_detail":{"type":["string","null"]},"warnings":{"type":"array","items":{"type":"string"}}}}},"warnings":{"type":"array","items":{"type":"string"}}}}"""
+internal val EML_VERIFICATION_SCHEMA_CANONICAL = canonicalizeStructuredSchema(EML_VERIFICATION_SCHEMA_SOURCE)
+internal val EML_VERIFICATION_SCHEMA_SHA256 = sha256Hex(EML_VERIFICATION_SCHEMA_CANONICAL.toByteArray(StandardCharsets.UTF_8))
+
 internal data class OpenAiResponsesTransportRequest(
     val endpoint: URI,
     val timeoutMillis: Long,
@@ -137,10 +148,16 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     init {
         require(endpoint == URI.create("https://api.openai.com/v1/responses")) { "OpenAI Responses endpoint is not approved" }
         require(!profile.store) { "OpenAI adapter requires store=false" }
-        require(profile.transcriptionProfileId in setOf(LITERAL_V2_PROFILE_ID, FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID))
+        require(profile.transcriptionProfileId in setOf(LITERAL_V2_PROFILE_ID, FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID, EML_TRANSCRIPTION_PROFILE_ID))
         require(profile.instructionSha256 == instructionSha256) { "OpenAI instruction digest does not match the governed profile" }
         require(profile.structuredSchemaSha256 == schemaSha256) { "OpenAI schema digest does not match the governed profile" }
-        require(profile.processingProfileIdentity == if (fidelityFirst) DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID else BYTE_EXACT_PROCESSING_PROFILE_ID)
+        require(
+            profile.processingProfileIdentity == when {
+                isEml -> EML_PROCESSING_PROFILE_IDENTITY
+                fidelityFirst -> DIRECT_AUTHORITATIVE_PROCESSING_PROFILE_ID
+                else -> BYTE_EXACT_PROCESSING_PROFILE_ID
+            },
+        )
         if (fidelityFirst) {
             require(profile.modelSelectionRule == "gpt-5.6-sol")
             require(profile.reasoningEffort == "none" && profile.pdfDetail == "high" && profile.imageDetail == "original")
@@ -179,7 +196,10 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             return failure(rejectionCategory)
         }
         return try {
-            ExternalTranscriptionMechanismOutcome.Candidate(parseResponse(request, response.body.toString(Charsets.UTF_8)))
+            val raw = response.body.toString(Charsets.UTF_8)
+            val candidate: parker.core.interfaces.ExternalTranscriptionResultCandidate =
+                if (isEml) parseEmlResponse(request, raw) else parseResponse(request, raw)
+            ExternalTranscriptionMechanismOutcome.Candidate(candidate)
         } catch (e: Exception) {
             runCatching {
                 responseFailureObserver(fingerprintOpenAiResponseFailure(response, e))
@@ -190,18 +210,19 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
 
     private fun buildRequestBody(request: ExternalTranscriptionRequest): String {
         val binding = request.executionBinding
-        if (fidelityFirst) require(binding != null && binding.profileId == profile.transcriptionProfileId)
-        // The PDF and image branches are byte-identical to before this unit. text/csv is the one
-        // new, narrow, explicit branch -- no startsWith("text/") generalisation, and the adapter
-        // performs no decoding/charset detection of its own: request.content is already the
-        // verified-UTF-8 authoritative source bytes, admitted only after
-        // OcrProcessingRepresentationFactory's strict UTF-8 validation.
+        if (fidelityFirst || isEml) require(binding != null && binding.profileId == profile.transcriptionProfileId)
+        // The PDF and image branches are byte-identical to before this unit. text/csv and the EML
+        // derived-text representation are both narrow, explicit input_text branches -- no
+        // startsWith("text/") generalisation, and the adapter performs no decoding/charset
+        // detection, HTML re-rendering/stripping, or CID resolution of its own: request.content is
+        // already the exact bytes EmlDerivedRepresentation.content() (or, for CSV, the
+        // verified-UTF-8 authoritative source) produced.
         val mediaPart = when {
             request.mediaType == "application/pdf" -> {
                 val base64 = Base64.getEncoder().encodeToString(request.content)
                 "{\"type\":\"input_file\",\"filename\":\"source.pdf\",\"detail\":\"${jsonEscape(profile.pdfDetail)}\",\"file_data\":\"data:application/pdf;base64,$base64\"}"
             }
-            request.mediaType == "text/csv" -> {
+            request.mediaType == "text/csv" || request.mediaType == parker.core.interfaces.EML_DERIVED_TEXT_REPRESENTATION_MEDIA_TYPE -> {
                 val text = String(request.content, Charsets.UTF_8)
                 "{\"type\":\"input_text\",\"text\":\"${jsonEscape(text)}\"}"
             }
@@ -215,7 +236,7 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
         return "{" +
             "\"model\":\"${jsonEscape(profile.modelSelectionRule)}\"," +
             "\"store\":false,\"stream\":false," +
-            (if (fidelityFirst) "\"reasoning\":{\"effort\":\"none\"}," else "") +
+            (if (fidelityFirst || isEml) "\"reasoning\":{\"effort\":\"none\"}," else "") +
             "\"instructions\":\"${jsonEscape(instruction)}\"," +
             "\"input\":[{\"role\":\"user\",\"content\":[" +
             "{\"type\":\"input_text\",\"text\":\"Transcribe this source under the developer instruction. ${jsonEscape(identityText)}\"}," +
@@ -275,6 +296,75 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
             ),
             requireNotNull(request.ocrProcessingProvenance) { "OCR-shaped response parsing requires an OcrProcessingRepresentation" },
             Instant.now(), result.requiredStringArray("warnings"),
+        ) }
+    }
+
+    /**
+     * STEP 4G -- parses a non-paginated EML verification receipt. This is a structured receipt
+     * over sections Parker already knows deterministically, never a second copy of the email
+     * text: no field here carries returned body text.
+     */
+    private fun parseEmlResponse(request: ExternalTranscriptionRequest, raw: String): parker.core.interfaces.EmlStructuredTranscriptionCandidate {
+        val envelope = responseParseStage("ENVELOPE_JSON") { Json.parse(raw).objectValue() }
+        val responseId = responseParseStage("RESPONSE_ID") {
+            envelope.requiredString("id").also { require(ID_PATTERN.matches(it)) }
+        }
+        val model = responseParseStage("MODEL") {
+            envelope.requiredString("model").also { require(it.isNotBlank() && !it.equals("unknown", true)) }
+        }
+        val outputText = responseParseStage("OUTPUT_TEXT") {
+            envelope.requiredArray("output").flatMap { it.objectValue().requiredArray("content") }
+                .map { it.objectValue() }.single { it.requiredString("type") == "output_text" }.requiredString("text")
+        }
+        val result = responseParseStage("STRUCTURED_PAYLOAD") { Json.parse(outputText).objectValue() }
+        val binding = requireNotNull(request.executionBinding) { "EML response parsing requires an execution binding" }
+        responseParseStage("EXECUTION_BINDING") {
+            require(result.requiredString("profile_id") == binding.profileId)
+            require(result.requiredString("request_id") == binding.requestId)
+            require(result.requiredString("attempt_id") == binding.attemptId)
+        }
+        val sections = responseParseStage("SECTIONS") { result.requiredArray("sections").map { value ->
+            val section = value.objectValue()
+            val classification = section.nullableString("reason_classification")
+            val reason = classification?.let { OcrPageOutcomeReason(it, section.nullableString("reason_detail")) }
+            parker.core.interfaces.EmlVerifiedSectionOutcome(
+                section.requiredString("mime_entity_id"),
+                OcrPageOutcomeKind.valueOf(section.requiredString("outcome")),
+                reason,
+                section.requiredStringArray("warnings"),
+            )
+        } }
+        val messageOutcome = responseParseStage("MESSAGE_OUTCOME") {
+            parker.core.interfaces.EmlMessageOutcomeKind.valueOf(result.requiredString("message_outcome"))
+        }
+        val completenessState = responseParseStage("COMPLETENESS_STATE") {
+            when (result.requiredString("completeness_state")) {
+                "COMPLETE" -> DerivativeCompletenessState.ACCOUNTED_FOR
+                "INCOMPLETE" -> DerivativeCompletenessState.KNOWN_INCOMPLETE
+                "UNDETERMINED" -> DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS
+                else -> throw OpenAiResponseParseException("COMPLETENESS_STATE", IllegalArgumentException("unrecognised completeness_state"))
+            }
+        }
+        return responseParseStage("CANDIDATE") { parker.core.interfaces.EmlStructuredTranscriptionCandidate(
+            profileId = result.requiredString("profile_id"),
+            requestId = result.requiredString("request_id"),
+            attemptId = result.requiredString("attempt_id"),
+            sourceEvidenceArtifactId = EvidenceArtifactId(result.requiredString("source_evidence_artifact_id")),
+            submittedRepresentationSha256 = OcrSha256Digest(result.requiredString("submitted_representation_sha256")),
+            processingProfileIdentity = result.requiredString("processing_profile_identity"),
+            messageOutcome = messageOutcome,
+            completenessState = completenessState,
+            sections = sections,
+            recognitionIdentity = OcrRecognitionIdentity("openai-responses", EML_TRANSCRIPTION_PROFILE_ID, adapterVersion),
+            providerProvenance = OcrProviderProvenance(
+                "OpenAI", "openai-responses-adapter", adapterVersion, EML_TRANSCRIPTION_PROFILE_ID,
+                model, OcrModelSnapshot.NotExposed, responseId,
+                OcrTranscriptionConfiguration.DigestedConfiguration(
+                    EML_TRANSCRIPTION_PROFILE_ID, OcrSha256Digest(instructionSha256), OcrSha256Digest(schemaSha256),
+                ),
+            ),
+            recognisedAt = Instant.now(),
+            warnings = result.requiredStringArray("warnings"),
         ) }
     }
 
@@ -365,11 +455,12 @@ class OpenAiResponsesExternalTranscriptionAdapter internal constructor(
     }
 
     private val fidelityFirst get() = profile.transcriptionProfileId == FIDELITY_FIRST_TRANSCRIPTION_PROFILE_ID
-    private val instruction get() = if (fidelityFirst) FIDELITY_FIRST_INSTRUCTION else TRANSCRIPTION_INSTRUCTION
-    private val instructionSha256 get() = if (fidelityFirst) FIDELITY_FIRST_INSTRUCTION_SHA256 else TRANSCRIPTION_INSTRUCTION_SHA256
-    private val schemaCanonical get() = if (fidelityFirst) FIDELITY_FIRST_SCHEMA_CANONICAL else STRUCTURED_SCHEMA_CANONICAL
-    private val schemaSha256 get() = if (fidelityFirst) FIDELITY_FIRST_SCHEMA_SHA256 else STRUCTURED_SCHEMA_SHA256
-    private val adapterVersion get() = if (fidelityFirst) "2.0.0" else ADAPTER_VERSION
+    private val isEml get() = profile.transcriptionProfileId == EML_TRANSCRIPTION_PROFILE_ID
+    private val instruction get() = when { isEml -> EML_VERIFICATION_INSTRUCTION; fidelityFirst -> FIDELITY_FIRST_INSTRUCTION; else -> TRANSCRIPTION_INSTRUCTION }
+    private val instructionSha256 get() = when { isEml -> EML_VERIFICATION_INSTRUCTION_SHA256; fidelityFirst -> FIDELITY_FIRST_INSTRUCTION_SHA256; else -> TRANSCRIPTION_INSTRUCTION_SHA256 }
+    private val schemaCanonical get() = when { isEml -> EML_VERIFICATION_SCHEMA_CANONICAL; fidelityFirst -> FIDELITY_FIRST_SCHEMA_CANONICAL; else -> STRUCTURED_SCHEMA_CANONICAL }
+    private val schemaSha256 get() = when { isEml -> EML_VERIFICATION_SCHEMA_SHA256; fidelityFirst -> FIDELITY_FIRST_SCHEMA_SHA256; else -> STRUCTURED_SCHEMA_SHA256 }
+    private val adapterVersion get() = if (fidelityFirst || isEml) "2.0.0" else ADAPTER_VERSION
 }
 
 internal class OpenAiResponseParseException(

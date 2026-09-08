@@ -176,9 +176,9 @@ class OpenAiResponsesExternalTranscriptionAdapterTest {
     @Test
     fun `success captures response ID exact model and NotExposed snapshot without secret`() = runTest {
         val transport = FakeTransport { OpenAiResponsesTransportResponse(200, successEnvelope().toByteArray()) }
-        val candidate = assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(
+        val candidate = assertIs<OcrStructuredTranscriptionCandidate>(assertIs<ExternalTranscriptionMechanismOutcome.Candidate>(
             adapter(transport).transcribe(request()),
-        ).candidate
+        ).candidate)
 
         assertEquals("resp_unit_h_1", candidate.providerProvenance.providerCorrelationIdentifier)
         assertEquals("returned-model-snapshot-name", candidate.providerProvenance.providerReportedModelIdentifier)

@@ -1,5 +1,13 @@
 package parker.core.runtime
 
+import parker.core.interfaces.EmlDerivedRepresentationOutcome
+import parker.core.interfaces.EmlExternalVerificationAdmissionOutcome
+import parker.core.interfaces.EmlExternalVerificationReceipt
+import parker.core.interfaces.EmlStructuralExtractionOutcome
+import parker.core.interfaces.EmlStructuralExtractor
+import parker.core.interfaces.EmlStructuredTranscriptionCandidate
+import parker.core.interfaces.EmlStructuredValidationOutcome
+import parker.core.interfaces.EmlValidatedExternalVerificationAdmission
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.ExternalTranscriptionMechanism
@@ -8,6 +16,7 @@ import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
 import parker.core.interfaces.ExternalTranscriptionRequest
 import parker.core.interfaces.ExternalTranscriptionExecutionBinding
 import parker.core.interfaces.OcrProcessingRepresentationOutcome
+import parker.core.interfaces.OcrStructuredTranscriptionCandidate
 import parker.core.interfaces.OcrStructuredValidationOutcome
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
@@ -42,6 +51,14 @@ interface ExternalTranscriptionInvocationObserver {
  * `PrincipalId(config.ownerPrincipalId)` (or its own already-held owner-scoped field) explicitly,
  * preserving identical behaviour; AG-1G's own Hermes-scoped call site passes Hermes's principal.
  * No second coordinator, no second pipeline -- the identical class, parameterised correctly.
+ *
+ * ## EML sibling (STEP 4G)
+ *
+ * message/rfc822 sources share every permission, custody-verification, egress, provider-
+ * invocation, and audit control this class already enforces for PDF/image/CSV -- only the
+ * representation-construction, response-candidate, validation, and admission steps differ,
+ * dispatched once at [invoke]'s own media-type branch (never scattered elsewhere). No second
+ * coordinator, no second execution pipeline.
  */
 class ExternalTranscriptionOwnerInvocationCoordinator(
     private val permissionEngine: PermissionEngine,
@@ -53,6 +70,12 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
     private val correlationFactory: () -> String = { UUID.randomUUID().toString() },
     private val invocationObserver: ExternalTranscriptionInvocationObserver = ExternalTranscriptionInvocationObserver.NONE,
     private val executionBinding: ExternalTranscriptionExecutionBinding? = null,
+    private val emlExtractor: EmlStructuralExtractor = ApacheJamesMime4jExtractor(),
+    private val emlRepresentationFactory: EmlDerivedRepresentationFactory = EmlDerivedRepresentationFactory(),
+    private val emlValidator: EmlStructuredResultValidator = EmlStructuredResultValidator(),
+    private val emlDurableAdmission: EmlValidatedExternalVerificationAdmission = EmlValidatedExternalVerificationAdmission {
+        _, _, _, _, _ -> EmlExternalVerificationAdmissionOutcome.MandatoryProvenanceUnavailable("EML external verification admission is not configured")
+    },
 ) {
     private val sourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
 
@@ -78,12 +101,25 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         val mediaType = trusted.mediaType
         if (trusted.byteLength <= 0 || trusted.byteLength > ExternalTranscriptionRequest.MAX_SOURCE_BYTES ||
             mediaType == null || (
-                mediaType != "application/pdf" && mediaType != "text/csv" &&
+                mediaType != "application/pdf" && mediaType != "text/csv" && mediaType != "message/rfc822" &&
                     !mediaType.startsWith("image/", ignoreCase = true)
                 )
         ) return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
         invocationObserver.sourceRetrieved()
 
+        return if (mediaType == "message/rfc822") {
+            invokeEml(requestingPrincipalId, evidenceArtifactId, trusted)
+        } else {
+            invokeOcr(requestingPrincipalId, evidenceArtifactId, trusted, mediaType)
+        }
+    }
+
+    private suspend fun invokeOcr(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+        trusted: AuthoritativeAcquisitionInput,
+        mediaType: String,
+    ): ExternalTranscriptionOwnerInvocationOutcome {
         val representation = when (val outcome = representationFactory.create(
             authoritativeSource = trusted,
         )) {
@@ -103,7 +139,9 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             is ExternalTranscriptionMechanismOutcome.Failure ->
                 return ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure(mechanismOutcome.reason)
         }
-        val provenance = candidate.processingProvenance
+        val ocrCandidate = candidate as? OcrStructuredTranscriptionCandidate
+            ?: return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Mechanism returned a non-OCR-shaped candidate for an OCR-shaped request")
+        val provenance = ocrCandidate.processingProvenance
         if (provenance.sourceEvidenceArtifactId != evidenceArtifactId ||
             provenance.sourceManifestSha256.value != trusted.sha256 ||
             provenance.sourceMediaType != mediaType ||
@@ -113,7 +151,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             provenance.representationSha256.value != trusted.sha256
         ) return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Candidate provenance contradicts the verified source representation")
 
-        return when (val validated = validator.validate(candidate)) {
+        return when (val validated = validator.validate(ocrCandidate)) {
             is OcrStructuredValidationOutcome.Validated -> when (val admission = durableAdmission.admit(
                 evidenceArtifactId, validated, requestingPrincipalId, correlationFactory(),
             )) {
@@ -129,6 +167,80 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             }
             is OcrStructuredValidationOutcome.Rejected ->
                 ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(validated.outcome.reason)
+        }
+    }
+
+    private suspend fun invokeEml(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+        trusted: AuthoritativeAcquisitionInput,
+    ): ExternalTranscriptionOwnerInvocationOutcome {
+        val structural = when (val outcome = emlExtractor.extract(trusted.bytes())) {
+            is EmlStructuralExtractionOutcome.Extracted -> outcome.result
+            is EmlStructuralExtractionOutcome.Malformed -> return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
+        }
+        val representation = when (val outcome = emlRepresentationFactory.create(trusted, structural)) {
+            is EmlDerivedRepresentationOutcome.Created -> outcome.representation
+            else -> return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
+        }
+        val request = ExternalTranscriptionRequest(
+            representation = representation,
+            maximumPageCount = ExternalTranscriptionRequest.MAX_PAGE_COUNT,
+            expectedPageCount = null,
+            executionBinding = executionBinding,
+        )
+        invocationObserver.representationBuilt()
+        invocationObserver.requestPrepared()
+        val candidate = when (val mechanismOutcome = externalMechanism.transcribe(request)) {
+            is ExternalTranscriptionMechanismOutcome.Candidate -> mechanismOutcome.candidate
+            is ExternalTranscriptionMechanismOutcome.Failure ->
+                return ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure(mechanismOutcome.reason)
+        }
+        val emlCandidate = candidate as? EmlStructuredTranscriptionCandidate
+            ?: return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Mechanism returned a non-EML-shaped candidate for an EML-shaped request")
+        val binding = executionBinding
+            ?: return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("EML verification requires an execution binding")
+
+        return when (val validated = emlValidator.validate(emlCandidate, representation, binding)) {
+            is EmlStructuredValidationOutcome.Validated -> {
+                val receipt = EmlExternalVerificationReceipt(
+                    sourceEvidenceArtifactId = evidenceArtifactId,
+                    submittedRepresentationSha256 = representation.representationSha256,
+                    representationGenerationProfileIdentity = representation.transformationProfileIdentity,
+                    messageOutcome = validated.messageOutcome,
+                    completenessState = validated.completenessState,
+                    verifiedSectionIds = validated.verifiedSectionIds,
+                    warnings = validated.warnings,
+                    producerIdentity = parker.core.interfaces.DerivativeProducerIdentity(
+                        pluginIdentity = emlCandidate.recognitionIdentity.mechanismIdentity,
+                        pluginVersion = emlCandidate.recognitionIdentity.mechanismVersion ?: "unspecified",
+                        configurationIdentity = emlCandidate.recognitionIdentity.configurationProfile,
+                        adapterIdentity = emlCandidate.providerProvenance.adapterIdentity,
+                        adapterVersion = emlCandidate.providerProvenance.adapterVersion,
+                        modelIdentity = emlCandidate.providerProvenance.providerReportedModelIdentifier,
+                    ),
+                    providerProvenance = emlCandidate.providerProvenance,
+                    recognisedAt = emlCandidate.recognisedAt,
+                )
+                when (val admission = emlDurableAdmission.admitEmlExternalVerification(
+                    evidenceArtifactId, structural, receipt, requestingPrincipalId, correlationFactory(),
+                )) {
+                    is EmlExternalVerificationAdmissionOutcome.Admitted -> {
+                        invocationObserver.generationAdmitted()
+                        ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted(evidenceArtifactId, admission.record, admission.receipt)
+                    }
+                    is EmlExternalVerificationAdmissionOutcome.MandatoryProvenanceUnavailable -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+                    is EmlExternalVerificationAdmissionOutcome.PreparationFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+                    is EmlExternalVerificationAdmissionOutcome.AuthorisationAuditFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+                    is EmlExternalVerificationAdmissionOutcome.PublicationFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+                    // STEP 4G CORRECTION: the record was durably persisted before the audit write
+                    // failed -- reported as reconciliation-required, never as an ordinary
+                    // admission failure, matching Admitted/ReconciliationRequired's own existing
+                    // OCR sibling semantics exactly.
+                    is EmlExternalVerificationAdmissionOutcome.AdmittedAuditFailed -> ExternalTranscriptionOwnerInvocationOutcome.EmlReconciliationRequired(evidenceArtifactId, admission.record, admission.receipt, admission.reason)
+                }
+            }
+            is EmlStructuredValidationOutcome.Rejected -> ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(validated.reason)
         }
     }
 }

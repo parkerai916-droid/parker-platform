@@ -727,6 +727,19 @@ class OwnerEvidenceHttpServer(
                 )
                 is EnhancedTranscriptionOutcome.NotReady -> readinessJson(outcome.readiness)
                 is EnhancedTranscriptionOutcome.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
+                // STEP 4G: genuinely admitted -- no OwnerTierBOcrContent exists for EML yet, so
+                // only the structured, non-content facts are reported.
+                is EnhancedTranscriptionOutcome.EmlAdmitted -> jsonObject(
+                    "status" to "EML_VERIFICATION_COMPLETE", "evidenceArtifactId" to id.value,
+                    "derivativeGenerationId" to outcome.derivativeGenerationId.value,
+                    "verifiedSectionCount" to outcome.verifiedSectionCount.toString(), "messageOutcome" to outcome.messageOutcome,
+                )
+                is EnhancedTranscriptionOutcome.EmlReconciliationRequired -> jsonObject(
+                    "status" to "RECONCILIATION_REQUIRED", "evidenceArtifactId" to id.value,
+                    "derivativeGenerationId" to outcome.derivativeGenerationId.value,
+                    "verifiedSectionCount" to outcome.verifiedSectionCount.toString(), "messageOutcome" to outcome.messageOutcome,
+                    "message" to outcome.safeMessage,
+                )
             }
             writeJson(exchange, 200, body)
         }

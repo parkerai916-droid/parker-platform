@@ -32,9 +32,10 @@ class ExternalTranscriptionRequest(
         require(representation.representationByteLength >= 1) { "ExternalTranscriptionRequest.content must not be empty" }
         require(representation.representationByteLength <= MAX_SOURCE_BYTES) { "External transcription source exceeds $MAX_SOURCE_BYTES bytes" }
         require(
-            mediaType == "application/pdf" || mediaType == "text/csv" || mediaType.startsWith("image/", ignoreCase = true),
+            mediaType == "application/pdf" || mediaType == "text/csv" ||
+                mediaType == EML_DERIVED_TEXT_REPRESENTATION_MEDIA_TYPE || mediaType.startsWith("image/", ignoreCase = true),
         ) {
-            "ExternalTranscriptionRequest.mediaType must be PDF, CSV, or image"
+            "ExternalTranscriptionRequest.mediaType must be PDF, CSV, image, or the EML derived-text representation media type"
         }
         require(maximumPageCount in 1..MAX_PAGE_COUNT) { "ExternalTranscriptionRequest.maximumPageCount must be in 1..$MAX_PAGE_COUNT" }
         require(expectedPageCount == null || expectedPageCount in 1..maximumPageCount) {
@@ -53,7 +54,7 @@ interface ExternalTranscriptionMechanism {
 }
 
 sealed interface ExternalTranscriptionMechanismOutcome {
-    data class Candidate(val candidate: OcrStructuredTranscriptionCandidate) : ExternalTranscriptionMechanismOutcome
+    data class Candidate(val candidate: ExternalTranscriptionResultCandidate) : ExternalTranscriptionMechanismOutcome
     data class Failure(val reason: String) : ExternalTranscriptionMechanismOutcome {
         init { require(reason.isNotBlank() && reason.length <= 4_096) }
     }
@@ -80,6 +81,19 @@ sealed interface ExternalTranscriptionOwnerInvocationOutcome {
         val evidenceArtifactId: EvidenceArtifactId,
         val record: DerivativeGenerationRecord,
         val extracted: OcrDerivativeExtractedResult,
+        val reason: String,
+    ) : ExternalTranscriptionOwnerInvocationOutcome
+    /** The EML sibling of [Admitted] -- a non-paginated structured-verification receipt, never an [OcrDerivativeExtractedResult]. */
+    data class EmlAdmitted(
+        val evidenceArtifactId: EvidenceArtifactId,
+        val record: DerivativeGenerationRecord,
+        val receipt: EmlExternalVerificationReceipt,
+    ) : ExternalTranscriptionOwnerInvocationOutcome
+    /** The EML sibling of [ReconciliationRequired]: durably persisted, but its final audit entry failed -- never reported as [AdmissionFailed]. */
+    data class EmlReconciliationRequired(
+        val evidenceArtifactId: EvidenceArtifactId,
+        val record: DerivativeGenerationRecord,
+        val receipt: EmlExternalVerificationReceipt,
         val reason: String,
     ) : ExternalTranscriptionOwnerInvocationOutcome
 }

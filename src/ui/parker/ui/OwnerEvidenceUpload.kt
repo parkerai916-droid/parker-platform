@@ -673,6 +673,14 @@ sealed interface EnhancedTranscriptionOutcome {
     data class NotReady(val readiness: EnhancedTranscriptionReadiness) : EnhancedTranscriptionOutcome
     data class Failed(val safeMessage: String) : EnhancedTranscriptionOutcome
     data class ReconciliationRequired(val content: OwnerTierBOcrContent, val derivativeGenerationId: DerivativeGenerationId, val safeMessage: String) : EnhancedTranscriptionOutcome
+    /**
+     * STEP 4G -- the EML sibling of [Admitted]: genuinely admitted/verified, never [Failed],
+     * with no dedicated content viewer yet -- deliberately no [OwnerTierBOcrContent], since EML
+     * verification is a structured receipt, never a second copy of the email text.
+     */
+    data class EmlAdmitted(val derivativeGenerationId: DerivativeGenerationId, val verifiedSectionCount: Int, val messageOutcome: String) : EnhancedTranscriptionOutcome
+    /** The EML sibling of [ReconciliationRequired]: durably admitted, but its audit entry requires reconciliation. */
+    data class EmlReconciliationRequired(val derivativeGenerationId: DerivativeGenerationId, val verifiedSectionCount: Int, val messageOutcome: String, val safeMessage: String) : EnhancedTranscriptionOutcome
 }
 
 /**

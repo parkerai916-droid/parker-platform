@@ -83,4 +83,42 @@ class FidelityFirstAcquisitionRouterTest {
         assertEquals("none", external.single().providerConfiguration?.reasoningEffort)
         assertEquals("original", external.single().providerConfiguration?.imageDetail)
     }
+
+    @Test fun `STEP 4G -- the EML capability is distinct, unavailable by default, and never widens the fidelity-first capability`() {
+        val eml = ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability()
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID, eml.capabilityId)
+        assertNotEquals(ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID, eml.capabilityId)
+        assertEquals(setOf("message/rfc822"), eml.supportedMediaTypes)
+        assertEquals(setOf(AcquisitionRepresentationClass.DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION), eml.supportedRepresentations)
+        assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED), eml.availability)
+        assertNull(eml.limits.maximumPages, "EML has no page concept -- none may be fabricated")
+
+        val fidelityFirst = ProductionAcquisitionCapabilityCatalogue.fidelityFirstExternalCapability()
+        assertFalse("message/rfc822" in fidelityFirst.supportedMediaTypes, "registering EML must never widen the existing PDF/image/CSV capability")
+    }
+
+    @Test fun `STEP 4G -- router selects the EML capability for message-rfc822 once it is Available, native remains untouched`() {
+        val emlSource = AcquisitionSource(
+            EvidenceArtifactId("synthetic-eml"), "a".repeat(64), 100, "message/rfc822",
+            AcquisitionPageCount.Unknown, AcquisitionSourceCharacteristics(
+                AcquisitionCharacteristicState.PRESENT, AcquisitionCharacteristicState.ABSENT,
+                AcquisitionCharacteristicState.ABSENT, AcquisitionCharacteristicState.ABSENT,
+                AcquisitionCharacteristicState.ABSENT, AcquisitionCharacteristicState.ABSENT,
+            ), HumanAuthorisedCustody.CONFIRMED,
+        )
+        val emlTemplate = ProductionAcquisitionCapabilityCatalogue.emlDerivedTextExternalCapability()
+        val emlAvailable = EvidenceAcquisitionCapability(
+            emlTemplate.capabilityId, emlTemplate.mechanism, emlTemplate.supportedMediaTypes, emlTemplate.supportedSourceForms,
+            emlTemplate.fidelity, emlTemplate.supportedRepresentations, emlTemplate.egress, emlTemplate.providerConfiguration,
+            AcquisitionAvailability.Available, emlTemplate.limits, emlTemplate.fidelitySuitabilityByMediaType,
+        )
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(
+            emlSource,
+            ProductionAcquisitionCapabilityCatalogue.create(emlExternalCapabilityProjection = emlAvailable).capabilities(),
+            ExternalEgressAuthorisation.AUTHORISED,
+        )
+        val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID, selected.decision.capability.capabilityId)
+        assertNotEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
+    }
 }

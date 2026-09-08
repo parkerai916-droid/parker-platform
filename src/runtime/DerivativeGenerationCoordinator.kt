@@ -32,6 +32,9 @@ import parker.core.interfaces.DocxStructuralExtractor
 import parker.core.interfaces.DocxStructuralResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EmlAttachmentCandidate
+import parker.core.interfaces.EmlExternalVerificationAdmissionOutcome
+import parker.core.interfaces.EmlExternalVerificationReceipt
+import parker.core.interfaces.EmlValidatedExternalVerificationAdmission
 import parker.core.interfaces.EmlStructuralExtractionOutcome
 import parker.core.interfaces.EmlStructuralExtractor
 import parker.core.interfaces.EmlStructuralResult
@@ -178,7 +181,7 @@ class DerivativeGenerationCoordinator(
     // persistence in view keeps compiling unchanged; the real production composition always
     // supplies a real instance (TierADocumentIngestionComposition.create).
     private val contentStorage: DerivativeContentStorage? = null,
-) : ValidatedExternalTranscriptionAdmission {
+) : ValidatedExternalTranscriptionAdmission, EmlValidatedExternalVerificationAdmission {
     /**
      * Publishes [payload]'s own durable content representation for [id],
      * strictly before [id]'s [DerivativeGenerationRecord] is ever prepared
@@ -555,6 +558,60 @@ class DerivativeGenerationCoordinator(
         try { audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
         catch (e: DocumentIngestionAuditException) { return OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
         return OcrDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+    }
+
+    /**
+     * Admits a validated, non-paginated EML external-verification receipt
+     * (STEP 4G, FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §6.1). Reuses exactly the
+     * same [storage]/[audit]/[publishContentFirst] primitives [admit] and [ingestEml] already use
+     * -- no parallel persistence mechanism. The durable content payload reuses the existing
+     * `TierADerivativePayload.Eml` shape: the retrievable content (the deterministic
+     * [parker.core.interfaces.EmlStructuralResult]) is identical regardless of which mechanism
+     * (native Tier A extraction or governed external verification) produced this generation;
+     * [DerivativeGenerationRecord.derivativeKind]/`producerIdentity`/`transformationHistory`
+     * remain the actual mechanism discriminator, exactly as this file's own existing convention
+     * already establishes for OCR (`TierADerivativePayload.Ocr` reused for both local and
+     * external OCR).
+     */
+    override suspend fun admitEmlExternalVerification(
+        evidenceArtifactId: EvidenceArtifactId,
+        structuralResult: EmlStructuralResult,
+        receipt: EmlExternalVerificationReceipt,
+        requestingPrincipalId: PrincipalId,
+        correlationValue: String,
+    ): EmlExternalVerificationAdmissionOutcome {
+        require(correlationValue.isNotBlank())
+        if (receipt.sourceEvidenceArtifactId != evidenceArtifactId) {
+            return EmlExternalVerificationAdmissionOutcome.MandatoryProvenanceUnavailable("Validated receipt does not match the requested evidence identity")
+        }
+        val id = idFactory()
+        val record = DerivativeGenerationRecord(
+            derivativeGenerationId = id,
+            rootSourceEvidenceArtifactId = evidenceArtifactId,
+            parents = listOf(DerivativeParentReference.RootEvidenceArtifact(evidenceArtifactId)),
+            derivativeKind = "EML external verification receipt",
+            producerIdentity = receipt.producerIdentity,
+            transformationHistory = listOf(DerivativeTransformation.MODEL_INFERENCE, DerivativeTransformation.STRUCTURAL_PARSING),
+            generatedAt = receipt.recognisedAt,
+            contentIdentity = DerivativeContentIdentity.NoCanonicalSerialization,
+            completenessState = receipt.completenessState,
+            operationalOutcome = DerivativeOperationalOutcome.USABLE,
+            warnings = receipt.warnings,
+        )
+        publishContentFirst(id, evidenceArtifactId, TierADerivativePayload.Eml(structuralResult, 0))?.let {
+            return EmlExternalVerificationAdmissionOutcome.PreparationFailed(id, it)
+        }
+        try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) {
+            return EmlExternalVerificationAdmissionOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try { audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED)) }
+        catch (e: DocumentIngestionAuditException) { return EmlExternalVerificationAdmissionOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { storage.publishPrepared(id) } catch (e: DerivativeGenerationStorageException) {
+            return EmlExternalVerificationAdmissionOutcome.PublicationFailed(id, e.message ?: e::class.simpleName.orEmpty())
+        }
+        try { audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
+        catch (e: DocumentIngestionAuditException) { return EmlExternalVerificationAdmissionOutcome.AdmittedAuditFailed(record, receipt, e.message ?: e::class.simpleName.orEmpty()) }
+        return EmlExternalVerificationAdmissionOutcome.Admitted(record, receipt)
     }
 
     private fun EmlAttachmentCandidate.linkTo(root: EvidenceArtifactId) = CandidateChildSource(
