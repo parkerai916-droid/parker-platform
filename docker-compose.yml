@@ -31,6 +31,9 @@ services:
       PARKER_EVIDENCE_STORAGE_ROOT: /data/evidence
       PARKER_EVIDENCE_DELETION_AUDIT_LOG_PATH: /data/evidence-audit/deletion-audit.log
       PARKER_EVIDENCE_SOURCE_MANIFEST_STORAGE_ROOT: /data/evidence-source-manifests
+      PARKER_CASE_STORAGE_ROOT: /data/cases
+      PARKER_CASE_ASSIGNMENT_STORAGE_ROOT: /data/case-assignments
+      PARKER_CASE_GOVERNANCE_AUDIT_LOG_PATH: /data/case-governance-audit/case-audit.log
       PARKER_DERIVATIVE_GENERATION_STORAGE_ROOT: /data/derivative-generations
       PARKER_DERIVATIVE_CONTENT_STORAGE_ROOT: /data/derivative-content
       PARKER_CORRECTED_PREPARATION_STORAGE_ROOT: /data/corrected-preparations
@@ -219,6 +222,9 @@ services:
       - /mnt/parker-data/parker/memory-core:/data/memory-core
       - /mnt/parker-data/parker/knowledge-items:/data/knowledge-items
       - /mnt/parker-data/parker/evidence-source-manifests:/data/evidence-source-manifests
+      - /mnt/parker-data/parker/cases:/data/cases
+      - /mnt/parker-data/parker/case-assignments:/data/case-assignments
+      - /mnt/parker-data/parker/case-governance-audit:/data/case-governance-audit
       - /mnt/parker-data/parker/derivative-generations:/data/derivative-generations
       - /mnt/parker-data/parker/derivative-content:/data/derivative-content
       - /mnt/parker-data/parker/corrected-preparations:/data/corrected-preparations
