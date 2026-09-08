@@ -138,6 +138,10 @@ services:
       PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED: "${PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_ENABLED:-false}"
       PARKER_OPENAI_API_KEY: "${PARKER_OPENAI_API_KEY:-}"
       PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH: "${PARKER_OPENAI_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH:-}"
+      # EML acceptance extension: the second, independently-accepted provider profile path for
+      # the distinct EML derived-text verification capability. Same opt-in shape as the
+      # fidelity-first path above -- blank unless set in .env, no default profile fallback.
+      PARKER_OPENAI_EML_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH: "${PARKER_OPENAI_EML_EXTERNAL_TRANSCRIPTION_PROVIDER_PROFILE_PATH:-}"
 
       # Owner LAN Evidence Upload. Opt-in and off by default: both
       # variables below are blank unless set in a local, git-ignored .env
@@ -244,6 +248,7 @@ services:
       - /home/steve/qmd:/opt/qmd:ro
       - /home/steve/.cache/qmd/models:/opt/qmd-models:ro
       - /home/steve/.config/parker/openai-external-transcription.properties:/run/parker/openai-external-transcription.properties:ro
+      - /home/steve/.config/parker/openai-eml-external-transcription.properties:/run/parker/openai-eml-external-transcription.properties:ro
       # Docling Production Runtime Enablement. The Parker host's own
       # already-populated Hugging Face cache (the document-layout model
       # Docling itself fetches on first use, docling-project/docling-layout-heron
