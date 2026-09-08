@@ -288,10 +288,34 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
     }
 
     @Test
-    fun `the acquisition executor is structurally a pure delegation wrapper -- its only collaborator is the existing coordinator, never a second provider-invocation path`() {
+    fun `governed acquisition invokes the fresh-binding boundary once per attempt with exact principal and evidence`() = runTest {
+        val observed = mutableListOf<Pair<PrincipalId, EvidenceArtifactId>>()
+        val generatedBindings = mutableListOf<ExternalTranscriptionExecutionBinding>()
+        val executor = ExternalTranscriptionAcquisitionExecutor(
+            AcquisitionExecutorBinding(
+                ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
+                EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
+                null,
+            ),
+        ) { principal, id ->
+            observed += principal to id
+            generatedBindings += ExternalTranscriptionExecutionBinding(
+                "request-${generatedBindings.size}", "attempt-${generatedBindings.size}", "profile-accepted",
+            )
+            ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure("controlled provider failure")
+        }
+
+        repeat(2) { assertIs<BoundAcquisitionExecutorOutcome.ExecutionFailed>(executor.execute(executionRequest())) }
+
+        assertEquals(listOf(owner to evidenceId, owner to evidenceId), observed)
+        assertEquals(2, generatedBindings.map { it.requestId }.distinct().size)
+        assertEquals(2, generatedBindings.map { it.attemptId }.distinct().size)
+    }
+
+    @Test
+    fun `the acquisition executor is structurally a pure delegation wrapper -- its only collaborator is the governed invocation function, never a provider mechanism`() {
         val fields = ExternalTranscriptionAcquisitionExecutor::class.java.declaredFields.filterNot { it.isSynthetic }
-        val coordinatorFields = fields.filter { it.type == ExternalTranscriptionOwnerInvocationCoordinator::class.java }
-        assertEquals(1, coordinatorFields.size, "expected exactly one ExternalTranscriptionOwnerInvocationCoordinator collaborator field")
+        assertTrue(fields.any { it.name.contains("invokeGovernedExternalTranscription") })
         val forbidden = listOf("Docling", "RapidOCR", "OpenAI", "Http", "Network", "Mechanism")
         fields.map { it.type.name }.forEach { type -> forbidden.forEach { assertTrue(!type.contains(it), "$type contains $it") } }
     }
@@ -494,7 +518,7 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
 
     private fun executor(coordinator: ExternalTranscriptionOwnerInvocationCoordinator) = ExternalTranscriptionAcquisitionExecutor(
         AcquisitionExecutorBinding(ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID, EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION, null),
-        coordinator,
+        { principal, evidenceId -> coordinator.invoke(principal, evidenceId) },
     )
 
     /**

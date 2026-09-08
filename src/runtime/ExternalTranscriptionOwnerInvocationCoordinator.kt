@@ -43,7 +43,8 @@ interface ExternalTranscriptionInvocationObserver {
  * whichever principal this instance was constructed with. That was safe as long as the only
  * production callers were genuinely Owner-only entry points (`ParkerRuntime.invokeExternalTranscriptionAsOwner`,
  * `FidelityFirstAcceptanceCoordinator`), but AG-1G's own Hermes-scoped governed-acquisition path
- * (`ExternalTranscriptionAcquisitionExecutor`) reuses this exact same, shared coordinator instance
+ * (`ExternalTranscriptionAcquisitionExecutor`) delegates through the composition root's exact
+ * fresh-binding invocation function
  * -- and a constructor-fixed Owner principal there would silently misattribute a Hermes-initiated
  * acquisition to Owner at the one stage (internal permission check, source resolution, durable
  * admission) this class itself controls. [invoke] now takes [requestingPrincipalId] as an explicit

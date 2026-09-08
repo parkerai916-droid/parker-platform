@@ -33,6 +33,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -354,6 +355,36 @@ class ParkerRuntimeStartupAndShutdownTest {
             "emlDurableAdmission = tierBDerivativeGenerationCoordinator" in methodBody,
             "the fresh-binding coordinator must wire the real EML durable admission, not the coordinator's own fail-closed default",
         )
+    }
+
+    @Test
+    fun `governed external acquisition is composed through the same fresh-binding helper as the direct owner pathway`() {
+        val source = java.io.File("src/composition/ParkerRuntime.kt").readText()
+        val executorBlockStart = source.indexOf("val governedAcquisitionExecutionCoordinator")
+        val executorBlockEnd = source.indexOf("val externalEgressAuthorised", executorBlockStart)
+        assertTrue(executorBlockStart >= 0 && executorBlockEnd > executorBlockStart)
+        val executorBlock = source.substring(executorBlockStart, executorBlockEnd)
+        assertEquals(2, Regex("::invokeExternalTranscriptionWithFreshBinding").findAll(executorBlock).count())
+        assertFalse("externalTranscriptionOwnerInvocationCoordinator," in executorBlock)
+
+        val directStart = source.indexOf("suspend fun invokeExternalTranscriptionAsOwner")
+        val helperStart = source.indexOf("private suspend fun invokeExternalTranscriptionWithFreshBinding", directStart)
+        assertTrue(directStart >= 0 && helperStart > directStart)
+        val directBody = source.substring(directStart, helperStart)
+        assertTrue("invokeExternalTranscriptionWithFreshBinding(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)" in directBody)
+
+        val helperEnd = source.indexOf("\n    /** Read-only, exact-target owner authorization status", helperStart)
+        val helper = source.substring(helperStart, helperEnd)
+        listOf(
+            "evidenceArtifactId = evidenceArtifactId.value",
+            "sourceSha256 = manifest.sha256",
+            "sourceByteLength = manifest.byteLength",
+            "sourceMediaType = mediaType",
+            "FidelityFirstAttemptTracker(ledger, identity)",
+            "val binding = identity.toExecutionBinding()",
+            "invocationObserver = tracker, executionBinding = binding",
+            "coordinator.invoke(requestingPrincipalId, evidenceArtifactId)",
+        ).forEach { required -> assertTrue(required in helper, "missing fresh-binding invariant: $required") }
     }
 
     /**

@@ -2244,9 +2244,9 @@ class ParkerRuntime(
                     ),
                     tierBOcrOwnerInvocationCoordinator,
                 ),
-                // REAL-DOCUMENT-2F: the already-existing executor and coordinator for the
-                // already-governed "enhanced transcription" invocation boundary -- no new
-                // provider invocation path. The binding's configurationIdentity is read from
+                // PDF-INGESTION-CLOSURE-1: the executor delegates to the same fresh-binding
+                // invocation helper used by the already-governed "enhanced transcription"
+                // boundary -- no new provider invocation path. The binding's configurationIdentity is read from
                 // the same capability template the projection above is derived from, so a
                 // routing decision can only ever be dispatched here if it selected the exact
                 // same configuration this executor is bound to (GovernedAcquisitionExecutionCoordinator's
@@ -2257,10 +2257,10 @@ class ParkerRuntime(
                         EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
                         fidelityFirstCapabilityTemplate.providerConfiguration?.configurationIdentity,
                     ),
-                    externalTranscriptionOwnerInvocationCoordinator,
+                    ::invokeExternalTranscriptionWithFreshBinding,
                 ),
                 // STEP 4G: the EML sibling, bound to its own distinct capability id and reusing
-                // this exact same, already-shared coordinator instance -- one execution pipeline,
+                // the exact same fresh-binding invocation helper -- one execution pipeline,
                 // two capability bindings. Unreachable in practice today: the capability above
                 // remains Unavailable until a separate governed acceptance decision.
                 ExternalTranscriptionAcquisitionExecutor(
@@ -2269,7 +2269,7 @@ class ParkerRuntime(
                         EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
                         emlExternalCapabilityTemplate.providerConfiguration?.configurationIdentity,
                     ),
-                    externalTranscriptionOwnerInvocationCoordinator,
+                    ::invokeExternalTranscriptionWithFreshBinding,
                 ),
             ),
         )
@@ -3137,7 +3137,7 @@ class ParkerRuntime(
         if (authorization != null && !authorization.isAuthorized(evidenceArtifactId)) {
             return ExternalTranscriptionOwnerInvocationOutcome.NotAuthorised
         }
-        return invokeExternalTranscriptionWithFreshBinding(evidenceArtifactId)
+        return invokeExternalTranscriptionWithFreshBinding(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)
     }
 
     /**
@@ -3167,14 +3167,14 @@ class ParkerRuntime(
      * call.
      */
     private suspend fun invokeExternalTranscriptionWithFreshBinding(
+        requestingPrincipalId: PrincipalId,
         evidenceArtifactId: EvidenceArtifactId,
     ): ExternalTranscriptionOwnerInvocationOutcome {
         val ledger = fidelityFirstAttemptLedger
             ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
         val credential = config.openAiApiCredential
             ?: return ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("EXECUTION_BINDING_UNAVAILABLE")
-        val ownerPrincipalId = PrincipalId(config.ownerPrincipalId)
-        val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
+        val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(requestingPrincipalId, evidenceArtifactId)) {
             is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
             is EvidenceManifestRetrievalResult.NotFound -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestNotFound(evidenceArtifactId)
             is EvidenceManifestRetrievalResult.Rejected -> return ExternalTranscriptionOwnerInvocationOutcome.ManifestRejected(evidenceArtifactId)
@@ -3225,7 +3225,7 @@ class ParkerRuntime(
             emlDurableAdmission = tierBDerivativeGenerationCoordinator,
         )
         return try {
-            when (val outcome = coordinator.invoke(ownerPrincipalId, evidenceArtifactId)) {
+            when (val outcome = coordinator.invoke(requestingPrincipalId, evidenceArtifactId)) {
                 is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> {
                     tracker.terminalSuccess(outcome.record.derivativeGenerationId.value); outcome
                 }

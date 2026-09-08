@@ -394,7 +394,7 @@ class AgentGatewayAcquisitionRequestTest {
                 )
                 ExternalTranscriptionAcquisitionExecutor(
                     AcquisitionExecutorBinding(externalCapability.capabilityId, parker.core.interfaces.EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION, externalCapability.providerConfiguration?.configurationIdentity),
-                    externalCoordinator,
+                    { principal, evidenceId -> externalCoordinator.invoke(principal, evidenceId) },
                 )
             },
         )
@@ -447,7 +447,7 @@ class AgentGatewayAcquisitionRequestTest {
                 )
                 ExternalTranscriptionAcquisitionExecutor(
                     AcquisitionExecutorBinding(externalCapability.capabilityId, parker.core.interfaces.EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION, externalCapability.providerConfiguration?.configurationIdentity),
-                    externalCoordinator,
+                    { principal, evidenceId -> externalCoordinator.invoke(principal, evidenceId) },
                 )
             },
         )

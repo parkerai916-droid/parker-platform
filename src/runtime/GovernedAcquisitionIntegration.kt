@@ -237,10 +237,13 @@ internal class LocalOcrAcquisitionExecutor(
 
 internal class ExternalTranscriptionAcquisitionExecutor(
     override val binding: AcquisitionExecutorBinding,
-    private val coordinator: ExternalTranscriptionOwnerInvocationCoordinator,
+    private val invokeGovernedExternalTranscription: suspend (PrincipalId, EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome,
 ) : BoundAcquisitionCapabilityExecutor {
     override suspend fun execute(request: GovernedAcquisitionExecutionRequest): BoundAcquisitionExecutorOutcome =
-        when (val outcome = coordinator.invoke(request.principalId, request.authoritativeSource.evidenceArtifactId)) {
+        when (val outcome = invokeGovernedExternalTranscription(
+            request.principalId,
+            request.authoritativeSource.evidenceArtifactId,
+        )) {
             is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> BoundAcquisitionExecutorOutcome.Admitted(
                 outcome.record.derivativeGenerationId, outcome.extracted.fidelity,
                 outcome.extracted.completenessState, outcome.extracted.processingProvenance,
