@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    printf 'Parker ingestion failed: %s\n' "$1" >&2
+    exit 1
+}
+
+[[ "$(hostname)" == "hermes" ]] || die "this wrapper must run on hostname hermes"
+[[ $# -ge 1 ]] || die "usage: ./parker-ingest-folder <folder> --batch <Parker-batch> --case-id <case>"
+SOURCE_FOLDER=$1
+shift
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) || die "not inside a Parker git repository"
+[[ "$REPO_ROOT" == "$SCRIPT_DIR" ]] || die "parker-ingest-folder must be in the Parker repository root"
+BATCH_ID=
+CASE_ID=
+GATEWAY_URL=${PARKER_GATEWAY_URL:-http://192.168.178.44:8090}
+ASSIGNMENT_SUFFIX='/agent/evidence/{evidenceArtifactId}/assign'
+ASSIGNMENT_ENDPOINT=${PARKER_ASSIGNMENT_ENDPOINT:-$GATEWAY_URL$ASSIGNMENT_SUFFIX}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --batch) [[ $# -ge 2 ]] || die "--batch requires a Parker-minted batch ID"; BATCH_ID=$2; shift 2 ;;
+        --case-id) [[ $# -ge 2 ]] || die "--case-id requires a local ledger/report case ID"; CASE_ID=$2; shift 2 ;;
+        --gateway) [[ $# -ge 2 ]] || die "--gateway requires a URL"; GATEWAY_URL=$2; ASSIGNMENT_ENDPOINT=${PARKER_ASSIGNMENT_ENDPOINT:-$GATEWAY_URL$ASSIGNMENT_SUFFIX}; shift 2 ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
+
+[[ -n "$BATCH_ID" ]] || die "--batch is required; Hermes will never invent a batch ID"
+[[ "$BATCH_ID" =~ ^bulk-[a-f0-9-]+$ ]] || die "--batch must be a Parker-minted batch ID"
+[[ -n "$CASE_ID" ]] || die "--case-id is required as local ledger/report metadata"
+[[ -d "$SOURCE_FOLDER" ]] || die "source folder is not a directory: $SOURCE_FOLDER"
+SOURCE_FOLDER=$(cd -- "$SOURCE_FOLDER" && pwd)
+cd "$REPO_ROOT"
+
+if [[ -z "${PARKER_AGENT_GATEWAY_TOKEN:-}" ]]; then
+    TOKEN_FILE=${HERMES_PARKER_TOKEN_FILE:-"$HOME/.hermes/parker-agent-gateway-token"}
+    [[ -f "$TOKEN_FILE" ]] || die "PARKER_AGENT_GATEWAY_TOKEN is unset and token file is missing"
+    token_mode=$(stat -c '%a' "$TOKEN_FILE" 2>/dev/null) || die "cannot inspect token file permissions"
+    (( (8#$token_mode & 0177) == 0 )) || die "Parker Agent Gateway token file permissions are broader than 0600"
+    IFS= read -r PARKER_AGENT_GATEWAY_TOKEN < "$TOKEN_FILE" || die "cannot read Parker Agent Gateway token file"
+fi
+[[ -n "${PARKER_AGENT_GATEWAY_TOKEN:-}" ]] || die "Parker Agent Gateway token is empty"
+export PARKER_AGENT_GATEWAY_TOKEN
+
+# TODO NEXT STAGE: replace manual --batch/--case-id entry with an Owner-facing
+# Parker case selection and confirmation workflow. Hermes must not select a case.
+exec python3 "$REPO_ROOT/tools/parker_bulk_ingest.py" "$SOURCE_FOLDER" --batch "$BATCH_ID" --case-id "$CASE_ID" \
+    --gateway "$GATEWAY_URL" --assignment-endpoint "$ASSIGNMENT_ENDPOINT"
