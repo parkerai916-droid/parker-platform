@@ -7,17 +7,58 @@ token stays in the Hermes process and every Parker call uses the selected opaque
 from __future__ import annotations
 
 import argparse
-import cgi
 import json
 import os
 import re
 import secrets
+from email import policy
+from email.parser import BytesParser
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SUPPORTED = {"application/pdf", "image/jpeg", "image/png", "image/webp", "text/csv", "message/rfc822"}
 MAX_FILE = 64 * 1024 * 1024
+MULTIPART_ALLOWANCE = 1024 * 1024
+
+
+class MultipartUploadError(ValueError):
+    pass
+
+
+def parse_multipart_upload(content_type: str, body: bytes):
+    """Parse one bounded browser file part without creating a server-side path."""
+    if content_type.split(";", 1)[0].strip().lower() != "multipart/form-data":
+        raise MultipartUploadError("multipart/form-data is required")
+    try:
+        envelope = (
+            b"Content-Type: " + content_type.encode("ascii") +
+            b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+        )
+        message = BytesParser(policy=policy.default).parsebytes(envelope)
+    except (UnicodeError, ValueError) as error:
+        raise MultipartUploadError("malformed multipart input") from error
+    if not message.is_multipart() or message.defects:
+        raise MultipartUploadError("malformed multipart input")
+    file_parts = []
+    for part in message.iter_parts():
+        if part.get_param("name", header="content-disposition") == "file":
+            file_parts.append(part)
+    if len(file_parts) != 1 or file_parts[0].is_multipart():
+        raise MultipartUploadError("file is missing or ambiguous")
+    part = file_parts[0]
+    if part.defects:
+        raise MultipartUploadError("malformed multipart file part")
+    raw_filename = part.get_filename()
+    if not raw_filename:
+        raise MultipartUploadError("file is missing")
+    filename = os.path.basename(raw_filename.replace("\\", "/"))
+    if not filename or filename in (".", ".."):
+        raise MultipartUploadError("file is missing")
+    data = part.get_payload(decode=True)
+    if data is None:
+        raise MultipartUploadError("malformed multipart file part")
+    return part.get_content_type().lower(), filename, data
 
 
 def parker_request(path: str, token: str, method: str = "GET", body: bytes | None = None, headers: dict[str, str] | None = None):
@@ -92,14 +133,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"status": "FAILED", "reason": "Parker READY batch discovery failed"}); return
         if batch not in {item.get("batchId") for item in ready.get("batches", [])}:
             self.send_json(200, {"status": "FAILED", "reason": "batch is not currently Parker-authorised and READY"}); return
-        length = int(self.headers.get("Content-Length", "-1"))
-        if length < 0 or length > MAX_FILE + 1024 * 1024:
+        try:
+            length = int(self.headers.get("Content-Length", "-1"))
+        except (TypeError, ValueError):
+            self.send_json(400, {"status": "FAILED", "reason": "invalid Content-Length"}); return
+        if length < 0 or length > MAX_FILE + MULTIPART_ALLOWANCE:
             self.send_json(413, {"status": "FAILED", "reason": "file is too large"}); return
         content_type = self.headers.get("Content-Type", "")
-        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD":"POST", "CONTENT_TYPE":content_type, "CONTENT_LENGTH":str(length)})
-        field = form["file"] if "file" in form else None
-        if field is None or not getattr(field, "filename", None): self.send_json(400, {"status":"FAILED", "reason":"file is missing"}); return
-        media = (field.type or "").lower(); filename = os.path.basename(field.filename); data = field.file.read(MAX_FILE + 1)
+        try:
+            request_body = self.rfile.read(length)
+            media, filename, data = parse_multipart_upload(content_type, request_body)
+        except MultipartUploadError as error:
+            self.send_json(400, {"status": "FAILED", "reason": str(error)}); return
         if media not in SUPPORTED: self.send_json(200, {"status":"UNSUPPORTED", "reason":"unsupported media type"}); return
         if len(data) > MAX_FILE: self.send_json(413, {"status":"FAILED", "reason":"file is too large"}); return
         headers = {"Content-Type": media, "X-Parker-Original-Filename": filename, "X-Parker-Ingestion-Batch-Id": batch}
