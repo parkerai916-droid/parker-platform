@@ -241,14 +241,10 @@ import java.nio.file.Path
  *   [parker.composition.OwnerEvidenceHttpServer] at all. Every existing
  *   deployment, test, and the Compose Desktop owner UI are completely
  *   unaffected unless this is explicitly set.
- * @param ownerHttpToken Owner LAN Evidence Upload. The single-owner bearer
- *   token every request to [parker.composition.OwnerEvidenceHttpServer]'s
- *   endpoints must present. Optional at the type level; [ParkerRuntimeConfigLoader.load]
- *   enforces that [ownerHttpPort] and this field are set together or not at
- *   all -- a port opened with no token, or a token configured with no port,
- *   is a startup configuration error, never a silently-anonymous server.
- *   Never logged, never returned in any response, never committed to this
- *   repository -- supplied only via environment/runtime configuration.
+ * @param ownerHttpToken Legacy Owner LAN Evidence Upload compatibility field.
+ *   It is still parsed for older environment/configuration callers, but is
+ *   not used by [parker.composition.OwnerEvidenceHttpServer]; Owner HTTP is
+ *   authenticated by [OwnerUiAuthentication]'s pairing/device/session model.
  * @param agentGatewayHttpBindAddress Parker Agent Gateway, AG-1E. The network interface
  *   [parker.composition.AgentGatewayHttpServer] binds -- structurally separate from
  *   [ownerHttpBindAddress]. **No default is provided, deliberately** (owner-review correction,
@@ -534,12 +530,10 @@ object ParkerRuntimeConfigLoader {
 
         // Owner LAN Evidence Upload. Optional and opt-in: with no
         // PARKER_OWNER_HTTP_PORT set, ownerHttpPort stays null and
-        // Main.kt never constructs OwnerEvidenceHttpServer at all --
-        // every existing deployment/test is unaffected. Once a port is
-        // set, a token becomes mandatory (and vice versa) so the
-        // feature can never come up as an anonymous LAN file drop by
-        // accident -- fail closed at startup rather than silently
-        // serving unauthenticated.
+        // Main.kt never constructs OwnerEvidenceHttpServer at all.
+        // The legacy owner HTTP token remains parseable for compatibility,
+        // but the enabled server requires the pairing/device-authentication
+        // storage root and never authenticates with that token.
         val ownerHttpBindAddress = environment[KEY_OWNER_HTTP_BIND_ADDRESS]?.takeIf { it.isNotBlank() } ?: "0.0.0.0"
         val ownerHttpPortRaw = environment[KEY_OWNER_HTTP_PORT]?.takeIf { it.isNotBlank() }
         val ownerHttpPort = ownerHttpPortRaw?.let {

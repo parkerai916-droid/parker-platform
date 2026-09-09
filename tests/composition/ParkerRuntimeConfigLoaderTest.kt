@@ -44,6 +44,8 @@ class ParkerRuntimeConfigLoaderTest {
                 Files.createTempDirectory("config-loader-test-human-fidelity-reviews").toString(),
             ParkerRuntimeConfigLoader.KEY_HUMAN_FIDELITY_GOVERNANCE_AUDIT_STORAGE_ROOT to
                 Files.createTempDirectory("config-loader-test-human-fidelity-audit").toString(),
+            ParkerRuntimeConfigLoader.KEY_OWNER_UI_AUTHENTICATION_ROOT to
+                Files.createTempDirectory("config-loader-test-owner-ui-auth").toString(),
         )
         val merged = base.toMutableMap()
         overrides.forEach { (key, value) ->
@@ -540,27 +542,29 @@ class ParkerRuntimeConfigLoaderTest {
     }
 
     @Test
-    fun `setting only PARKER_OWNER_HTTP_PORT without a token throws InvalidConfiguration`() {
-        val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "8080"))
+    fun `setting only PARKER_OWNER_HTTP_PORT without Owner UI authentication storage throws InvalidConfiguration`() {
+        val environment = fullEnvironment(overrides = mapOf(
+            ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "8080",
+            ParkerRuntimeConfigLoader.KEY_OWNER_UI_AUTHENTICATION_ROOT to null,
+        ))
 
         val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
             ParkerRuntimeConfigLoader.load(environment)
         }
-        assertEquals(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN, thrown.key)
+        assertEquals(ParkerRuntimeConfigLoader.KEY_OWNER_UI_AUTHENTICATION_ROOT, thrown.key)
     }
 
     @Test
-    fun `setting only PARKER_OWNER_HTTP_TOKEN without a port throws InvalidConfiguration`() {
+    fun `setting only legacy PARKER_OWNER_HTTP_TOKEN without a port remains parseable but does not enable Owner HTTP`() {
         val environment = fullEnvironment(overrides = mapOf(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_TOKEN to "secret-token"))
 
-        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
-            ParkerRuntimeConfigLoader.load(environment)
-        }
-        assertEquals(ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT, thrown.key)
+        val config = ParkerRuntimeConfigLoader.load(environment)
+        assertEquals(null, config.ownerHttpPort)
+        assertEquals("secret-token", config.ownerHttpToken)
     }
 
     @Test
-    fun `setting both PARKER_OWNER_HTTP_PORT and PARKER_OWNER_HTTP_TOKEN enables the feature with those exact values`() {
+    fun `setting Owner HTTP port and authentication storage enables the feature while legacy token remains compatibility data`() {
         val environment = fullEnvironment(
             overrides = mapOf(
                 ParkerRuntimeConfigLoader.KEY_OWNER_HTTP_PORT to "8080",
@@ -572,6 +576,7 @@ class ParkerRuntimeConfigLoaderTest {
 
         assertEquals(8080, config.ownerHttpPort)
         assertEquals("secret-token", config.ownerHttpToken)
+        assertEquals(environment[ParkerRuntimeConfigLoader.KEY_OWNER_UI_AUTHENTICATION_ROOT], config.ownerUiAuthenticationRootPath)
     }
 
     @Test

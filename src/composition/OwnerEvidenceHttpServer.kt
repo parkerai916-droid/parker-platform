@@ -70,14 +70,13 @@ import parker.core.runtime.OrdinaryRegionCapabilityStatus
  * Reusing the JDK's own bundled server rather than adding Ktor/Spring/etc.
  * mirrors that precedent and needs no new Gradle dependency.
  *
- * **Single-owner bearer token.** Every owner-evidence API request (except
- * the static shell page itself, which carries no evidence data) must present
- * `Authorization: Bearer <token>` matching [token] exactly, compared via
- * [constantTimeEquals] so a wrong guess cannot be narrowed by response
- * timing. There is no per-request client-supplied principal anywhere in
- * this class -- every call into [operations] resolves the owner identity
- * [OwnerUiEvidenceRuntimeAdapter] was itself already constructed with, the
- * same structural guarantee the Compose Desktop UI already has.
+ * **Paired owner device/session authentication.** Owner-evidence API requests
+ * require an authenticated [OwnerUiAuthentication] session cookie, or a
+ * valid paired device-id/device-credential cookie pair from which this server
+ * establishes a short-lived session. Pairing is one-time and host-administered;
+ * there is no bearer-token or caller-supplied principal path. Every call into
+ * [operations] therefore resolves the owner identity that
+ * [OwnerUiEvidenceRuntimeAdapter] was constructed with.
  *
  * **Never a second evidence-ingress mechanism.** This class never writes
  * Evidence Custodian storage directly and never calls Tier A/B logic

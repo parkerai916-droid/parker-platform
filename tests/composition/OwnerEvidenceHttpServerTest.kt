@@ -129,7 +129,6 @@ class OwnerEvidenceHttpServerTest {
 
     private fun startHarness(
         doclingBridgeScriptPath: String,
-        tokenOverride: String = token,
         modelEndpointUrl: String = "http://127.0.0.1:1/api/generate",
         externalReadiness: () -> EnhancedTranscriptionReadiness = { EnhancedTranscriptionReadiness.Disabled },
         invokeExternal: suspend (EvidenceArtifactId) -> ExternalTranscriptionOwnerInvocationOutcome = { ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed("disabled") },
@@ -251,11 +250,11 @@ class OwnerEvidenceHttpServerTest {
             val body = "{\"profileId\":\"full-page-achromatic-png-preparation-v1\",\"profileVersion\":\"1\"}"
             assertEquals(401, send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.ofString(body)).build()).statusCode())
             assertEquals(0, calls)
-            val response = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val response = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build())
             assertEquals(409, response.statusCode(), response.body()); assertEquals(1, calls)
             assertTrue(response.body().contains("SYNTHETIC_FAIL_CLOSED"))
-            val extra = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val extra = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString(body.dropLast(1) + ",\"executionId\":\"forbidden\"}")).build())
             assertEquals(400, extra.statusCode()); assertEquals(1, calls)
         } finally { harness.shutdown() }
@@ -287,7 +286,8 @@ class OwnerEvidenceHttpServerTest {
         val builder = HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence"))
             .header("Content-Type", "multipart/form-data; boundary=$boundary")
             .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-        if (authToken != null) builder.header("Authorization", "Bearer $authToken")
+        if (authToken == token) builder.header("Cookie", pairedCookie(harness))
+        else if (authToken != null) builder.header("Cookie", "ParkerOwnerSession=invalid-session")
         return builder.build()
     }
 
@@ -300,19 +300,19 @@ class OwnerEvidenceHttpServerTest {
         try {
             val uri = URI.create(harness.baseUri() + "/owner/evidence")
             assertEquals(401, send(HttpRequest.newBuilder(uri).GET().build()).statusCode())
-            val empty = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
+            val empty = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness)).GET().build())
             assertEquals(200, empty.statusCode()); assertTrue(empty.body().contains("\"evidence\":[]"))
 
             val bytes = "durable-list-route".toByteArray()
             val upload = send(uploadRequest(harness, listOf(UploadPart("files", "before-reload.pdf", "application/pdf", bytes))))
             assertEquals(200, upload.statusCode())
             val id = Regex("evidence-[0-9a-f-]{36}").find(upload.body())!!.value
-            val listed = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
+            val listed = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness)).GET().build())
             assertEquals(200, listed.statusCode())
             assertTrue(listed.body().contains(id)); assertTrue(listed.body().contains("\"byteLength\":${bytes.size}"))
             assertTrue(listed.body().contains("application/pdf"))
 
-            val page = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val page = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(page.contains("loadExistingEvidence();"))
             assertTrue(page.contains("Refresh existing evidence"))
             assertTrue(page.contains("Durably registered evidence"))
@@ -340,13 +340,13 @@ class OwnerEvidenceHttpServerTest {
             val uri = URI.create("${harness.baseUri()}/owner/evidence/$evidenceId/execute-region-transcription")
             assertEquals(401, send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.noBody()).build()).statusCode())
             assertEquals(0, calls)
-            val override = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val override = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString("{\"provider\":\"caller\",\"model\":\"caller\"}")).build())
             assertEquals(400, override.statusCode()); assertEquals(0, calls)
-            val execute = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val execute = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.noBody()).build())
             assertEquals(200, execute.statusCode()); assertEquals(1, calls)
-            val page = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val page = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(page.contains("Execute external transcription"))
             assertTrue(page.contains("This action initiates the authorized external transcription"))
             assertTrue(page.contains("if (!confirmed) return"))
@@ -368,8 +368,8 @@ class OwnerEvidenceHttpServerTest {
         try {
             val uri = URI.create(harness.baseUri() + "/owner/admin/region-capability-acceptance")
             assertEquals(401, send(HttpRequest.newBuilder(uri).GET().build()).statusCode()); assertEquals(0, calls)
-            val first = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
-            val second = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token").GET().build())
+            val first = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness)).GET().build())
+            val second = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness)).GET().build())
             assertEquals(200, first.statusCode()); assertEquals(2, calls)
             assertTrue(first.body().contains("CAPABILITY_NOT_ACCEPTED"))
             assertTrue(first.body().contains("openai-responses-region-transcription-adapter"))
@@ -389,20 +389,20 @@ class OwnerEvidenceHttpServerTest {
             val body = "{\"capabilityId\":\"$ORDINARY_REGION_CAPABILITY_ID\",\"promotingBuildCommit\":\"${"a".repeat(40)}\"}"
             assertEquals(401, send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.ofString(body)).build()).statusCode())
             assertEquals(0, calls)
-            val response = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val response = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build())
             assertEquals(409, response.statusCode()); assertEquals(1, calls)
             assertEquals(ORDINARY_REGION_CAPABILITY_ID, request?.capabilityId)
             assertTrue(response.body().contains("SYNTHETIC_GOVERNED_BLOCK"))
             val v8Body = "{\"capabilityId\":\"$ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID\",\"promotingBuildCommit\":\"${"b".repeat(40)}\"}"
-            val v8Response = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val v8Response = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString(v8Body)).build())
             assertEquals(409, v8Response.statusCode()); assertEquals(2, calls)
             assertEquals(ORDINARY_REQUEST_REGION_V8_CAPABILITY_ID, request?.capabilityId)
-            val unknown = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val unknown = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString("{\"capabilityId\":\"unknown\",\"promotingBuildCommit\":\"${"c".repeat(40)}\"}")).build())
             assertEquals(400, unknown.statusCode()); assertEquals(2, calls)
-            val arbitrary = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val arbitrary = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString("{\"capabilityId\":\"$ORDINARY_REGION_CAPABILITY_ID\",\"promotingBuildCommit\":\"${"a".repeat(40)}\",\"evidence\":[\"${"f".repeat(64)}\"]}" )).build())
             assertEquals(400, arbitrary.statusCode()); assertEquals(2, calls)
         } finally { harness.shutdown() }
@@ -420,7 +420,7 @@ class OwnerEvidenceHttpServerTest {
             val uri = URI.create(harness.baseUri() + "/owner/evidence/acceptance-executions/authority-synthetic")
             val unauthorised = send(HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.noBody()).build())
             assertEquals(401, unauthorised.statusCode()); assertEquals(0, calls)
-            val authorised = send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer $token")
+            val authorised = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.ofString("{\"evidenceArtifactId\":\"caller-override\",\"model\":\"caller-override\"}")).build())
             assertEquals(409, authorised.statusCode()); assertEquals(1, calls); assertEquals("authority-synthetic", authority)
             assertTrue(authorised.body().contains("SYNTHETIC_PREFLIGHT_BLOCK"))
@@ -438,16 +438,16 @@ class OwnerEvidenceHttpServerTest {
             invokeExternal = { id -> calls++; invokedId = id; externalAdmitted(id) },
         )
         try {
-            val root = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val root = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             assertTrue(root.body().contains("Run local OCR")); assertTrue(root.body().contains("Run enhanced transcription"))
             assertTrue(root.body().contains("selectedForAnalysis: false")); assertEquals(0, calls)
 
-            val readiness = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/transcription-readiness")).header("Authorization", "Bearer $token").GET().build())
+            val readiness = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/transcription-readiness")).header("Cookie", pairedCookie(harness)).GET().build())
             assertTrue(readiness.body().contains("READY")); assertEquals(0, calls)
 
             val evidenceId = EvidenceArtifactId("evidence-route-exact")
             val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/${evidenceId.value}/transcribe-external?evidenceArtifactId=replacement"))
-                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.ofString("{\"evidenceArtifactId\":\"replacement\",\"secret\":\"$sentinel\"}")).build())
+                .header("Cookie", pairedCookie(harness)).POST(HttpRequest.BodyPublishers.ofString("{\"evidenceArtifactId\":\"replacement\",\"secret\":\"$sentinel\"}")).build())
             assertEquals(200, response.statusCode()); assertEquals(1, calls); assertEquals(evidenceId, invokedId)
             assertTrue(response.body().contains("generation-external-unit-k")); assertTrue(response.body().contains("Machine transcription — unverified"))
             assertTrue(root.body().contains("Fluent machine transcription may contain plausible text that is inconsistent with the source."))
@@ -456,10 +456,10 @@ class OwnerEvidenceHttpServerTest {
             assertFalse(response.body().contains(sentinel))
 
             val malformed = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/bad%20id/transcribe-external"))
-                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build())
+                .header("Cookie", pairedCookie(harness)).POST(HttpRequest.BodyPublishers.noBody()).build())
             assertEquals(400, malformed.statusCode()); assertEquals(1, calls)
             val get = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/${evidenceId.value}/transcribe-external"))
-                .header("Authorization", "Bearer $token").GET().build())
+                .header("Cookie", pairedCookie(harness)).GET().build())
             assertEquals(404, get.statusCode()); assertEquals(1, calls)
         } finally { harness.shutdown() }
     }
@@ -468,7 +468,7 @@ class OwnerEvidenceHttpServerTest {
     fun `analysis request carries exact unverified acknowledgement and UI never preselects it`() {
         val page = startHarness("")
         try {
-            val root = send(HttpRequest.newBuilder(URI.create(page.baseUri() + "/")).GET().build()).body()
+            val root = send(HttpRequest.newBuilder(URI.create(page.baseUri() + "/" )).header("Cookie", pairedCookie(page)).GET().build()).body()
             assertTrue(root.contains("acknowledgesUnverifiedExternalTranscription"))
             assertTrue(root.contains("I acknowledge this exact unverified machine transcription"))
             assertTrue(root.contains("selectedForAnalysis: false"))
@@ -482,7 +482,7 @@ class OwnerEvidenceHttpServerTest {
         val harness = startHarness("", externalReadiness = { EnhancedTranscriptionReadiness.Disabled }, invokeExternal = { calls++; error("must not run") })
         try {
             val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/evidence-one/transcribe-external"))
-                .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build())
+                .header("Cookie", pairedCookie(harness)).POST(HttpRequest.BodyPublishers.noBody()).build())
             assertEquals(409, response.statusCode()); assertTrue(response.body().contains("DISABLED")); assertEquals(0, calls)
         } finally { harness.shutdown() }
     }
@@ -497,10 +497,10 @@ class OwnerEvidenceHttpServerTest {
             val harness = startHarness("", externalReadiness = { readiness }, invokeExternal = { calls++; error("must not run") })
             try {
                 val status = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/transcription-readiness"))
-                    .header("Authorization", "Bearer $token").GET().build())
+                    .header("Cookie", pairedCookie(harness)).GET().build())
                 assertTrue(status.body().contains(expected))
                 val action = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/evidence-one/transcribe-external"))
-                    .header("Authorization", "Bearer $token").POST(HttpRequest.BodyPublishers.noBody()).build())
+                    .header("Cookie", pairedCookie(harness)).POST(HttpRequest.BodyPublishers.noBody()).build())
                 assertEquals(409, action.statusCode()); assertEquals(0, calls)
             } finally { harness.shutdown() }
         }
@@ -510,23 +510,25 @@ class OwnerEvidenceHttpServerTest {
     fun `governed acquisition GET is authenticated zero-execution and POST is exact and stale protected`() = runTest {
         val harness = startHarness("")
         try {
-            val upload = send(uploadRequest(harness, listOf(UploadPart("files", "synthetic.csv", "text/csv", "name,value\na,1\n".toByteArray()))))
+            val upload = send(uploadRequest(harness, listOf(UploadPart(
+                "files", "synthetic.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("01-searchable-simple.pdf")),
+            ))))
             val id = requireNotNull(extractField(upload.body(), "evidenceArtifactId"))
             val unauthorised = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition")).GET().build())
             assertEquals(401, unauthorised.statusCode())
             val decision = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition"))
-                .header("Authorization", "Bearer $token").GET().build())
-            assertEquals(200, decision.statusCode()); assertEquals("SELECTED", extractField(decision.body(), "status"))
-            assertTrue(decision.body().contains("Native text extraction")); assertTrue(decision.body().contains("externalEgressRequired\":false"))
+                .header("Cookie", pairedCookie(harness)).GET().build())
+            assertEquals(200, decision.statusCode()); assertEquals("NO_ELIGIBLE_CAPABILITY", extractField(decision.body(), "status"))
+            assertTrue(decision.body().contains("EXTERNAL_EGRESS_NOT_AUTHORISED"))
             val stale = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
-                .header("Authorization", "Bearer $token").header("Content-Type", "application/json")
+                .header("Cookie", pairedCookie(harness)).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"wrong-capability\"}")).build())
             assertEquals(409, stale.statusCode()); assertEquals("STALE_DECISION", extractField(stale.body(), "status"))
             val execute = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
-                .header("Authorization", "Bearer $token").header("Content-Type", "application/json")
+                .header("Cookie", pairedCookie(harness)).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"parker-tier-a-native-v1\"}")).build())
-            assertEquals(200, execute.statusCode()); assertEquals("COMPLETED", extractField(execute.body(), "status"))
-            assertTrue(execute.body().contains("derivativeGenerationId")); assertTrue(execute.body().contains("UNREVIEWED"))
+            assertEquals(409, execute.statusCode())
+            assertEquals("STALE_DECISION", extractField(execute.body(), "status"))
         } finally { harness.shutdown() }
     }
 
@@ -803,11 +805,11 @@ class OwnerEvidenceHttpServerTest {
     fun `owner page presents governed primary action warnings and labels compatibility controls`() {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            assertTrue(body.contains("Acquire machine-readable representation"))
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("Process document"))
             assertTrue(body.contains("Legacy/manual specialist operation"))
             assertTrue(body.contains("bd.disabled = true"))
-            assertTrue(body.contains("external.disabled = true"))
+            assertTrue(body.contains("external.disabled = !(ready && authorized)"))
             assertTrue(body.contains("Machine transcription — unverified"))
             assertTrue(body.contains("Fluent machine transcription may contain plausible text that is inconsistent with the source."))
             listOf("best evidence", "preferred evidence", "high-quality evidence").forEach { assertFalse(body.contains(it, true)) }
@@ -882,7 +884,7 @@ class OwnerEvidenceHttpServerTest {
     // ================= Authentication =================
 
     @Test
-    fun `an upload request with no Authorization header is rejected and nothing is imported`() = runTest {
+    fun `an upload request with no Owner session is rejected and nothing is imported`() = runTest {
         val harness = startHarness("")
         try {
             val response = send(
@@ -899,7 +901,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `an upload request with the wrong token is rejected`() = runTest {
+    fun `an upload request with an invalid Owner session credential is rejected`() = runTest {
         val harness = startHarness("")
         try {
             val response = send(
@@ -1035,7 +1037,7 @@ class OwnerEvidenceHttpServerTest {
             val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
 
             val processRequest = HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/process"))
-                .header("Authorization", "Bearer $token")
+                .header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build()
             val processResponse = send(processRequest)
@@ -1063,7 +1065,7 @@ class OwnerEvidenceHttpServerTest {
             val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
 
             val processRequest = HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/process"))
-                .header("Authorization", "Bearer $token")
+                .header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build()
             val processResponse = send(processRequest)
@@ -1088,7 +1090,7 @@ class OwnerEvidenceHttpServerTest {
 
             fun post(path: String) = send(
                 HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
-                    .header("Authorization", "Bearer $token")
+                    .header("Cookie", pairedCookie(harness))
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build(),
             )
@@ -1108,7 +1110,7 @@ class OwnerEvidenceHttpServerTest {
         val harness = startHarness("")
         try {
             val processRequest = HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/evidence-never-registered/process"))
-                .header("Authorization", "Bearer $token")
+                .header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build()
             val response = send(processRequest)
@@ -1135,7 +1137,7 @@ class OwnerEvidenceHttpServerTest {
             val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
 
             val processRequest = HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/process"))
-                .header("Authorization", "Bearer $token")
+                .header("Cookie", pairedCookie(harness))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build()
             val processResponse = send(processRequest)
@@ -1170,7 +1172,7 @@ class OwnerEvidenceHttpServerTest {
 
             val processResponse = send(
                 HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/process"))
-                    .header("Authorization", "Bearer $token")
+                    .header("Cookie", pairedCookie(harness))
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build(),
             )
@@ -1191,7 +1193,7 @@ class OwnerEvidenceHttpServerTest {
         try {
             val response = send(
                 HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/evidence-never-registered/process"))
-                    .header("Authorization", "Bearer $token")
+                    .header("Cookie", pairedCookie(harness))
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build(),
             )
@@ -1259,29 +1261,28 @@ class OwnerEvidenceHttpServerTest {
 
     private fun post(harness: Harness, path: String): HttpResponse<String> = send(
         HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
-            .header("Authorization", "Bearer $token")
+            .header("Cookie", pairedCookie(harness))
             .POST(HttpRequest.BodyPublishers.noBody())
             .build(),
     )
 
     private fun get(harness: Harness, path: String, authToken: String? = token): HttpResponse<String> {
         val builder = HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path")).GET()
-        if (authToken != null) builder.header("Authorization", "Bearer $authToken")
+        if (authToken == token) builder.header("Cookie", pairedCookie(harness))
+        else if (authToken != null) builder.header("Cookie", "ParkerOwnerSession=invalid-session")
         return send(builder.build())
     }
 
     /**
-     * UI-INGESTION-8: [get]'s `Authorization: Bearer` scheme predates the real owner
-     * device-pairing authentication ([OwnerUiAuthentication]) that [isAuthorised] on the server
-     * now actually checks -- a paired-device session cookie is the only credential the server
-     * itself accepts. Used for every new test in this unit that needs a genuinely authenticated
-     * request.
+     * UI-INGESTION-8: a paired-device session cookie is the only credential the
+     * server accepts. Used for every test in this unit that needs a genuinely
+     * authenticated request.
      */
     private fun getPaired(harness: Harness, path: String): HttpResponse<String> = send(
         HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path")).header("Cookie", pairedCookie(harness)).GET().build(),
     )
 
-    /** CASE-1: a genuinely authenticated (paired-cookie, never the stale Bearer-token scheme) POST, mirroring [getPaired]'s own real-authentication discipline. */
+    /** CASE-1: a genuinely authenticated paired-cookie POST. */
     private fun postPaired(harness: Harness, path: String, body: String): HttpResponse<String> = send(
         HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
             .header("Cookie", pairedCookie(harness)).header("Content-Type", "application/json")
@@ -1292,7 +1293,8 @@ class OwnerEvidenceHttpServerTest {
         val builder = HttpRequest.newBuilder(URI.create("${harness.baseUri()}$path"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-        if (authToken != null) builder.header("Authorization", "Bearer $authToken")
+        if (authToken == token) builder.header("Cookie", pairedCookie(harness))
+        else if (authToken != null) builder.header("Cookie", "ParkerOwnerSession=invalid-session")
         return send(builder.build())
     }
 
@@ -1534,10 +1536,10 @@ class OwnerEvidenceHttpServerTest {
     // ================= Static page =================
 
     @Test
-    fun `the root page is served without authentication and contains the upload controls`() = runTest {
+    fun `the authenticated root page contains the upload controls`() = runTest {
         val harness = startHarness("")
         try {
-            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             assertEquals(200, response.statusCode())
             assertTrue(response.body().contains("Select"))
         } finally {
@@ -1549,7 +1551,7 @@ class OwnerEvidenceHttpServerTest {
     fun `the served page offers a View Extracted Content action for a completed Tier A row`() = runTest {
         val harness = startHarness("")
         try {
-            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             val body = response.body()
             assertTrue(body.contains("View Extracted Content"), "the page must offer an explicit action to view extracted content")
             assertTrue(
@@ -1566,7 +1568,7 @@ class OwnerEvidenceHttpServerTest {
     fun `governed acquisition result becomes viewable and presents provenance layers separately`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains("row.derivativeGenerationId = result.derivativeGenerationId"))
             assertTrue(body.contains("row.message = 'Governed transcription available'"))
             assertTrue(body.contains("Raw provider representation"))
@@ -1638,7 +1640,7 @@ class OwnerEvidenceHttpServerTest {
     fun `the served page never renders extracted text or metadata via innerHTML -- only textContent, closing off HTML or script injection`() = runTest {
         val harness = startHarness("")
         try {
-            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             val body = response.body()
             // pre.textContent = ... / td2.textContent = ... etc. is how extracted content actually
             // reaches the DOM; the only innerHTML uses in the whole page are the two fixed, unrelated
@@ -1652,102 +1654,88 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
-    // ================= Remember Owner Token On This Device =================
-    //
-    // A browser convenience only -- never sent to or read from the server. Every assertion here
-    // inspects the served page's own static HTML/JS source (never a real production token), since
-    // localStorage itself is a browser-side concern this JDK HttpClient-based test suite has no
-    // DOM to exercise directly.
+    // ================= Owner device/session browser authentication =================
 
     @Test
-    fun `the served page offers an explicit Remember token checkbox and a trusted-device warning`() = runTest {
+    fun `an unauthenticated browser receives only the pairing page`() = runTest {
         val harness = startHarness("")
         try {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            assertTrue(body.contains("id=\"rememberToken\""), "an explicit Remember-token checkbox must be present")
-            assertTrue(body.contains("Remember token on this device"))
-            assertTrue(body.contains("Use only on a trusted device."), "the trusted-device warning must be present near the checkbox")
+            assertTrue(body.contains("Pair this owner device"))
+            assertTrue(body.contains("id=\"pairingCode\""))
+            assertTrue(body.contains("/owner/pair"))
+            assertTrue("Parker Owner Evidence Upload" !in body)
         } finally {
             harness.shutdown()
         }
     }
 
     @Test
-    fun `the served page uses localStorage with a Parker-specific storage key, never cookies or the URL`() = runTest {
+    fun `the authenticated browser page uses same-origin session credentials and no local token storage`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            assertTrue(body.contains("TOKEN_STORAGE_KEY = 'parker.ownerHttpToken'"), "storage key must be Parker-specific and narrowly named")
-            assertTrue(body.contains("localStorage.setItem(TOKEN_STORAGE_KEY"))
-            assertTrue(body.contains("localStorage.getItem(TOKEN_STORAGE_KEY"))
-            assertTrue("document.cookie" !in body, "the token must never be persisted via cookies")
-            assertTrue("sessionStorage" !in body, "the token must never be persisted via sessionStorage")
-            assertTrue("indexedDB" !in body && "IndexedDB" !in body, "the token must never be persisted via IndexedDB")
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("credentials: 'same-origin'"))
+            assertTrue("localStorage" !in body)
+            assertTrue("sessionStorage" !in body)
+            assertTrue("'Authorization':" !in body)
+            assertTrue("Bearer " !in body)
         } finally {
             harness.shutdown()
         }
     }
 
     @Test
-    fun `a remembered token is restored into the field and the checkbox starts checked`() = runTest {
+    fun `the pairing page does not restore or persist reusable credentials`() = runTest {
         val harness = startHarness("")
         try {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            assertTrue(body.contains("function restoreRememberedToken"))
-            assertTrue(body.contains("document.getElementById('token').value = remembered"))
-            assertTrue(body.contains("document.getElementById('rememberToken').checked = true"))
-            assertTrue(body.contains("restoreRememberedToken();"), "restoration must actually run on page load, not merely be defined")
+            assertTrue(body.contains("autocomplete=\"one-time-code\""))
+            assertTrue("localStorage" !in body)
+            assertTrue("document.cookie" !in body)
         } finally {
             harness.shutdown()
         }
     }
 
     @Test
-    fun `unchecking Remember removes the persisted token without clearing the input field`() = runTest {
+    fun `the authenticated page exposes logout without exposing credential storage controls`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            val handler = requireNotNull(
-                Regex("""function onRememberToggled\(\) \{.*?\n\}""", RegexOption.DOT_MATCHES_ALL).find(body),
-            ) { "expected an onRememberToggled handler" }.value
-            assertTrue(handler.contains("localStorage.removeItem(TOKEN_STORAGE_KEY)"))
-            assertTrue(
-                "getElementById('token').value = ''" !in handler && "getElementById(\"token\").value = ''" !in handler,
-                "unchecking Remember must not clear the currently entered token from the input field",
-            )
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("id=\"logoutButton\""))
+            assertTrue(body.contains("/owner/logout"))
+            assertTrue("rememberToken" !in body)
         } finally {
             harness.shutdown()
         }
     }
 
     @Test
-    fun `editing the token while Remember is checked updates the persisted value`() = runTest {
+    fun `the authenticated page has no token input or browser persistence handlers`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            assertTrue(body.contains("function onTokenFieldInput"))
-            assertTrue(body.contains("addEventListener('input', onTokenFieldInput)"))
-            val handler = requireNotNull(
-                Regex("""function onTokenFieldInput\(\) \{.*?\n\}""", RegexOption.DOT_MATCHES_ALL).find(body),
-            ) { "expected an onTokenFieldInput handler" }.value
-            assertTrue(handler.contains("localStorage.setItem(TOKEN_STORAGE_KEY"), "editing the token while Remember is checked must update the persisted value, enabling rotation")
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue("id=\"token\"" !in body)
+            assertTrue("onTokenFieldInput" !in body)
+            assertTrue("localStorage" !in body)
         } finally {
             harness.shutdown()
         }
     }
 
     @Test
-    fun `the Authorization header still reads from the token input field, and remembering never bypasses authentication`() = runTest {
+    fun `browser requests use same-origin cookies and unauthenticated requests remain denied`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            assertTrue(
-                body.contains("'Authorization': 'Bearer ' + document.getElementById('token').value"),
-                "authHeaders() must be unchanged: still Bearer <the current token field value>",
-            )
-
-            // Remembering is a browser-side convenience only -- the server side of authentication is
-            // untouched by this unit; a real request with no/wrong token is still rejected.
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("function authHeaders()"))
+            assertTrue("'Authorization':" !in body)
+            assertTrue("Bearer " !in body)
             val unauthorised = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence")).POST(HttpRequest.BodyPublishers.noBody()).build())
             assertEquals(401, unauthorised.statusCode())
         } finally {
@@ -1760,23 +1748,21 @@ class OwnerEvidenceHttpServerTest {
         val harness = startHarness("")
         try {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            // The server-configured owner token (`token` in startHarness) must not appear anywhere in
-            // the served page -- the page only ever reads whatever the owner has typed/restored
-            // client-side, never a value the server itself knows or injects.
-            assertTrue(token !in body, "the real server-side owner token must never be embedded in server-generated HTML")
+            assertTrue(token !in body, "the legacy server-side token must never be embedded in server-generated HTML")
             assertTrue("?token=" !in body && "&token=" !in body, "the token must never be placed in a URL query parameter")
-            assertTrue(body.contains("id=\"token\" placeholder="), "the token field must remain owner-entered, not server-populated")
+            assertTrue(body.contains("id=\"pairingCode\""))
         } finally {
             harness.shutdown()
         }
     }
 
     @Test
-    fun `the token field is type password, and existing Upload, Process, Run OCR, and View Extracted Content actions remain structurally intact`() = runTest {
+    fun `the authenticated page retains Owner UI actions without a token field`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
-            assertTrue(body.contains("<input type=\"password\" id=\"token\""), "the token field must be type=password")
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue("id=\"token\"" !in body)
             assertTrue(body.contains("id=\"uploadButton\""))
             assertTrue(body.contains("processRow(index)"))
             assertTrue(body.contains("ocrRow(index)"))
@@ -1798,8 +1784,8 @@ class OwnerEvidenceHttpServerTest {
     // substring rather than parsed out of the page with a regex, since the page's source is fully
     // under this repository's own control and a literal check is far less fragile than trying to
     // structurally re-parse JavaScript out of an HTML/JS test fixture.
-    private val processRenderCondition = "if (row.status === 'IMPORTED' || row.status === 'READY_TO_PROCESS') {"
-    private val ocrRenderCondition = "} else if (row.status === 'REQUIRES_OCR') {"
+    private val processRenderCondition = "acquire.textContent = 'Process document';"
+    private val ocrRenderCondition = "if (row.status === 'REQUIRES_OCR') {"
     private val durableOcrRenderCondition = "if (row.status === 'REQUIRES_OCR' || row.status === 'COMPLETE') {"
     private val tierAAnalysisEligibility = "row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId"
     private val tierBAnalysisEligibility = "row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId"
@@ -1814,7 +1800,7 @@ class OwnerEvidenceHttpServerTest {
             assertEquals(200, uploadResponse.statusCode())
             assertEquals("IMPORTED", extractField(uploadResponse.body(), "status"))
 
-            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             assertTrue(
                 pageResponse.body().contains(processRenderCondition),
                 "the Process button's render condition must include the real, server-sent 'IMPORTED' status, not only 'READY_TO_PROCESS'",
@@ -1828,7 +1814,7 @@ class OwnerEvidenceHttpServerTest {
     fun `READY_TO_PROCESS remains a processable status in the page's render logic`() = runTest {
         val harness = startHarness("")
         try {
-            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             // The Process-button condition (the `if` guarding the `processRow` click handler) must
             // still reference READY_TO_PROCESS, in case any future response ever uses that name.
             assertTrue(
@@ -1844,7 +1830,7 @@ class OwnerEvidenceHttpServerTest {
     fun `IMPORT_FAILED is never treated as processable in the page's render logic`() = runTest {
         val harness = startHarness("")
         try {
-            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             assertTrue(
                 "row.status === 'IMPORT_FAILED'" !in pageResponse.body(),
                 "IMPORT_FAILED must never appear as a condition satisfying the Process-button render logic",
@@ -1858,7 +1844,7 @@ class OwnerEvidenceHttpServerTest {
     fun `REQUIRES_OCR renders only the Run OCR action, never Process, in the page's render logic`() = runTest {
         val harness = startHarness("")
         try {
-            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val pageResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             val body = pageResponse.body()
             assertTrue(
                 !processRenderCondition.contains("REQUIRES_OCR") && body.contains(ocrRenderCondition),
@@ -1873,7 +1859,7 @@ class OwnerEvidenceHttpServerTest {
     fun `REQUIRES_OCR shows the explicit durable OCR action`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains(durableOcrRenderCondition))
             assertTrue(body.contains("bd.textContent = 'Run local OCR (Durable)'"))
         } finally {
@@ -1885,7 +1871,7 @@ class OwnerEvidenceHttpServerTest {
     fun `transient COMPLETE still shows durable OCR but does not satisfy analysis eligibility`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains(durableOcrRenderCondition), "COMPLETE must retain the explicit durable OCR action")
             assertTrue("row.status === 'COMPLETE' && row.ocrDerivativeGenerationId" !in body)
             assertTrue("row.status === 'COMPLETE' && row.derivativeGenerationId" !in body)
@@ -1898,7 +1884,7 @@ class OwnerEvidenceHttpServerTest {
     fun `durable Tier B with a real generation id is the sole Tier B analysis eligibility path`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains(tierBAnalysisEligibility))
             assertTrue(body.contains("derivativeGenerationId: row.ocrDerivativeGenerationId"))
             assertTrue(body.contains("acknowledgesUnverifiedExternalTranscription: !!row.acknowledgesUnverifiedExternalTranscription"))
@@ -1911,7 +1897,7 @@ class OwnerEvidenceHttpServerTest {
     fun `Tier A analysis eligibility remains unchanged`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains(tierAAnalysisEligibility))
             assertTrue(body.contains("selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.derivativeGenerationId })"))
         } finally {
@@ -1923,7 +1909,7 @@ class OwnerEvidenceHttpServerTest {
     fun `Unit L each analysable row submits its own evidence and generation pair without evidence-level inference`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains("rows.forEach(row => {"))
             assertTrue(body.contains("if (!row.selectedForAnalysis) return;"))
             assertTrue(body.contains("rows.push({"), "a later durable generation must remain a separate visible row")
@@ -2091,7 +2077,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `the durable ocr endpoint rejects the wrong token`() = runTest {
+    fun `the durable ocr endpoint rejects an invalid session credential`() = runTest {
         val harness = startHarness("")
         try {
             val uploadResponse = send(uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))))
@@ -2099,7 +2085,7 @@ class OwnerEvidenceHttpServerTest {
 
             val response = send(
                 HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/ocr-durable"))
-                    .header("Authorization", "Bearer wrong-token")
+                    .header("Cookie", "ParkerOwnerSession=invalid-session")
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build(),
             )
@@ -3007,7 +2993,7 @@ class OwnerEvidenceHttpServerTest {
     // ================= Minimum Production Document Pipeline -- Local Reasoning Implementation =================
 
     @Test
-    fun `M an analyse request with no Authorization header is rejected with 401`() = runTest {
+    fun `M an analyse request with no Owner session is rejected with 401`() = runTest {
         val harness = startHarness("")
         try {
             val response = postJson(
@@ -3022,7 +3008,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `M an analyse request with the wrong token is rejected with 401`() = runTest {
+    fun `M an analyse request with an invalid Owner session credential is rejected with 401`() = runTest {
         val harness = startHarness("")
         try {
             val response = postJson(
@@ -3136,7 +3122,7 @@ class OwnerEvidenceHttpServerTest {
     fun `S the served page selects and renders analysis results via textContent only, never innerHTML, for owner- or model-controlled content`() = runTest {
         val harness = startHarness("")
         try {
-            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build())
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build())
             val body = response.body()
             assertTrue(body.contains("id=\"analysisInstruction\""), "the page must offer an instruction input for document analysis")
             assertTrue(body.contains("id=\"analyseButton\""), "the page must offer one explicit Analyse action")
@@ -3441,7 +3427,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `R a save-analysis request with no Authorization header is rejected with 401`() = runTest {
+    fun `R a save-analysis request with no Owner session is rejected with 401`() = runTest {
         val harness = startHarness("")
         try {
             assertEquals(401, postJson(harness, "/owner/saved-analyses", """{"pendingAnalysisId":"x"}""", authToken = null).statusCode())
@@ -3453,7 +3439,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `S a save-analysis request with the wrong token is rejected with 401`() = runTest {
+    fun `S a save-analysis request with an invalid Owner session credential is rejected with 401`() = runTest {
         val harness = startHarness("")
         try {
             assertEquals(401, postJson(harness, "/owner/saved-analyses", """{"pendingAnalysisId":"x"}""", authToken = "wrong-token").statusCode())
@@ -3510,7 +3496,7 @@ class OwnerEvidenceHttpServerTest {
     fun `Q the served page renders retrieved saved analyses via textContent only, never innerHTML`() = runTest {
         val harness = startHarness("")
         try {
-            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).GET().build()).body()
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains("id=\"savedAnalysisRows\""), "the page must offer a saved-analyses listing area")
             assertTrue(body.contains("id=\"savedAnalysisDetail\""), "the page must offer a saved-analysis detail area")
             assertTrue(body.contains("saveButton.onclick = saveCurrentAnalysis"), "the page must offer an explicit Save Analysis action")

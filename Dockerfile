@@ -179,7 +179,7 @@ USER parker
 # Owner LAN Evidence Upload. Documentation only -- EXPOSE does not itself
 # publish anything; docker-compose.yml's own `ports:` mapping is what
 # actually makes this reachable from the LAN, and only once
-# PARKER_OWNER_HTTP_PORT/PARKER_OWNER_HTTP_TOKEN are both set (the feature
+# PARKER_OWNER_HTTP_PORT and PARKER_OWNER_UI_AUTHENTICATION_ROOT are set (the feature
 # is opt-in and off by default; see docker-compose.yml's own comment).
 EXPOSE 8080
 

@@ -172,9 +172,10 @@ fun main(args: Array<String>) = runBlocking {
         exitProcess(1)
     }
 
-    // Owner LAN Evidence Upload. Opt-in: only constructed when both PARKER_OWNER_HTTP_PORT and
-    // PARKER_OWNER_HTTP_TOKEN are set (ParkerRuntimeConfigLoader enforces they are set together
-    // or not at all). Reuses the exact same OwnerEvidenceOperations seam the Compose Desktop
+    // Owner LAN Evidence Upload. Opt-in: constructed only when PARKER_OWNER_HTTP_PORT is set;
+    // ParkerRuntimeConfigLoader requires PARKER_OWNER_UI_AUTHENTICATION_ROOT for any enabled listener.
+    // PARKER_OWNER_HTTP_TOKEN remains a legacy parsed field but
+    // is not consumed by Owner HTTP authentication. Reuses the exact same OwnerEvidenceOperations seam the Compose Desktop
     // owner UI already drives -- this is a transport, never a second evidence-ingress mechanism.
     val ownerHttpServer = if (config.ownerHttpPort != null) {
         val adapter = buildOwnerHttpAdapter(runtime, config)

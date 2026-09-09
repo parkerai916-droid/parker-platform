@@ -155,11 +155,12 @@ services:
       # to `null` -- with either one null, Main.kt never constructs
       # OwnerEvidenceHttpServer at all, so an unmodified .env leaves this
       # deployment exactly as it was before this feature existed. To
-      # enable it, set both PARKER_OWNER_HTTP_PORT (e.g. 8080) and
-      # PARKER_OWNER_HTTP_TOKEN (a real secret, generated locally -- never
-      # committed to this repository) in .env; the loader enforces they
-      # are set together or not at all and fails startup otherwise, so a
-      # port can never come up anonymous. PARKER_OWNER_HTTP_BIND_ADDRESS
+      # enable it, set PARKER_OWNER_HTTP_PORT (e.g. 8080). The
+      # PARKER_OWNER_UI_AUTHENTICATION_ROOT below supplies pairing/device
+      # state; PARKER_OWNER_HTTP_TOKEN remains legacy compatibility parsing
+      # only and is not used for Owner authentication. The loader fails
+      # startup if the port is configured without the auth root, so the
+      # server can never come up anonymous. PARKER_OWNER_HTTP_BIND_ADDRESS
       # keeps ParkerRuntimeConfig's own "0.0.0.0" default -- inside this
       # container that already means "reachable via whatever the `ports:`
       # mapping below publishes", never wider than that.
