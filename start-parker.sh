@@ -16,7 +16,7 @@ cd "$REPO_ROOT"
 PARKER_BUILD_COMMIT=$(git rev-parse HEAD) || die "cannot determine git HEAD"
 PARKER_PRODUCTION_COMMIT="$PARKER_BUILD_COMMIT"
 SECRET_FILE=${PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_SECRET_FILE:-/mnt/parker-secrets/parker/owner-high-authority-verification.secret}
-[[ -f "$SECRET_FILE" ]] || die "Owner high-authority verification secret file is missing: $SECRET_FILE"
+sudo test -f "$SECRET_FILE" || die "Owner high-authority verification secret file is missing: $SECRET_FILE"
 
 resolve_env_value() {
     local name=$1 value

@@ -104,6 +104,35 @@ class OperatorWrapperTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("PARKER_PRODUCTION_COMMIT does not match", result.stderr)
 
+    def test_parker_validates_secret_path_through_privileged_test(self):
+        with tempfile.TemporaryDirectory() as directory:
+            protected_dir = Path(directory) / "root-protected"
+            protected_dir.mkdir()
+            protected_dir.chmod(0o700)
+            secret = protected_dir / "owner-high-authority-verification.secret"
+            sudo_log = Path(directory) / "sudo.log"
+            bin_dir = Path(directory) / "bin"
+            bin_dir.mkdir()
+            fake_command(bin_dir, "hostname", 'echo "parker"')
+            fake_command(bin_dir, "git", 'if [[ "$*" == *"status --porcelain"* ]]; then exit 0; elif [[ "$*" == *"--show-toplevel"* ]]; then echo "$PWD"; else echo "a"; fi')
+            fake_command(bin_dir, "sudo", 'if [[ "$1" == "test" && "$2" == "-f" ]]; then printf "test -f %s\\n" "$3" >> "$SUDO_LOG"; [[ "$3" == "$EXPECTED_SECRET" ]]; exit; fi; printf "%s\\n" "$*" >> "$SUDO_LOG"; exec "$@"')
+            fake_command(bin_dir, "docker", 'if [[ "$1" == "compose" ]]; then exit 0; elif [[ "$1" == "inspect" ]]; then echo true; elif [[ "$1" == "exec" ]]; then echo a; fi')
+            fake_command(bin_dir, "curl", "exit 0")
+            result = self.run_script(
+                "start-parker.sh",
+                bin_dir=bin_dir,
+                env={
+                    "PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_SECRET_FILE": str(secret),
+                    "PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID": "test-owner",
+                    "EXPECTED_SECRET": str(secret),
+                    "SUDO_LOG": str(sudo_log),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            sudo_calls = sudo_log.read_text()
+            self.assertIn(f"test -f {secret}", sudo_calls)
+            self.assertIn(f"env PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_SECRET_FILE={secret}", sudo_calls)
+
     def test_hermes_sources_existing_repo_venv_before_readiness(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "repo"
