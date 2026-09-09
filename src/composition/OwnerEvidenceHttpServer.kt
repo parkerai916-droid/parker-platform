@@ -51,6 +51,14 @@ import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
 import parker.core.runtime.OrdinaryRegionCapabilityStatus
+import parker.core.interfaces.CaseId
+
+/** Transport-safe Owner HTTP result for creating one governed ingestion batch. */
+sealed interface OwnerIngestionBatchAuthorisation {
+    data class Authorised(val batchId: String, val caseId: String) : OwnerIngestionBatchAuthorisation
+    data object UnknownCase : OwnerIngestionBatchAuthorisation
+    data class Failure(val reason: String) : OwnerIngestionBatchAuthorisation
+}
 
 /**
  * Owner LAN Evidence Upload. Pure HTTP transport for the exact same
@@ -97,6 +105,9 @@ class OwnerEvidenceHttpServer(
         OrdinaryRegionCapabilityPromotionOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
     },
     private val evaluateOrdinaryRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
+    private val authoriseBulkIngestionAsOwner: suspend (CaseId) -> OwnerIngestionBatchAuthorisation = {
+        OwnerIngestionBatchAuthorisation.Failure("BULK_INGESTION_AUTHORIZATION_LANE_NOT_CONFIGURED")
+    },
     private val prepareCorrectedEvidence: suspend (EvidenceArtifactId, String, Int) -> parker.core.runtime.GovernedCorrectedPreparationOutcome =
         { _, _, _ -> parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected("PREPARATION_LANE_NOT_CONFIGURED") },
     private val continuePostEgress: suspend (EvidenceArtifactId, String, String, String) -> parker.core.runtime.OrdinaryRegionOwnerResult =
@@ -120,6 +131,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/logout", LogoutHandler())
         httpServer.createContext("/owner/evidence", EvidenceHandler())
         httpServer.createContext("/owner/cases", CasesHandler())
+        httpServer.createContext("/owner/ingestion-batches", IngestionBatchesHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
@@ -129,6 +141,47 @@ class OwnerEvidenceHttpServer(
         server = httpServer
         executor = fixedThreadPool
         logger.info("Owner LAN Evidence Upload HTTP server listening on $bindAddress:${httpServer.address.port}")
+    }
+
+    // ---- /owner/ingestion-batches ---------------------------------------------------------
+
+    private inner class IngestionBatchesHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                if (exchange.requestURI.path != "/owner/ingestion-batches" || exchange.requestMethod != "POST") {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
+                    writeJson(exchange, 404, jsonObject("error" to "not found"))
+                    return
+                }
+                val body = try {
+                    exchange.requestBody.use { readBounded(it, MAX_INGESTION_BATCH_REQUEST_BODY_BYTES) }
+                } catch (_: RequestBodyTooLargeException) {
+                    writeJson(exchange, 413, jsonObject("error" to "request body too large"))
+                    return
+                }
+                val caseId = try {
+                    parseIngestionBatchAuthorisationRequest(body)
+                } catch (_: Exception) {
+                    writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
+                    return
+                }
+                when (val outcome = runBlocking { authoriseBulkIngestionAsOwner(caseId) }) {
+                    is OwnerIngestionBatchAuthorisation.Authorised -> writeJson(exchange, 201, jsonObject(
+                        "status" to "AUTHORISED",
+                        "batchId" to outcome.batchId,
+                        "caseId" to outcome.caseId,
+                    ))
+                    OwnerIngestionBatchAuthorisation.UnknownCase -> writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_CASE"))
+                    is OwnerIngestionBatchAuthorisation.Failure -> writeJson(exchange, 500, jsonObject(
+                        "status" to "FAILED", "reason" to outcome.reason,
+                    ))
+                }
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: ingestion batch authorisation failed safely", e)
+                runCatching { writeJson(exchange, 500, jsonObject("status" to "FAILED", "reason" to "internal error")) }
+            } finally { exchange.close() }
+        }
     }
 
     /**
@@ -1723,6 +1776,9 @@ class OwnerEvidenceHttpServer(
 
         /** CASE-1. `POST /owner/evidence/{id}/case`'s own tiny single-field body -- just an already-known CaseId, or none for Unassigned. */
         const val MAX_CASE_ASSIGNMENT_REQUEST_BODY_BYTES: Long = 4L * 1024L
+
+        /** The `/owner/ingestion-batches` body contains exactly one existing CaseId. */
+        const val MAX_INGESTION_BATCH_REQUEST_BODY_BYTES: Long = 1024L
     }
 }
 
@@ -1852,6 +1908,17 @@ private fun parseCaseCreationRequestBody(bodyBytes: ByteArray): String {
     val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
     val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
     return obj["caseName"] as? String ?: throw JsonParseException("expected a 'caseName' string")
+}
+
+/** Parses the exact Owner request for authorising one governed ingestion batch. */
+private fun parseIngestionBatchAuthorisationRequest(bodyBytes: ByteArray): CaseId {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    if (obj.keys != setOf("caseId")) throw JsonParseException("unexpected ingestion batch fields")
+    val rawCaseId = obj["caseId"] as? String ?: throw JsonParseException("expected a 'caseId' string")
+    return try { CaseId(rawCaseId) } catch (_: IllegalArgumentException) {
+        throw JsonParseException("invalid caseId")
+    }
 }
 
 /**

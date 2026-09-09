@@ -136,6 +136,9 @@ class OwnerEvidenceHttpServerTest {
         invokePromotion: (OrdinaryRegionCapabilityPromotionRequest) -> OrdinaryRegionCapabilityPromotionOutcome = {
             OrdinaryRegionCapabilityPromotionOutcome.Blocked("disabled")
         },
+        authoriseBulkIngestion: suspend (CaseId) -> OwnerIngestionBatchAuthorisation = {
+            OwnerIngestionBatchAuthorisation.Failure("disabled")
+        },
         evaluateRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
         prepareCorrected: suspend (EvidenceArtifactId, String, Int) -> GovernedCorrectedPreparationOutcome =
             { _, _, _ -> GovernedCorrectedPreparationOutcome.Rejected("disabled") },
@@ -224,6 +227,7 @@ class OwnerEvidenceHttpServerTest {
             invokeFidelityFirstAcceptance = invokeAcceptance,
             createOrdinaryRegionCapabilityAcceptance = invokePromotion,
             evaluateOrdinaryRegionCapability = evaluateRegionCapability,
+            authoriseBulkIngestionAsOwner = authoriseBulkIngestion,
             prepareCorrectedEvidence = prepareCorrected,
         )
         server.start()
@@ -233,6 +237,77 @@ class OwnerEvidenceHttpServerTest {
     private fun pairedCookie(harness: Harness): String {
         val paired = requireNotNull(harness.authentication.pair(harness.authentication.initiatePairing()))
         return "ParkerOwnerDeviceId=${paired.deviceId}; ParkerOwnerDeviceCredential=${paired.deviceCredential}; ParkerOwnerSession=${paired.sessionId}"
+    }
+
+    @Test
+    fun `ingestion batch authorisation requires owner session and returns Parker batch`() {
+        var calls = 0
+        val harness = startHarness("", authoriseBulkIngestion = { caseId ->
+            calls++
+            assertEquals("case-existing", caseId.value)
+            OwnerIngestionBatchAuthorisation.Authorised("bulk-parker-minted", caseId.value)
+        })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/ingestion-batches")
+            val request = { cookie: String? ->
+                val builder = HttpRequest.newBuilder(uri).header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"caseId\":\"case-existing\"}"))
+                if (cookie != null) builder.header("Cookie", cookie)
+                send(builder.build())
+            }
+            assertEquals(401, request(null).statusCode())
+            assertEquals(0, calls)
+            val response = request(pairedCookie(harness))
+            assertEquals(201, response.statusCode(), response.body())
+            assertEquals("{\"status\":\"AUTHORISED\",\"batchId\":\"bulk-parker-minted\",\"caseId\":\"case-existing\"}", response.body())
+            assertEquals(1, calls)
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `ingestion batch authorisation maps unknown case and rejects malformed or unexpected requests`() {
+        var calls = 0
+        val harness = startHarness("", authoriseBulkIngestion = {
+            calls++
+            if (it.value == "unknown") OwnerIngestionBatchAuthorisation.UnknownCase
+            else OwnerIngestionBatchAuthorisation.Failure("unexpected")
+        })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/ingestion-batches")
+            fun post(body: String) = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness))
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build())
+            assertEquals(404, post("{\"caseId\":\"unknown\"}").statusCode())
+            val failure = post("{\"caseId\":\"known\"}")
+            assertEquals(500, failure.statusCode())
+            assertEquals("{\"status\":\"FAILED\",\"reason\":\"unexpected\"}", failure.body())
+            assertEquals(400, post("{\"caseId\":").statusCode())
+            assertEquals(400, post("{\"caseId\":\"case\",\"caseName\":\"A name\"}").statusCode())
+            assertEquals(400, post("{\"caseName\":\"A name\"}").statusCode())
+            assertEquals(2, calls)
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `ingestion batch authorisation fails closed for method route and body size`() {
+        var calls = 0
+        val harness = startHarness("", authoriseBulkIngestion = {
+            calls++
+            OwnerIngestionBatchAuthorisation.Failure("should not be reached")
+        })
+        try {
+            val cookie = pairedCookie(harness)
+            val uri = URI.create(harness.baseUri() + "/owner/ingestion-batches")
+            val get = send(HttpRequest.newBuilder(uri).header("Cookie", cookie).GET().build())
+            assertEquals(404, get.statusCode())
+            val extraPath = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/ingestion-batches/extra"))
+                .header("Cookie", cookie).POST(HttpRequest.BodyPublishers.ofString("{}" )).build())
+            assertEquals(404, extraPath.statusCode())
+            val oversized = "{\"caseId\":\"${"x".repeat(OwnerEvidenceHttpServer.MAX_INGESTION_BATCH_REQUEST_BODY_BYTES.toInt())}\"}"
+            val tooLarge = send(HttpRequest.newBuilder(uri).header("Cookie", cookie)
+                .POST(HttpRequest.BodyPublishers.ofString(oversized)).build())
+            assertEquals(413, tooLarge.statusCode())
+            assertEquals(0, calls)
+        } finally { harness.shutdown() }
     }
 
     @Test

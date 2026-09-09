@@ -191,6 +191,15 @@ fun main(args: Array<String>) = runBlocking {
             invokeFidelityFirstAcceptance = runtime::invokeFidelityFirstAcceptanceAsOwner,
             createOrdinaryRegionCapabilityAcceptance = runtime::createOrdinaryRegionCapabilityAcceptanceAsOwner,
             evaluateOrdinaryRegionCapability = runtime::ordinaryRegionCapabilityStatusAsOwner,
+            authoriseBulkIngestionAsOwner = { caseId ->
+                when (val outcome = runtime.authoriseBulkIngestionAsOwner(caseId)) {
+                    is parker.core.runtime.BulkIngestionAuthorisation.Authorised ->
+                        OwnerIngestionBatchAuthorisation.Authorised(outcome.binding.batchId, outcome.binding.caseId.value)
+                    parker.core.runtime.BulkIngestionAuthorisation.UnknownCase -> OwnerIngestionBatchAuthorisation.UnknownCase
+                    is parker.core.runtime.BulkIngestionAuthorisation.Failure ->
+                        OwnerIngestionBatchAuthorisation.Failure(outcome.reason)
+                }
+            },
             prepareCorrectedEvidence = runtime::prepareCorrectedEvidenceAsOwner,
             continuePostEgress = runtime::continueOrdinaryRegionPostEgressAsOwner,
         ).also { it.start() }
