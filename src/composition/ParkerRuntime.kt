@@ -2995,6 +2995,12 @@ class ParkerRuntime(
         return agentGatewayEvidenceProjection.bindIngestionEvidence(batchId, evidenceArtifactId)
     }
 
+    /** Agent Gateway read-only batch handoff; the projection intentionally omits CaseId. */
+    internal suspend fun listReadyBulkIngestionBatchesAsAgent(): List<parker.core.runtime.ReadyBulkIngestionBatch> {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return bulkIngestionBindingCoordinator?.listReady() ?: emptyList()
+    }
+
     /**
      * Evidence Custodian Runtime Integration (Implementation Plan Phase 10).
      * The one production entry point capable of ending Evidence Custodian

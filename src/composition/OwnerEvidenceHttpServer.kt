@@ -2391,11 +2391,23 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   .document-name { font-weight: 650; }
   .technical-id { color: #aaa; font-size: 0.75rem; margin-top: 0.2rem; }
   .status-label { white-space: nowrap; }
+  .tabs { display:flex; gap:.4rem; margin:1rem 0; }
+  .tab.active { background:#2a5d3a; color:#fff; }
+  #bulkIngestionPanel { border:1px solid #333; padding:1rem; margin-bottom:1rem; }
 </style>
 </head>
 <body>
 <h1>Parker Owner Evidence Upload</h1>
 <p><button id="logoutButton">Log out</button></p>
+<nav class="tabs" aria-label="Owner sections"><button class="tab active" id="ownerEvidenceTab">Evidence Library</button><button class="tab" id="ownerBulkTab">Bulk Ingestion</button></nav>
+<section id="bulkIngestionPanel" hidden>
+  <h2>Bulk Ingestion</h2>
+  <p>Select and confirm an existing case. Parker will mint a READY batch for Hermes. This tab never uploads files.</p>
+  <label>Case <select id="bulkCaseSelector"><option value="">Select a case</option></select></label>
+  <p>Case: <span id="bulkCaseName">—</span></p>
+  <button id="bulkConfirmButton" disabled>Confirm Case and Authorise Batch</button>
+  <div id="bulkBatchStatus" class="note"></div>
+</section>
 <p><button id="checkEnhancedReadinessButton">Check enhanced transcription readiness</button> <span id="enhancedReadinessStatus" class="note"></span></p>
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
 <p><button id="refreshEvidenceButton">Refresh existing evidence</button></p>
@@ -2430,6 +2442,7 @@ const detailsExpanded = new Set();
 let enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription readiness has not been loaded.' };
 // CASE-1: every defined case, for the case filter and the per-row assign/change-case panel.
 let casesList = [];
+let selectedBulkCase = null;
 
 async function loadCases() {
   try {
@@ -2437,9 +2450,30 @@ async function loadCases() {
     if (resp.status === 401) { casesList = []; render(); return; }
     const result = await resp.json();
     casesList = result.cases || [];
+    const select = document.getElementById('bulkCaseSelector');
+    if (select) { select.innerHTML = '<option value="">Select a case</option>'; casesList.forEach(c => { const o = document.createElement('option'); o.value = c.caseId; o.textContent = c.caseName; select.appendChild(o); }); }
     render();
   } catch (e) { /* Case list request failed safely; the prior list (if any) is kept. */ }
 }
+
+document.getElementById('bulkCaseSelector').onchange = e => {
+  selectedBulkCase = casesList.find(c => c.caseId === e.target.value) || null;
+  document.getElementById('bulkCaseName').textContent = selectedBulkCase ? selectedBulkCase.caseName : '—';
+  document.getElementById('bulkConfirmButton').disabled = !selectedBulkCase;
+};
+document.getElementById('ownerBulkTab').onclick = () => { document.getElementById('bulkIngestionPanel').hidden = false; document.getElementById('ownerBulkTab').classList.add('active'); document.getElementById('ownerEvidenceTab').classList.remove('active'); };
+document.getElementById('ownerEvidenceTab').onclick = () => { document.getElementById('bulkIngestionPanel').hidden = true; document.getElementById('ownerEvidenceTab').classList.add('active'); document.getElementById('ownerBulkTab').classList.remove('active'); };
+document.getElementById('bulkConfirmButton').onclick = async () => {
+  if (!selectedBulkCase) return;
+  const status = document.getElementById('bulkBatchStatus'); const button = document.getElementById('bulkConfirmButton'); button.disabled = true; status.textContent = 'Authorising…';
+  try {
+    const response = await fetch('/owner/ingestion-batches', {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body:JSON.stringify({caseId:selectedBulkCase.caseId})});
+    if (response.status === 401) throw new Error('Owner authentication expired.');
+    const result = await response.json();
+    if (!response.ok || !result.batchId) throw new Error(result.status === 'UNKNOWN_CASE' ? 'The selected case no longer exists.' : (result.reason || 'Batch authorisation failed.'));
+    status.textContent = 'Case: ' + selectedBulkCase.caseName + ' · Batch status: READY · Batch ID: ' + result.batchId;
+  } catch (e) { status.textContent = e.message; button.disabled = false; }
+};
 
 function renderCaseFilterOptions() {
   const select = document.getElementById('caseFilter');

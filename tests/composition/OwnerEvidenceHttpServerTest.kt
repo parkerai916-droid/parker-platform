@@ -882,6 +882,13 @@ class OwnerEvidenceHttpServerTest {
         try {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains("Process document"))
+            assertTrue(body.contains("Bulk Ingestion"))
+            assertTrue(body.contains("bulkCaseSelector"))
+            assertTrue(body.contains("Confirm Case and Authorise Batch"))
+            assertTrue(body.contains("fetch('/owner/ingestion-batches'"))
+            val bulkPanel = body.substringAfter("<section id=\"bulkIngestionPanel\"").substringBefore("</section>")
+            assertTrue(bulkPanel.contains("This tab never uploads files."))
+            assertFalse(bulkPanel.contains("filePicker"))
             assertTrue(body.contains("Legacy/manual specialist operation"))
             assertTrue(body.contains("bd.disabled = true"))
             assertTrue(body.contains("external.disabled = !(ready && authorized)"))

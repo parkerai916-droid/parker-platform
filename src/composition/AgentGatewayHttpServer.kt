@@ -90,6 +90,7 @@ class AgentGatewayHttpServer(
     private val requestAcquisitionAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayAcquisitionResult,
     private val bindIngestionEvidenceAsAgent: suspend (String, EvidenceArtifactId) -> AgentGatewayBulkBindingResult = { _, _ -> AgentGatewayBulkBindingResult.Denied },
     private val submitSourceWithBatchAsAgent: (suspend (CandidateEvidenceArtifact, String?, String?) -> AgentGatewaySourceSubmissionResult)? = null,
+    private val listReadyIngestionBatchesAsAgent: suspend () -> List<parker.core.runtime.ReadyBulkIngestionBatch> = { emptyList() },
     private val audit: AgentGatewayAccessAudit,
     private val logger: ParkerLogger,
 ) {
@@ -105,10 +106,35 @@ class AgentGatewayHttpServer(
         val fixedThreadPool = Executors.newFixedThreadPool(4)
         httpServer.executor = fixedThreadPool
         httpServer.createContext("/agent/evidence", EvidenceHandler())
+        httpServer.createContext("/agent/ingestion-batches", ReadyBatchesHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
         logger.info("Agent Gateway HTTP server started on $bindAddress:${boundPort}")
+    }
+
+    private inner class ReadyBatchesHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            val correlationId = UUID.randomUUID().toString()
+            try {
+                val token = bearerToken(exchange)
+                val principalId = token?.let(authentication::authenticate)
+                if (principalId == null) {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
+                    recordAudit(correlationId, null, null, null, if (token == null) AgentGatewayAccessOutcome.UNAUTHENTICATED else AgentGatewayAccessOutcome.AUTHENTICATION_FAILED)
+                    writeJson(exchange, 401, jsonObject("error" to "unauthorised")); return
+                }
+                if (exchange.requestMethod != "GET" || exchange.requestURI.path != "/agent/ingestion-batches") {
+                    writeJson(exchange, 404, jsonObject("error" to "not found")); return
+                }
+                val batches = runBlocking { listReadyIngestionBatchesAsAgent() }
+                recordAudit(correlationId, principalId, "agent.ingestion-batches.ready", null, AgentGatewayAccessOutcome.APPROVED)
+                writeJson(exchange, 200, jsonObject("batches" to JsonArray(batches.map { jsonObject("batchId" to it.batchId, "caseName" to it.caseName, "status" to "READY") })))
+            } catch (e: Exception) {
+                logger.error("Agent Gateway HTTP: ready batch discovery failed safely", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally { exchange.close() }
+        }
     }
 
     fun stop() {
@@ -424,6 +450,7 @@ class AgentGatewayHttpServer(
 
     private sealed interface JsonValue
     private class JsonObject(val fields: List<Pair<String, Any?>>) : JsonValue
+    private class JsonArray(val items: List<Any?>) : JsonValue
 
     private fun jsonObject(vararg fields: Pair<String, Any?>): JsonObject = JsonObject(fields.toList())
 
@@ -438,6 +465,11 @@ class AgentGatewayHttpServer(
                     writeJsonValue(sb, v)
                 }
                 sb.append('}')
+            }
+            is JsonArray -> {
+                sb.append('[')
+                value.items.forEachIndexed { index, item -> if (index > 0) sb.append(','); writeJsonValue(sb, item) }
+                sb.append(']')
             }
             is String -> sb.append(jsonString(value))
             is Int -> sb.append(value)

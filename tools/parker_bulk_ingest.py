@@ -136,7 +136,8 @@ def submit_one(args, ledger, row):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("root", type=Path); p.add_argument("--case-id", required=True); p.add_argument("--gateway", required=True)
+    p.add_argument("root", type=Path); p.add_argument("--gateway", required=True)
+    p.add_argument("--case-id", default=None, help="legacy local-report value; ignored for Parker authority")
     p.add_argument("--assignment-endpoint", help="Parker assignment endpoint template, e.g. /agent/evidence/{evidenceArtifactId}/assign")
     p.add_argument("--token", default=os.environ.get("PARKER_AGENT_GATEWAY_TOKEN"), required=False)
     p.add_argument("--ledger", type=Path, default=Path("parker-bulk-ingest.sqlite3")); p.add_argument("--batch", default=None)
@@ -146,8 +147,8 @@ def main():
     if not args.assignment_endpoint: p.error("--assignment-endpoint is required: Hermes must never claim success without Parker case assignment")
     root = args.root.resolve(strict=True)
     if not root.is_dir(): p.error("root must be a directory")
-    batch = args.batch or "bulk-" + uuid.uuid4().hex
-    ledger = Ledger(args.ledger, batch, root, args.case_id)
+    if not args.batch: p.error("--batch is required: Hermes must use a Parker-minted authorised batch")
+    ledger = Ledger(args.ledger, args.batch, root, "Parker-resolved-from-batch")
     for path in sorted((x for x in root.rglob("*") if x.is_file() and not x.is_symlink()), key=lambda x: x.relative_to(root).as_posix()):
         rel = path.relative_to(root).as_posix(); mt = media_type(path); digest = hashlib.sha256(path.read_bytes()).hexdigest()
         ledger.put(rel, path.name, path.stat().st_size, digest, mt, "READY_TO_SUBMIT" if mt in SUPPORTED else "UNSUPPORTED", None if mt in SUPPORTED else "unsupported media type: " + mt)
@@ -156,7 +157,7 @@ def main():
         for future in as_completed(futures): future.result()
     rows = ledger.rows(); counts = {}
     for row in rows: counts[row[5]] = counts.get(row[5], 0) + 1
-    report = {"batchId": batch, "batchName": batch, "sourceRoot": str(root), "targetCaseId": args.case_id, "filesDiscovered": len(rows), "states": counts, "problematic": [{"relativePath": r[0], "reason": r[9]} for r in rows if r[9]]}
+    report = {"batchId": args.batch, "batchName": args.batch, "sourceRoot": str(root), "filesDiscovered": len(rows), "states": counts, "problematic": [{"relativePath": r[0], "reason": r[9]} for r in rows if r[9]]}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if not any(r[5] in ("RETRYABLE_FAILURE", "PERMANENT_FAILURE") for r in rows) else 2
 

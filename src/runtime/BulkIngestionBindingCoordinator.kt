@@ -33,6 +33,9 @@ internal sealed interface BulkIngestionAssignment {
     data class Failure(val reason: String) : BulkIngestionAssignment
 }
 
+/** Read-only handoff projection; deliberately omits CaseId. */
+data class ReadyBulkIngestionBatch(val batchId: String, val caseName: String)
+
 /**
  * The only subordinate case-binding seam. The case id is written once by an Owner call and is
  * never accepted by the Hermes-facing methods. Evidence membership is durable and is recorded
@@ -72,6 +75,22 @@ internal class BulkIngestionBindingCoordinator(
     }
 
     suspend fun isAuthorised(batchId: String): Boolean = mutex.withLock { read(batchId) != null }
+
+    /** Bounded read-only projection for Hermes. Reads the existing durable bindings only. */
+    suspend fun listReady(limit: Int = 32): List<ReadyBulkIngestionBatch> = mutex.withLock {
+        val result = mutableListOf<ReadyBulkIngestionBatch>()
+        Files.list(storageRoot).use { paths ->
+            val iterator = paths.filter { it.fileName.toString().endsWith(".binding") }.sorted().iterator()
+            while (iterator.hasNext() && result.size < limit) {
+                val path = iterator.next()
+                val batchId = path.fileName.toString().removeSuffix(".binding")
+                val binding = runCatching { read(batchId) }.getOrNull() ?: continue
+                val case = caseStorage.read(binding.caseId) ?: continue
+                result += ReadyBulkIngestionBatch(batchId, case.caseName)
+            }
+        }
+        result
+    }
 
     suspend fun assignFromHermes(batchId: String, evidenceArtifactId: EvidenceArtifactId): BulkIngestionAssignment = mutex.withLock {
         val binding = read(batchId) ?: return@withLock BulkIngestionAssignment.UnknownBatch

@@ -70,6 +70,7 @@ class AgentGatewayHttpServerTest {
         var manifestResult: AgentGatewayEvidenceManifestResult = AgentGatewayEvidenceManifestResult.NotFound(EvidenceArtifactId("unset")),
         var submitResult: parker.core.runtime.AgentGatewaySourceSubmissionResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
         var acquireResult: parker.core.runtime.AgentGatewayAcquisitionResult = parker.core.runtime.AgentGatewayAcquisitionResult.Denied(PermissionDecisionOutcome.DENIED),
+        val readyBatches: List<parker.core.runtime.ReadyBulkIngestionBatch> = emptyList(),
     ) {
         val auditLogFile = Files.createTempDirectory("agent-gateway-http-test-audit").resolve("audit.log")
         val server = AgentGatewayHttpServer(
@@ -80,6 +81,7 @@ class AgentGatewayHttpServerTest {
             retrieveEvidenceManifestAsAgent = { id -> manifestCalls.add(id); manifestResult },
             submitSourceAsAgent = { candidate, advisory -> submitCalls.add(candidate to advisory); submitResult },
             requestAcquisitionAsAgent = { id -> acquireCalls.add(id); acquireResult },
+            listReadyIngestionBatchesAsAgent = { readyBatches },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -99,6 +101,17 @@ class AgentGatewayHttpServerTest {
     }
 
     // ================= Real harness: genuine end-to-end integration =================
+
+    @Test
+    fun `authenticated Hermes can discover READY batches without CaseId and unauthenticated requests are rejected`() = withFakeHarness { fake ->
+        val response = send(HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches"))
+            .header("Authorization", "Bearer $token").GET().build())
+        assertEquals(200, response.statusCode())
+        assertTrue(response.body().contains("\"batches\":[]"))
+        assertFalse(response.body().contains("caseId"))
+        val unauthorised = send(HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches")).GET().build())
+        assertEquals(401, unauthorised.statusCode())
+    }
 
     private fun realConfig(): ParkerRuntimeConfig = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate",
@@ -385,16 +398,16 @@ class AgentGatewayHttpServerTest {
     // ================= P. Cannot invoke arbitrary ParkerRuntime methods =================
 
     @Test
-    fun `AgentGatewayHttpServer's only callable capabilities are the four injected AG-1D-AG-1G functions`() {
+    fun `AgentGatewayHttpServer's only callable capabilities are the injected gateway functions`() {
         val functionTypedFields = AgentGatewayHttpServer::class.java.declaredFields.filter {
             it.type.name.startsWith("kotlin.jvm.functions.Function")
         }
-        // Exactly the five delegate fields (the fifth is the narrow batch-binding operation) -- no generic "invoke arbitrary method"
-        // capability, and no fifth callable added silently.
+        // Exactly the explicitly injected delegate fields, including the narrow read-only READY
+        // batch handoff -- no generic "invoke arbitrary method" capability.
         //
         // Revision history: BI-4 adds only the fixed batch-binding delegate.
         assertEquals(
-            setOf("retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent", "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent"),
+            setOf("retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent", "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent"),
             functionTypedFields.map { it.name }.toSet(),
         )
     }
