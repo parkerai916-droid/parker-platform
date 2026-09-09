@@ -2326,6 +2326,33 @@ class ParkerRuntime(
             executionCoordinator = governedAcquisitionExecutionCoordinator,
             externalEgressAuthorised = externalEgressAuthorised,
         )
+        if (caseClassificationConfigured) {
+            val caseStorage = stage("Case storage construction") {
+                FileSystemCaseStorage(Path.of(requireNotNull(config.caseStorageRootPath)))
+            }
+            val caseAssignmentStorage = stage("Case assignment storage construction") {
+                FileSystemCaseAssignmentStorage(Path.of(requireNotNull(config.caseAssignmentStorageRootPath)))
+            }
+            val caseGovernanceAudit = stage("Case governance audit construction") {
+                FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath)))
+            }
+            caseAssignmentCoordinator = CaseAssignmentCoordinator(
+                caseStorage,
+                caseAssignmentStorage,
+                caseGovernanceAudit,
+                evidenceCustodian,
+                PrincipalId(config.ownerPrincipalId),
+                clock,
+            )
+            bulkIngestionBindingCoordinator = BulkIngestionBindingCoordinator(
+                Path.of(requireNotNull(config.caseAssignmentStorageRootPath)).resolve("bulk-ingestion-bindings"),
+                caseStorage,
+                requireNotNull(caseAssignmentCoordinator),
+                caseGovernanceAudit,
+                PrincipalId(config.ownerPrincipalId),
+                clock,
+            )
+        }
         // Parker Agent Gateway, AG-1D/AG-1F/AG-1G (Section 20): Hermes's own fixed PrincipalId and
         // the Agent Gateway's own fixed AuthorizationPurposeId are supplied here, once, at
         // composition time -- the only place either value is ever threaded into this projection.
@@ -2355,34 +2382,6 @@ class ParkerRuntime(
                 clock,
             )
         }
-        if (caseClassificationConfigured) {
-            val caseStorage = stage("Case storage construction") {
-                FileSystemCaseStorage(Path.of(requireNotNull(config.caseStorageRootPath)))
-            }
-            val caseAssignmentStorage = stage("Case assignment storage construction") {
-                FileSystemCaseAssignmentStorage(Path.of(requireNotNull(config.caseAssignmentStorageRootPath)))
-            }
-            val caseGovernanceAudit = stage("Case governance audit construction") {
-                FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath)))
-            }
-            caseAssignmentCoordinator = CaseAssignmentCoordinator(
-                caseStorage,
-                caseAssignmentStorage,
-                caseGovernanceAudit,
-                evidenceCustodian,
-                PrincipalId(config.ownerPrincipalId),
-                clock,
-            )
-            bulkIngestionBindingCoordinator = BulkIngestionBindingCoordinator(
-                Path.of(requireNotNull(config.caseAssignmentStorageRootPath)).resolve("bulk-ingestion-bindings"),
-                caseStorage,
-                requireNotNull(caseAssignmentCoordinator),
-                caseGovernanceAudit,
-                PrincipalId(config.ownerPrincipalId),
-                clock,
-            )
-        }
-
         // Construct the parent saved-analysis store before its separately governed review
         // sub-store; both validate their roots during construction.
         pendingAnalysisCache = PendingAnalysisCache()

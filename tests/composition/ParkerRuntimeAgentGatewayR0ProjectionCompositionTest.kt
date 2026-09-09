@@ -25,6 +25,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertSame
+import parker.core.runtime.BulkIngestionAuthorisation
+import parker.core.runtime.CaseCreationOutcome
 
 /**
  * AG-1D -- R0 Governed Runtime Projections
@@ -61,7 +64,7 @@ class ParkerRuntimeAgentGatewayR0ProjectionCompositionTest {
     private val hermesPrincipalId = PrincipalId("agent.hermes-ingestion-operator")
     private val agentGatewayPurpose = AuthorizationPurposeId("agent-gateway.hermes-ingestion")
 
-    private fun config(): ParkerRuntimeConfig = ParkerRuntimeConfig(
+    private fun config(caseClassificationConfigured: Boolean = false, agentGatewayHermesActive: Boolean = false): ParkerRuntimeConfig = ParkerRuntimeConfig(
         modelEndpointUrl = "http://127.0.0.1:1/api/generate", // deliberately unreachable -- never contacted by these tests
         modelName = "test-model",
         ownerPrincipalId = ownerPrincipalId,
@@ -75,6 +78,10 @@ class ParkerRuntimeAgentGatewayR0ProjectionCompositionTest {
         evidenceDeletionAuditLogPath = Files.createTempDirectory("agent-gateway-projection-deletion-audit").resolve("audit.log").toString(),
         memoryCoreDurabilityLogPath = Files.createTempDirectory("agent-gateway-projection-memory").resolve("memory-core.log").toString(),
         knowledgeItemDurabilityLogPath = Files.createTempDirectory("agent-gateway-projection-knowledge-items").resolve("items.log").toString(),
+        caseStorageRootPath = if (caseClassificationConfigured) Files.createTempDirectory("agent-gateway-projection-cases").toString() else null,
+        caseAssignmentStorageRootPath = if (caseClassificationConfigured) Files.createTempDirectory("agent-gateway-projection-case-assignments").toString() else null,
+        caseGovernanceAuditLogPath = if (caseClassificationConfigured) Files.createTempDirectory("agent-gateway-projection-case-audit").resolve("audit.log").toString() else null,
+        agentGatewayHermesActive = agentGatewayHermesActive,
     )
 
     private fun candidateProvenance() = CandidateProvenance(
@@ -154,6 +161,28 @@ class ParkerRuntimeAgentGatewayR0ProjectionCompositionTest {
 
         assertEquals(hermesPrincipalId, boundPrincipalId)
         assertEquals(agentGatewayPurpose, boundPurpose)
+
+        runtime.shutdown()
+    }
+
+    @Test
+    fun `configured projection shares the runtime bulk coordinator and accepts a valid Owner-authorised batch submission`() = runTest {
+        val runtime = ParkerRuntime(config(caseClassificationConfigured = true, agentGatewayHermesActive = true), RecordingParkerLogger())
+        runtime.start()
+
+        val case = assertIs<CaseCreationOutcome.Created>(runtime.createCaseAsOwner("batch case")).case
+        val authorisation = assertIs<BulkIngestionAuthorisation.Authorised>(runtime.authoriseBulkIngestionAsOwner(case.caseId))
+        val projection = composedProjection(runtime)
+        val projectionCoordinator = projection.privateField<Any>("bulkIngestionBindingCoordinator")
+        val runtimeCoordinator = runtime.privateField<Any>("bulkIngestionBindingCoordinator")
+        assertSame(runtimeCoordinator, projectionCoordinator)
+
+        val submitted = runtime.submitSourceAsAgent(
+            CandidateEvidenceArtifact("valid batch submission".toByteArray()),
+            null,
+            authorisation.binding.batchId,
+        )
+        assertIs<parker.core.runtime.AgentGatewaySourceSubmissionResult.Registered>(submitted)
 
         runtime.shutdown()
     }
