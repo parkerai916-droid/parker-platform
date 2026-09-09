@@ -389,13 +389,12 @@ class AgentGatewayHttpServerTest {
         val functionTypedFields = AgentGatewayHttpServer::class.java.declaredFields.filter {
             it.type.name.startsWith("kotlin.jvm.functions.Function")
         }
-        // Exactly the four delegate fields (retrieveEvidenceAsAgent/retrieveEvidenceManifestAsAgent/
-        // submitSourceAsAgent/requestAcquisitionAsAgent) -- no generic "invoke arbitrary method"
+        // Exactly the five delegate fields (the fifth is the narrow batch-binding operation) -- no generic "invoke arbitrary method"
         // capability, and no fifth callable added silently.
         //
-        // Revision history: AG-1G added requestAcquisitionAsAgent (three -> four).
+        // Revision history: BI-4 adds only the fixed batch-binding delegate.
         assertEquals(
-            setOf("retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent"),
+            setOf("retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent", "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent"),
             functionTypedFields.map { it.name }.toSet(),
         )
     }

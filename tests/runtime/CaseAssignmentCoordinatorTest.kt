@@ -258,4 +258,21 @@ class CaseAssignmentCoordinatorTest {
         assertEquals(evidenceArtifactId, after.evidenceArtifactId)
         assertContentEquals(before.content, after.content)
     }
+
+    @Test
+    fun `Owner-authorised bulk binding survives restart and cannot bind evidence from another batch`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "bulk")
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Bulk target")).case
+        val evidence = acceptEvidence(fixture.custodian, "submitted")
+        val bindings = directory.resolve("bulk/bindings")
+        val bindingCoordinator = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        val authorised = assertIs<BulkIngestionAuthorisation.Authorised>(bindingCoordinator.authoriseAsOwner(case.caseId))
+        assertTrue(bindingCoordinator.recordSubmission(authorised.binding.batchId, evidence))
+        assertEquals(BulkIngestionAssignment.Assigned(case.caseId), bindingCoordinator.assignFromHermes(authorised.binding.batchId, evidence))
+        assertEquals(BulkIngestionAssignment.EvidenceNotSubmittedUnderBatch, bindingCoordinator.assignFromHermes(authorised.binding.batchId, EvidenceArtifactId("evidence-not-in-batch")))
+
+        val restarted = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        assertEquals(BulkIngestionAssignment.Assigned(case.caseId), restarted.assignFromHermes(authorised.binding.batchId, evidence))
+        assertTrue(Files.readAllLines(fixture.auditLogFile).any { it.contains("INGESTION_BATCH_AUTHORISED") })
+    }
 }

@@ -595,11 +595,10 @@ class ParkerRuntimeAgentGatewayR0VocabularyCompositionTest {
 
         assertTrue(rules.none { it.authorizationPurpose == agentGatewayPurpose && (it.action == PermissionAction.DELETE || it.action == PermissionAction.EXECUTE) })
         val writeRules = gatewayScopedRules.filter { it.action == PermissionAction.WRITE }
-        // Revision history: AG-1G added a second WRITE rule, "agent-gateway.evidence.acquire"
-        // (one -> two) -- the only thing standing between an ACTIVE Hermes principal and
+        // Revision history: BI-4 adds a third WRITE rule for the fixed batch-binding operation.
         // reachability of the governed acquisition workflow at all.
-        assertEquals(2, writeRules.size)
-        assertEquals(setOf("agent-gateway.evidence.submit", "agent-gateway.evidence.acquire"), writeRules.map { it.proposedAction }.toSet())
+        assertEquals(3, writeRules.size)
+        assertEquals(setOf("agent-gateway.evidence.submit", "agent-gateway.evidence.acquire", "agent-gateway.ingestion.bind"), writeRules.map { it.proposedAction }.toSet())
         writeRules.forEach { rule ->
             assertEquals(ResourceType.DOCUMENT, rule.resourceType)
             assertEquals(PermissionDecisionOutcome.APPROVED, rule.outcome)

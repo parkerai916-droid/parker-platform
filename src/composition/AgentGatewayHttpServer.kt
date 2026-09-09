@@ -19,6 +19,7 @@ import parker.core.runtime.AgentGatewayAcquisitionResult
 import parker.core.runtime.AgentGatewayEvidenceManifestResult
 import parker.core.runtime.AgentGatewayEvidenceRetrievalResult
 import parker.core.runtime.AgentGatewaySourceSubmissionResult
+import parker.core.runtime.AgentGatewayBulkBindingResult
 
 /**
  * Parker Agent Gateway, AG-1E — R0 Agent Gateway Transport
@@ -87,6 +88,8 @@ class AgentGatewayHttpServer(
     private val retrieveEvidenceManifestAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayEvidenceManifestResult,
     private val submitSourceAsAgent: suspend (CandidateEvidenceArtifact, String?) -> AgentGatewaySourceSubmissionResult,
     private val requestAcquisitionAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayAcquisitionResult,
+    private val bindIngestionEvidenceAsAgent: suspend (String, EvidenceArtifactId) -> AgentGatewayBulkBindingResult = { _, _ -> AgentGatewayBulkBindingResult.Denied },
+    private val submitSourceWithBatchAsAgent: (suspend (CandidateEvidenceArtifact, String?, String?) -> AgentGatewaySourceSubmissionResult)? = null,
     private val audit: AgentGatewayAccessAudit,
     private val logger: ParkerLogger,
 ) {
@@ -152,6 +155,10 @@ class AgentGatewayHttpServer(
                     val postSegments = exchange.requestURI.path.removePrefix("/agent/evidence/").split('/').filter { it.isNotEmpty() }
                     if (postSegments.size == 2 && postSegments[1] == "acquire") {
                         handleAcquire(exchange, correlationId, principalId, postSegments[0])
+                        return
+                    }
+                    if (postSegments.size == 2 && postSegments[1] == "assign") {
+                        handleAssign(exchange, correlationId, principalId, postSegments[0])
                         return
                     }
                 }
@@ -286,7 +293,8 @@ class AgentGatewayHttpServer(
             val originalFileName = exchange.requestHeaders.getFirst(ORIGINAL_FILENAME_HEADER)?.trim()?.takeIf { it.isNotEmpty() }
             val candidate = CandidateEvidenceArtifact(content, receivedMediaType, originalFileName)
 
-            when (val result = runBlocking { submitSourceAsAgent(candidate, advisorySha256Raw) }) {
+            val batchId = exchange.requestHeaders.getFirst(BATCH_ID_HEADER)?.trim()?.takeIf { it.isNotEmpty() }
+            when (val result = runBlocking { submitSourceWithBatchAsAgent?.invoke(candidate, advisorySha256Raw, batchId) ?: submitSourceAsAgent(candidate, advisorySha256Raw) }) {
                 is AgentGatewaySourceSubmissionResult.Registered -> {
                     recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, result.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
                     writeJson(exchange, 201, submissionJson("REGISTERED", result.projection))
@@ -311,6 +319,26 @@ class AgentGatewayHttpServer(
                     recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, result.evidenceArtifactId.value, AgentGatewayAccessOutcome.SOURCE_IDENTITY_CONFLICT)
                     writeJson(exchange, 500, jsonObject("error" to "source identity conflict"))
                 }
+            }
+        }
+
+        private fun handleAssign(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, rawId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val id = parseEvidenceId(exchange, correlationId, principalId, rawId) ?: return
+            val batchId = exchange.requestHeaders.getFirst(BATCH_ID_HEADER)?.trim()
+            if (batchId.isNullOrBlank()) {
+                recordAudit(correlationId, principalId, BIND_ACTION_NAME, id.value, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "missing ingestion batch id")); return
+            }
+            when (val result = runBlocking { bindIngestionEvidenceAsAgent(batchId, id) }) {
+                is AgentGatewayBulkBindingResult.Assigned -> {
+                    recordAudit(correlationId, principalId, BIND_ACTION_NAME, id.value, AgentGatewayAccessOutcome.APPROVED)
+                    writeJson(exchange, 200, jsonObject("status" to "ASSIGNED", "evidenceArtifactId" to id.value))
+                }
+                AgentGatewayBulkBindingResult.Denied -> { recordAudit(correlationId, principalId, BIND_ACTION_NAME, id.value, AgentGatewayAccessOutcome.DENIED); writeJson(exchange, 403, jsonObject("error" to "denied")) }
+                AgentGatewayBulkBindingResult.UnknownBatch, AgentGatewayBulkBindingResult.EvidenceNotSubmitted -> { recordAudit(correlationId, principalId, BIND_ACTION_NAME, id.value, AgentGatewayAccessOutcome.NOT_FOUND); writeJson(exchange, 404, jsonObject("error" to "batch or evidence not found")) }
+                is AgentGatewayBulkBindingResult.Rejected -> { recordAudit(correlationId, principalId, BIND_ACTION_NAME, id.value, AgentGatewayAccessOutcome.DENIED); writeJson(exchange, 409, jsonObject("error" to result.reason)) }
+                is AgentGatewayBulkBindingResult.Failed -> { recordAudit(correlationId, principalId, BIND_ACTION_NAME, id.value, AgentGatewayAccessOutcome.INTERNAL_FAILURE); writeJson(exchange, 500, jsonObject("error" to result.reason)) }
             }
         }
 
@@ -454,6 +482,8 @@ class AgentGatewayHttpServer(
         const val ACQUIRE_ACTION_NAME = "agent-gateway.evidence.acquire"
         const val ORIGINAL_FILENAME_HEADER = "X-Parker-Original-Filename"
         const val ADVISORY_SHA256_HEADER = "X-Parker-Advisory-Sha256"
+        const val BATCH_ID_HEADER = "X-Parker-Ingestion-Batch-Id"
+        const val BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
 
         /**
          * Mirrors `OwnerEvidenceHttpServer.MAX_PART_BYTES` -- the same 64 MiB ingress bound

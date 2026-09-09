@@ -138,6 +138,7 @@ interface CaseAssignmentStorage {
 /** CASE-1's own closed audit-event vocabulary -- exactly the three facts this unit's own governance requires, nothing broader. */
 enum class CaseGovernanceAuditEventType {
     CASE_CREATED,
+    INGESTION_BATCH_AUTHORISED,
     EVIDENCE_ASSIGNED,
     EVIDENCE_REASSIGNED,
 }
@@ -147,7 +148,7 @@ enum class CaseGovernanceAuditEventType {
  * every event type; [previousCaseId] is populated only for
  * [CaseGovernanceAuditEventType.EVIDENCE_REASSIGNED] (the assignment that
  * existed immediately before this change); [evidenceArtifactId] is `null`
- * only for [CaseGovernanceAuditEventType.CASE_CREATED]. Never carries
+ * only for case creation or ingestion-batch authorisation. Never carries
  * evidence content, case notes, or anything beyond these identity/actor/
  * timestamp facts.
  */
@@ -160,8 +161,8 @@ data class CaseGovernanceAuditRecord(
     val recordedAt: Instant,
 ) {
     init {
-        require((eventType == CaseGovernanceAuditEventType.CASE_CREATED) == (evidenceArtifactId == null)) {
-            "CaseGovernanceAuditRecord.evidenceArtifactId must be present for every event type except CASE_CREATED"
+        require((eventType == CaseGovernanceAuditEventType.CASE_CREATED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED) == (evidenceArtifactId == null)) {
+            "CaseGovernanceAuditRecord.evidenceArtifactId must be present except for CASE_CREATED or INGESTION_BATCH_AUTHORISED"
         }
         require(eventType == CaseGovernanceAuditEventType.EVIDENCE_REASSIGNED || previousCaseId == null) {
             "CaseGovernanceAuditRecord.previousCaseId is meaningful only for EVIDENCE_REASSIGNED"
@@ -171,6 +172,9 @@ data class CaseGovernanceAuditRecord(
         }
         require(eventType != CaseGovernanceAuditEventType.CASE_CREATED || caseId != null) {
             "CaseGovernanceAuditRecord.caseId must be present for CASE_CREATED"
+        }
+        require(eventType != CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || caseId != null) {
+            "CaseGovernanceAuditRecord.caseId must be present for INGESTION_BATCH_AUTHORISED"
         }
         require(eventType != CaseGovernanceAuditEventType.EVIDENCE_ASSIGNED || caseId != null) {
             "CaseGovernanceAuditRecord.caseId must be present for EVIDENCE_ASSIGNED -- a first assignment is always to a real case, never to Unassigned"

@@ -134,7 +134,7 @@ class ParkerRuntimeAgentGatewayR0ProjectionCompositionTest {
             .filter { it.kind == kotlin.reflect.KParameter.Kind.VALUE }
             .map { it.type.classifier }
 
-        assertEquals(listOf(CandidateEvidenceArtifact::class, String::class), valueParameterTypes)
+        assertEquals(listOf(CandidateEvidenceArtifact::class, String::class, String::class), valueParameterTypes)
     }
 
     // ================= B/C. Composed projection is fixed to Hermes's principal and the gateway purpose =================

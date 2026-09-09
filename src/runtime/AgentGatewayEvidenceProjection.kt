@@ -96,6 +96,7 @@ internal class AgentGatewayEvidenceProjection(
      */
     private val governedAcquisitionWorkflow: GovernedAcquisitionOwnerWorkflow? = null,
     private val clock: () -> Instant = Instant::now,
+    private val bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null,
 ) {
 
     suspend fun retrieveEvidence(evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceRetrievalResult {
@@ -158,7 +159,7 @@ internal class AgentGatewayEvidenceProjection(
      * own; [advisorySha256] is passed through unchanged for [EvidenceCustodian.submitSource]'s
      * own comparison against its own authoritative, independently computed hash.
      */
-    suspend fun submitSource(candidate: CandidateEvidenceArtifact, advisorySha256: String?): AgentGatewaySourceSubmissionResult {
+    suspend fun submitSource(candidate: CandidateEvidenceArtifact, advisorySha256: String?, batchId: String? = null): AgentGatewaySourceSubmissionResult {
         val decision = permissionEngine.evaluate(
             buildRequest(
                 resourceId = AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID,
@@ -170,12 +171,33 @@ internal class AgentGatewayEvidenceProjection(
         if (!decision.isApproved()) {
             return AgentGatewaySourceSubmissionResult.Denied(decision.decision)
         }
+        if (batchId != null && bulkIngestionBindingCoordinator?.isAuthorised(batchId) != true) {
+            return AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED)
+        }
         return when (val outcome = evidenceCustodian.submitSource(hermesPrincipalId, candidate, advisorySha256)) {
-            is EvidenceSourceSubmissionResult.Registered -> AgentGatewaySourceSubmissionResult.Registered(projectionOf(outcome.evidenceArtifactId, outcome.manifest))
-            is EvidenceSourceSubmissionResult.AlreadyRegistered -> AgentGatewaySourceSubmissionResult.AlreadyRegistered(projectionOf(outcome.evidenceArtifactId, outcome.manifest))
+            is EvidenceSourceSubmissionResult.Registered -> if (batchId == null || bulkIngestionBindingCoordinator?.recordSubmission(batchId, outcome.evidenceArtifactId) == true) AgentGatewaySourceSubmissionResult.Registered(projectionOf(outcome.evidenceArtifactId, outcome.manifest)) else AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED)
+            is EvidenceSourceSubmissionResult.AlreadyRegistered -> if (batchId == null || bulkIngestionBindingCoordinator?.recordSubmission(batchId, outcome.evidenceArtifactId) == true) AgentGatewaySourceSubmissionResult.AlreadyRegistered(projectionOf(outcome.evidenceArtifactId, outcome.manifest)) else AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED)
             is EvidenceSourceSubmissionResult.HashMismatch -> AgentGatewaySourceSubmissionResult.HashMismatch(outcome.computedSha256, outcome.advisorySha256)
             is EvidenceSourceSubmissionResult.Rejected -> AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED)
             is EvidenceSourceSubmissionResult.Conflict -> AgentGatewaySourceSubmissionResult.Conflict(outcome.evidenceArtifactId, outcome.computedSha256, outcome.reason)
+        }
+    }
+
+    suspend fun bindIngestionEvidence(batchId: String, evidenceArtifactId: EvidenceArtifactId): AgentGatewayBulkBindingResult {
+        val decision = permissionEngine.evaluate(buildRequest(
+            resourceId = AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID,
+            actionName = AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME,
+            requestIdPrefix = "agent-gateway-ingestion-bind",
+            contextId = evidenceArtifactId.value,
+        ))
+        if (!decision.isApproved()) return AgentGatewayBulkBindingResult.Denied
+        return when (val result = bulkIngestionBindingCoordinator?.assignFromHermes(batchId, evidenceArtifactId)
+            ?: BulkIngestionAssignment.Failure("BULK_BINDING_NOT_CONFIGURED")) {
+            is BulkIngestionAssignment.Assigned -> AgentGatewayBulkBindingResult.Assigned(result.caseId)
+            BulkIngestionAssignment.UnknownBatch -> AgentGatewayBulkBindingResult.UnknownBatch
+            BulkIngestionAssignment.EvidenceNotSubmittedUnderBatch -> AgentGatewayBulkBindingResult.EvidenceNotSubmitted
+            is BulkIngestionAssignment.Rejected -> AgentGatewayBulkBindingResult.Rejected(result.reason)
+            is BulkIngestionAssignment.Failure -> AgentGatewayBulkBindingResult.Failed(result.reason)
         }
     }
 
@@ -338,11 +360,22 @@ internal class AgentGatewayEvidenceProjection(
         const val AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME = "agent-gateway.evidence.retrieve-manifest"
         const val AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME = "agent-gateway.evidence.submit"
         const val AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME = "agent-gateway.evidence.acquire"
+        const val AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
         val AGENT_GATEWAY_EVIDENCE_RETRIEVAL_RESOURCE_ID = ResourceId("agent-gateway-evidence-retrieval")
         val AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID = ResourceId("agent-gateway-evidence-manifest-retrieval")
         val AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-evidence-submit")
         val AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID = ResourceId("agent-gateway-evidence-acquire")
+        val AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID = ResourceId("agent-gateway-ingestion-bind")
     }
+}
+
+sealed interface AgentGatewayBulkBindingResult {
+    data class Assigned(val caseId: parker.core.interfaces.CaseId) : AgentGatewayBulkBindingResult
+    data object UnknownBatch : AgentGatewayBulkBindingResult
+    data object EvidenceNotSubmitted : AgentGatewayBulkBindingResult
+    data class Rejected(val reason: String) : AgentGatewayBulkBindingResult
+    data class Failed(val reason: String) : AgentGatewayBulkBindingResult
+    data object Denied : AgentGatewayBulkBindingResult
 }
 
 /**

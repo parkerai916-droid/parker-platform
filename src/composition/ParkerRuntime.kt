@@ -226,6 +226,9 @@ import parker.core.runtime.TierBOcrOwnerInvocationCoordinator
 import parker.core.runtime.TierBOcrHumanFidelityReviewCoordinator
 import parker.core.runtime.CaseAssignmentCoordinator
 import parker.core.runtime.CaseAssignmentOutcome
+import parker.core.runtime.BulkIngestionAssignment
+import parker.core.runtime.BulkIngestionAuthorisation
+import parker.core.runtime.BulkIngestionBindingCoordinator
 import parker.core.runtime.CaseCreationOutcome
 import parker.core.runtime.FileSystemCaseAssignmentStorage
 import parker.core.runtime.FileSystemCaseGovernanceAudit
@@ -469,6 +472,7 @@ class ParkerRuntime(
     // CASE-1: null unless caseStorageRootPath/caseAssignmentStorageRootPath/caseGovernanceAuditLogPath
     // are all configured together, mirroring every other optional collaborator in this file.
     private var caseAssignmentCoordinator: CaseAssignmentCoordinator? = null
+    private var bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null
     private var governedHumanCorrectionService: GovernedHumanCorrectionService? = null
     private var humanCorrectedRepresentationStorage: HumanCorrectedRepresentationStorage? = null
     private var humanCorrectionAudit: HumanCorrectionAudit? = null
@@ -832,6 +836,7 @@ class ParkerRuntime(
                 // Section 11, Section 20): the acquisition-request counterpart's own fixed
                 // resource -- still ResourceType.DOCUMENT, still no new ResourceType.
                 Triple(AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Acquisition Request"),
+                Triple(AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Ingestion Case Binding"),
             ).forEach { (resourceId, resourceType, displayName) ->
                 resourceRegistry.register(
                     Resource(
@@ -1015,6 +1020,7 @@ class ParkerRuntime(
                     mappings = setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
                 ),
             )
+            vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))))
         }
 
         val permissionPolicy = DefaultPermissionPolicy(
@@ -1358,6 +1364,17 @@ class ParkerRuntime(
                     outcome = PermissionDecisionOutcome.DENIED,
                     level = PermissionLevel.AUTOMATIC,
                     proposedAction = AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE, resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED, level = PermissionLevel.AUTOMATIC,
+                    proposedAction = AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE, resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED, level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME,
                 ),
                 PermissionPolicyRule(
                     action = PermissionAction.WRITE,
@@ -2323,6 +2340,7 @@ class ParkerRuntime(
             permissionEngine = permissionEngine,
             evidenceCustodian = defaultEvidenceCustodian,
             governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
+            bulkIngestionBindingCoordinator = bulkIngestionBindingCoordinator,
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
@@ -2352,6 +2370,14 @@ class ParkerRuntime(
                 caseAssignmentStorage,
                 caseGovernanceAudit,
                 evidenceCustodian,
+                PrincipalId(config.ownerPrincipalId),
+                clock,
+            )
+            bulkIngestionBindingCoordinator = BulkIngestionBindingCoordinator(
+                Path.of(requireNotNull(config.caseAssignmentStorageRootPath)).resolve("bulk-ingestion-bindings"),
+                caseStorage,
+                requireNotNull(caseAssignmentCoordinator),
+                caseGovernanceAudit,
                 PrincipalId(config.ownerPrincipalId),
                 clock,
             )
@@ -2923,12 +2949,13 @@ class ParkerRuntime(
     internal suspend fun submitSourceAsAgent(
         candidate: CandidateEvidenceArtifact,
         advisorySha256: String?,
+        batchId: String? = null,
     ): parker.core.runtime.AgentGatewaySourceSubmissionResult {
         if (state != RuntimeLifecycleState.RUNNING) {
             throw ParkerRuntimeException.NotRunning(state)
         }
         logger.info("Agent Gateway candidate-source submission requested")
-        return agentGatewayEvidenceProjection.submitSource(candidate, advisorySha256)
+        return agentGatewayEvidenceProjection.submitSource(candidate, advisorySha256, batchId)
     }
 
     /**
@@ -2962,6 +2989,11 @@ class ParkerRuntime(
         }
         logger.info("Agent Gateway governed acquisition requested (evidenceArtifactId=${evidenceArtifactId.value})")
         return agentGatewayEvidenceProjection.requestAcquisition(evidenceArtifactId)
+    }
+
+    internal suspend fun bindIngestionEvidenceAsAgent(batchId: String, evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.AgentGatewayBulkBindingResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return agentGatewayEvidenceProjection.bindIngestionEvidence(batchId, evidenceArtifactId)
     }
 
     /**
@@ -3568,6 +3600,20 @@ class ParkerRuntime(
         return coordinator.assign(evidenceArtifactId, caseId)
     }
 
+    /** Owner-only creation of one immutable opaque Hermes bulk-ingestion binding. */
+    internal suspend fun authoriseBulkIngestionAsOwner(caseId: CaseId): BulkIngestionAuthorisation {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return bulkIngestionBindingCoordinator?.authoriseAsOwner(caseId)
+            ?: BulkIngestionAuthorisation.Failure("Bulk ingestion case binding is not configured")
+    }
+
+    /** Hermes-facing binding operation: the target CaseId is resolved only from Parker's durable batch record. */
+    internal suspend fun bindBulkIngestionEvidenceAsAgent(batchId: String, evidenceArtifactId: EvidenceArtifactId): BulkIngestionAssignment {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return bulkIngestionBindingCoordinator?.assignFromHermes(batchId, evidenceArtifactId)
+            ?: BulkIngestionAssignment.Failure("Bulk ingestion case binding is not configured")
+    }
+
     /** Exact-pair, metadata-only human-review records; ordering conveys no precedence. */
     suspend fun listHumanVerificationRecordsAsOwner(
         evidenceArtifactId: EvidenceArtifactId,
@@ -3953,6 +3999,8 @@ class ParkerRuntime(
         // purpose is created.
         val AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID = ResourceId("agent-gateway-evidence-acquire")
         const val AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME = "agent-gateway.evidence.acquire"
+        val AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID = ResourceId("agent-gateway-ingestion-bind")
+        const val AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
 
         // Controlled Agent Run Submission (docs/implementation/
         // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and

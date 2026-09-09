@@ -217,6 +217,8 @@ fun main(args: Array<String>) = runBlocking {
             retrieveEvidenceManifestAsAgent = runtime::retrieveEvidenceManifestAsAgent,
             submitSourceAsAgent = runtime::submitSourceAsAgent,
             requestAcquisitionAsAgent = runtime::requestAcquisitionAsAgent,
+            bindIngestionEvidenceAsAgent = runtime::bindIngestionEvidenceAsAgent,
+            submitSourceWithBatchAsAgent = runtime::submitSourceAsAgent,
             audit = parker.core.runtime.FileSystemAgentGatewayAccessAudit(
                 java.nio.file.Path.of(requireNotNull(config.agentGatewayAccessAuditLogPath)),
             ),

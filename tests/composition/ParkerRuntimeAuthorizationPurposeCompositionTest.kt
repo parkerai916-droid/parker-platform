@@ -194,7 +194,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         // purpose, so it does not count here). AG-1G (R2 Governed-Acquisition Request, Section 9,
         // Section 20) adds exactly one more still, by the identical shape -- the acquisition
         // verb's own Purpose-scoped APPROVED rule (its DENIED guard likewise carries no purpose).
-        assertEquals(9, rules.count { it.authorizationPurpose != null })
+        assertEquals(10, rules.count { it.authorizationPurpose != null })
 
         val candidateEvaluationRules = rules.filter { it.authorizationPurpose == candidateEvaluationPurpose }
         assertEquals(2, candidateEvaluationRules.size)

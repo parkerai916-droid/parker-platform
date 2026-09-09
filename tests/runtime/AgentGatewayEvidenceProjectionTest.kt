@@ -325,7 +325,7 @@ class AgentGatewayEvidenceProjectionTest {
     // ================= M/N/O/P/Q. Only the exact governed surface exists -- no other mutation =================
 
     @Test
-    fun `AgentGatewayEvidenceProjection declares exactly four public methods -- the two R0 reads, AG-1F's governed submission, and AG-1G's governed acquisition request, nothing else`() {
+    fun `AgentGatewayEvidenceProjection declares only the governed reads submission acquisition and batch-binding methods`() {
         val publicFunctionNames = AgentGatewayEvidenceProjection::class.declaredFunctions
             .filter { it.visibility == kotlin.reflect.KVisibility.PUBLIC }
             .map { it.name }
@@ -337,7 +337,7 @@ class AgentGatewayEvidenceProjectionTest {
         // performs no routing, provider, or egress logic of its own.
         //
         // Revision history: AG-1G added requestAcquisition (three -> four).
-        assertEquals(setOf("retrieveEvidence", "retrieveEvidenceManifest", "submitSource", "requestAcquisition"), publicFunctionNames)
+        assertEquals(setOf("retrieveEvidence", "retrieveEvidenceManifest", "submitSource", "requestAcquisition", "bindIngestionEvidence"), publicFunctionNames)
     }
 
     // ================= AG-1F. Candidate-source submission =================
@@ -362,7 +362,7 @@ class AgentGatewayEvidenceProjectionTest {
         val valueParameterTypes = function.parameters
             .filter { it.kind == kotlin.reflect.KParameter.Kind.VALUE }
             .map { it.type.classifier }
-        assertEquals(listOf(parker.core.interfaces.CandidateEvidenceArtifact::class, String::class), valueParameterTypes)
+        assertEquals(listOf(parker.core.interfaces.CandidateEvidenceArtifact::class, String::class, String::class), valueParameterTypes)
     }
 
     @Test
