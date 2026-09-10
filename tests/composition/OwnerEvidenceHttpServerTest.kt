@@ -9,6 +9,7 @@ import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -77,6 +78,8 @@ class OwnerEvidenceHttpServerTest {
         openAiExternalTranscriptionEnabled: Boolean = false,
         openAiExternalTranscriptionProviderProfilePath: String? = null,
         openAiApiCredential: OpenAiApiCredential? = null,
+        hermesProcessingStorageRootPath: String = Files.createTempDirectory("evidence-http-hermes-processing").toString(),
+        agentGatewayHermesActive: Boolean = false,
     ): ParkerRuntimeConfig = ParkerRuntimeConfig(
         modelEndpointUrl = modelEndpointUrl, // deliberately unreachable by default
         modelName = "test-model",
@@ -101,6 +104,8 @@ class OwnerEvidenceHttpServerTest {
         openAiExternalTranscriptionEnabled = openAiExternalTranscriptionEnabled,
         openAiExternalTranscriptionProviderProfilePath = openAiExternalTranscriptionProviderProfilePath,
         openAiApiCredential = openAiApiCredential,
+        hermesProcessingStorageRootPath = hermesProcessingStorageRootPath,
+        agentGatewayHermesActive = agentGatewayHermesActive,
     )
 
     private fun writeFakeBridgeScript(directory: Path, exitCode: Int, stdout: String): Path {
@@ -165,12 +170,13 @@ class OwnerEvidenceHttpServerTest {
         openAiExternalTranscriptionEnabled: Boolean = false,
         openAiExternalTranscriptionProviderProfilePath: String? = null,
         openAiApiCredential: OpenAiApiCredential? = null,
+        runtimeConfigOverride: ParkerRuntimeConfig? = null,
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
         val runtimeLogger = RecordingParkerLogger()
         val serverLogger = RecordingParkerLogger()
-        val runtimeConfig = if (derivativeGenerationStorageRootPath != null && derivativeContentStorageRootPath != null) {
+        val runtimeConfig = runtimeConfigOverride ?: if (derivativeGenerationStorageRootPath != null && derivativeContentStorageRootPath != null) {
             config(
                 bridgePath, modelEndpointUrl, derivativeGenerationStorageRootPath, derivativeContentStorageRootPath, productionLocalOcrEligible,
                 openAiExternalTranscriptionEnabled, openAiExternalTranscriptionProviderProfilePath, openAiApiCredential,
@@ -229,6 +235,10 @@ class OwnerEvidenceHttpServerTest {
             evaluateOrdinaryRegionCapability = evaluateRegionCapability,
             authoriseBulkIngestionAsOwner = authoriseBulkIngestion,
             prepareCorrectedEvidence = prepareCorrected,
+            listHermesProcessingReviewAsOwner = runtime::listHermesProcessingReviewAsOwner,
+            recordHermesProcessingDecisionAsOwner = { batchId, sourceSha256, decision, reason, correction ->
+                runtime.recordHermesProcessingDecisionAsOwner(batchId, sourceSha256, decision, reason, correction)
+            },
         )
         server.start()
         return Harness(runtime, server, authentication, runtimeLogger, serverLogger)
@@ -368,6 +378,9 @@ class OwnerEvidenceHttpServerTest {
 
     private fun send(request: HttpRequest): HttpResponse<String> =
         client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     @Test
     fun `authenticated evidence GET returns durable rows and browser loads them on page start`() {
@@ -2798,6 +2811,132 @@ class OwnerEvidenceHttpServerTest {
     }
 
     // CASE-1 — Owner Case / Matter Classification for Evidence.
+
+    @Test
+    fun `Task 6 Owner Hermes review HTTP survives full Parker runtime reconstruction`() = runTest {
+        val hermesStorageRoot = Files.createTempDirectory("task6-hermes-processing")
+        val reviewBytes = "task6 review source".toByteArray()
+        val failedBytes = "task6 failed source".toByteArray()
+        val reviewSha = sha256(reviewBytes)
+        val failedSha = sha256(failedBytes)
+        lateinit var batchId: String
+        val durableConfig = config(
+            syntheticBridgeShellExecutable(),
+            hermesProcessingStorageRootPath = hermesStorageRoot.toString(),
+            agentGatewayHermesActive = true,
+        )
+        val runtimeA = startHarness("", runtimeConfigOverride = durableConfig)
+        try {
+            val case = (runtimeA.runtime.createCaseAsOwner("Task 6 durable Owner review case") as parker.core.runtime.CaseCreationOutcome.Created).case
+            val batch = (runtimeA.runtime.authoriseBulkIngestionAsOwner(case.caseId) as parker.core.runtime.BulkIngestionAuthorisation.Authorised).binding
+            batchId = batch.batchId
+            val passBytes = "task6 pass source".toByteArray()
+            val passSha = sha256(passBytes)
+
+            fun result(sha: String, status: parker.core.interfaces.HermesProcessingStatus) =
+                parker.core.interfaces.HermesProcessingResult(
+                    sourceSha256 = sha,
+                    batchId = batch.batchId,
+                    status = status,
+                    methods = setOf(parker.core.interfaces.HermesProcessingMethod.DIRECT_TEXT_EXTRACTION),
+                    issues = if (status == parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED) listOf(
+                        parker.core.interfaces.HermesProcessingIssue(
+                            parker.core.interfaces.HermesProcessingIssueKind.MISSING_CONTENT,
+                            "Owner review required",
+                        ),
+                    ) else emptyList(),
+                    failure = if (status == parker.core.interfaces.HermesProcessingStatus.FAILED) {
+                        parker.core.interfaces.HermesProcessingFailure(parker.core.interfaces.HermesProcessingFailureKind.PROCESSOR_FAILURE)
+                    } else null,
+                )
+
+            val passSubmission = runtimeA.runtime.submitProcessingResultAsAgent(batch.batchId, result(passSha, parker.core.interfaces.HermesProcessingStatus.PASS))
+            val reviewSubmission = runtimeA.runtime.submitProcessingResultAsAgent(batch.batchId, result(reviewSha, parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED))
+            val failedSubmission = runtimeA.runtime.submitProcessingResultAsAgent(batch.batchId, result(failedSha, parker.core.interfaces.HermesProcessingStatus.FAILED))
+            assertTrue(passSubmission is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded, passSubmission.toString())
+            assertTrue(reviewSubmission is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded, reviewSubmission.toString())
+            assertTrue(failedSubmission is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded, failedSubmission.toString())
+
+            val reviewPath = "/owner/hermes-processing/review"
+            val decisionPath = "$reviewPath/${batch.batchId}/$reviewSha/decision"
+            assertEquals(401, send(HttpRequest.newBuilder(URI.create(runtimeA.baseUri() + reviewPath)).GET().build()).statusCode())
+            assertEquals(
+                401,
+                send(
+                    HttpRequest.newBuilder(URI.create(runtimeA.baseUri() + decisionPath))
+                        .header("Authorization", "Bearer hermes-agent-credential")
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"decision\":\"ACCEPT\"}"))
+                        .build(),
+                ).statusCode(),
+            )
+
+            val pendingA = send(HttpRequest.newBuilder(URI.create(runtimeA.baseUri() + reviewPath)).header("Cookie", pairedCookie(runtimeA)).GET().build())
+            assertEquals(200, pendingA.statusCode())
+            assertTrue(pendingA.body().contains(reviewSha), pendingA.body())
+            assertTrue(pendingA.body().contains(failedSha), pendingA.body())
+
+            val acceptResponse = send(
+                HttpRequest.newBuilder(URI.create(runtimeA.baseUri() + decisionPath))
+                    .header("Cookie", pairedCookie(runtimeA))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"decision\":\"ACCEPT\",\"reason\":\"reviewed by Owner\"}"))
+                    .build(),
+            )
+            assertEquals(200, acceptResponse.statusCode(), acceptResponse.body())
+            assertTrue(acceptResponse.body().contains("\"status\":\"RECORDED\""))
+            assertTrue(acceptResponse.body().contains("\"decision\":\"ACCEPT\""))
+
+            val failedDecisionPath = "$reviewPath/${batch.batchId}/$failedSha/decision"
+            val reprocessResponse = send(
+                HttpRequest.newBuilder(URI.create(runtimeA.baseUri() + failedDecisionPath))
+                    .header("Cookie", pairedCookie(runtimeA))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"decision\":\"REPROCESS\",\"reason\":\"send back to Hermes\"}"))
+                    .build(),
+            )
+            assertEquals(200, reprocessResponse.statusCode(), reprocessResponse.body())
+
+        } finally {
+            runtimeA.shutdown()
+        }
+
+        val runtimeB = startHarness("", runtimeConfigOverride = durableConfig)
+        try {
+            val results = runtimeB.runtime.listProcessingResultsForBatchAsAgent(batchId)
+            assertTrue(results is parker.core.runtime.AgentGatewayProcessingResultListResult.Found)
+            val foundResults = results
+            assertEquals(3, foundResults.results.size)
+            assertEquals(
+                setOf(
+                    parker.core.interfaces.HermesProcessingStatus.PASS,
+                    parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED,
+                    parker.core.interfaces.HermesProcessingStatus.FAILED,
+                ),
+                foundResults.results.map { it.status }.toSet(),
+            )
+
+            val reconstructedReview = send(HttpRequest.newBuilder(URI.create(runtimeB.baseUri() + "/owner/hermes-processing/review")).header("Cookie", pairedCookie(runtimeB)).GET().build())
+            assertEquals(200, reconstructedReview.statusCode())
+            assertFalse(reconstructedReview.body().contains("\"sourceSha256\":\"$reviewSha\""))
+            assertTrue(reconstructedReview.body().contains("REPROCESS"))
+            assertTrue(reconstructedReview.body().contains("\"sourceSha256\":\"$failedSha\""))
+
+            val reviewStillEligible = runtimeB.runtime.submitGovernedIngestionAsAgent(
+                batchId, reviewSha, CandidateEvidenceArtifact(reviewBytes, "text/plain", "review.txt"),
+            )
+            assertTrue(reviewStillEligible is parker.core.runtime.AgentGatewayGovernedIngestionResult.Ingested)
+            val failedStillBlocked = runtimeB.runtime.submitGovernedIngestionAsAgent(
+                batchId, failedSha, CandidateEvidenceArtifact(failedBytes, "text/plain", "failed.txt"),
+            )
+            assertTrue(failedStillBlocked is parker.core.runtime.AgentGatewayGovernedIngestionResult.ReprocessRequired)
+
+            val reviewEvidence = runtimeB.runtime.listRegisteredEvidenceAsOwner().first { it.sha256 == reviewSha }
+            assertEquals((runtimeB.runtime.listCasesAsOwner().first { it.caseName == "Task 6 durable Owner review case" }).caseId, runtimeB.runtime.currentCaseAssignmentAsOwner(reviewEvidence.evidenceArtifactId))
+        } finally {
+            runtimeB.shutdown()
+        }
+    }
 
     @Test
     fun `GET owner-cases requires authentication`() {
