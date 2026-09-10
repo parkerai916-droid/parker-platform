@@ -3068,6 +3068,16 @@ class ParkerRuntime(
         return agentGatewayEvidenceProjection.listProcessingResultsForBatch(batchId)
     }
 
+    /** Hermes Governed Ingestion, Task 3. See [parker.core.runtime.AgentGatewayEvidenceProjection.submitGovernedIngestion]. */
+    internal suspend fun submitGovernedIngestionAsAgent(
+        batchId: String,
+        expectedSha256: String,
+        candidate: CandidateEvidenceArtifact,
+    ): parker.core.runtime.AgentGatewayGovernedIngestionResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return agentGatewayEvidenceProjection.submitGovernedIngestion(batchId, expectedSha256, candidate)
+    }
+
     /** Agent Gateway read-only batch handoff; the projection intentionally omits CaseId. */
     internal suspend fun listReadyBulkIngestionBatchesAsAgent(): List<parker.core.runtime.ReadyBulkIngestionBatch> {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)

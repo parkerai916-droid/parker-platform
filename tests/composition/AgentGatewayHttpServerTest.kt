@@ -19,6 +19,7 @@ import parker.core.runtime.FileSystemAgentGatewayAccessAudit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -68,12 +69,14 @@ class AgentGatewayHttpServerTest {
         val acquireCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
         val submitProcessingResultCalls: MutableList<Pair<String, parker.core.interfaces.HermesProcessingResult>> = mutableListOf(),
         val listProcessingResultCalls: MutableList<String> = mutableListOf(),
+        val submitGovernedIngestionCalls: MutableList<Triple<String, String, parker.core.interfaces.CandidateEvidenceArtifact>> = mutableListOf(),
         var retrieveResult: AgentGatewayEvidenceRetrievalResult = AgentGatewayEvidenceRetrievalResult.NotFound(EvidenceArtifactId("unset")),
         var manifestResult: AgentGatewayEvidenceManifestResult = AgentGatewayEvidenceManifestResult.NotFound(EvidenceArtifactId("unset")),
         var submitResult: parker.core.runtime.AgentGatewaySourceSubmissionResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
         var acquireResult: parker.core.runtime.AgentGatewayAcquisitionResult = parker.core.runtime.AgentGatewayAcquisitionResult.Denied(PermissionDecisionOutcome.DENIED),
         var submitProcessingResultResult: parker.core.runtime.AgentGatewayProcessingResultSubmissionResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
         var listProcessingResultsResult: parker.core.runtime.AgentGatewayProcessingResultListResult = parker.core.runtime.AgentGatewayProcessingResultListResult.Denied(PermissionDecisionOutcome.DENIED),
+        var submitGovernedIngestionResult: parker.core.runtime.AgentGatewayGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.Denied(PermissionDecisionOutcome.DENIED),
         val readyBatches: List<parker.core.runtime.ReadyBulkIngestionBatch> = emptyList(),
     ) {
         val auditLogFile = Files.createTempDirectory("agent-gateway-http-test-audit").resolve("audit.log")
@@ -88,6 +91,7 @@ class AgentGatewayHttpServerTest {
             listReadyIngestionBatchesAsAgent = { readyBatches },
             submitProcessingResultAsAgent = { batchId, result -> submitProcessingResultCalls.add(batchId to result); submitProcessingResultResult },
             listProcessingResultsForBatchAsAgent = { batchId -> listProcessingResultCalls.add(batchId); listProcessingResultsResult },
+            submitGovernedIngestionAsAgent = { batchId, sha, candidate -> submitGovernedIngestionCalls.add(Triple(batchId, sha, candidate)); submitGovernedIngestionResult },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -172,6 +176,7 @@ class AgentGatewayHttpServerTest {
             requestAcquisitionAsAgent = { id -> runtime.requestAcquisitionAsAgent(id) },
             submitProcessingResultAsAgent = { batchId, result -> runtime.submitProcessingResultAsAgent(batchId, result) },
             listProcessingResultsForBatchAsAgent = { batchId -> runtime.listProcessingResultsForBatchAsAgent(batchId) },
+            submitGovernedIngestionAsAgent = { batchId, sha, candidate -> runtime.submitGovernedIngestionAsAgent(batchId, sha, candidate) },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -431,11 +436,12 @@ class AgentGatewayHttpServerTest {
         // Revision history: BI-4 adds only the fixed batch-binding delegate. Hermes Processing
         // Result Intake, Task 2, adds submitProcessingResultAsAgent/listProcessingResultsForBatchAsAgent
         // -- both still narrow, explicitly injected delegates, never a generic invocation surface.
+        // Hermes Governed Ingestion, Task 3, adds submitGovernedIngestionAsAgent -- same shape.
         assertEquals(
             setOf(
                 "retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent",
                 "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent",
-                "submitProcessingResultAsAgent", "listProcessingResultsForBatchAsAgent",
+                "submitProcessingResultAsAgent", "listProcessingResultsForBatchAsAgent", "submitGovernedIngestionAsAgent",
             ),
             functionTypedFields.map { it.name }.toSet(),
         )
@@ -1255,6 +1261,128 @@ class AgentGatewayHttpServerTest {
         assertEquals(0, fake.listProcessingResultCalls.size)
     }
 
+    // ================= Hermes Governed Ingestion, Task 3 (fake harness: isolated HTTP layer) =================
+
+    private fun postGovernedIngestion(baseUri: String, batchId: String, sha256: String, bytes: ByteArray = "content".toByteArray(), bearer: String = token): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("$baseUri/agent/ingestion-batches/$batchId/sources/$sha256"))
+            .header("Authorization", "Bearer $bearer")
+            .header("Content-Type", "text/plain")
+            .POST(HttpRequest.BodyPublishers.ofByteArray(bytes))
+            .build(),
+    )
+
+    @Test
+    fun `governed ingestion with a missing credential is rejected before the coordinator is reached`() = withFakeHarness { fake ->
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-test/sources/${"a".repeat(64)}"))
+                .POST(HttpRequest.BodyPublishers.ofByteArray("content".toByteArray())).build(),
+        )
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.submitGovernedIngestionCalls.size)
+    }
+
+    @Test
+    fun `governed ingestion with an invalid credential is rejected before the coordinator is reached`() = withFakeHarness { fake ->
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-test", "a".repeat(64), bearer = "wrong-token")
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.submitGovernedIngestionCalls.size)
+    }
+
+    @Test
+    fun `a malformed source sha256 in the route is rejected with 400 before the coordinator is reached`() = withFakeHarness { fake ->
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-test", "not-a-hash")
+        assertEquals(400, response.statusCode())
+        assertEquals(0, fake.submitGovernedIngestionCalls.size)
+    }
+
+    @Test
+    fun `Ingested is reported as 201 and the batch id and sha256 come from the route`() = withFakeHarness { fake ->
+        val projection = parker.core.runtime.AgentGatewayEvidenceManifestProjection(EvidenceArtifactId("evidence-1"), "a".repeat(64), 7L, "text/plain", "f.txt")
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.Ingested(projection)
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-abc", "a".repeat(64))
+
+        assertEquals(201, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"INGESTED\""))
+        val call = fake.submitGovernedIngestionCalls.single()
+        assertEquals("bulk-abc", call.first)
+        assertEquals("a".repeat(64), call.second)
+    }
+
+    @Test
+    fun `AlreadyIngested is reported as 200, not 201`() = withFakeHarness { fake ->
+        val projection = parker.core.runtime.AgentGatewayEvidenceManifestProjection(EvidenceArtifactId("evidence-1"), "a".repeat(64), 7L, null, null)
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.AlreadyIngested(projection)
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-abc", "a".repeat(64))
+
+        assertEquals(200, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"ALREADY_INGESTED\""))
+    }
+
+    @Test
+    fun `HeldForReview blocks ingestion and is reported distinctly`() = withFakeHarness { fake ->
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.HeldForReview
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-abc", "a".repeat(64))
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"HELD_FOR_REVIEW\""))
+    }
+
+    @Test
+    fun `ProcessingFailed blocks ingestion and echoes the failure kind`() = withFakeHarness { fake ->
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.ProcessingFailed(
+            parker.core.interfaces.HermesProcessingFailure(parker.core.interfaces.HermesProcessingFailureKind.CORRUPT_SOURCE),
+        )
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-abc", "a".repeat(64))
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"PROCESSING_FAILED\""))
+        assertTrue(response.body().contains("CORRUPT_SOURCE"))
+    }
+
+    @Test
+    fun `ProcessingResultRequired blocks ingestion when no stored result exists`() = withFakeHarness { fake ->
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.ProcessingResultRequired
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-abc", "a".repeat(64))
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"PROCESSING_RESULT_REQUIRED\""))
+    }
+
+    @Test
+    fun `HashMismatch blocks ingestion and echoes both hashes`() = withFakeHarness { fake ->
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.HashMismatch("b".repeat(64), "a".repeat(64))
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-abc", "a".repeat(64))
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"HASH_MISMATCH\""))
+        assertTrue(response.body().contains("b".repeat(64)))
+        assertTrue(response.body().contains("a".repeat(64)))
+    }
+
+    @Test
+    fun `UnknownBatch is reported as 404`() = withFakeHarness { fake ->
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.UnknownBatch
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-missing", "a".repeat(64))
+
+        assertEquals(404, response.statusCode())
+    }
+
+    @Test
+    fun `Denied is reported as 403`() = withFakeHarness { fake ->
+        fake.submitGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.Denied(PermissionDecisionOutcome.DENIED)
+
+        val response = postGovernedIngestion(fake.baseUri(), "bulk-abc", "a".repeat(64))
+
+        assertEquals(403, response.statusCode())
+    }
+
     // ================= Real-runtime integration: genuine end-to-end processing-result intake =================
 
     private suspend fun RealHarness.activateHermesAndMintBatch(caseName: String = "Processing Result Test Case"): String {
@@ -1355,5 +1483,190 @@ class AgentGatewayHttpServerTest {
             assertTrue(readB.body().contains("b".repeat(64)))
             assertFalse(readB.body().contains("a".repeat(64)))
         }
+    }
+
+    // ================= Hermes Governed Ingestion, Task 3 (real-runtime integration) =================
+
+    private fun sha256Of(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    @Test
+    fun `PASS happy path -- governed ingestion produces an authoritative EvidenceArtifactId and real case binding`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("PASS Happy Path Case")
+            val bytes = "the actual submitted bytes".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = sha256, status = "PASS"))
+
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+
+            assertEquals(201, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"INGESTED\""))
+            val evidenceArtifactId = jsonStringField(response.body(), "evidenceArtifactId")
+            assertNotNull(evidenceArtifactId)
+            val retrieved = harness.runtime.retrieveEvidenceAsAgent(EvidenceArtifactId(evidenceArtifactId))
+            assertIs<AgentGatewayEvidenceRetrievalResult.Found>(retrieved)
+            assertEquals(bytes.size, retrieved.byteLength)
+            val caseId = harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(evidenceArtifactId))
+            assertNotNull(caseId, "governed ingestion must complete real case binding, not just registration")
+        }
+    }
+
+    @Test
+    fun `PASS idempotency -- repeating the identical submission returns the same authoritative EvidenceArtifactId and creates no duplicate`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val bytes = "idempotent bytes".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = sha256, status = "PASS"))
+
+            val first = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            val second = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+
+            assertEquals(201, first.statusCode())
+            assertEquals(200, second.statusCode())
+            assertTrue(second.body().contains("\"status\":\"ALREADY_INGESTED\""))
+            assertEquals(jsonStringField(first.body(), "evidenceArtifactId"), jsonStringField(second.body(), "evidenceArtifactId"))
+        }
+    }
+
+    @Test
+    fun `REVIEW_REQUIRED blocks ingestion, registers no evidence, and the stored result remains readable`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val bytes = "needs human review".toByteArray()
+            val sha256 = sha256Of(bytes)
+            val body = """{"sourceSha256":"$sha256","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"MISSING_CONTENT","explanation":"content missing"}]}"""
+            postProcessingResult(harness.baseUri(), batchId, body)
+
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            val readBack = getProcessingResults(harness.baseUri(), batchId)
+
+            assertEquals(409, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"HELD_FOR_REVIEW\""))
+            assertTrue(readBack.body().contains("REVIEW_REQUIRED"), "the stored result must remain visible for a future review interface")
+            val queue = harness.runtime.steveReviewQueueProjectionAsAgent()?.enumerate() ?: emptyList()
+            assertEquals(emptyList(), queue, "no evidence was ever registered, so the post-ingestion review queue stays empty")
+        }
+    }
+
+    @Test
+    fun `FAILED blocks ingestion, registers no evidence, and the stored result remains readable`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val bytes = "corrupt or unsupported".toByteArray()
+            val sha256 = sha256Of(bytes)
+            val body = """{"sourceSha256":"$sha256","status":"FAILED","methods":["OCR"],"failure":{"kind":"CORRUPT_SOURCE"}}"""
+            postProcessingResult(harness.baseUri(), batchId, body)
+
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            val readBack = getProcessingResults(harness.baseUri(), batchId)
+
+            assertEquals(409, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"PROCESSING_FAILED\""))
+            assertTrue(readBack.body().contains("FAILED"), "the stored result must remain visible for a future review interface")
+        }
+    }
+
+    @Test
+    fun `missing processing result blocks ingestion through the sanctioned Hermes bulk path -- no silent fallback`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val bytes = "never processed by Hermes".toByteArray()
+
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256Of(bytes), bytes)
+
+            assertEquals(409, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"PROCESSING_RESULT_REQUIRED\""))
+        }
+    }
+
+    @Test
+    fun `hash mismatch between the declared route hash and the actual submitted bytes is rejected, and no evidence is registered`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val processedBytes = "what Hermes actually analysed".toByteArray()
+            val declaredSha256 = sha256Of(processedBytes)
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = declaredSha256, status = "PASS"))
+            val differentBytes = "completely different bytes submitted instead".toByteArray()
+
+            val response = postGovernedIngestion(harness.baseUri(), batchId, declaredSha256, differentBytes)
+
+            assertEquals(409, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"HASH_MISMATCH\""))
+            assertTrue(response.body().contains(sha256Of(differentBytes)))
+        }
+    }
+
+    @Test
+    fun `an unknown batch is rejected before any evidence admission is attempted`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val identityService: parker.core.interfaces.IdentityService =
+                harness.runtime.privateField<parker.core.interfaces.PermissionEngine>("permissionEngine").privateField("identityService")
+            identityService.updateStatus(hermesPrincipalId, PrincipalStatus.ACTIVE)
+            val bytes = "content".toByteArray()
+
+            val response = postGovernedIngestion(harness.baseUri(), "bulk-00000000-0000-0000-0000-000000000000", sha256Of(bytes), bytes)
+
+            assertEquals(404, response.statusCode())
+        }
+    }
+
+    @Test
+    fun `through the real composed runtime, a CREATED (not yet ACTIVE) Hermes is DENIED for governed ingestion -- existing PermissionEngine protection remains active`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val created = harness.runtime.createCaseAsOwner("Denied Governed Ingestion Case") as parker.core.runtime.CaseCreationOutcome.Created
+            val batchId = (harness.runtime.authoriseBulkIngestionAsOwner(created.case.caseId) as parker.core.runtime.BulkIngestionAuthorisation.Authorised).binding.batchId
+            val bytes = "content".toByteArray()
+
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256Of(bytes), bytes)
+
+            assertEquals(403, response.statusCode())
+        }
+    }
+
+    @Test
+    fun `Hermes's own proposedEvidenceArtifactId is never treated as authoritative -- Parker's own dedup resolution wins`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val bytes = "proposed id should be ignored".toByteArray()
+            val sha256 = sha256Of(bytes)
+            val body = """{"sourceSha256":"$sha256","status":"PASS","methods":["OCR"],"proposedEvidenceArtifactId":"evidence-hermes-guessed-this"}"""
+            postProcessingResult(harness.baseUri(), batchId, body)
+
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+
+            assertEquals(201, response.statusCode())
+            val evidenceArtifactId = jsonStringField(response.body(), "evidenceArtifactId")
+            assertNotNull(evidenceArtifactId)
+            assertFalse(evidenceArtifactId == "evidence-hermes-guessed-this", "Parker's own authoritative identity, not Hermes's proposal, must be the final EvidenceArtifactId")
+        }
+    }
+
+    @Test
+    fun `lifecycle isolation -- the stored HermesProcessingResult is unchanged after successful ingestion, and post-ingestion review state is untouched`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val bytes = "lifecycle isolation bytes".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = sha256, status = "PASS"))
+
+            postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            val readBack = getProcessingResults(harness.baseUri(), batchId)
+
+            // HermesProcessingStatus itself has no INGESTED value -- the stored result can only ever
+            // still say PASS; this also proves it was never rewritten in place.
+            assertTrue(readBack.body().contains("\"status\":\"PASS\""))
+            assertFalse(readBack.body().contains("INGESTED"), "the processing result record itself must never be mutated to reflect ingestion")
+            val queue = harness.runtime.steveReviewQueueProjectionAsAgent()?.enumerate() ?: emptyList()
+            assertEquals(emptyList(), queue, "governed ingestion registers raw bytes only -- no OCR/derivative generation exists yet, so the post-ingestion review projection has nothing to enumerate")
+        }
+    }
+
+    private fun jsonStringField(body: String, field: String): String? {
+        val marker = "\"$field\":\""
+        val start = body.indexOf(marker).takeIf { it >= 0 }?.plus(marker.length) ?: return null
+        val end = body.indexOf('"', start)
+        return if (end >= 0) body.substring(start, end) else null
     }
 }

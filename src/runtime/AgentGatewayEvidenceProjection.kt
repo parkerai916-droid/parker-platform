@@ -266,6 +266,85 @@ internal class AgentGatewayEvidenceProjection(
         try { bulkIngestionBindingCoordinator?.isAuthorised(batchId) == true } catch (_: IllegalArgumentException) { false }
 
     /**
+     * Hermes Governed Ingestion, Task 3. Gates the existing governed source-submission path
+     * ([submitSource]) and the existing batch/case-binding path ([bindIngestionEvidence]) behind a
+     * stored Task 2 [parker.core.interfaces.HermesProcessingResult] -- it invents no dedup,
+     * registration, or case-binding logic of its own. Order: permission first (reusing the exact
+     * same `agent-gateway.evidence.submit` verb/resource [submitSource] itself uses -- "PASS
+     * orchestration must be denied if PermissionEngine denies the existing governed
+     * source-submission action," never a new trust boundary), then batch validity, then actual-byte
+     * hash verification against [expectedSha256] (the caller's own declared identity for the source
+     * it is submitting -- computed with [parker.core.interfaces.CanonicalPagePixelDigests.sha256],
+     * Parker's own existing SHA-256 primitive, never a second hashing implementation), then the
+     * stored processing result's own status.
+     *
+     * [submitSource] and [bindIngestionEvidence] are called unchanged -- each performs its own,
+     * separate, pre-existing permission and batch-validity check; this method's own upfront checks
+     * are strictly additive gating, never a bypass or a relaxation of either.
+     */
+    suspend fun submitGovernedIngestion(
+        batchId: String,
+        expectedSha256: String,
+        candidate: CandidateEvidenceArtifact,
+    ): AgentGatewayGovernedIngestionResult {
+        val decision = permissionEngine.evaluate(buildRequest(
+            resourceId = AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID,
+            actionName = AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME,
+            requestIdPrefix = "agent-gateway-governed-ingestion",
+            contextId = "$batchId-$expectedSha256",
+        ))
+        if (!decision.isApproved()) return AgentGatewayGovernedIngestionResult.Denied(decision.decision)
+        if (!isBatchAuthorised(batchId)) return AgentGatewayGovernedIngestionResult.UnknownBatch
+
+        val computedSha256 = parker.core.interfaces.CanonicalPagePixelDigests.sha256(candidate.content)
+        if (!computedSha256.equals(expectedSha256, ignoreCase = true)) {
+            return AgentGatewayGovernedIngestionResult.HashMismatch(computedSha256, expectedSha256)
+        }
+
+        val stored = processingResultRegistry?.find(batchId, computedSha256)
+            ?: return AgentGatewayGovernedIngestionResult.ProcessingResultRequired
+
+        when (stored.status) {
+            parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED -> return AgentGatewayGovernedIngestionResult.HeldForReview
+            parker.core.interfaces.HermesProcessingStatus.FAILED -> return AgentGatewayGovernedIngestionResult.ProcessingFailed(
+                stored.failure ?: parker.core.interfaces.HermesProcessingFailure(parker.core.interfaces.HermesProcessingFailureKind.PROCESSOR_FAILURE),
+            )
+            parker.core.interfaces.HermesProcessingStatus.PASS -> Unit
+        }
+
+        return when (val submission = submitSource(candidate, computedSha256, batchId)) {
+            is AgentGatewaySourceSubmissionResult.Registered -> completeGovernedIngestion(batchId, submission.projection, alreadyIngested = false)
+            is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> completeGovernedIngestion(batchId, submission.projection, alreadyIngested = true)
+            is AgentGatewaySourceSubmissionResult.HashMismatch -> AgentGatewayGovernedIngestionResult.HashMismatch(submission.computedSha256, submission.advisorySha256)
+            is AgentGatewaySourceSubmissionResult.Denied -> AgentGatewayGovernedIngestionResult.Denied(submission.decision)
+            is AgentGatewaySourceSubmissionResult.Conflict -> AgentGatewayGovernedIngestionResult.Conflict(submission.evidenceArtifactId, submission.computedSha256, submission.reason)
+        }
+    }
+
+    /**
+     * Completes governed ingestion by delegating unchanged to the existing [bindIngestionEvidence]
+     * -- Parker's own existing batch -> case authority remains the only source of case membership;
+     * this method asserts no `CaseId` of its own. [bindIngestionEvidence] is already idempotent for
+     * a repeat assignment of the same evidence (its own `Assigned`/`NoChange` mapping) -- calling it
+     * again for an already-bound evidence is a harmless no-op, never a duplicate side effect.
+     */
+    private suspend fun completeGovernedIngestion(
+        batchId: String,
+        projection: AgentGatewayEvidenceManifestProjection,
+        alreadyIngested: Boolean,
+    ): AgentGatewayGovernedIngestionResult {
+        when (val binding = bindIngestionEvidence(batchId, projection.evidenceArtifactId)) {
+            is AgentGatewayBulkBindingResult.Assigned -> Unit
+            AgentGatewayBulkBindingResult.Denied -> return AgentGatewayGovernedIngestionResult.Denied(PermissionDecisionOutcome.DENIED)
+            AgentGatewayBulkBindingResult.UnknownBatch -> return AgentGatewayGovernedIngestionResult.UnknownBatch
+            AgentGatewayBulkBindingResult.EvidenceNotSubmitted -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected("EVIDENCE_NOT_SUBMITTED_UNDER_BATCH")
+            is AgentGatewayBulkBindingResult.Rejected -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
+            is AgentGatewayBulkBindingResult.Failed -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
+        }
+        return if (alreadyIngested) AgentGatewayGovernedIngestionResult.AlreadyIngested(projection) else AgentGatewayGovernedIngestionResult.Ingested(projection)
+    }
+
+    /**
      * Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section 20).
      * Performs exactly one [PermissionEngine.evaluate] call using the Agent-Gateway-specific
      * acquisition-request shape (Hermes's own fixed principal, the fixed gateway purpose, the
@@ -467,6 +546,48 @@ sealed class AgentGatewayProcessingResultListResult {
     data class Found(val results: List<parker.core.interfaces.HermesProcessingResult>) : AgentGatewayProcessingResultListResult()
     data object UnknownBatch : AgentGatewayProcessingResultListResult()
     data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewayProcessingResultListResult()
+}
+
+/**
+ * Hermes Governed Ingestion, Task 3. The gated outcome of [AgentGatewayEvidenceProjection.submitGovernedIngestion]
+ * -- a stored [parker.core.interfaces.HermesProcessingResult] deciding whether the existing governed
+ * source-submission/batch-binding path ([AgentGatewaySourceSubmissionResult]/[AgentGatewayBulkBindingResult])
+ * is ever reached at all. [Ingested]/[AlreadyIngested] carry the same
+ * [AgentGatewayEvidenceManifestProjection] those existing outcomes already return -- Parker's
+ * existing hash-based dedup remains the sole source of the final, authoritative
+ * [parker.core.interfaces.EvidenceArtifactId]; nothing here mints or asserts one independently.
+ */
+sealed class AgentGatewayGovernedIngestionResult {
+
+    /** No prior evidence existed for this hash; governed submission and case binding both newly completed. */
+    data class Ingested(val projection: AgentGatewayEvidenceManifestProjection) : AgentGatewayGovernedIngestionResult()
+
+    /** This exact source hash was already governed-ingested (by an earlier attempt or a repeat of this same one) -- idempotent, not a duplicate. */
+    data class AlreadyIngested(val projection: AgentGatewayEvidenceManifestProjection) : AgentGatewayGovernedIngestionResult()
+
+    /** The stored processing result's status is REVIEW_REQUIRED -- no EvidenceArtifactId is minted or registered. */
+    data object HeldForReview : AgentGatewayGovernedIngestionResult()
+
+    /** The stored processing result's status is FAILED -- no governed evidence admission occurs. */
+    data class ProcessingFailed(val failure: parker.core.interfaces.HermesProcessingFailure) : AgentGatewayGovernedIngestionResult()
+
+    /** No stored [parker.core.interfaces.HermesProcessingResult] exists for this exact (batchId, sourceSha256) -- the sanctioned Hermes bulk path never silently falls back to ungated submission. */
+    data object ProcessingResultRequired : AgentGatewayGovernedIngestionResult()
+
+    /** The actual submitted bytes hash to something other than the caller's own declared [expectedSha256] -- rejected outright, never merely logged. */
+    data class HashMismatch(val computedSha256: String, val expectedSha256: String) : AgentGatewayGovernedIngestionResult()
+
+    /** No batch exists under the requested id -- including one that is not even shaped like a real one. */
+    data object UnknownBatch : AgentGatewayGovernedIngestionResult()
+
+    /** The Agent-Gateway-specific permission check (the same verb ordinary source submission uses) was not approved. */
+    data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewayGovernedIngestionResult()
+
+    /** Mirrors [AgentGatewaySourceSubmissionResult.Conflict] exactly -- a rare internal consistency fault, never an ordinary outcome. */
+    data class Conflict(val evidenceArtifactId: EvidenceArtifactId, val computedSha256: String, val reason: String) : AgentGatewayGovernedIngestionResult()
+
+    /** The existing batch/case-binding step ([AgentGatewayBulkBindingResult.Rejected]/[AgentGatewayBulkBindingResult.Failed]) refused to complete case membership for otherwise-successfully-submitted evidence. */
+    data class CaseBindingRejected(val reason: String) : AgentGatewayGovernedIngestionResult()
 }
 
 sealed interface AgentGatewayBulkBindingResult {

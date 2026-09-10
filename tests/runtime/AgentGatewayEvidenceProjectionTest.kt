@@ -339,11 +339,15 @@ class AgentGatewayEvidenceProjectionTest {
         // Revision history: AG-1G added requestAcquisition (three -> four). Hermes Processing
         // Result Intake, Task 2, added submitProcessingResult/listProcessingResultsForBatch (five
         // -> seven) -- both still fully governed: permission-checked first, batch-validated
-        // second, never a new evidence-registration or case-model path.
+        // second, never a new evidence-registration or case-model path. Hermes Governed Ingestion,
+        // Task 3, added submitGovernedIngestion (seven -> eight) -- it mints no identity and binds
+        // no case of its own; it only gates, then delegates unchanged to submitSource and
+        // bindIngestionEvidence, both already in this set.
         assertEquals(
             setOf(
                 "retrieveEvidence", "retrieveEvidenceManifest", "submitSource", "requestAcquisition",
                 "bindIngestionEvidence", "submitProcessingResult", "listProcessingResultsForBatch",
+                "submitGovernedIngestion",
             ),
             publicFunctionNames,
         )
@@ -555,5 +559,40 @@ class AgentGatewayEvidenceProjectionTest {
         )
 
         assertIs<AgentGatewaySourceSubmissionResult.HashMismatch>(result)
+    }
+
+    // ================= Hermes Governed Ingestion, Task 3 =================
+    //
+    // Gate-logic behaviour (PASS happy path, idempotency, REVIEW_REQUIRED/FAILED holds, missing
+    // result, hash mismatch, case integrity, lifecycle isolation) needs a real, server-minted batch
+    // -- exercised realistically through the real composed ParkerRuntime in
+    // AgentGatewayHttpServerTest's own real-harness tests, per this file's own established "unit
+    // logic here, full composition proof there" division. This file's own job, matching every other
+    // verb above, is submitGovernedIngestion's own request shape and that a denied decision is
+    // reached before anything else -- both provable without a real batch at all.
+
+    @Test
+    fun `submitGovernedIngestion constructs a request naming exactly Hermes, the gateway purpose, and the same evidence-submit verb and resource ordinary submitSource uses`() = runTest {
+        val env = buildEnvironment()
+        env.registerHermes(PrincipalStatus.CREATED) // request shape is checked regardless of outcome
+
+        env.projection.submitGovernedIngestion("bulk-test", "a".repeat(64), parker.core.interfaces.CandidateEvidenceArtifact("content".toByteArray()))
+
+        val request = env.engine.requests.single()
+        assertEquals(hermesPrincipalId, request.principalId)
+        assertEquals(agentGatewayPurpose, request.authorizationPurpose)
+        assertEquals(listOf(gatewaySubmitAction), request.proposedActions)
+        assertEquals(listOf(gatewaySubmitResourceId), request.targetResources)
+    }
+
+    @Test
+    fun `a CREATED (not yet ACTIVE) Hermes is DENIED for governed ingestion -- the same permission gate ordinary submission uses`() = runTest {
+        val env = buildEnvironment()
+        env.registerHermes(PrincipalStatus.CREATED)
+
+        val result = env.projection.submitGovernedIngestion("bulk-test", "a".repeat(64), parker.core.interfaces.CandidateEvidenceArtifact("content".toByteArray()))
+
+        assertIs<AgentGatewayGovernedIngestionResult.Denied>(result)
+        assertEquals(PermissionDecisionOutcome.DENIED, result.decision)
     }
 }

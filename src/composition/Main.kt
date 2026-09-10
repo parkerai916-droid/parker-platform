@@ -232,6 +232,7 @@ fun main(args: Array<String>) = runBlocking {
             listReadyIngestionBatchesAsAgent = runtime::listReadyBulkIngestionBatchesAsAgent,
             submitProcessingResultAsAgent = runtime::submitProcessingResultAsAgent,
             listProcessingResultsForBatchAsAgent = runtime::listProcessingResultsForBatchAsAgent,
+            submitGovernedIngestionAsAgent = runtime::submitGovernedIngestionAsAgent,
             audit = parker.core.runtime.FileSystemAgentGatewayAccessAudit(
                 java.nio.file.Path.of(requireNotNull(config.agentGatewayAccessAuditLogPath)),
             ),

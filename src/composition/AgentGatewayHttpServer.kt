@@ -97,6 +97,9 @@ class AgentGatewayHttpServer(
     /** Hermes Processing Result Intake, Task 2. See [handleListProcessingResults]. */
     private val listProcessingResultsForBatchAsAgent: suspend (String) -> parker.core.runtime.AgentGatewayProcessingResultListResult =
         { parker.core.runtime.AgentGatewayProcessingResultListResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    /** Hermes Governed Ingestion, Task 3. See [handleSubmitGovernedIngestion]. */
+    private val submitGovernedIngestionAsAgent: suspend (String, String, CandidateEvidenceArtifact) -> parker.core.runtime.AgentGatewayGovernedIngestionResult =
+        { _, _, _ -> parker.core.runtime.AgentGatewayGovernedIngestionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
     private val audit: AgentGatewayAccessAudit,
     private val logger: ParkerLogger,
 ) {
@@ -155,6 +158,10 @@ class AgentGatewayHttpServer(
                             writeJson(exchange, 404, jsonObject("error" to "not found"))
                         }
                     }
+                    return
+                }
+                if (segments.size == 3 && segments[1] == "sources" && exchange.requestMethod == "POST") {
+                    handleSubmitGovernedIngestion(exchange, correlationId, principalId, segments[0], segments[2])
                     return
                 }
                 runCatching { exchange.requestBody.use { it.readBytes() } }
@@ -235,6 +242,78 @@ class AgentGatewayHttpServer(
                 }
             }
         }
+
+        /**
+         * Hermes Governed Ingestion, Task 3. [expectedSha256] comes from the route -- the caller's
+         * own declared identity for the source it is submitting, established earlier by its own
+         * stored [parker.core.interfaces.HermesProcessingResult]. Raw request body bytes are the
+         * candidate source, exactly mirroring [handleSubmit]'s own `POST /agent/evidence` shape
+         * (`Content-Type`/`X-Parker-Original-Filename` headers, no advisory-hash header needed here
+         * since the route itself already names the expected hash).
+         */
+        private fun handleSubmitGovernedIngestion(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, batchId: String, expectedSha256: String) {
+            if (!SHA256_PATTERN.matches(expectedSha256)) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid source sha256")); return
+            }
+            val content = try {
+                readBounded(exchange.requestBody, MAX_SUBMISSION_BYTES)
+            } catch (_: RequestBodyTooLargeException) {
+                recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 413, jsonObject("error" to "request body too large")); return
+            }
+            if (content.isEmpty()) {
+                recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid source")); return
+            }
+            val receivedMediaType = exchange.requestHeaders.getFirst("Content-Type")?.trim()?.takeIf { it.isNotEmpty() }
+            val originalFileName = exchange.requestHeaders.getFirst(ORIGINAL_FILENAME_HEADER)?.trim()?.takeIf { it.isNotEmpty() }
+            val candidate = CandidateEvidenceArtifact(content, receivedMediaType, originalFileName)
+
+            when (val outcome = runBlocking { submitGovernedIngestionAsAgent(batchId, expectedSha256, candidate) }) {
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.Ingested -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 201, governedIngestionJson("INGESTED", outcome.projection))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.AlreadyIngested -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.ALREADY_REGISTERED)
+                    writeJson(exchange, 200, governedIngestionJson("ALREADY_INGESTED", outcome.projection))
+                }
+                parker.core.runtime.AgentGatewayGovernedIngestionResult.HeldForReview -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("status" to "HELD_FOR_REVIEW"))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.ProcessingFailed -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("status" to "PROCESSING_FAILED", "failure" to jsonObject("kind" to outcome.failure.kind.name, "detail" to outcome.failure.detail)))
+                }
+                parker.core.runtime.AgentGatewayGovernedIngestionResult.ProcessingResultRequired -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                    writeJson(exchange, 409, jsonObject("status" to "PROCESSING_RESULT_REQUIRED"))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.HashMismatch -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.HASH_MISMATCH)
+                    writeJson(exchange, 409, jsonObject("status" to "HASH_MISMATCH", "computedSha256" to outcome.computedSha256, "expectedSha256" to outcome.expectedSha256))
+                }
+                parker.core.runtime.AgentGatewayGovernedIngestionResult.UnknownBatch -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.NOT_FOUND)
+                    writeJson(exchange, 404, jsonObject("error" to "unknown batch"))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.Denied -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied"))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.Conflict -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.evidenceArtifactId.value, AgentGatewayAccessOutcome.SOURCE_IDENTITY_CONFLICT)
+                    writeJson(exchange, 500, jsonObject("error" to "source identity conflict"))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.CaseBindingRejected -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("status" to "CASE_BINDING_REJECTED", "reason" to outcome.reason))
+                }
+            }
+        }
     }
 
     private fun hermesProcessingResultJson(result: parker.core.interfaces.HermesProcessingResult): JsonObject = jsonObject(
@@ -260,6 +339,16 @@ class AgentGatewayHttpServer(
             )
         }),
         "failure" to result.failure?.let { failure -> jsonObject("kind" to failure.kind.name, "detail" to failure.detail) },
+    )
+
+    /** Hermes Governed Ingestion, Task 3. Mirrors [EvidenceHandler]'s own `submissionJson` shape exactly -- the same flat, opaque-identifier-only manifest fields, plus the governed-ingestion-specific status token. */
+    private fun governedIngestionJson(status: String, projection: parker.core.runtime.AgentGatewayEvidenceManifestProjection) = jsonObject(
+        "status" to status,
+        "evidenceArtifactId" to projection.evidenceArtifactId.value,
+        "sha256" to projection.sha256,
+        "byteLength" to projection.byteLength,
+        "receivedMediaType" to projection.receivedMediaType,
+        "originalFileName" to projection.originalFileName,
     )
 
     fun stop() {
@@ -643,6 +732,15 @@ class AgentGatewayHttpServer(
         const val BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
         const val PROCESSING_RESULT_SUBMIT_ACTION_NAME = "agent-gateway.processing-result.submit"
         const val PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
+        /**
+         * Hermes Governed Ingestion, Task 3. An audit-log label only -- distinct from
+         * [AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME], which is what [handleSubmitGovernedIngestion]
+         * actually authorises against (reused unchanged, per "must be denied if PermissionEngine
+         * denies the existing governed source-submission action"). Keeping this label distinct
+         * lets an audit-log reviewer tell a governed-ingestion attempt apart from an ordinary
+         * `/agent/evidence` submission even though both share one permission verb.
+         */
+        const val GOVERNED_INGESTION_ACTION_NAME = "agent-gateway.governed-ingestion.submit"
 
         /**
          * Hermes Processing Result Intake, Task 2. A processing result is metadata only (no raw
