@@ -42,10 +42,12 @@ class HermesBulkUiSecurityTest(unittest.TestCase):
         self.assertIn('/api/ingest?batchId=', page)
         self.assertIn('batch is not currently Parker-authorised and READY', self.source)
 
-    def test_server_uses_batch_header_for_submission_and_assignment(self):
-        self.assertIn('X-Parker-Ingestion-Batch-Id', self.source)
-        self.assertIn('/agent/evidence', self.source)
-        self.assertIn('/assign', self.source)
+    def test_server_uses_processing_result_then_governed_ingestion(self):
+        self.assertIn('process_one', self.source)
+        self.assertIn('ParkerClient', self.source)
+        self.assertIn('governed_ingestion', self.source)
+        self.assertNotIn('X-Parker-Ingestion-Batch-Id', self.source)
+        self.assertNotIn('/agent/evidence', self.source)
         self.assertNotIn('--acquire', self.source)
 
     def test_browser_values_do_not_become_server_paths_or_commands(self):

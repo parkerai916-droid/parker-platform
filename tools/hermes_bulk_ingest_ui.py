@@ -7,17 +7,34 @@ token stays in the Hermes process and every Parker call uses the selected opaque
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
 import secrets
+import sys
+import tempfile
+from pathlib import Path
 from email import policy
 from email.parser import BytesParser
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SUPPORTED = {"application/pdf", "image/jpeg", "image/png", "image/webp", "text/csv", "message/rfc822"}
+try:
+    from hermes_processing_ingest import ParkerClient, media_type_for, process_one
+except ModuleNotFoundError:  # also supports direct spec-based test loading
+    _processor_spec = importlib.util.spec_from_file_location("hermes_processing_ingest", Path(__file__).with_name("hermes_processing_ingest.py"))
+    if _processor_spec is None or _processor_spec.loader is None:
+        raise
+    _processor_module = importlib.util.module_from_spec(_processor_spec)
+    sys.modules["hermes_processing_ingest"] = _processor_module
+    _processor_spec.loader.exec_module(_processor_module)
+    ParkerClient = _processor_module.ParkerClient
+    media_type_for = _processor_module.media_type_for
+    process_one = _processor_module.process_one
+
+SUPPORTED = {"application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain", "text/csv", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 MAX_FILE = 64 * 1024 * 1024
 MULTIPART_ALLOWANCE = 1024 * 1024
 
@@ -90,7 +107,7 @@ function setFiles(x){files=Array.from(x);update()}
 async function walk(items){let es=Array.from(items).map(i=>i.webkitGetAsEntry&&i.webkitGetAsEntry()).filter(Boolean);if(!es.some(e=>e.isDirectory))throw Error('Dropped-folder recursion is unavailable in this browser. Use Choose Folder.');let out=[];async function w(e,p){if(e.isFile)return new Promise(ok=>e.file(f=>{Object.defineProperty(f,'webkitRelativePath',{value:p+f.name});out.push(f);ok()},ok));let r=e.createReader(),a;do{a=await new Promise(ok=>r.readEntries(ok,()=>ok([])));for(let c of a)await w(c,p+e.name+'/')}while(a.length)}for(let e of es)await w(e,'');if(!out.length)throw Error('No files found. Use Choose Folder.');return out}
 document.querySelector('#choose').onclick=()=>document.querySelector('#folder').click();document.querySelector('#folder').onchange=e=>setFiles(e.target.files);let drop=document.querySelector('#drop');drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag')};drop.ondragleave=()=>drop.classList.remove('drag');drop.ondrop=async e=>{e.preventDefault();drop.classList.remove('drag');try{setFiles(await walk(e.dataTransfer.items))}catch(x){document.querySelector('#selected').textContent=x.message}};
 document.querySelector('#refresh').onclick=ready;
-document.querySelector('#start').onclick=async()=>{let b=batches[document.querySelector('#batch').value],p=document.querySelector('#progress'),counts={REGISTERED:0,ALREADY_REGISTERED:0,ASSIGNED:0,UNSUPPORTED:0,FAILED:0},bad=[];if(!b)return;for(let i=0;i<files.length;i++){let f=files[i];p.textContent=`File ${i+1} / ${files.length}: ${f.name}`;let form=new FormData();form.append('file',f,f.name);let r=await fetch('/api/ingest?batchId='+encodeURIComponent(b.batchId),{method:'POST',headers:apiHeaders,body:form});let d=await r.json();if(d.status==='ASSIGNED'){counts.ASSIGNED++;counts[d.registration==='ALREADY_REGISTERED'?'ALREADY_REGISTERED':'REGISTERED']++}else counts[d.status]=(counts[d.status]||0)+1;if(d.status==='FAILED'||d.status==='UNSUPPORTED')bad.push(f.name+': '+d.reason)}document.querySelector('#summary').textContent=`Case name: ${b.caseName}\nBatch ID: ${b.batchId}\nFiles discovered: ${files.length}\nRegistered: ${counts.REGISTERED}\nAlready registered: ${counts.ALREADY_REGISTERED}\nAssigned: ${counts.ASSIGNED}\nUnsupported: ${counts.UNSUPPORTED}\nFailed: ${counts.FAILED}`+(bad.length?'\n\nProblems:\n'+bad.join('\n'):'')};
+document.querySelector('#start').onclick=async()=>{let b=batches[document.querySelector('#batch').value],p=document.querySelector('#progress'),counts={PASS:0,REVIEW_REQUIRED:0,FAILED:0,INGESTED:0,ALREADY_INGESTED:0,BLOCKED:0},bad=[];if(!b||!confirm(`Process ${files.length} file(s) for Parker case “${b.caseName}”?`))return;for(let i=0;i<files.length;i++){let f=files[i];p.textContent=`File ${i+1} / ${files.length}: ${f.name}`;let form=new FormData();form.append('file',f,f.name);let r=await fetch('/api/ingest?batchId='+encodeURIComponent(b.batchId),{method:'POST',headers:apiHeaders,body:form});let d=await r.json();counts[d.status]=(counts[d.status]||0)+1;if(d.governed_ingestion)counts[d.governed_ingestion]=(counts[d.governed_ingestion]||0)+1;if(d.reason)bad.push(f.name+': '+d.reason)}document.querySelector('#summary').textContent=`Case name: ${b.caseName}\nBatch ID: ${b.batchId}\nFiles discovered: ${files.length}\nPASS: ${counts.PASS}\nREVIEW_REQUIRED: ${counts.REVIEW_REQUIRED}\nFAILED: ${counts.FAILED}\nIngested: ${counts.INGESTED+counts.ALREADY_INGESTED}\nBlocked: ${counts.BLOCKED}`+(bad.length?'\n\nProblems:\n'+bad.join('\n'):'')};
 ready();
 </script>'''
 
@@ -145,19 +162,16 @@ class Handler(BaseHTTPRequestHandler):
             media, filename, data = parse_multipart_upload(content_type, request_body)
         except MultipartUploadError as error:
             self.send_json(400, {"status": "FAILED", "reason": str(error)}); return
-        if media not in SUPPORTED: self.send_json(200, {"status":"UNSUPPORTED", "reason":"unsupported media type"}); return
+        if media_type_for(Path(filename)) != media or media not in SUPPORTED: self.send_json(200, {"status":"FAILED", "reason":"unsupported media type"}); return
         if len(data) > MAX_FILE: self.send_json(413, {"status":"FAILED", "reason":"file is too large"}); return
-        headers = {"Content-Type": media, "X-Parker-Original-Filename": filename, "X-Parker-Ingestion-Batch-Id": batch}
-        code, payload = parker_request("/agent/evidence", self.token, "POST", data, headers)
-        try: result = json.loads(payload)
-        except ValueError: result = {}
-        if code not in (200, 201) or not result.get("evidenceArtifactId"):
-            self.send_json(200, {"status":"FAILED", "reason":result.get("error", "registration failed")}); return
-        aid = result["evidenceArtifactId"]
-        acode, apayload = parker_request(f"/agent/evidence/{aid}/assign", self.token, "POST", b"", {"X-Parker-Ingestion-Batch-Id": batch})
-        if acode not in (200, 201, 204):
-            self.send_json(200, {"status":"FAILED", "reason":"assignment failed"}); return
-        self.send_json(200, {"status":"ASSIGNED", "registration":result.get("status"), "evidenceArtifactId":aid})
+        try:
+            with tempfile.NamedTemporaryFile(prefix="hermes-ui-", suffix=Path(filename).suffix, delete=True) as source:
+                source.write(data); source.flush()
+                item = process_one(ParkerClient(os.environ.get("PARKER_GATEWAY_URL", "http://127.0.0.1:8090"), self.token, 120), batch, Path(source.name), 120)
+            payload = item.json(); payload["filename"] = filename
+            self.send_json(200, payload)
+        except Exception as error:
+            self.send_json(200, {"status":"FAILED", "governed_ingestion":"BLOCKED", "reason":str(error)})
 
 
 def main():
