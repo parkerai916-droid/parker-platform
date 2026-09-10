@@ -2467,7 +2467,9 @@ class ParkerRuntime(
         // InMemoryHermesProcessingResultRegistry's own KDoc for the explicit durability scope-down
         // and why it is safe (Hermes's own submission is idempotent, so a lost record is simply
         // recoverable by retrying).
-        val hermesProcessingResultRegistry = parker.core.runtime.InMemoryHermesProcessingResultRegistry()
+        val hermesProcessingResultRegistry: parker.core.interfaces.HermesProcessingResultRegistry = config.hermesProcessingStorageRootPath?.let {
+            parker.core.runtime.FileSystemHermesProcessingResultRegistry(Path.of(it))
+        } ?: parker.core.runtime.InMemoryHermesProcessingResultRegistry()
         // Hermes Exception Decision Backend, Task 4. In-memory only for this unit, mirroring
         // hermesProcessingResultRegistry's own identical, explicitly disclosed durability
         // scope-down immediately above -- see InMemoryHermesProcessingDecisionRegistry's own KDoc.
@@ -2475,7 +2477,9 @@ class ParkerRuntime(
         // recording/review never requires case classification to be configured, only
         // caseDisplayName resolution does, which degrades to null via bulkIngestionBindingCoordinator's
         // own nullability below.
-        hermesProcessingDecisionRegistry = parker.core.runtime.InMemoryHermesProcessingDecisionRegistry()
+        hermesProcessingDecisionRegistry = config.hermesProcessingStorageRootPath?.let {
+            parker.core.runtime.FileSystemHermesProcessingDecisionRegistry(Path.of(it))
+        } ?: parker.core.runtime.InMemoryHermesProcessingDecisionRegistry()
         hermesProcessingDecisionCoordinator = parker.core.runtime.HermesProcessingDecisionCoordinator(
             permissionEngine = permissionEngine,
             processingResultRegistry = hermesProcessingResultRegistry,

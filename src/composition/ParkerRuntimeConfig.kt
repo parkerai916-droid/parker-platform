@@ -364,6 +364,8 @@ data class ParkerRuntimeConfig(
     val agentGatewayHttpToken: String? = null,
     val agentGatewayAccessAuditLogPath: String? = null,
     val agentGatewayHermesActive: Boolean = false,
+    /** Optional Parker-controlled root for durable Hermes processing results and Owner decisions. */
+    val hermesProcessingStorageRootPath: String? = null,
 )
 
 /**
@@ -443,6 +445,7 @@ object ParkerRuntimeConfigLoader {
     const val KEY_AGENT_GATEWAY_HTTP_TOKEN = "PARKER_AGENT_GATEWAY_HTTP_TOKEN"
     const val KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH = "PARKER_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH"
     const val KEY_AGENT_GATEWAY_HERMES_ACTIVE = "PARKER_AGENT_GATEWAY_HERMES_ACTIVE"
+    const val KEY_HERMES_PROCESSING_STORAGE_ROOT = "PARKER_HERMES_PROCESSING_STORAGE_ROOT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -755,6 +758,7 @@ object ParkerRuntimeConfigLoader {
             agentGatewayHttpToken = agentGatewayHttpToken,
             agentGatewayAccessAuditLogPath = agentGatewayAccessAuditLogPath,
             agentGatewayHermesActive = agentGatewayHermesActive,
+            hermesProcessingStorageRootPath = environment[KEY_HERMES_PROCESSING_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
         )
     }
 

@@ -138,6 +138,7 @@ class AgentGatewayHttpServerTest {
             evidenceDeletionAuditLogPath = Files.createTempDirectory("agent-gateway-http-deletion-audit").resolve("audit.log").toString(),
             memoryCoreDurabilityLogPath = Files.createTempDirectory("agent-gateway-http-memory").resolve("memory-core.log").toString(),
             knowledgeItemDurabilityLogPath = Files.createTempDirectory("agent-gateway-http-knowledge-items").resolve("items.log").toString(),
+            hermesProcessingStorageRootPath = Files.createTempDirectory("agent-gateway-http-hermes-processing").toString(),
         )
         if (!enableCaseClassification) return base
         // Hermes Processing Result Intake, Task 2: CASE-1's three roots, co-required, so a real
@@ -1660,6 +1661,190 @@ class AgentGatewayHttpServerTest {
             assertFalse(readBack.body().contains("INGESTED"), "the processing result record itself must never be mutated to reflect ingestion")
             val queue = harness.runtime.steveReviewQueueProjectionAsAgent()?.enumerate() ?: emptyList()
             assertEquals(emptyList(), queue, "governed ingestion registers raw bytes only -- no OCR/derivative generation exists yet, so the post-ingestion review projection has nothing to enumerate")
+        }
+    }
+
+    // ================= Hermes Exception Decision Backend, Task 4 (real-runtime integration) =================
+    //
+    // Precedence-matrix/registry-internal unit coverage (without a real batch or hash) lives in
+    // HermesProcessingEffectiveGateTest, InMemoryHermesProcessingDecisionRegistryTest, and
+    // HermesProcessingDecisionCoordinatorTest. This section's own job, mirroring Task 3's own
+    // "real composed runtime" tests immediately above, is that the Owner decision genuinely
+    // changes what the sanctioned Hermes governed-ingestion HTTP path does -- Task 3's own
+    // machinery is never replaced, only additively gated.
+
+    @Test
+    fun `Owner ACCEPT unblocks a REVIEW_REQUIRED source for governed ingestion, and the stored machine result is unchanged`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Owner Accept Case")
+            val bytes = "owner accepted this review".toByteArray()
+            val sha256 = sha256Of(bytes)
+            val body = """{"sourceSha256":"$sha256","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"MISSING_CONTENT","explanation":"content missing"}]}"""
+            postProcessingResult(harness.baseUri(), batchId, body)
+
+            val decisionOutcome = harness.runtime.recordHermesProcessingDecisionAsOwner(
+                batchId, sha256, parker.core.interfaces.HermesProcessingHumanDecisionType.ACCEPT, "looks fine", null,
+            )
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            val readBack = getProcessingResults(harness.baseUri(), batchId)
+
+            assertIs<parker.core.runtime.HermesProcessingDecisionOutcome.Recorded>(decisionOutcome)
+            assertEquals(201, response.statusCode(), response.body())
+            assertTrue(response.body().contains("\"status\":\"INGESTED\""))
+            assertTrue(readBack.body().contains("REVIEW_REQUIRED"), "the stored machine result must remain unchanged by the human ACCEPT")
+        }
+    }
+
+    @Test
+    fun `Owner ACCEPT against a FAILED result is refused, and no evidence is ever admitted`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Owner Accept Failed Case")
+            val bytes = "corrupt bytes".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$sha256","status":"FAILED","methods":["OCR"],"failure":{"kind":"CORRUPT_SOURCE"}}""")
+
+            val decisionOutcome = harness.runtime.recordHermesProcessingDecisionAsOwner(
+                batchId, sha256, parker.core.interfaces.HermesProcessingHumanDecisionType.ACCEPT, null, null,
+            )
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+
+            assertIs<parker.core.runtime.HermesProcessingDecisionOutcome.InvalidDecision>(decisionOutcome)
+            assertEquals(409, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"PROCESSING_FAILED\""), "no ACCEPT was ever actually recorded, so the effective gate behaves exactly as with no decision at all")
+        }
+    }
+
+    @Test
+    fun `Owner CORRECT naming a real issue unblocks REVIEW_REQUIRED -- naming a nonexistent issue is refused`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Owner Correct Case")
+            val bytes = "table structure ambiguity".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(
+                harness.baseUri(), batchId,
+                """{"sourceSha256":"$sha256","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"TABLE_STRUCTURE_AMBIGUITY","explanation":"ambiguous table","hermesInterpretation":"Gross earnings appears to be ${'$'}42,871"}]}""",
+            )
+            val correction = parker.core.interfaces.HermesProcessingCorrection(0, "Gross earnings is ${'$'}42,871.00", "verified against the source document")
+
+            val invalidOutcome = harness.runtime.recordHermesProcessingDecisionAsOwner(
+                batchId, sha256, parker.core.interfaces.HermesProcessingHumanDecisionType.CORRECT, null,
+                parker.core.interfaces.HermesProcessingCorrection(5, "nonexistent issue", "reason"),
+            )
+            val validOutcome = harness.runtime.recordHermesProcessingDecisionAsOwner(
+                batchId, sha256, parker.core.interfaces.HermesProcessingHumanDecisionType.CORRECT, "resolved", correction,
+            )
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+
+            assertIs<parker.core.runtime.HermesProcessingDecisionOutcome.InvalidDecision>(invalidOutcome)
+            val recorded = assertIs<parker.core.runtime.HermesProcessingDecisionOutcome.Recorded>(validOutcome)
+            assertEquals(correction, recorded.decision.correction)
+            assertEquals(201, response.statusCode(), response.body())
+        }
+    }
+
+    @Test
+    fun `Owner REJECT overrides an otherwise-passing machine PASS -- human REJECT has the highest precedence`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Owner Reject Overrides Pass Case")
+            val bytes = "machine says pass, owner says no".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = sha256, status = "PASS"))
+
+            harness.runtime.recordHermesProcessingDecisionAsOwner(batchId, sha256, parker.core.interfaces.HermesProcessingHumanDecisionType.REJECT, "blocked by owner", null)
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            val retry = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+
+            assertEquals(409, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"HUMAN_REJECTED\""))
+            assertEquals(409, retry.statusCode(), "a later retry through the sanctioned path remains blocked")
+            assertTrue(retry.body().contains("\"status\":\"HUMAN_REJECTED\""))
+        }
+    }
+
+    @Test
+    fun `Owner REPROCESS overrides an otherwise-passing machine PASS, and no Hermes call is ever made by recording it`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Owner Reprocess Overrides Pass Case")
+            val bytes = "machine says pass, owner wants reprocessing".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = sha256, status = "PASS"))
+
+            val decisionOutcome = harness.runtime.recordHermesProcessingDecisionAsOwner(
+                batchId, sha256, parker.core.interfaces.HermesProcessingHumanDecisionType.REPROCESS, "please reprocess", null,
+            )
+            val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            val readBack = getProcessingResults(harness.baseUri(), batchId)
+
+            assertIs<parker.core.runtime.HermesProcessingDecisionOutcome.Recorded>(decisionOutcome)
+            assertEquals(409, response.statusCode())
+            assertTrue(response.body().contains("\"status\":\"REPROCESS_REQUIRED\""))
+            assertTrue(readBack.body().contains("\"status\":\"PASS\""), "REPROCESS must not reset or delete the existing stored machine result")
+        }
+    }
+
+    @Test
+    fun `a decision against a source Hermes never reported on is UnknownProcessingResult, and the Owner review queue reflects pending vs resolved items correctly`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Owner Review Queue Case")
+            val unknownOutcome = harness.runtime.recordHermesProcessingDecisionAsOwner(
+                batchId, "f".repeat(64), parker.core.interfaces.HermesProcessingHumanDecisionType.ACCEPT, null, null,
+            )
+            assertIs<parker.core.runtime.HermesProcessingDecisionOutcome.UnknownProcessingResult>(unknownOutcome)
+
+            val reviewRequiredSha = "1".repeat(64)
+            val failedSha = "2".repeat(64)
+            val passSha = "3".repeat(64)
+            val acceptedSha = "4".repeat(64)
+            postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$reviewRequiredSha","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"MISSING_CONTENT","explanation":"m"}]}""")
+            postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$failedSha","status":"FAILED","methods":["OCR"],"failure":{"kind":"CORRUPT_SOURCE"}}""")
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = passSha, status = "PASS"))
+            postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$acceptedSha","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"MISSING_CONTENT","explanation":"m"}]}""")
+            harness.runtime.recordHermesProcessingDecisionAsOwner(batchId, acceptedSha, parker.core.interfaces.HermesProcessingHumanDecisionType.ACCEPT, null, null)
+
+            val queue = assertIs<parker.core.runtime.HermesProcessingReviewListOutcome.Found>(harness.runtime.listHermesProcessingReviewAsOwner())
+            val pendingHashes = queue.items.map { it.sourceSha256 }.toSet()
+
+            assertTrue(reviewRequiredSha in pendingHashes, "REVIEW_REQUIRED with no decision must be pending")
+            assertTrue(failedSha in pendingHashes, "FAILED with no decision must be pending")
+            assertTrue(passSha !in pendingHashes, "PASS must never appear in the pending queue")
+            assertTrue(acceptedSha !in pendingHashes, "a resolved ACCEPT must leave the pending queue")
+            assertEquals("Owner Review Queue Case", queue.items.first { it.sourceSha256 == reviewRequiredSha }.caseDisplayName)
+        }
+    }
+
+    @Test
+    fun `real mixed batch routes PASS review acceptance and FAILED reprocess through one server-bound case`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Mixed Batch Acceptance Case")
+            val pass = "pass source bytes".toByteArray()
+            val review = "review source bytes".toByteArray()
+            val failed = "failed source bytes".toByteArray()
+            val passSha = sha256Of(pass); val reviewSha = sha256Of(review); val failedSha = sha256Of(failed)
+
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = passSha, status = "PASS"))
+            postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$reviewSha","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"MISSING_CONTENT","explanation":"needs Owner review"}]}""")
+            postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$failedSha","status":"FAILED","methods":["OCR"],"failure":{"kind":"PROCESSOR_FAILURE"}}""")
+
+            val pending = assertIs<parker.core.runtime.HermesProcessingReviewListOutcome.Found>(harness.runtime.listHermesProcessingReviewAsOwner())
+            assertEquals(setOf(reviewSha, failedSha), pending.items.map { it.sourceSha256 }.toSet())
+
+            val passResponse = postGovernedIngestion(harness.baseUri(), batchId, passSha, pass)
+            assertEquals(201, passResponse.statusCode(), passResponse.body())
+            val passArtifact = assertNotNull(jsonStringField(passResponse.body(), "evidenceArtifactId"))
+            assertEquals(passArtifact, jsonStringField(postGovernedIngestion(harness.baseUri(), batchId, passSha, pass).body(), "evidenceArtifactId"))
+
+            harness.runtime.recordHermesProcessingDecisionAsOwner(batchId, reviewSha, parker.core.interfaces.HermesProcessingHumanDecisionType.ACCEPT, "reviewed", null)
+            val reviewResponse = postGovernedIngestion(harness.baseUri(), batchId, reviewSha, review)
+            assertEquals(201, reviewResponse.statusCode(), reviewResponse.body())
+            val reviewArtifact = assertNotNull(jsonStringField(reviewResponse.body(), "evidenceArtifactId"))
+
+            harness.runtime.recordHermesProcessingDecisionAsOwner(batchId, failedSha, parker.core.interfaces.HermesProcessingHumanDecisionType.REPROCESS, "send back to Hermes", null)
+            val failedResponse = postGovernedIngestion(harness.baseUri(), batchId, failedSha, failed)
+            assertEquals(409, failedResponse.statusCode())
+            assertTrue(failedResponse.body().contains("REPROCESS_REQUIRED"))
+
+            val caseId = assertNotNull(harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(passArtifact)))
+            assertEquals(caseId, harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(reviewArtifact)))
         }
     }
 
