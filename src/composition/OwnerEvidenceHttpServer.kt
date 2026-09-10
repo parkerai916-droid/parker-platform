@@ -112,6 +112,14 @@ class OwnerEvidenceHttpServer(
         { _, _, _ -> parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected("PREPARATION_LANE_NOT_CONFIGURED") },
     private val continuePostEgress: suspend (EvidenceArtifactId, String, String, String) -> parker.core.runtime.OrdinaryRegionOwnerResult =
         { _, _, _, _ -> parker.core.runtime.OrdinaryRegionOwnerResult(parker.core.runtime.OrdinaryRegionDisposition.VALIDATION_FAILED,"CONTINUATION_LANE_NOT_CONFIGURED") },
+    /** Hermes Exception Decision Backend, Task 4. `GET /owner/hermes-processing/review`'s own seam. */
+    private val listHermesProcessingReviewAsOwner: suspend () -> parker.core.runtime.HermesProcessingReviewListOutcome =
+        { parker.core.runtime.HermesProcessingReviewListOutcome.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    /** Hermes Exception Decision Backend, Task 4. `POST /owner/hermes-processing/review/{batchId}/{sourceSha256}/decision`'s own seam. */
+    private val recordHermesProcessingDecisionAsOwner: suspend (
+        String, String, parker.core.interfaces.HermesProcessingHumanDecisionType, String?, parker.core.interfaces.HermesProcessingCorrection?,
+    ) -> parker.core.runtime.HermesProcessingDecisionOutcome =
+        { _, _, _, _, _ -> parker.core.runtime.HermesProcessingDecisionOutcome.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -137,6 +145,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
         httpServer.createContext("/owner/admin/corrected-preparation", CorrectedPreparationHandler())
         httpServer.createContext("/owner/admin/region-transcription-continuation", RegionTranscriptionContinuationHandler())
+        httpServer.createContext("/owner/hermes-processing", HermesProcessingReviewHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
@@ -352,6 +361,130 @@ class OwnerEvidenceHttpServer(
             } finally { exchange.close() }
         }
     }
+
+    // ---- /owner/hermes-processing/review, /owner/hermes-processing/review/{batchId}/{sourceSha256}/decision ----
+
+    /**
+     * Hermes Exception Decision Backend, Task 4. Pure HTTP transport for
+     * [listHermesProcessingReviewAsOwner]/[recordHermesProcessingDecisionAsOwner] -- exactly this
+     * class's own established "transport only, no domain logic" discipline: every domain decision
+     * (permission, existence, decision-shape legality) already happened, or happens next, inside
+     * `HermesProcessingDecisionCoordinator`, reached only through [ParkerRuntime]'s own
+     * structurally owner-only methods. Reachable only through [isAuthorised]'s own existing
+     * cookie/paired-device gate -- the identical boundary every other handler in this class already
+     * requires -- so Hermes (which never holds an Owner session cookie or paired device credential;
+     * its own separate credential is a bearer token checked by the entirely separate
+     * `AgentGatewayHttpServer`/`AgentGatewayAuthentication`, never by this class) cannot reach
+     * either route.
+     */
+    private inner class HermesProcessingReviewHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                val path = exchange.requestURI.path
+                val method = exchange.requestMethod
+                val segments = path.removePrefix("/owner/hermes-processing").trim('/').split('/').filter { it.isNotEmpty() }
+                when {
+                    segments.size == 1 && segments[0] == "review" && method == "GET" -> handleReviewList(exchange)
+                    segments.size == 4 && segments[0] == "review" && segments[3] == "decision" && method == "POST" ->
+                        handleDecision(exchange, segments[1], segments[2])
+                    else -> {
+                        runCatching { exchange.requestBody.use { it.readBytes() } }
+                        writeJson(exchange, 404, jsonObject("error" to "not found"))
+                    }
+                }
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: unexpected failure handling ${exchange.requestURI}", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally {
+                exchange.close()
+            }
+        }
+
+        private fun handleReviewList(exchange: HttpExchange) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            when (val outcome = runBlocking { listHermesProcessingReviewAsOwner() }) {
+                is parker.core.runtime.HermesProcessingReviewListOutcome.Found ->
+                    writeJson(exchange, 200, jsonObject("items" to jsonArray(outcome.items.map(::hermesProcessingReviewItemJson))))
+                is parker.core.runtime.HermesProcessingReviewListOutcome.Denied ->
+                    writeJson(exchange, 403, jsonObject("error" to "denied"))
+            }
+        }
+
+        private fun handleDecision(exchange: HttpExchange, rawBatchId: String, rawSourceSha256: String) {
+            if (!SAFE_ROUTE_ID.matches(rawBatchId) || !SAFE_ROUTE_ID.matches(rawSourceSha256)) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                writeJson(exchange, 400, jsonObject("error" to "invalid batchId or sourceSha256")); return
+            }
+            val body = try {
+                readBounded(exchange.requestBody, MAX_HERMES_PROCESSING_DECISION_REQUEST_BODY_BYTES)
+            } catch (_: RequestBodyTooLargeException) {
+                writeJson(exchange, 413, jsonObject("error" to "request body too large")); return
+            }
+            val request = try {
+                parseHermesProcessingDecisionRequestBody(body)
+            } catch (_: JsonParseException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body")); return
+            } catch (_: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed request body")); return
+            }
+            val outcome = runBlocking {
+                recordHermesProcessingDecisionAsOwner(rawBatchId, rawSourceSha256, request.decision, request.reason, request.correction)
+            }
+            when (outcome) {
+                is parker.core.runtime.HermesProcessingDecisionOutcome.Recorded ->
+                    writeJson(exchange, 200, jsonObject("status" to "RECORDED", "decision" to hermesProcessingHumanDecisionJson(outcome.decision)))
+                parker.core.runtime.HermesProcessingDecisionOutcome.UnknownProcessingResult ->
+                    writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_PROCESSING_RESULT"))
+                is parker.core.runtime.HermesProcessingDecisionOutcome.InvalidDecision ->
+                    writeJson(exchange, 409, jsonObject("status" to "INVALID_DECISION", "reason" to outcome.reason))
+                is parker.core.runtime.HermesProcessingDecisionOutcome.Denied ->
+                    writeJson(exchange, 403, jsonObject("error" to "denied"))
+            }
+        }
+    }
+
+    private fun hermesProcessingReviewItemJson(item: parker.core.runtime.HermesProcessingReviewItem) = jsonObject(
+        "batchId" to item.batchId,
+        "sourceSha256" to item.sourceSha256,
+        "status" to item.status.name,
+        "methods" to jsonArray(item.methods.map { it.name }),
+        "issues" to jsonArray(item.issues.mapIndexed { index, issue -> hermesProcessingIssueJson(index, issue) }),
+        "failure" to item.failure?.let { jsonObject("kind" to it.kind.name, "detail" to it.detail) },
+        "caseDisplayName" to item.caseDisplayName,
+        "latestDecision" to item.latestDecision?.let(::hermesProcessingHumanDecisionJson),
+    )
+
+    private fun hermesProcessingIssueJson(issueIndex: Int, issue: parker.core.interfaces.HermesProcessingIssue) = jsonObject(
+        "issueIndex" to issueIndex,
+        "kind" to issue.kind.name,
+        "explanation" to issue.explanation,
+        "hermesInterpretation" to issue.hermesInterpretation,
+        "location" to (issue.location as? parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage)?.let { location ->
+            jsonObject(
+                "pageNumber" to location.pageNumber,
+                "startOffsetInclusive" to location.startOffsetInclusive,
+                "endOffsetExclusive" to location.endOffsetExclusive,
+                "regionDescription" to location.regionDescription,
+            )
+        },
+    )
+
+    private fun hermesProcessingHumanDecisionJson(decision: parker.core.interfaces.HermesProcessingHumanDecision) = jsonObject(
+        "batchId" to decision.batchId,
+        "sourceSha256" to decision.sourceSha256,
+        "decision" to decision.decision.name,
+        "decidedBy" to decision.decidedBy.value,
+        "decidedAt" to decision.decidedAt.toString(),
+        "reason" to decision.reason,
+        "correction" to decision.correction?.let { correction ->
+            jsonObject(
+                "issueIndex" to correction.issueIndex,
+                "correctedInterpretation" to correction.correctedInterpretation,
+                "reason" to correction.reason,
+            )
+        },
+    )
 
     // ---- static owner page ---------------------------------------------------------------
 
@@ -1779,6 +1912,17 @@ class OwnerEvidenceHttpServer(
 
         /** The `/owner/ingestion-batches` body contains exactly one existing CaseId. */
         const val MAX_INGESTION_BATCH_REQUEST_BODY_BYTES: Long = 1024L
+
+        /**
+         * Hermes Exception Decision Backend, Task 4. `POST
+         * /owner/hermes-processing/review/{batchId}/{sourceSha256}/decision`'s own body -- a
+         * decision literal, an optional bounded reason, and an optional bounded correction (an
+         * issue index plus two bounded text fields, each individually capped by
+         * [parker.core.interfaces.HermesProcessingCorrection]'s own domain-type validation at up to
+         * 4,096 characters). Sized generously above that legitimate shape with headroom for JSON
+         * structure/escaping overhead.
+         */
+        const val MAX_HERMES_PROCESSING_DECISION_REQUEST_BODY_BYTES: Long = 32L * 1024L
     }
 }
 
@@ -1961,6 +2105,52 @@ private fun parseHumanFidelityReviewSubmissionRequestBody(bodyBytes: ByteArray):
 
 /** `internal`, not `private`, mirroring [MultipartParseException]'s own identical friend-source-set reasoning. */
 internal class JsonParseException(message: String) : Exception(message)
+
+/**
+ * Hermes Exception Decision Backend, Task 4. The parsed body of `POST
+ * /owner/hermes-processing/review/{batchId}/{sourceSha256}/decision`.
+ */
+private data class HermesProcessingDecisionRequest(
+    val decision: parker.core.interfaces.HermesProcessingHumanDecisionType,
+    val reason: String?,
+    val correction: parker.core.interfaces.HermesProcessingCorrection?,
+)
+
+/**
+ * Parses `{"decision":"ACCEPT|CORRECT|REPROCESS|REJECT","reason":"...optional",
+ * "correction":{"issueIndex":"0","correctedInterpretation":"...","reason":"..."} optional}` into
+ * [HermesProcessingDecisionRequest]. `issueIndex` is transmitted as a JSON string, mirroring
+ * [parseCorrectedPreparationRequest]'s own identical `profileVersion` convention --
+ * [SimpleJsonReader] never parses a raw JSON number. Domain-type construction
+ * ([parker.core.interfaces.HermesProcessingHumanDecision]'s own and
+ * [parker.core.interfaces.HermesProcessingCorrection]'s own `init` blocks) performs the actual
+ * bound/shape validation; this function only extracts fields and reports a malformed shape as
+ * [JsonParseException], mapped by the caller to a 400.
+ */
+private fun parseHermesProcessingDecisionRequestBody(bodyBytes: ByteArray): HermesProcessingDecisionRequest {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    val rawDecision = obj["decision"] as? String ?: throw JsonParseException("expected a 'decision' string")
+    val decision = try {
+        parker.core.interfaces.HermesProcessingHumanDecisionType.valueOf(rawDecision)
+    } catch (_: IllegalArgumentException) {
+        throw JsonParseException("unrecognised decision '$rawDecision'")
+    }
+    val reason = (obj["reason"] as? String)?.takeIf { it.isNotBlank() }
+    val correctionRaw = obj["correction"]
+    val correction = if (correctionRaw == null) {
+        null
+    } else {
+        val correctionObj = correctionRaw as? Map<*, *> ?: throw JsonParseException("expected a 'correction' object")
+        val issueIndex = (correctionObj["issueIndex"] as? String)?.toIntOrNull()
+            ?: throw JsonParseException("expected an integer 'issueIndex' string")
+        val correctedInterpretation = correctionObj["correctedInterpretation"] as? String
+            ?: throw JsonParseException("expected a 'correctedInterpretation' string")
+        val correctionReason = correctionObj["reason"] as? String ?: throw JsonParseException("expected a 'reason' string")
+        parker.core.interfaces.HermesProcessingCorrection(issueIndex, correctedInterpretation, correctionReason)
+    }
+    return HermesProcessingDecisionRequest(decision, reason, correction)
+}
 
 /**
  * Final correction pass §3: the `/owner/analyse` request schema is genuinely shallow -- a root

@@ -35,6 +35,14 @@ interface HermesProcessingResultRegistry {
 
     /** Every record stored for [batchId], in no particular guaranteed order. Never crosses batches. */
     suspend fun listForBatch(batchId: String): List<HermesProcessingResult>
+
+    /**
+     * Hermes Exception Decision Backend, Task 4. Every record stored across every batch, in no
+     * particular guaranteed order -- the narrow read this task's own cross-batch Owner review
+     * queue needs (`GET /owner/hermes-processing/review`) that [listForBatch] cannot provide.
+     * Never leaks any fact this registry does not already hold (no case identity, no provenance).
+     */
+    suspend fun listAll(): List<HermesProcessingResult>
 }
 
 /** What [HermesProcessingResultRegistry.record] returns. */

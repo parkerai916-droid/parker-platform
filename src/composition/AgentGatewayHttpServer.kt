@@ -20,6 +20,7 @@ import parker.core.runtime.AgentGatewayEvidenceManifestResult
 import parker.core.runtime.AgentGatewayEvidenceRetrievalResult
 import parker.core.runtime.AgentGatewaySourceSubmissionResult
 import parker.core.runtime.AgentGatewayBulkBindingResult
+import parker.core.runtime.SteveReviewQueueItem
 
 /**
  * Parker Agent Gateway, AG-1E — R0 Agent Gateway Transport
@@ -91,6 +92,7 @@ class AgentGatewayHttpServer(
     private val bindIngestionEvidenceAsAgent: suspend (String, EvidenceArtifactId) -> AgentGatewayBulkBindingResult = { _, _ -> AgentGatewayBulkBindingResult.Denied },
     private val submitSourceWithBatchAsAgent: (suspend (CandidateEvidenceArtifact, String?, String?) -> AgentGatewaySourceSubmissionResult)? = null,
     private val listReadyIngestionBatchesAsAgent: suspend () -> List<parker.core.runtime.ReadyBulkIngestionBatch> = { emptyList() },
+    private val steveReviewQueueProjection: parker.core.runtime.SteveReviewQueueProjection? = null,
     /** Hermes Processing Result Intake, Task 2. See [handleSubmitProcessingResult]. */
     private val submitProcessingResultAsAgent: suspend (String, parker.core.interfaces.HermesProcessingResult) -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult =
         { _, _ -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
@@ -116,11 +118,72 @@ class AgentGatewayHttpServer(
         httpServer.executor = fixedThreadPool
         httpServer.createContext("/agent/evidence", EvidenceHandler())
         httpServer.createContext("/agent/ingestion-batches", ReadyBatchesHandler())
+        httpServer.createContext("/agent/review-queue", SteveReviewQueueHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
         logger.info("Agent Gateway HTTP server started on $bindAddress:${boundPort}")
     }
+
+    private inner class SteveReviewQueueHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            val correlationId = UUID.randomUUID().toString()
+            try {
+                val token = bearerToken(exchange)
+                val principalId = token?.let(authentication::authenticate)
+                if (principalId == null) {
+                    recordAudit(correlationId, null, null, null, if (token == null) AgentGatewayAccessOutcome.UNAUTHENTICATED else AgentGatewayAccessOutcome.AUTHENTICATION_FAILED)
+                    writeJson(exchange, 401, jsonObject("error" to "unauthorised")); return
+                }
+                if (exchange.requestMethod != "GET" || exchange.requestURI.path != "/agent/review-queue") {
+                    writeJson(exchange, 404, jsonObject("error" to "not found")); return
+                }
+                val items = runBlocking { steveReviewQueueProjection?.enumerate() ?: emptyList() }
+                recordAudit(correlationId, principalId, "agent.review-queue.enumerate", null, AgentGatewayAccessOutcome.APPROVED)
+                writeJson(exchange, 200, jsonObject("items" to JsonArray(items.map(::queueItemJson))))
+            } catch (e: Exception) {
+                logger.error("Agent Gateway HTTP: review queue enumeration failed safely", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally { exchange.close() }
+        }
+    }
+
+    private fun queueItemJson(item: SteveReviewQueueItem): JsonObject = jsonObject(
+        "status" to item.status.name,
+        "failureReason" to item.failureReason,
+        "evidenceArtifactId" to item.evidence.evidenceArtifactId.value,
+        "sourceSha256" to item.evidence.sha256,
+        "caseId" to item.caseId?.value,
+        "batchIds" to JsonArray(item.batchIds),
+        "derivativeGenerationId" to item.generation.derivativeGenerationId.value,
+        "derivativeReviewState" to item.derivativeReviewState?.name,
+        "humanFidelityState" to (item.humanFidelity as? parker.core.interfaces.EffectiveHumanFidelityReviewProjectionOutcome.Projected)?.summary?.projection?.effectiveState?.name,
+        "sourceConfirmedEligibility" to item.sourceConfirmedEligibility.state.name,
+        "denialReason" to item.sourceConfirmedEligibility.denialReason?.name,
+        "discrepancyIds" to JsonArray(item.discrepancies.map { it.discrepancyId.value }),
+        "discrepancies" to JsonArray(item.discrepancies.map { d -> jsonObject(
+            "discrepancyId" to d.discrepancyId.value,
+            "pageNumber" to d.location.pageNumber,
+            "preparationRegionId" to d.location.preparationRegionId.value,
+            "derivativeRegionId" to d.location.derivativeRegionId.value,
+            "transcriptionBlockIndex" to d.location.transcriptionBlockIndex,
+            "reason" to d.reason,
+            "classification" to d.classification.name,
+            "severity" to d.severity.name,
+        ) }),
+        "uncertaintySpans" to JsonArray(item.uncertainty.map { u -> jsonObject(
+            "pageNumber" to u.pageNumber, "startOffsetInclusive" to u.startOffsetInclusive,
+            "endOffsetExclusive" to u.endOffsetExclusive, "kind" to u.kind.name, "disclosure" to u.disclosure,
+        ) }),
+        "correctionRepresentations" to JsonArray(item.corrections.map { c -> jsonObject(
+            "derivativeGenerationId" to c.derivativeGenerationId.value,
+            "reviewId" to c.reviewId.value,
+            "proposalIds" to JsonArray(c.proposals.map { it.proposalId.value }),
+            "acceptanceId" to c.acceptance.acceptanceId.value,
+            "acceptingPrincipalId" to c.acceptance.acceptingPrincipalId.value,
+            "published" to true,
+        ) }),
+    )
 
     /**
      * Hermes Processing Result Intake, Task 2 note: this handler now also serves
@@ -291,6 +354,22 @@ class AgentGatewayHttpServer(
                 parker.core.runtime.AgentGatewayGovernedIngestionResult.ProcessingResultRequired -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
                     writeJson(exchange, 409, jsonObject("status" to "PROCESSING_RESULT_REQUIRED"))
+                }
+                // Hermes Exception Decision Backend, Task 4: the three new gate outcomes an Owner
+                // decision (recorded through the separate, Owner-only OwnerEvidenceHttpServer
+                // path) can now produce here. All three are DENIED-shaped audit outcomes, mirroring
+                // HELD_FOR_REVIEW/PROCESSING_FAILED above -- no evidence admission occurs.
+                parker.core.runtime.AgentGatewayGovernedIngestionResult.HumanRejected -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("status" to "HUMAN_REJECTED"))
+                }
+                parker.core.runtime.AgentGatewayGovernedIngestionResult.ReprocessRequired -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("status" to "REPROCESS_REQUIRED"))
+                }
+                parker.core.runtime.AgentGatewayGovernedIngestionResult.InvalidHumanDecision -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("status" to "INVALID_HUMAN_DECISION"))
                 }
                 is parker.core.runtime.AgentGatewayGovernedIngestionResult.HashMismatch -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.HASH_MISMATCH)

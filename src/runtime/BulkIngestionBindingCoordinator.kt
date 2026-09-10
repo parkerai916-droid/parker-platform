@@ -76,6 +76,28 @@ internal class BulkIngestionBindingCoordinator(
 
     suspend fun isAuthorised(batchId: String): Boolean = mutex.withLock { read(batchId) != null }
 
+    /**
+     * Hermes Exception Decision Backend, Task 4. Read-only case display name for one exact batch,
+     * for Owner review usability only -- mirrors [listReady]'s own identical
+     * `read(batchId)`/`caseStorage.read` lookup, never a new case-resolution mechanism. `null` for
+     * an unknown batch or a batch whose bound case no longer exists. Never exposed to Hermes.
+     */
+    suspend fun caseNameForBatch(batchId: String): String? = mutex.withLock {
+        val binding = runCatching { read(batchId) }.getOrNull() ?: return@withLock null
+        caseStorage.read(binding.caseId)?.caseName
+    }
+
+    /** Read-only exact-evidence lookup for downstream projections. */
+    suspend fun batchesForEvidence(evidenceArtifactId: EvidenceArtifactId): List<String> = mutex.withLock {
+        Files.list(storageRoot).use { paths ->
+            paths.filter { it.fileName.toString().endsWith(".binding") }
+                .map { it.fileName.toString().removeSuffix(".binding") }
+                .sorted()
+                .filter { batchId -> runCatching { evidenceArtifactId in (read(batchId)?.evidence ?: emptySet()) }.getOrDefault(false) }
+                .toList()
+        }
+    }
+
     /** Bounded read-only projection for Hermes. Reads the existing durable bindings only. */
     suspend fun listReady(limit: Int = 32): List<ReadyBulkIngestionBatch> = mutex.withLock {
         val result = mutableListOf<ReadyBulkIngestionBatch>()

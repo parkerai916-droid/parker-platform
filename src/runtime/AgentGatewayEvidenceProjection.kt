@@ -105,6 +105,16 @@ internal class AgentGatewayEvidenceProjection(
      * [governedAcquisitionWorkflow]'s own identical "always supplied in production" convention.
      */
     private val processingResultRegistry: parker.core.interfaces.HermesProcessingResultRegistry? = null,
+    /**
+     * Hermes Exception Decision Backend, Task 4. `null` only for compositions that never wire
+     * Owner pre-ingestion decisions at all -- [submitGovernedIngestion] then behaves exactly as
+     * Task 3 left it (every decision resolves as "no human decision on record"), mirroring
+     * [processingResultRegistry]'s own identical "always supplied in production" convention.
+     * Never written to by this class -- only [HermesProcessingDecisionCoordinator] (reachable
+     * exclusively through Owner-authenticated, structurally owner-only `ParkerRuntime` methods,
+     * never through this Hermes-scoped class) ever records a decision.
+     */
+    private val humanDecisionRegistry: parker.core.interfaces.HermesProcessingDecisionRegistry? = null,
 ) {
 
     suspend fun retrieveEvidence(evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceRetrievalResult {
@@ -304,12 +314,19 @@ internal class AgentGatewayEvidenceProjection(
         val stored = processingResultRegistry?.find(batchId, computedSha256)
             ?: return AgentGatewayGovernedIngestionResult.ProcessingResultRequired
 
-        when (stored.status) {
-            parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED -> return AgentGatewayGovernedIngestionResult.HeldForReview
-            parker.core.interfaces.HermesProcessingStatus.FAILED -> return AgentGatewayGovernedIngestionResult.ProcessingFailed(
-                stored.failure ?: parker.core.interfaces.HermesProcessingFailure(parker.core.interfaces.HermesProcessingFailureKind.PROCESSOR_FAILURE),
-            )
-            parker.core.interfaces.HermesProcessingStatus.PASS -> Unit
+        // Hermes Exception Decision Backend, Task 4: the latest Owner decision (if any) for this
+        // exact key is consulted here, additively, before Task 3's own stored-status decision --
+        // see HermesProcessingEffectiveGate's own KDoc for the complete precedence table. `null`
+        // when humanDecisionRegistry is not wired reproduces Task 3's own unmodified behaviour
+        // exactly ("no human decision -> machine PASS only").
+        val latestDecision = humanDecisionRegistry?.latest(batchId, computedSha256)
+        when (val gate = HermesProcessingEffectiveGate.evaluate(stored, latestDecision)) {
+            HermesEffectiveGateDecision.Allow -> Unit
+            HermesEffectiveGateDecision.HumanRejected -> return AgentGatewayGovernedIngestionResult.HumanRejected
+            HermesEffectiveGateDecision.ReprocessRequired -> return AgentGatewayGovernedIngestionResult.ReprocessRequired
+            HermesEffectiveGateDecision.HeldForReview -> return AgentGatewayGovernedIngestionResult.HeldForReview
+            is HermesEffectiveGateDecision.ProcessingFailed -> return AgentGatewayGovernedIngestionResult.ProcessingFailed(gate.failure)
+            HermesEffectiveGateDecision.InvalidHumanDecision -> return AgentGatewayGovernedIngestionResult.InvalidHumanDecision
         }
 
         return when (val submission = submitSource(candidate, computedSha256, batchId)) {
@@ -573,6 +590,15 @@ sealed class AgentGatewayGovernedIngestionResult {
 
     /** No stored [parker.core.interfaces.HermesProcessingResult] exists for this exact (batchId, sourceSha256) -- the sanctioned Hermes bulk path never silently falls back to ungated submission. */
     data object ProcessingResultRequired : AgentGatewayGovernedIngestionResult()
+
+    /** Hermes Exception Decision Backend, Task 4. A human REJECT is on record for this exact key -- blocks unconditionally, even over a machine PASS. */
+    data object HumanRejected : AgentGatewayGovernedIngestionResult()
+
+    /** Hermes Exception Decision Backend, Task 4. A human REPROCESS is on record for this exact key -- blocks unconditionally, even over a machine PASS. No Hermes reprocessing is triggered by this outcome; a later Hermes orchestrator discovers and acts on it separately. */
+    data object ReprocessRequired : AgentGatewayGovernedIngestionResult()
+
+    /** Hermes Exception Decision Backend, Task 4. A recorded human decision is not permitted for the current machine status (for example, ACCEPT against FAILED) -- see [HermesProcessingEffectiveGate]'s own KDoc. No evidence admission occurs. */
+    data object InvalidHumanDecision : AgentGatewayGovernedIngestionResult()
 
     /** The actual submitted bytes hash to something other than the caller's own declared [expectedSha256] -- rejected outright, never merely logged. */
     data class HashMismatch(val computedSha256: String, val expectedSha256: String) : AgentGatewayGovernedIngestionResult()

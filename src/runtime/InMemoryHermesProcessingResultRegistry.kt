@@ -45,5 +45,9 @@ class InMemoryHermesProcessingResultRegistry : HermesProcessingResultRegistry {
         records.entries.filter { it.key.batchId == batchId }.map { it.value }
     }
 
+    override suspend fun listAll(): List<HermesProcessingResult> = mutex.withLock {
+        records.values.toList()
+    }
+
     private data class Key(val batchId: String, val sourceSha256: String)
 }

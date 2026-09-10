@@ -202,6 +202,8 @@ fun main(args: Array<String>) = runBlocking {
             },
             prepareCorrectedEvidence = runtime::prepareCorrectedEvidenceAsOwner,
             continuePostEgress = runtime::continueOrdinaryRegionPostEgressAsOwner,
+            listHermesProcessingReviewAsOwner = runtime::listHermesProcessingReviewAsOwner,
+            recordHermesProcessingDecisionAsOwner = runtime::recordHermesProcessingDecisionAsOwner,
         ).also { it.start() }
     } else {
         null
@@ -233,6 +235,7 @@ fun main(args: Array<String>) = runBlocking {
             submitProcessingResultAsAgent = runtime::submitProcessingResultAsAgent,
             listProcessingResultsForBatchAsAgent = runtime::listProcessingResultsForBatchAsAgent,
             submitGovernedIngestionAsAgent = runtime::submitGovernedIngestionAsAgent,
+            steveReviewQueueProjection = runtime.steveReviewQueueProjectionAsAgent(),
             audit = parker.core.runtime.FileSystemAgentGatewayAccessAudit(
                 java.nio.file.Path.of(requireNotNull(config.agentGatewayAccessAuditLogPath)),
             ),

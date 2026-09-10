@@ -472,6 +472,14 @@ class ParkerRuntime(
     // CASE-1: null unless caseStorageRootPath/caseAssignmentStorageRootPath/caseGovernanceAuditLogPath
     // are all configured together, mirroring every other optional collaborator in this file.
     private var caseAssignmentCoordinator: CaseAssignmentCoordinator? = null
+    // Hermes Exception Decision Backend, Task 4: null only in the sense that no production
+    // composition path ever leaves this unset (constructed unconditionally, mirroring
+    // hermesProcessingResultRegistry's own identical always-constructed convention below) -- kept
+    // as a nullable field only so the Owner-facing methods that read it fail closed
+    // (Denied(PermissionDecisionOutcome.DENIED)) rather than throw, exactly like every other
+    // optional collaborator in this file.
+    private var hermesProcessingDecisionRegistry: parker.core.interfaces.HermesProcessingDecisionRegistry? = null
+    private var hermesProcessingDecisionCoordinator: parker.core.runtime.HermesProcessingDecisionCoordinator? = null
     private var bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null
     private var governedHumanCorrectionService: GovernedHumanCorrectionService? = null
     private var humanCorrectedRepresentationStorage: HumanCorrectedRepresentationStorage? = null
@@ -858,6 +866,36 @@ class ParkerRuntime(
             }
         }
 
+        // Hermes Exception Decision Backend, Task 4: two new, distinct, fixed ResourceIds for the
+        // Owner-only pre-ingestion decision surface -- still ResourceType.DOCUMENT, still no new
+        // ResourceType, mirroring the Agent Gateway R0 resource registration immediately above.
+        // Registering a Resource is not itself a grant: the coarse (WRITE, DOCUMENT)/(READ,
+        // DOCUMENT) policy rules already approve every Active principal for these verbs, so
+        // Owner-only-ness is enforced structurally by ParkerRuntime.recordHermesProcessingDecisionAsOwner/
+        // listHermesProcessingReviewAsOwner's own "no caller-supplied principal" shape -- the same
+        // precedent DefaultOwnerEvidenceDeletionAuthority's own EVIDENCE_DELETION_RESOURCE_ID
+        // already establishes -- never by this registration or these coarse rules.
+        stage("Hermes Exception Decision Backend resource registration") {
+            val now = clock()
+            listOf(
+                Triple(parker.core.runtime.HermesProcessingDecisionCoordinator.DECISION_RESOURCE_ID, ResourceType.DOCUMENT, "Hermes Processing Human Decision"),
+                Triple(parker.core.runtime.HermesProcessingDecisionCoordinator.REVIEW_RESOURCE_ID, ResourceType.DOCUMENT, "Hermes Processing Owner Review Queue"),
+            ).forEach { (resourceId, resourceType, displayName) ->
+                resourceRegistry.register(
+                    Resource(
+                        resourceId = resourceId,
+                        resourceType = resourceType,
+                        displayName = displayName,
+                        ownerPrincipalId = SYSTEM_PARKER_PRINCIPAL_ID,
+                        sensitivity = ResourceSensitivity.PUBLIC,
+                        lifecycleState = ResourceLifecycleState.REGISTERED,
+                        createdAt = now,
+                        updatedAt = now,
+                        source = "composition-root:hermes-processing-decision",
+                    ),
+                )
+            }
+        }
         stage("action vocabulary registration") {
             vocabulary.register(
                 ActionVocabularyEntry(
@@ -1033,6 +1071,18 @@ class ParkerRuntime(
             // uses -- no new PermissionAction or ResourceType is introduced.
             vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))))
             vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT))))
+            // Hermes Exception Decision Backend, Task 4: one new write verb (recording an Owner
+            // decision) and one new read verb (the Owner review queue), reusing the identical
+            // existing (WRITE, DOCUMENT)/(READ, DOCUMENT) pairs every verb above already uses -- no
+            // new PermissionAction or ResourceType is introduced.
+            vocabulary.register(ActionVocabularyEntry(
+                parker.core.runtime.HermesProcessingDecisionCoordinator.DECISION_RECORD_ACTION_NAME,
+                setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT)),
+            ))
+            vocabulary.register(ActionVocabularyEntry(
+                parker.core.runtime.HermesProcessingDecisionCoordinator.REVIEW_LIST_ACTION_NAME,
+                setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT)),
+            ))
         }
 
         val permissionPolicy = DefaultPermissionPolicy(
@@ -2418,6 +2468,21 @@ class ParkerRuntime(
         // and why it is safe (Hermes's own submission is idempotent, so a lost record is simply
         // recoverable by retrying).
         val hermesProcessingResultRegistry = parker.core.runtime.InMemoryHermesProcessingResultRegistry()
+        // Hermes Exception Decision Backend, Task 4. In-memory only for this unit, mirroring
+        // hermesProcessingResultRegistry's own identical, explicitly disclosed durability
+        // scope-down immediately above -- see InMemoryHermesProcessingDecisionRegistry's own KDoc.
+        // Constructed unconditionally (not gated behind caseClassificationConfigured): decision
+        // recording/review never requires case classification to be configured, only
+        // caseDisplayName resolution does, which degrades to null via bulkIngestionBindingCoordinator's
+        // own nullability below.
+        hermesProcessingDecisionRegistry = parker.core.runtime.InMemoryHermesProcessingDecisionRegistry()
+        hermesProcessingDecisionCoordinator = parker.core.runtime.HermesProcessingDecisionCoordinator(
+            permissionEngine = permissionEngine,
+            processingResultRegistry = hermesProcessingResultRegistry,
+            decisionRegistry = requireNotNull(hermesProcessingDecisionRegistry),
+            caseDisplayNameForBatch = { batchId -> bulkIngestionBindingCoordinator?.caseNameForBatch(batchId) },
+            clock = clock,
+        )
         agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
             hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
             agentGatewayPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
@@ -2426,6 +2491,7 @@ class ParkerRuntime(
             governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
             bulkIngestionBindingCoordinator = bulkIngestionBindingCoordinator,
             processingResultRegistry = hermesProcessingResultRegistry,
+            humanDecisionRegistry = hermesProcessingDecisionRegistry,
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
@@ -3693,6 +3759,42 @@ class ParkerRuntime(
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return bulkIngestionBindingCoordinator?.authoriseAsOwner(caseId)
             ?: BulkIngestionAuthorisation.Failure("Bulk ingestion case binding is not configured")
+    }
+
+    /**
+     * Hermes Exception Decision Backend, Task 4. The Owner review queue of pre-ingestion Hermes
+     * exceptions still requiring Steve's attention -- **explicit, individually-authorized owner
+     * invocation only**, mirroring [deleteEvidenceAsOwner]'s own structural owner-only pattern
+     * exactly: no `requestingPrincipalId` parameter, always acts as `PrincipalId(config.ownerPrincipalId)`.
+     */
+    suspend fun listHermesProcessingReviewAsOwner(): parker.core.runtime.HermesProcessingReviewListOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val coordinator = hermesProcessingDecisionCoordinator
+            ?: return parker.core.runtime.HermesProcessingReviewListOutcome.Denied(PermissionDecisionOutcome.DENIED)
+        return coordinator.listPendingForOwner(PrincipalId(config.ownerPrincipalId))
+    }
+
+    /**
+     * Hermes Exception Decision Backend, Task 4. Records one Owner decision
+     * (ACCEPT/CORRECT/REPROCESS/REJECT) against a stored pre-ingestion
+     * [parker.core.interfaces.HermesProcessingResult] -- **explicit, individually-authorized owner
+     * invocation only**, mirroring [deleteEvidenceAsOwner]'s own structural owner-only pattern
+     * exactly: no `requestingPrincipalId` parameter, always acts as `PrincipalId(config.ownerPrincipalId)`.
+     * There is no code path through which Hermes's own principal could ever reach this method or
+     * [HermesProcessingDecisionCoordinator] beneath it.
+     */
+    suspend fun recordHermesProcessingDecisionAsOwner(
+        batchId: String,
+        sourceSha256: String,
+        decisionType: parker.core.interfaces.HermesProcessingHumanDecisionType,
+        reason: String?,
+        correction: parker.core.interfaces.HermesProcessingCorrection?,
+    ): parker.core.runtime.HermesProcessingDecisionOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val coordinator = hermesProcessingDecisionCoordinator
+            ?: return parker.core.runtime.HermesProcessingDecisionOutcome.Denied(PermissionDecisionOutcome.DENIED)
+        logger.info("Hermes processing decision recorded by owner (batchId=$batchId, sourceSha256=$sourceSha256, decision=$decisionType)")
+        return coordinator.recordDecision(PrincipalId(config.ownerPrincipalId), batchId, sourceSha256, decisionType, reason, correction)
     }
 
     /** Hermes-facing binding operation: the target CaseId is resolved only from Parker's durable batch record. */
