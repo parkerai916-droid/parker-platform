@@ -91,6 +91,12 @@ class AgentGatewayHttpServer(
     private val bindIngestionEvidenceAsAgent: suspend (String, EvidenceArtifactId) -> AgentGatewayBulkBindingResult = { _, _ -> AgentGatewayBulkBindingResult.Denied },
     private val submitSourceWithBatchAsAgent: (suspend (CandidateEvidenceArtifact, String?, String?) -> AgentGatewaySourceSubmissionResult)? = null,
     private val listReadyIngestionBatchesAsAgent: suspend () -> List<parker.core.runtime.ReadyBulkIngestionBatch> = { emptyList() },
+    /** Hermes Processing Result Intake, Task 2. See [handleSubmitProcessingResult]. */
+    private val submitProcessingResultAsAgent: suspend (String, parker.core.interfaces.HermesProcessingResult) -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult =
+        { _, _ -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    /** Hermes Processing Result Intake, Task 2. See [handleListProcessingResults]. */
+    private val listProcessingResultsForBatchAsAgent: suspend (String) -> parker.core.runtime.AgentGatewayProcessingResultListResult =
+        { parker.core.runtime.AgentGatewayProcessingResultListResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
     private val audit: AgentGatewayAccessAudit,
     private val logger: ParkerLogger,
 ) {
@@ -113,6 +119,14 @@ class AgentGatewayHttpServer(
         logger.info("Agent Gateway HTTP server started on $bindAddress:${boundPort}")
     }
 
+    /**
+     * Hermes Processing Result Intake, Task 2 note: this handler now also serves
+     * `POST`/`GET /agent/ingestion-batches/{batchId}/processing-results` -- both necessarily route
+     * here rather than to a second registered context, since `com.sun.net.httpserver.HttpServer`
+     * dispatches by longest-registered-prefix match and `/agent/ingestion-batches` is the only
+     * context registered for this whole subtree (mirroring [EvidenceHandler]'s own established
+     * "one context, method-and-path-segment dispatch inside `handle`" shape for `/agent/evidence`).
+     */
     private inner class ReadyBatchesHandler : HttpHandler {
         override fun handle(exchange: HttpExchange) {
             val correlationId = UUID.randomUUID().toString()
@@ -124,18 +138,129 @@ class AgentGatewayHttpServer(
                     recordAudit(correlationId, null, null, null, if (token == null) AgentGatewayAccessOutcome.UNAUTHENTICATED else AgentGatewayAccessOutcome.AUTHENTICATION_FAILED)
                     writeJson(exchange, 401, jsonObject("error" to "unauthorised")); return
                 }
-                if (exchange.requestMethod != "GET" || exchange.requestURI.path != "/agent/ingestion-batches") {
-                    writeJson(exchange, 404, jsonObject("error" to "not found")); return
+                if (exchange.requestMethod == "GET" && exchange.requestURI.path == "/agent/ingestion-batches") {
+                    val batches = runBlocking { listReadyIngestionBatchesAsAgent() }
+                    recordAudit(correlationId, principalId, "agent.ingestion-batches.ready", null, AgentGatewayAccessOutcome.APPROVED)
+                    writeJson(exchange, 200, jsonObject("batches" to JsonArray(batches.map { jsonObject("batchId" to it.batchId, "caseName" to it.caseName, "status" to "READY") })))
+                    return
                 }
-                val batches = runBlocking { listReadyIngestionBatchesAsAgent() }
-                recordAudit(correlationId, principalId, "agent.ingestion-batches.ready", null, AgentGatewayAccessOutcome.APPROVED)
-                writeJson(exchange, 200, jsonObject("batches" to JsonArray(batches.map { jsonObject("batchId" to it.batchId, "caseName" to it.caseName, "status" to "READY") })))
+                val segments = exchange.requestURI.path.removePrefix("/agent/ingestion-batches/").split('/').filter { it.isNotEmpty() }
+                if (segments.size == 2 && segments[1] == "processing-results") {
+                    when (exchange.requestMethod) {
+                        "POST" -> handleSubmitProcessingResult(exchange, correlationId, principalId, segments[0])
+                        "GET" -> handleListProcessingResults(exchange, correlationId, principalId, segments[0])
+                        else -> {
+                            runCatching { exchange.requestBody.use { it.readBytes() } }
+                            recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.NOT_FOUND_ROUTE)
+                            writeJson(exchange, 404, jsonObject("error" to "not found"))
+                        }
+                    }
+                    return
+                }
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.NOT_FOUND_ROUTE)
+                writeJson(exchange, 404, jsonObject("error" to "not found"))
             } catch (e: Exception) {
-                logger.error("Agent Gateway HTTP: ready batch discovery failed safely", e)
+                logger.error("Agent Gateway HTTP: ready batch / processing-result request failed safely (correlationId=$correlationId)", e)
+                runCatching { recordAudit(correlationId, null, null, null, AgentGatewayAccessOutcome.INTERNAL_FAILURE) }
                 runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
             } finally { exchange.close() }
         }
+
+        /**
+         * Hermes Processing Result Intake, Task 2. Batch-scoped, never evidence-ID-scoped -- the
+         * source may not yet have an authoritative [EvidenceArtifactId] at all when Hermes reports
+         * its result. [batchId] comes only from the route, never redundantly re-asserted in the
+         * body -- [parseHermesProcessingResultRequest] rejects a request body naming a `batchId`
+         * (or a `caseId`) field at all, so there is no field anywhere through which a caller could
+         * assert or alter case/batch binding.
+         */
+        private fun handleSubmitProcessingResult(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, batchId: String) {
+            val body = try {
+                readBounded(exchange.requestBody, MAX_PROCESSING_RESULT_REQUEST_BODY_BYTES)
+            } catch (_: RequestBodyTooLargeException) {
+                recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 413, jsonObject("error" to "request body too large"))
+                return
+            }
+            val result = try {
+                parseHermesProcessingResultRequest(body, batchId)
+            } catch (e: Exception) {
+                recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "malformed processing result", "detail" to (e.message ?: "invalid request")))
+                return
+            }
+            when (val outcome = runBlocking { submitProcessingResultAsAgent(batchId, result) }) {
+                is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 201, jsonObject("status" to "RECORDED", "result" to hermesProcessingResultJson(outcome.result)))
+                }
+                is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.AlreadyRecorded -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.ALREADY_REGISTERED)
+                    writeJson(exchange, 200, jsonObject("status" to "ALREADY_RECORDED", "result" to hermesProcessingResultJson(outcome.result)))
+                }
+                is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Conflict -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.SOURCE_IDENTITY_CONFLICT)
+                    writeJson(exchange, 409, jsonObject("status" to "CONFLICT", "existing" to hermesProcessingResultJson(outcome.existing)))
+                }
+                parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.UnknownBatch -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.NOT_FOUND)
+                    writeJson(exchange, 404, jsonObject("error" to "unknown batch"))
+                }
+                is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied"))
+                }
+            }
+        }
+
+        /**
+         * Hermes Processing Result Intake, Task 2. The narrow, authorised read-back path -- only
+         * results already recorded for [batchId], never a cross-batch or broader search.
+         */
+        private fun handleListProcessingResults(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, batchId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            when (val outcome = runBlocking { listProcessingResultsForBatchAsAgent(batchId) }) {
+                is parker.core.runtime.AgentGatewayProcessingResultListResult.Found -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_LIST_ACTION_NAME, batchId, AgentGatewayAccessOutcome.APPROVED)
+                    writeJson(exchange, 200, jsonObject("results" to JsonArray(outcome.results.map(::hermesProcessingResultJson))))
+                }
+                parker.core.runtime.AgentGatewayProcessingResultListResult.UnknownBatch -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_LIST_ACTION_NAME, batchId, AgentGatewayAccessOutcome.NOT_FOUND)
+                    writeJson(exchange, 404, jsonObject("error" to "unknown batch"))
+                }
+                is parker.core.runtime.AgentGatewayProcessingResultListResult.Denied -> {
+                    recordAudit(correlationId, principalId, PROCESSING_RESULT_LIST_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied"))
+                }
+            }
+        }
     }
+
+    private fun hermesProcessingResultJson(result: parker.core.interfaces.HermesProcessingResult): JsonObject = jsonObject(
+        "sourceSha256" to result.sourceSha256,
+        "batchId" to result.batchId,
+        "status" to result.status.name,
+        "methods" to JsonArray(result.methods.map { it.name }),
+        "proposedEvidenceArtifactId" to result.proposedEvidenceArtifactId?.value,
+        "issues" to JsonArray(result.issues.map { issue ->
+            jsonObject(
+                "kind" to issue.kind.name,
+                "explanation" to issue.explanation,
+                "location" to (issue.location as? parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage)?.let { location ->
+                    jsonObject(
+                        "pageNumber" to location.pageNumber,
+                        "startOffsetInclusive" to location.startOffsetInclusive,
+                        "endOffsetExclusive" to location.endOffsetExclusive,
+                        "regionDescription" to location.regionDescription,
+                    )
+                },
+                "hermesInterpretation" to issue.hermesInterpretation,
+                "transcriptionFidelity" to issue.transcriptionFidelity?.name,
+            )
+        }),
+        "failure" to result.failure?.let { failure -> jsonObject("kind" to failure.kind.name, "detail" to failure.detail) },
+    )
 
     fun stop() {
         server?.stop(1)
@@ -516,6 +641,17 @@ class AgentGatewayHttpServer(
         const val ADVISORY_SHA256_HEADER = "X-Parker-Advisory-Sha256"
         const val BATCH_ID_HEADER = "X-Parker-Ingestion-Batch-Id"
         const val BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
+        const val PROCESSING_RESULT_SUBMIT_ACTION_NAME = "agent-gateway.processing-result.submit"
+        const val PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
+
+        /**
+         * Hermes Processing Result Intake, Task 2. A processing result is metadata only (no raw
+         * source bytes), so this bound is far smaller than [MAX_SUBMISSION_BYTES] -- sized with
+         * headroom above [parker.core.interfaces.HermesProcessingResult]'s own worst-case shape
+         * (up to 1,000 issues, each up to 4,096-character bounded text fields) without being
+         * effectively unbounded.
+         */
+        const val MAX_PROCESSING_RESULT_REQUEST_BODY_BYTES: Long = 8L * 1024L * 1024L
 
         /**
          * Mirrors `OwnerEvidenceHttpServer.MAX_PART_BYTES` -- the same 64 MiB ingress bound
@@ -524,4 +660,250 @@ class AgentGatewayHttpServer(
          */
         const val MAX_SUBMISSION_BYTES: Long = 64L * 1024L * 1024L
     }
+}
+
+// ---- Hermes Processing Result Intake, Task 2: request-body parsing -----------------------------
+//
+// Domain/transport separation: everything below only ever parses JSON into plain Kotlin values
+// (Map/List/String/Long) and then maps those into Task 1's own, already-fully-validated
+// parker.core.interfaces.HermesProcessingResult -- it never constructs a partially-valid domain
+// value, and every [HermesProcessingResult]/[HermesProcessingIssue]/[HermesProcessingFailure]
+// invariant is enforced exactly once, by those types' own `init` blocks, not duplicated here.
+// [JsonParseException] is [OwnerEvidenceHttpServer.kt]'s own existing, `internal`-visible type,
+// reused unchanged (same module, same package) rather than declared a second time.
+
+private const val MAX_HERMES_JSON_NESTING_DEPTH = 10
+
+/**
+ * The smallest generic JSON value reader Task 2's own request shape needs -- objects, arrays,
+ * strings, and bounded non-negative integers (page numbers, character offsets). No boolean or
+ * floating-point support: nothing in [parker.core.interfaces.HermesProcessingResult]'s own shape
+ * needs either. Deliberately not a reuse of [OwnerEvidenceHttpServer.kt]'s own `SimpleJsonReader`
+ * -- that class is `private` to its own file (this repository's own established convention that
+ * each HTTP server file owns its own private JSON helpers, exactly as this file's own JSON
+ * *writer* below already mirrors that file's writer, per its own KDoc).
+ */
+private class AgentGatewayJsonReader(private val text: String) {
+    private var pos = 0
+    private var depth = 0
+
+    fun parseRootValue(): Any {
+        val value = parseValue()
+        skipWhitespace()
+        if (pos != text.length) throw JsonParseException("unexpected trailing content after JSON value at position $pos")
+        return value
+    }
+
+    private fun parseValue(): Any {
+        skipWhitespace()
+        if (pos >= text.length) throw JsonParseException("unexpected end of JSON")
+        return when (val c = text[pos]) {
+            '{' -> parseObject()
+            '[' -> parseArray()
+            '"' -> parseString()
+            else -> if (c == '-' || c.isDigit()) parseNumber() else throw JsonParseException("unexpected token at position $pos")
+        }
+    }
+
+    private fun enterNestedStructure() {
+        depth++
+        if (depth > MAX_HERMES_JSON_NESTING_DEPTH) {
+            throw JsonParseException("JSON nesting exceeds the maximum permitted depth of $MAX_HERMES_JSON_NESTING_DEPTH")
+        }
+    }
+
+    private fun parseObject(): Map<String, Any> {
+        enterNestedStructure()
+        try {
+            expect('{')
+            val map = LinkedHashMap<String, Any>()
+            skipWhitespace()
+            if (peek() == '}') { pos++; return map }
+            while (true) {
+                skipWhitespace()
+                val key = parseString()
+                if (map.containsKey(key)) throw JsonParseException("duplicate key '$key' in object")
+                skipWhitespace()
+                expect(':')
+                map[key] = parseValue()
+                skipWhitespace()
+                when (peek()) {
+                    ',' -> pos++
+                    '}' -> { pos++; return map }
+                    else -> throw JsonParseException("expected ',' or '}' in object")
+                }
+            }
+        } finally {
+            depth--
+        }
+    }
+
+    private fun parseArray(): List<Any> {
+        enterNestedStructure()
+        try {
+            expect('[')
+            val list = mutableListOf<Any>()
+            skipWhitespace()
+            if (peek() == ']') { pos++; return list }
+            while (true) {
+                list += parseValue()
+                skipWhitespace()
+                when (peek()) {
+                    ',' -> pos++
+                    ']' -> { pos++; return list }
+                    else -> throw JsonParseException("expected ',' or ']' in array")
+                }
+            }
+        } finally {
+            depth--
+        }
+    }
+
+    private fun parseString(): String {
+        expect('"')
+        val sb = StringBuilder()
+        while (true) {
+            if (pos >= text.length) throw JsonParseException("unterminated string")
+            val c = text[pos]
+            pos++
+            when {
+                c == '"' -> return sb.toString()
+                c == '\\' -> {
+                    if (pos >= text.length) throw JsonParseException("unterminated escape sequence")
+                    val esc = text[pos]
+                    pos++
+                    when (esc) {
+                        '"' -> sb.append('"')
+                        '\\' -> sb.append('\\')
+                        '/' -> sb.append('/')
+                        'n' -> sb.append('\n')
+                        'r' -> sb.append('\r')
+                        't' -> sb.append('\t')
+                        'b' -> sb.append('\b')
+                        'u' -> {
+                            if (pos + 4 > text.length) throw JsonParseException("truncated unicode escape")
+                            val hex = text.substring(pos, pos + 4)
+                            val code = hex.toIntOrNull(16) ?: throw JsonParseException("invalid unicode escape '\\u$hex'")
+                            sb.append(code.toChar())
+                            pos += 4
+                        }
+                        else -> throw JsonParseException("invalid escape character '\\$esc'")
+                    }
+                }
+                else -> sb.append(c)
+            }
+        }
+    }
+
+    /** Integer only -- no fractional or exponent part, matching what page numbers/offsets need. */
+    private fun parseNumber(): Long {
+        val start = pos
+        if (peek() == '-') pos++
+        if (pos >= text.length || !text[pos].isDigit()) throw JsonParseException("invalid number at position $start")
+        while (pos < text.length && text[pos].isDigit()) pos++
+        if (pos < text.length && (text[pos] == '.' || text[pos] == 'e' || text[pos] == 'E')) {
+            throw JsonParseException("non-integer numbers are not supported")
+        }
+        return text.substring(start, pos).toLongOrNull() ?: throw JsonParseException("number out of range at position $start")
+    }
+
+    private fun peek(): Char { skipWhitespace(); return if (pos < text.length) text[pos] else ' ' }
+    private fun expect(c: Char) { skipWhitespace(); if (pos >= text.length || text[pos] != c) throw JsonParseException("expected '$c' at position $pos"); pos++ }
+    private fun skipWhitespace() { while (pos < text.length && text[pos].isWhitespace()) pos++ }
+}
+
+private val HERMES_PROCESSING_RESULT_REQUEST_FIELDS =
+    setOf("sourceSha256", "status", "methods", "proposedEvidenceArtifactId", "issues", "failure")
+private val HERMES_PROCESSING_ISSUE_FIELDS =
+    setOf("kind", "explanation", "location", "hermesInterpretation", "transcriptionFidelity")
+private val HERMES_PROCESSING_ISSUE_LOCATION_FIELDS =
+    setOf("pageNumber", "startOffsetInclusive", "endOffsetExclusive", "regionDescription")
+private val HERMES_PROCESSING_FAILURE_FIELDS = setOf("kind", "detail")
+
+/**
+ * Parses one `POST /agent/ingestion-batches/{batchId}/processing-results` request body into a
+ * fully-validated [parker.core.interfaces.HermesProcessingResult]. [batchId] always comes from
+ * the route (never from the body): a `batchId` field in the body -- and, deliberately, any
+ * `caseId` field, since Hermes never asserts case membership -- is an unexpected field and is
+ * rejected exactly like any other, never silently accepted or cross-checked against the route.
+ */
+private fun parseHermesProcessingResultRequest(bodyBytes: ByteArray, batchId: String): parker.core.interfaces.HermesProcessingResult {
+    val obj = requireJsonObject(AgentGatewayJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue())
+    requireKeysSubsetOf(obj.keys, HERMES_PROCESSING_RESULT_REQUEST_FIELDS, "processing result")
+
+    val sourceSha256 = obj["sourceSha256"] as? String ?: throw JsonParseException("expected a 'sourceSha256' string")
+    val status = parseEnum<parker.core.interfaces.HermesProcessingStatus>(obj["status"], "status")
+    val methods = (obj["methods"] as? List<*> ?: throw JsonParseException("expected a 'methods' array"))
+        .map { parseEnum<parker.core.interfaces.HermesProcessingMethod>(it, "methods") }
+        .toSet()
+    val proposedEvidenceArtifactId = (obj["proposedEvidenceArtifactId"] as? String)?.let { raw ->
+        try { EvidenceArtifactId(raw) } catch (e: IllegalArgumentException) { throw JsonParseException(e.message ?: "invalid proposedEvidenceArtifactId") }
+    }
+    val issues = (obj["issues"] as? List<*> ?: emptyList<Any?>()).map(::parseHermesProcessingIssue)
+    val failure = (obj["failure"] as? Map<*, *>)?.let(::parseHermesProcessingFailure)
+
+    return try {
+        parker.core.interfaces.HermesProcessingResult(
+            sourceSha256 = sourceSha256,
+            batchId = batchId,
+            status = status,
+            methods = methods,
+            proposedEvidenceArtifactId = proposedEvidenceArtifactId,
+            issues = issues,
+            failure = failure,
+        )
+    } catch (e: IllegalArgumentException) {
+        throw JsonParseException(e.message ?: "invalid processing result")
+    }
+}
+
+private fun parseHermesProcessingIssue(raw: Any?): parker.core.interfaces.HermesProcessingIssue {
+    val obj = requireJsonObject(raw)
+    requireKeysSubsetOf(obj.keys, HERMES_PROCESSING_ISSUE_FIELDS, "processing issue")
+    val kind = parseEnum<parker.core.interfaces.HermesProcessingIssueKind>(obj["kind"], "issue kind")
+    val explanation = obj["explanation"] as? String ?: throw JsonParseException("expected an issue 'explanation' string")
+    val location = (obj["location"] as? Map<*, *>)?.let(::parseHermesProcessingIssueLocation)
+    val hermesInterpretation = obj["hermesInterpretation"] as? String
+    val transcriptionFidelity = obj["transcriptionFidelity"]?.let { parseEnum<parker.core.interfaces.TranscriptionFidelity>(it, "transcriptionFidelity") }
+    return try {
+        parker.core.interfaces.HermesProcessingIssue(kind, explanation, location, hermesInterpretation, transcriptionFidelity)
+    } catch (e: IllegalArgumentException) {
+        throw JsonParseException(e.message ?: "invalid processing issue")
+    }
+}
+
+private fun parseHermesProcessingIssueLocation(obj: Map<*, *>): parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage {
+    requireKeysSubsetOf(obj.keys, HERMES_PROCESSING_ISSUE_LOCATION_FIELDS, "issue location")
+    val pageNumber = (obj["pageNumber"] as? Long)?.let(Long::toInt) ?: throw JsonParseException("expected a numeric 'pageNumber'")
+    val startOffsetInclusive = (obj["startOffsetInclusive"] as? Long)?.let(Long::toInt)
+    val endOffsetExclusive = (obj["endOffsetExclusive"] as? Long)?.let(Long::toInt)
+    val regionDescription = obj["regionDescription"] as? String
+    return try {
+        parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage(pageNumber, startOffsetInclusive, endOffsetExclusive, regionDescription)
+    } catch (e: IllegalArgumentException) {
+        throw JsonParseException(e.message ?: "invalid issue location")
+    }
+}
+
+private fun parseHermesProcessingFailure(obj: Map<*, *>): parker.core.interfaces.HermesProcessingFailure {
+    requireKeysSubsetOf(obj.keys, HERMES_PROCESSING_FAILURE_FIELDS, "processing failure")
+    val kind = parseEnum<parker.core.interfaces.HermesProcessingFailureKind>(obj["kind"], "failure kind")
+    val detail = obj["detail"] as? String
+    return try {
+        parker.core.interfaces.HermesProcessingFailure(kind, detail)
+    } catch (e: IllegalArgumentException) {
+        throw JsonParseException(e.message ?: "invalid processing failure")
+    }
+}
+
+private fun requireJsonObject(raw: Any?): Map<*, *> = raw as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+
+private fun requireKeysSubsetOf(keys: Set<*>, allowed: Set<String>, label: String) {
+    val unexpected = keys.filterNot { it in allowed }
+    if (unexpected.isNotEmpty()) throw JsonParseException("unexpected $label field(s): $unexpected")
+}
+
+private inline fun <reified T : Enum<T>> parseEnum(raw: Any?, fieldName: String): T {
+    val name = raw as? String ?: throw JsonParseException("expected a '$fieldName' string")
+    return try { enumValueOf<T>(name) } catch (_: IllegalArgumentException) { throw JsonParseException("invalid $fieldName '$name'") }
 }

@@ -97,6 +97,14 @@ internal class AgentGatewayEvidenceProjection(
     private val governedAcquisitionWorkflow: GovernedAcquisitionOwnerWorkflow? = null,
     private val clock: () -> Instant = Instant::now,
     private val bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null,
+    /**
+     * Hermes Processing Result Intake, Task 2. `null` only for compositions that never wire
+     * processing-result intake at all -- [submitProcessingResult]/[listProcessingResultsForBatch]
+     * return [AgentGatewayProcessingResultSubmissionResult.Denied]/
+     * [AgentGatewayProcessingResultListResult.Denied] rather than throwing if absent, mirroring
+     * [governedAcquisitionWorkflow]'s own identical "always supplied in production" convention.
+     */
+    private val processingResultRegistry: parker.core.interfaces.HermesProcessingResultRegistry? = null,
 ) {
 
     suspend fun retrieveEvidence(evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceRetrievalResult {
@@ -200,6 +208,62 @@ internal class AgentGatewayEvidenceProjection(
             is BulkIngestionAssignment.Failure -> AgentGatewayBulkBindingResult.Failed(result.reason)
         }
     }
+
+    /**
+     * Hermes Processing Result Intake, Task 2. Performs exactly one [PermissionEngine.evaluate]
+     * call using the Agent-Gateway-specific processing-result-submission shape (Hermes's own
+     * fixed principal, the fixed gateway purpose, the exact `agent-gateway.processing-result.submit`
+     * verb/resource -- never a caller-supplied one) and, only if approved, validates [batchId]
+     * against the existing [bulkIngestionBindingCoordinator] before ever touching
+     * [processingResultRegistry] -- mirroring [submitSource]'s own "permission first, batch
+     * validity second" ordering exactly. A batch id that is not a real, Parker-minted,
+     * currently-authorised batch identity -- including one that is not even shaped like one, which
+     * [BulkIngestionBindingCoordinator.isAuthorised] itself validates by throwing
+     * [IllegalArgumentException] rather than returning `false` -- is uniformly reported as
+     * [AgentGatewayProcessingResultSubmissionResult.UnknownBatch], never a 500-shaped internal
+     * failure. This class invents no case-binding logic of its own: [result] carries no `CaseId`
+     * field at all (see [parker.core.interfaces.HermesProcessingResult]'s own KDoc), so there is no
+     * field here through which a caller could assert or alter one.
+     */
+    suspend fun submitProcessingResult(batchId: String, result: parker.core.interfaces.HermesProcessingResult): AgentGatewayProcessingResultSubmissionResult {
+        val decision = permissionEngine.evaluate(buildRequest(
+            resourceId = AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID,
+            actionName = AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME,
+            requestIdPrefix = "agent-gateway-processing-result-submit",
+            contextId = "$batchId-${result.sourceSha256}",
+        ))
+        if (!decision.isApproved()) return AgentGatewayProcessingResultSubmissionResult.Denied(decision.decision)
+        if (!isBatchAuthorised(batchId)) return AgentGatewayProcessingResultSubmissionResult.UnknownBatch
+        val registry = processingResultRegistry ?: return AgentGatewayProcessingResultSubmissionResult.Denied(PermissionDecisionOutcome.DENIED)
+        return when (val outcome = registry.record(result)) {
+            is parker.core.interfaces.HermesProcessingResultRecordOutcome.Recorded -> AgentGatewayProcessingResultSubmissionResult.Recorded(outcome.result)
+            is parker.core.interfaces.HermesProcessingResultRecordOutcome.AlreadyRecorded -> AgentGatewayProcessingResultSubmissionResult.AlreadyRecorded(outcome.result)
+            is parker.core.interfaces.HermesProcessingResultRecordOutcome.Conflict -> AgentGatewayProcessingResultSubmissionResult.Conflict(outcome.existing)
+        }
+    }
+
+    /**
+     * Hermes Processing Result Intake, Task 2. The narrow, authorised read-back path for stored
+     * processing results -- the same "permission first, batch validity second" shape
+     * [submitProcessingResult] uses. Returns only results already recorded for [batchId]; never
+     * leaks a result recorded under a different batch, and never offers any broader search or
+     * evidence-listing behaviour.
+     */
+    suspend fun listProcessingResultsForBatch(batchId: String): AgentGatewayProcessingResultListResult {
+        val decision = permissionEngine.evaluate(buildRequest(
+            resourceId = AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID,
+            actionName = AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME,
+            requestIdPrefix = "agent-gateway-processing-result-list",
+            contextId = batchId,
+        ))
+        if (!decision.isApproved()) return AgentGatewayProcessingResultListResult.Denied(decision.decision)
+        if (!isBatchAuthorised(batchId)) return AgentGatewayProcessingResultListResult.UnknownBatch
+        return AgentGatewayProcessingResultListResult.Found(processingResultRegistry?.listForBatch(batchId) ?: emptyList())
+    }
+
+    /** `false` for a batch that does not exist, exactly as for one whose id is not even shaped like a real one -- never throws. */
+    private suspend fun isBatchAuthorised(batchId: String): Boolean =
+        try { bulkIngestionBindingCoordinator?.isAuthorised(batchId) == true } catch (_: IllegalArgumentException) { false }
 
     /**
      * Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section 20).
@@ -366,7 +430,43 @@ internal class AgentGatewayEvidenceProjection(
         val AGENT_GATEWAY_EVIDENCE_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-evidence-submit")
         val AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID = ResourceId("agent-gateway-evidence-acquire")
         val AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID = ResourceId("agent-gateway-ingestion-bind")
+
+        // Hermes Processing Result Intake, Task 2: one new write verb (submitting a result) and
+        // one new read verb (listing already-submitted results for a batch) -- reusing the
+        // identical existing (WRITE, DOCUMENT)/(READ, DOCUMENT) pairs every other Agent Gateway
+        // verb above already uses, and the same existing AGENT_GATEWAY_HERMES_INGESTION_PURPOSE
+        // (ParkerRuntime's own companion object) -- no new PermissionAction, ResourceType, or
+        // AuthorizationPurposeId is introduced anywhere by this Task.
+        const val AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME = "agent-gateway.processing-result.submit"
+        const val AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
+        val AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-processing-result-submit")
+        val AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID = ResourceId("agent-gateway-processing-result-list")
     }
+}
+
+/**
+ * Hermes Processing Result Intake, Task 2. Reuses [AgentGatewayEvidenceManifestProjection]'s own
+ * "flat, opaque-identifier-only projection" precedent conceptually, but the underlying value is
+ * already exactly the flat, fully-validated [parker.core.interfaces.HermesProcessingResult]
+ * domain type itself -- Task 1's own contract -- so no separate projection type wraps it here.
+ */
+sealed class AgentGatewayProcessingResultSubmissionResult {
+    data class Recorded(val result: parker.core.interfaces.HermesProcessingResult) : AgentGatewayProcessingResultSubmissionResult()
+    data class AlreadyRecorded(val result: parker.core.interfaces.HermesProcessingResult) : AgentGatewayProcessingResultSubmissionResult()
+
+    /** [existing] is the unchanged, previously-recorded result; the attempted submission was not stored. */
+    data class Conflict(val existing: parker.core.interfaces.HermesProcessingResult) : AgentGatewayProcessingResultSubmissionResult()
+
+    /** No batch exists under the requested id -- including one that is not even shaped like a real one. */
+    data object UnknownBatch : AgentGatewayProcessingResultSubmissionResult()
+    data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewayProcessingResultSubmissionResult()
+}
+
+/** The narrow, authorised, single-batch read-back path for stored [parker.core.interfaces.HermesProcessingResult] records. */
+sealed class AgentGatewayProcessingResultListResult {
+    data class Found(val results: List<parker.core.interfaces.HermesProcessingResult>) : AgentGatewayProcessingResultListResult()
+    data object UnknownBatch : AgentGatewayProcessingResultListResult()
+    data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewayProcessingResultListResult()
 }
 
 sealed interface AgentGatewayBulkBindingResult {

@@ -336,8 +336,159 @@ class AgentGatewayEvidenceProjectionTest {
         // existing, unmodified GovernedAcquisitionOwnerWorkflow -- this class itself still
         // performs no routing, provider, or egress logic of its own.
         //
-        // Revision history: AG-1G added requestAcquisition (three -> four).
-        assertEquals(setOf("retrieveEvidence", "retrieveEvidenceManifest", "submitSource", "requestAcquisition", "bindIngestionEvidence"), publicFunctionNames)
+        // Revision history: AG-1G added requestAcquisition (three -> four). Hermes Processing
+        // Result Intake, Task 2, added submitProcessingResult/listProcessingResultsForBatch (five
+        // -> seven) -- both still fully governed: permission-checked first, batch-validated
+        // second, never a new evidence-registration or case-model path.
+        assertEquals(
+            setOf(
+                "retrieveEvidence", "retrieveEvidenceManifest", "submitSource", "requestAcquisition",
+                "bindIngestionEvidence", "submitProcessingResult", "listProcessingResultsForBatch",
+            ),
+            publicFunctionNames,
+        )
+    }
+
+    // ================= Hermes Processing Result Intake, Task 2 =================
+    //
+    // Idempotency/conflict/find/listForBatch logic itself is unit-tested in isolation, without any
+    // permission or batch-validity concerns, in InMemoryHermesProcessingResultRegistryTest. The
+    // genuine "a real, server-minted batch is accepted end-to-end" path -- which needs a real
+    // BulkIngestionBindingCoordinator (filesystem-backed CaseStorage/CaseAssignmentCoordinator/
+    // CaseGovernanceAudit) -- is proven through the real composed ParkerRuntime in
+    // AgentGatewayHttpServerTest's own real-harness tests, exactly mirroring how this file's own
+    // KDoc already defers full end-to-end composition proof elsewhere. This file's own job, as for
+    // every other verb above, is this class's own logic: exact request shape, and that a denied
+    // decision never reaches the registry.
+
+    private fun hermesResult(
+        sha256: String = "a".repeat(64),
+        batchId: String,
+        status: parker.core.interfaces.HermesProcessingStatus = parker.core.interfaces.HermesProcessingStatus.PASS,
+    ) = parker.core.interfaces.HermesProcessingResult(
+        sourceSha256 = sha256,
+        batchId = batchId,
+        status = status,
+        methods = setOf(parker.core.interfaces.HermesProcessingMethod.OCR),
+    )
+
+    /**
+     * Extends [buildEnvironment]'s own rule shape with the guard-then-override pair for the two
+     * new verbs, mirroring exactly what production's own `ParkerRuntime` composition registers --
+     * without this, an unregistered verb would resolve DENIED by [DefaultPermissionPolicy]'s own
+     * "Unknown Action" fail-closed behaviour regardless of Hermes's status, masking rather than
+     * proving the batch-validation behaviour these tests target.
+     */
+    private suspend fun buildEnvironmentWithProcessingResults(): Pair<Environment, parker.core.interfaces.HermesProcessingResultRegistry> {
+        val identityService = InMemoryIdentityService()
+        val now = Instant.parse("2026-01-01T00:00:00Z")
+        // Must match registerHermes's own hardcoded createdByPrincipalId exactly -- that shared
+        // extension function is reused unchanged from the environment above.
+        val ownerPrincipalId = PrincipalId("user.owner-agent-gateway-projection-test")
+        identityService.register(Principal(ownerPrincipalId, PrincipalType.USER, "Owner", null, PrincipalStatus.CREATED, now, now))
+        identityService.updateStatus(ownerPrincipalId, PrincipalStatus.ACTIVE)
+
+        val submitAction = AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME
+        val listAction = AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME
+        val submitResourceId = AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID
+        val listResourceId = AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID
+
+        val vocabulary = InMemoryActionVocabulary()
+        vocabulary.register(ActionVocabularyEntry(submitAction, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))))
+        vocabulary.register(ActionVocabularyEntry(listAction, setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT))))
+
+        val resourceRegistry = InMemoryResourceRegistry()
+        listOf(submitResourceId, listResourceId).forEach { id ->
+            resourceRegistry.register(
+                parker.core.interfaces.Resource(
+                    resourceId = id, resourceType = ResourceType.DOCUMENT, displayName = id.value,
+                    ownerPrincipalId = ownerPrincipalId, sensitivity = parker.core.interfaces.ResourceSensitivity.PUBLIC,
+                    lifecycleState = parker.core.interfaces.ResourceLifecycleState.REGISTERED, createdAt = now, updatedAt = now, source = "test",
+                ),
+            )
+        }
+
+        val authorizationPurposeRegistry = InMemoryAuthorizationPurposeRegistry()
+        authorizationPurposeRegistry.register(agentGatewayPurpose)
+
+        val rules = listOf(
+            PermissionPolicyRule(PermissionAction.WRITE, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC),
+            PermissionPolicyRule(PermissionAction.READ, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC),
+            PermissionPolicyRule(PermissionAction.WRITE, ResourceType.DOCUMENT, PermissionDecisionOutcome.DENIED, PermissionLevel.AUTOMATIC, proposedAction = submitAction),
+            PermissionPolicyRule(
+                PermissionAction.WRITE, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC,
+                authorizationPurpose = agentGatewayPurpose, proposedAction = submitAction,
+            ),
+            PermissionPolicyRule(
+                PermissionAction.READ, ResourceType.DOCUMENT, PermissionDecisionOutcome.APPROVED, PermissionLevel.AUTOMATIC,
+                authorizationPurpose = agentGatewayPurpose, proposedAction = listAction,
+            ),
+        )
+        val policy = DefaultPermissionPolicy(ActionMapper(vocabulary), resourceRegistry, rules, authorizationPurposeRegistry)
+        val engine = RecordingPermissionEngine(DefaultPermissionEngine(identityService, policy))
+        val evidenceCustodian = DefaultEvidenceCustodian(InMemoryEvidenceArtifactStorage(), engine)
+        val registry = InMemoryHermesProcessingResultRegistry()
+        val projection = AgentGatewayEvidenceProjection(
+            hermesPrincipalId, agentGatewayPurpose, engine, evidenceCustodian,
+            processingResultRegistry = registry,
+        )
+        val env = Environment(identityService, engine, evidenceCustodian, InMemoryEvidenceArtifactStorage(), InMemoryEvidenceSourceManifestStorage(), projection)
+        return env to registry
+    }
+
+    @Test
+    fun `submitProcessingResult constructs a request naming exactly Hermes, the gateway purpose, the processing-result-submit verb, and its own resource`() = runTest {
+        val (env, _) = buildEnvironmentWithProcessingResults()
+        env.registerHermes(PrincipalStatus.CREATED) // request shape is checked regardless of outcome
+
+        env.projection.submitProcessingResult("bulk-test", hermesResult(batchId = "bulk-test"))
+
+        val request = env.engine.requests.single()
+        assertEquals(hermesPrincipalId, request.principalId)
+        assertEquals(agentGatewayPurpose, request.authorizationPurpose)
+        assertEquals(listOf(AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME), request.proposedActions)
+        assertEquals(listOf(AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID), request.targetResources)
+    }
+
+    @Test
+    fun `listProcessingResultsForBatch constructs a request naming exactly Hermes, the gateway purpose, the processing-result-list verb, and its own resource`() = runTest {
+        val (env, _) = buildEnvironmentWithProcessingResults()
+        env.registerHermes(PrincipalStatus.CREATED)
+
+        env.projection.listProcessingResultsForBatch("bulk-test")
+
+        val request = env.engine.requests.single()
+        assertEquals(hermesPrincipalId, request.principalId)
+        assertEquals(agentGatewayPurpose, request.authorizationPurpose)
+        assertEquals(listOf(AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME), request.proposedActions)
+        assertEquals(listOf(AgentGatewayEvidenceProjection.AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID), request.targetResources)
+    }
+
+    @Test
+    fun `a CREATED (not yet ACTIVE) Hermes is DENIED for processing-result submission and listing, and nothing is recorded`() = runTest {
+        val (env, registry) = buildEnvironmentWithProcessingResults()
+        env.registerHermes(PrincipalStatus.CREATED)
+
+        val submitResult = env.projection.submitProcessingResult("bulk-test", hermesResult(batchId = "bulk-test"))
+        val listResult = env.projection.listProcessingResultsForBatch("bulk-test")
+
+        assertIs<AgentGatewayProcessingResultSubmissionResult.Denied>(submitResult)
+        assertEquals(PermissionDecisionOutcome.DENIED, submitResult.decision)
+        assertIs<AgentGatewayProcessingResultListResult.Denied>(listResult)
+        assertEquals(null, registry.find("bulk-test", "a".repeat(64)))
+    }
+
+    @Test
+    fun `an ACTIVE Hermes against an unknown batch -- including no coordinator wired at all -- resolves UnknownBatch, never an internal failure, and records nothing`() = runTest {
+        val (env, registry) = buildEnvironmentWithProcessingResults()
+        env.registerHermes(PrincipalStatus.ACTIVE)
+
+        val submitResult = env.projection.submitProcessingResult("bulk-does-not-exist", hermesResult(batchId = "bulk-does-not-exist"))
+        val listResult = env.projection.listProcessingResultsForBatch("bulk-does-not-exist")
+
+        assertIs<AgentGatewayProcessingResultSubmissionResult.UnknownBatch>(submitResult)
+        assertIs<AgentGatewayProcessingResultListResult.UnknownBatch>(listResult)
+        assertEquals(null, registry.find("bulk-does-not-exist", "a".repeat(64)))
     }
 
     // ================= AG-1F. Candidate-source submission =================

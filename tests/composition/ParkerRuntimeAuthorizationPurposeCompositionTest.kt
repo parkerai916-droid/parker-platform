@@ -194,7 +194,11 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         // purpose, so it does not count here). AG-1G (R2 Governed-Acquisition Request, Section 9,
         // Section 20) adds exactly one more still, by the identical shape -- the acquisition
         // verb's own Purpose-scoped APPROVED rule (its DENIED guard likewise carries no purpose).
-        assertEquals(10, rules.count { it.authorizationPurpose != null })
+        // Hermes Processing Result Intake, Task 2, adds exactly two more, by the identical shape:
+        // the processing-result-submission verb's own Purpose-scoped APPROVED rule (its DENIED
+        // guard again carries no purpose) and the processing-result-listing verb's own single
+        // Purpose-scoped APPROVED rule (a read verb, so no guard exists to carry one either).
+        assertEquals(12, rules.count { it.authorizationPurpose != null })
 
         val candidateEvaluationRules = rules.filter { it.authorizationPurpose == candidateEvaluationPurpose }
         assertEquals(2, candidateEvaluationRules.size)

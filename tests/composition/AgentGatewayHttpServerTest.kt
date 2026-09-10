@@ -66,10 +66,14 @@ class AgentGatewayHttpServerTest {
         val manifestCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
         val submitCalls: MutableList<Pair<parker.core.interfaces.CandidateEvidenceArtifact, String?>> = mutableListOf(),
         val acquireCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
+        val submitProcessingResultCalls: MutableList<Pair<String, parker.core.interfaces.HermesProcessingResult>> = mutableListOf(),
+        val listProcessingResultCalls: MutableList<String> = mutableListOf(),
         var retrieveResult: AgentGatewayEvidenceRetrievalResult = AgentGatewayEvidenceRetrievalResult.NotFound(EvidenceArtifactId("unset")),
         var manifestResult: AgentGatewayEvidenceManifestResult = AgentGatewayEvidenceManifestResult.NotFound(EvidenceArtifactId("unset")),
         var submitResult: parker.core.runtime.AgentGatewaySourceSubmissionResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
         var acquireResult: parker.core.runtime.AgentGatewayAcquisitionResult = parker.core.runtime.AgentGatewayAcquisitionResult.Denied(PermissionDecisionOutcome.DENIED),
+        var submitProcessingResultResult: parker.core.runtime.AgentGatewayProcessingResultSubmissionResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
+        var listProcessingResultsResult: parker.core.runtime.AgentGatewayProcessingResultListResult = parker.core.runtime.AgentGatewayProcessingResultListResult.Denied(PermissionDecisionOutcome.DENIED),
         val readyBatches: List<parker.core.runtime.ReadyBulkIngestionBatch> = emptyList(),
     ) {
         val auditLogFile = Files.createTempDirectory("agent-gateway-http-test-audit").resolve("audit.log")
@@ -82,6 +86,8 @@ class AgentGatewayHttpServerTest {
             submitSourceAsAgent = { candidate, advisory -> submitCalls.add(candidate to advisory); submitResult },
             requestAcquisitionAsAgent = { id -> acquireCalls.add(id); acquireResult },
             listReadyIngestionBatchesAsAgent = { readyBatches },
+            submitProcessingResultAsAgent = { batchId, result -> submitProcessingResultCalls.add(batchId to result); submitProcessingResultResult },
+            listProcessingResultsForBatchAsAgent = { batchId -> listProcessingResultCalls.add(batchId); listProcessingResultsResult },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -113,21 +119,32 @@ class AgentGatewayHttpServerTest {
         assertEquals(401, unauthorised.statusCode())
     }
 
-    private fun realConfig(): ParkerRuntimeConfig = ParkerRuntimeConfig(
-        modelEndpointUrl = "http://127.0.0.1:1/api/generate",
-        modelName = "test-model",
-        ownerPrincipalId = "user.owner-agent-gateway-http-test",
-        localTextChannelModuleId = "channel.local-text-agent-gateway-http-test",
-        evidenceStorageRootPath = Files.createTempDirectory("agent-gateway-http-evidence").toString(),
-        evidenceSourceManifestStorageRootPath = Files.createTempDirectory("agent-gateway-http-evidence-manifest").toString(),
-        derivativeGenerationStorageRootPath = Files.createTempDirectory("agent-gateway-http-derivative-generation").toString(),
-        derivativeContentStorageRootPath = Files.createTempDirectory("agent-gateway-http-derivative-generation-content").toString(),
-        savedAnalysisStorageRootPath = Files.createTempDirectory("agent-gateway-http-saved-analysis").toString(),
-        documentIngestionAuditLogPath = Files.createTempDirectory("agent-gateway-http-ingestion-audit").resolve("audit.log").toString(),
-        evidenceDeletionAuditLogPath = Files.createTempDirectory("agent-gateway-http-deletion-audit").resolve("audit.log").toString(),
-        memoryCoreDurabilityLogPath = Files.createTempDirectory("agent-gateway-http-memory").resolve("memory-core.log").toString(),
-        knowledgeItemDurabilityLogPath = Files.createTempDirectory("agent-gateway-http-knowledge-items").resolve("items.log").toString(),
-    )
+    private fun realConfig(enableCaseClassification: Boolean = false): ParkerRuntimeConfig {
+        val base = ParkerRuntimeConfig(
+            modelEndpointUrl = "http://127.0.0.1:1/api/generate",
+            modelName = "test-model",
+            ownerPrincipalId = "user.owner-agent-gateway-http-test",
+            localTextChannelModuleId = "channel.local-text-agent-gateway-http-test",
+            evidenceStorageRootPath = Files.createTempDirectory("agent-gateway-http-evidence").toString(),
+            evidenceSourceManifestStorageRootPath = Files.createTempDirectory("agent-gateway-http-evidence-manifest").toString(),
+            derivativeGenerationStorageRootPath = Files.createTempDirectory("agent-gateway-http-derivative-generation").toString(),
+            derivativeContentStorageRootPath = Files.createTempDirectory("agent-gateway-http-derivative-generation-content").toString(),
+            savedAnalysisStorageRootPath = Files.createTempDirectory("agent-gateway-http-saved-analysis").toString(),
+            documentIngestionAuditLogPath = Files.createTempDirectory("agent-gateway-http-ingestion-audit").resolve("audit.log").toString(),
+            evidenceDeletionAuditLogPath = Files.createTempDirectory("agent-gateway-http-deletion-audit").resolve("audit.log").toString(),
+            memoryCoreDurabilityLogPath = Files.createTempDirectory("agent-gateway-http-memory").resolve("memory-core.log").toString(),
+            knowledgeItemDurabilityLogPath = Files.createTempDirectory("agent-gateway-http-knowledge-items").resolve("items.log").toString(),
+        )
+        if (!enableCaseClassification) return base
+        // Hermes Processing Result Intake, Task 2: CASE-1's three roots, co-required, so a real
+        // BulkIngestionBindingCoordinator (and therefore a real, server-minted batch) exists for
+        // the genuine end-to-end processing-result tests below.
+        return base.copy(
+            caseStorageRootPath = Files.createTempDirectory("agent-gateway-http-cases").toString(),
+            caseAssignmentStorageRootPath = Files.createTempDirectory("agent-gateway-http-case-assignments").toString(),
+            caseGovernanceAuditLogPath = Files.createTempDirectory("agent-gateway-http-case-audit").resolve("audit.log").toString(),
+        )
+    }
 
     private class RealHarness(val runtime: ParkerRuntime, val server: AgentGatewayHttpServer) {
         fun baseUri(): String = "http://127.0.0.1:${server.boundPort}"
@@ -137,8 +154,12 @@ class AgentGatewayHttpServerTest {
         }
     }
 
-    private suspend fun withRealHarness(token: String, block: suspend (RealHarness) -> Unit) {
-        val runtime = ParkerRuntime(realConfig(), RecordingParkerLogger())
+    private suspend fun withRealHarness(
+        token: String,
+        enableCaseClassification: Boolean = false,
+        block: suspend (RealHarness) -> Unit,
+    ) {
+        val runtime = ParkerRuntime(realConfig(enableCaseClassification), RecordingParkerLogger())
         runtime.start()
         val auditLogFile = Files.createTempDirectory("agent-gateway-http-real-audit").resolve("audit.log")
         val server = AgentGatewayHttpServer(
@@ -149,6 +170,8 @@ class AgentGatewayHttpServerTest {
             retrieveEvidenceManifestAsAgent = { id -> runtime.retrieveEvidenceManifestAsAgent(id) },
             submitSourceAsAgent = { candidate, advisory -> runtime.submitSourceAsAgent(candidate, advisory) },
             requestAcquisitionAsAgent = { id -> runtime.requestAcquisitionAsAgent(id) },
+            submitProcessingResultAsAgent = { batchId, result -> runtime.submitProcessingResultAsAgent(batchId, result) },
+            listProcessingResultsForBatchAsAgent = { batchId -> runtime.listProcessingResultsForBatchAsAgent(batchId) },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -405,9 +428,15 @@ class AgentGatewayHttpServerTest {
         // Exactly the explicitly injected delegate fields, including the narrow read-only READY
         // batch handoff -- no generic "invoke arbitrary method" capability.
         //
-        // Revision history: BI-4 adds only the fixed batch-binding delegate.
+        // Revision history: BI-4 adds only the fixed batch-binding delegate. Hermes Processing
+        // Result Intake, Task 2, adds submitProcessingResultAsAgent/listProcessingResultsForBatchAsAgent
+        // -- both still narrow, explicitly injected delegates, never a generic invocation surface.
         assertEquals(
-            setOf("retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent", "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent"),
+            setOf(
+                "retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent",
+                "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent",
+                "submitProcessingResultAsAgent", "listProcessingResultsForBatchAsAgent",
+            ),
             functionTypedFields.map { it.name }.toSet(),
         )
     }
@@ -958,6 +987,373 @@ class AgentGatewayHttpServerTest {
             )
 
             assertEquals(403, response.statusCode())
+        }
+    }
+
+    // ================= Hermes Processing Result Intake, Task 2 =================
+
+    private fun processingResultRequestBody(
+        sourceSha256: String = "a".repeat(64),
+        status: String = "PASS",
+        methods: String = "\"DIRECT_TEXT_EXTRACTION\"",
+    ): String = """{"sourceSha256":"$sourceSha256","status":"$status","methods":[$methods]}"""
+
+    private fun postProcessingResult(baseUri: String, batchId: String, body: String, bearer: String = token): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("$baseUri/agent/ingestion-batches/$batchId/processing-results"))
+            .header("Authorization", "Bearer $bearer")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build(),
+    )
+
+    private fun getProcessingResults(baseUri: String, batchId: String, bearer: String = token): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("$baseUri/agent/ingestion-batches/$batchId/processing-results"))
+            .header("Authorization", "Bearer $bearer")
+            .GET().build(),
+    )
+
+    // --- Authentication ---
+
+    @Test
+    fun `submitting a processing result with a missing credential is rejected before the coordinator is reached`() = withFakeHarness { fake ->
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-test/processing-results"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(processingResultRequestBody()))
+                .build(),
+        )
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    @Test
+    fun `submitting a processing result with an invalid credential is rejected before the coordinator is reached`() = withFakeHarness { fake ->
+        val response = postProcessingResult(fake.baseUri(), "bulk-test", processingResultRequestBody(), bearer = "wrong-token")
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    @Test
+    fun `an Owner-shaped session cookie with no bearer token does not authenticate the processing-result route`() = withFakeHarness { fake ->
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-test/processing-results"))
+                .header("Cookie", "${OwnerEvidenceHttpServer.SESSION_COOKIE}=some-owner-session-value")
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(processingResultRequestBody()))
+                .build(),
+        )
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    @Test
+    fun `a valid credential reaches the coordinator even when the coordinator itself denies the request`() = withFakeHarness { fake ->
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(PermissionDecisionOutcome.DENIED)
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-test", processingResultRequestBody())
+
+        assertEquals(403, response.statusCode())
+        assertEquals(1, fake.submitProcessingResultCalls.size, "authentication alone must not be sufficient -- the coordinator's own authorisation decision is what's reflected in the response")
+    }
+
+    // --- Batch validation ---
+
+    @Test
+    fun `an unknown batch is reported as 404, never as an internal error`() = withFakeHarness { fake ->
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.UnknownBatch
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-does-not-exist", processingResultRequestBody())
+
+        assertEquals(404, response.statusCode())
+    }
+
+    @Test
+    fun `a request body naming a caseId or batchId field is rejected as malformed -- the batch comes only from the route`() = withFakeHarness { fake ->
+        val bodyWithCaseId = """{"sourceSha256":"${"a".repeat(64)}","status":"PASS","methods":["OCR"],"caseId":"case-forged"}"""
+        val bodyWithBatchId = """{"sourceSha256":"${"a".repeat(64)}","status":"PASS","methods":["OCR"],"batchId":"bulk-forged"}"""
+
+        val responseCase = postProcessingResult(fake.baseUri(), "bulk-test", bodyWithCaseId)
+        val responseBatch = postProcessingResult(fake.baseUri(), "bulk-test", bodyWithBatchId)
+
+        assertEquals(400, responseCase.statusCode())
+        assertEquals(400, responseBatch.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    // --- PASS / REVIEW_REQUIRED / FAILED recording ---
+
+    @Test
+    fun `a PASS result is recorded as 201 and the batch id comes from the route, not the body`() = withFakeHarness { fake ->
+        val recorded = parker.core.interfaces.HermesProcessingResult(
+            "a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS,
+            setOf(parker.core.interfaces.HermesProcessingMethod.DIRECT_TEXT_EXTRACTION),
+        )
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(recorded)
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", processingResultRequestBody())
+
+        assertEquals(201, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"RECORDED\""))
+        assertEquals("bulk-abc", fake.submitProcessingResultCalls.single().first)
+    }
+
+    @Test
+    fun `a REVIEW_REQUIRED result with an issue and a page location is parsed and recorded successfully`() = withFakeHarness { fake ->
+        val result = parker.core.interfaces.HermesProcessingResult(
+            "a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED,
+            setOf(parker.core.interfaces.HermesProcessingMethod.OCR),
+            issues = listOf(
+                parker.core.interfaces.HermesProcessingIssue(
+                    parker.core.interfaces.HermesProcessingIssueKind.TABLE_STRUCTURE_AMBIGUITY,
+                    "table column boundary is ambiguous",
+                    parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage(pageNumber = 3),
+                ),
+            ),
+        )
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(result)
+        val body = """{"sourceSha256":"${"a".repeat(64)}","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"TABLE_STRUCTURE_AMBIGUITY","explanation":"table column boundary is ambiguous","location":{"pageNumber":3}}]}"""
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", body)
+
+        assertEquals(201, response.statusCode())
+        val submitted = fake.submitProcessingResultCalls.single().second
+        assertEquals(parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED, submitted.status)
+        val location = submitted.issues.single().location as parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage
+        assertEquals(3, location.pageNumber)
+    }
+
+    @Test
+    fun `a REVIEW_REQUIRED request body with no issues is rejected as malformed, matching HermesProcessingResult's own invariant`() = withFakeHarness { fake ->
+        val body = """{"sourceSha256":"${"a".repeat(64)}","status":"REVIEW_REQUIRED","methods":["OCR"]}"""
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", body)
+
+        assertEquals(400, response.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    @Test
+    fun `a FAILED result with a failure reason is recorded successfully`() = withFakeHarness { fake ->
+        val result = parker.core.interfaces.HermesProcessingResult(
+            "a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.FAILED,
+            setOf(parker.core.interfaces.HermesProcessingMethod.OCR),
+            failure = parker.core.interfaces.HermesProcessingFailure(parker.core.interfaces.HermesProcessingFailureKind.CORRUPT_SOURCE),
+        )
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(result)
+        val body = """{"sourceSha256":"${"a".repeat(64)}","status":"FAILED","methods":["OCR"],"failure":{"kind":"CORRUPT_SOURCE"}}"""
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", body)
+
+        assertEquals(201, response.statusCode())
+        assertEquals(parker.core.interfaces.HermesProcessingStatus.FAILED, fake.submitProcessingResultCalls.single().second.status)
+    }
+
+    @Test
+    fun `a FAILED request body with no failure field is rejected as malformed, matching HermesProcessingResult's own invariant`() = withFakeHarness { fake ->
+        val body = """{"sourceSha256":"${"a".repeat(64)}","status":"FAILED","methods":["OCR"]}"""
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", body)
+
+        assertEquals(400, response.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    // --- Idempotency / conflict (HTTP status mapping) ---
+
+    @Test
+    fun `an ALREADY_RECORDED outcome is reported as 200, not 201`() = withFakeHarness { fake ->
+        val result = parker.core.interfaces.HermesProcessingResult(
+            "a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS, setOf(parker.core.interfaces.HermesProcessingMethod.OCR),
+        )
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.AlreadyRecorded(result)
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", processingResultRequestBody())
+
+        assertEquals(200, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"ALREADY_RECORDED\""))
+    }
+
+    @Test
+    fun `a CONFLICT outcome is reported as 409 and echoes the existing, unchanged result`() = withFakeHarness { fake ->
+        val existing = parker.core.interfaces.HermesProcessingResult(
+            "a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS, setOf(parker.core.interfaces.HermesProcessingMethod.OCR),
+        )
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Conflict(existing)
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", processingResultRequestBody())
+
+        assertEquals(409, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"CONFLICT\""))
+    }
+
+    // --- SHA ---
+
+    @Test
+    fun `a malformed sourceSha256 is rejected with 400 before the coordinator is reached`() = withFakeHarness { fake ->
+        val body = """{"sourceSha256":"not-a-hash","status":"PASS","methods":["OCR"]}"""
+
+        val response = postProcessingResult(fake.baseUri(), "bulk-abc", body)
+
+        assertEquals(400, response.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    @Test
+    fun `a valid lowercase sha256 is parsed and passed through exactly`() = withFakeHarness { fake ->
+        val sha = "b".repeat(64)
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(
+            parker.core.interfaces.HermesProcessingResult(sha, "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS, setOf(parker.core.interfaces.HermesProcessingMethod.OCR)),
+        )
+
+        postProcessingResult(fake.baseUri(), "bulk-abc", processingResultRequestBody(sourceSha256 = sha))
+
+        assertEquals(sha, fake.submitProcessingResultCalls.single().second.sourceSha256)
+    }
+
+    // --- Proposed evidence id ---
+
+    @Test
+    fun `an optional proposedEvidenceArtifactId is parsed and retained, and is never required`() = withFakeHarness { fake ->
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(
+            parker.core.interfaces.HermesProcessingResult("a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS, setOf(parker.core.interfaces.HermesProcessingMethod.OCR)),
+        )
+        val body = """{"sourceSha256":"${"a".repeat(64)}","status":"PASS","methods":["OCR"],"proposedEvidenceArtifactId":"evidence-already-known"}"""
+
+        postProcessingResult(fake.baseUri(), "bulk-abc", body)
+
+        assertEquals(EvidenceArtifactId("evidence-already-known"), fake.submitProcessingResultCalls.single().second.proposedEvidenceArtifactId)
+    }
+
+    // --- Read-back ---
+
+    @Test
+    fun `read-back returns exactly the coordinator's own results for the requested batch`() = withFakeHarness { fake ->
+        val result = parker.core.interfaces.HermesProcessingResult("a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS, setOf(parker.core.interfaces.HermesProcessingMethod.OCR))
+        fake.listProcessingResultsResult = parker.core.runtime.AgentGatewayProcessingResultListResult.Found(listOf(result))
+
+        val response = getProcessingResults(fake.baseUri(), "bulk-abc")
+
+        assertEquals(200, response.statusCode())
+        assertEquals(listOf("bulk-abc"), fake.listProcessingResultCalls)
+        assertTrue(response.body().contains("\"sourceSha256\":\"${"a".repeat(64)}\""))
+    }
+
+    @Test
+    fun `read-back for an unknown batch is 404`() = withFakeHarness { fake ->
+        fake.listProcessingResultsResult = parker.core.runtime.AgentGatewayProcessingResultListResult.UnknownBatch
+
+        val response = getProcessingResults(fake.baseUri(), "bulk-missing")
+
+        assertEquals(404, response.statusCode())
+    }
+
+    @Test
+    fun `read-back with a missing credential is rejected before the coordinator is reached`() = withFakeHarness { fake ->
+        val response = send(HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-abc/processing-results")).GET().build())
+
+        assertEquals(401, response.statusCode())
+        assertEquals(0, fake.listProcessingResultCalls.size)
+    }
+
+    // ================= Real-runtime integration: genuine end-to-end processing-result intake =================
+
+    private suspend fun RealHarness.activateHermesAndMintBatch(caseName: String = "Processing Result Test Case"): String {
+        val identityService: parker.core.interfaces.IdentityService =
+            runtime.privateField<parker.core.interfaces.PermissionEngine>("permissionEngine").privateField("identityService")
+        identityService.updateStatus(hermesPrincipalId, PrincipalStatus.ACTIVE)
+        val created = runtime.createCaseAsOwner(caseName) as parker.core.runtime.CaseCreationOutcome.Created
+        val authorised = runtime.authoriseBulkIngestionAsOwner(created.case.caseId) as parker.core.runtime.BulkIngestionAuthorisation.Authorised
+        return authorised.binding.batchId
+    }
+
+    @Test
+    fun `through the real composed runtime, an ACTIVE Hermes records PASS against a real server-minted batch, retries idempotently, and reads it back`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val body = processingResultRequestBody(status = "PASS")
+
+            val first = postProcessingResult(harness.baseUri(), batchId, body)
+            val retry = postProcessingResult(harness.baseUri(), batchId, body)
+            val readBack = getProcessingResults(harness.baseUri(), batchId)
+
+            assertEquals(201, first.statusCode())
+            assertTrue(first.body().contains("\"status\":\"RECORDED\""))
+            assertEquals(200, retry.statusCode())
+            assertTrue(retry.body().contains("\"status\":\"ALREADY_RECORDED\""))
+            assertEquals(200, readBack.statusCode())
+            assertTrue(readBack.body().contains("\"batchId\":\"$batchId\""))
+
+            // Lifecycle isolation: no evidence was ever registered through EvidenceCustodian, so
+            // the post-ingestion review queue -- a different, later pipeline stage -- stays empty.
+            val queue = harness.runtime.steveReviewQueueProjectionAsAgent()?.enumerate() ?: emptyList()
+            assertEquals(emptyList(), queue)
+        }
+    }
+
+    @Test
+    fun `through the real composed runtime, a changed result for the same batch and source hash is a conflict, and the original is unchanged`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch()
+            val first = postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(status = "PASS"))
+            val differentBody = """{"sourceSha256":"${"a".repeat(64)}","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"MISSING_CONTENT","explanation":"content missing"}]}"""
+
+            val conflict = postProcessingResult(harness.baseUri(), batchId, differentBody)
+            val readBack = getProcessingResults(harness.baseUri(), batchId)
+
+            assertEquals(201, first.statusCode())
+            assertEquals(409, conflict.statusCode())
+            assertTrue(readBack.body().contains("\"status\":\"PASS\""), "the original PASS record must remain unchanged")
+            assertFalse(readBack.body().contains("REVIEW_REQUIRED"), "the conflicting attempt must never be stored")
+        }
+    }
+
+    @Test
+    fun `through the real composed runtime, an unknown batch is 404 even for an ACTIVE Hermes`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val identityService: parker.core.interfaces.IdentityService =
+                harness.runtime.privateField<parker.core.interfaces.PermissionEngine>("permissionEngine").privateField("identityService")
+            identityService.updateStatus(hermesPrincipalId, PrincipalStatus.ACTIVE)
+
+            val response = postProcessingResult(harness.baseUri(), "bulk-00000000-0000-0000-0000-000000000000", processingResultRequestBody())
+
+            assertEquals(404, response.statusCode())
+        }
+    }
+
+    @Test
+    fun `through the real composed runtime, a CREATED (not yet ACTIVE) Hermes is DENIED for processing-result submission and read-back`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val created = harness.runtime.createCaseAsOwner("Denied Path Case") as parker.core.runtime.CaseCreationOutcome.Created
+            val batchId = (harness.runtime.authoriseBulkIngestionAsOwner(created.case.caseId) as parker.core.runtime.BulkIngestionAuthorisation.Authorised).binding.batchId
+
+            val submitResponse = postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody())
+            val readResponse = getProcessingResults(harness.baseUri(), batchId)
+
+            assertEquals(403, submitResponse.statusCode())
+            assertEquals(403, readResponse.statusCode())
+        }
+    }
+
+    @Test
+    fun `through the real composed runtime, results from one batch never appear when reading back another`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val identityService: parker.core.interfaces.IdentityService =
+                harness.runtime.privateField<parker.core.interfaces.PermissionEngine>("permissionEngine").privateField("identityService")
+            identityService.updateStatus(hermesPrincipalId, PrincipalStatus.ACTIVE)
+            val created = harness.runtime.createCaseAsOwner("Isolation Case") as parker.core.runtime.CaseCreationOutcome.Created
+            val batchA = (harness.runtime.authoriseBulkIngestionAsOwner(created.case.caseId) as parker.core.runtime.BulkIngestionAuthorisation.Authorised).binding.batchId
+            val batchB = (harness.runtime.authoriseBulkIngestionAsOwner(created.case.caseId) as parker.core.runtime.BulkIngestionAuthorisation.Authorised).binding.batchId
+
+            postProcessingResult(harness.baseUri(), batchA, processingResultRequestBody(sourceSha256 = "a".repeat(64)))
+            postProcessingResult(harness.baseUri(), batchB, processingResultRequestBody(sourceSha256 = "b".repeat(64)))
+
+            val readA = getProcessingResults(harness.baseUri(), batchA)
+            val readB = getProcessingResults(harness.baseUri(), batchB)
+
+            assertTrue(readA.body().contains("a".repeat(64)))
+            assertFalse(readA.body().contains("b".repeat(64)))
+            assertTrue(readB.body().contains("b".repeat(64)))
+            assertFalse(readB.body().contains("a".repeat(64)))
         }
     }
 }

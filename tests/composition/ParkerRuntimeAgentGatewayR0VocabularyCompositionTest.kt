@@ -573,13 +573,20 @@ class ParkerRuntimeAgentGatewayR0VocabularyCompositionTest {
         // prove exactly what AG-1C itself added. See
         // `no rule maps the Agent Gateway purpose to DELETE or EXECUTE, and the only WRITE rule
         // is AG-1F's own exact submission verb` below for the complete, current picture.
+        //
+        // Hermes Processing Result Intake, Task 2, adds one further READ-scoped rule for the same
+        // purpose (the processing-result-listing verb) -- included here rather than excluded like
+        // AG-1F's WRITE rule above, since it is itself a READ verb.
         val readRules = rules.filter { it.authorizationPurpose == agentGatewayPurpose && it.action == PermissionAction.READ }
 
-        assertEquals(2, readRules.size)
+        assertEquals(3, readRules.size)
         readRules.forEach { rule ->
             assertEquals(ResourceType.DOCUMENT, rule.resourceType)
             assertEquals(PermissionDecisionOutcome.APPROVED, rule.outcome)
-            assertTrue(rule.proposedAction == retrieveAction || rule.proposedAction == retrieveManifestAction)
+            assertTrue(
+                rule.proposedAction == retrieveAction || rule.proposedAction == retrieveManifestAction ||
+                    rule.proposedAction == "agent-gateway.processing-result.list",
+            )
         }
 
         runtime.shutdown()
@@ -596,9 +603,16 @@ class ParkerRuntimeAgentGatewayR0VocabularyCompositionTest {
         assertTrue(rules.none { it.authorizationPurpose == agentGatewayPurpose && (it.action == PermissionAction.DELETE || it.action == PermissionAction.EXECUTE) })
         val writeRules = gatewayScopedRules.filter { it.action == PermissionAction.WRITE }
         // Revision history: BI-4 adds a third WRITE rule for the fixed batch-binding operation.
-        // reachability of the governed acquisition workflow at all.
-        assertEquals(3, writeRules.size)
-        assertEquals(setOf("agent-gateway.evidence.submit", "agent-gateway.evidence.acquire", "agent-gateway.ingestion.bind"), writeRules.map { it.proposedAction }.toSet())
+        // reachability of the governed acquisition workflow at all. Hermes Processing Result
+        // Intake, Task 2, adds a fourth WRITE rule for the processing-result-submission verb.
+        assertEquals(4, writeRules.size)
+        assertEquals(
+            setOf(
+                "agent-gateway.evidence.submit", "agent-gateway.evidence.acquire",
+                "agent-gateway.ingestion.bind", "agent-gateway.processing-result.submit",
+            ),
+            writeRules.map { it.proposedAction }.toSet(),
+        )
         writeRules.forEach { rule ->
             assertEquals(ResourceType.DOCUMENT, rule.resourceType)
             assertEquals(PermissionDecisionOutcome.APPROVED, rule.outcome)

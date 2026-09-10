@@ -837,6 +837,10 @@ class ParkerRuntime(
                 // resource -- still ResourceType.DOCUMENT, still no new ResourceType.
                 Triple(AGENT_GATEWAY_EVIDENCE_ACQUIRE_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Evidence Acquisition Request"),
                 Triple(AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Ingestion Case Binding"),
+                // Hermes Processing Result Intake, Task 2: still ResourceType.DOCUMENT, still no
+                // new ResourceType.
+                Triple(AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Processing Result Submission"),
+                Triple(AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Processing Result Listing"),
             ).forEach { (resourceId, resourceType, displayName) ->
                 resourceRegistry.register(
                     Resource(
@@ -1021,6 +1025,14 @@ class ParkerRuntime(
                 ),
             )
             vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))))
+            // Hermes Processing Result Intake, Task 2: one new write verb (submitting a
+            // processing result -- durably records new state, so WRITE, mirroring
+            // AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME's own identical reasoning) and one new
+            // read verb (listing already-submitted results for a batch), both reusing the
+            // identical existing (WRITE, DOCUMENT)/(READ, DOCUMENT) pairs every verb above already
+            // uses -- no new PermissionAction or ResourceType is introduced.
+            vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))))
+            vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT))))
         }
 
         val permissionPolicy = DefaultPermissionPolicy(
@@ -1383,6 +1395,46 @@ class ParkerRuntime(
                     level = PermissionLevel.AUTOMATIC,
                     authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
                     proposedAction = AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME,
+                ),
+                // Hermes Processing Result Intake, Task 2: the same fail-closed guard-then-override
+                // shape as AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME's own two rules above, applied
+                // to the new processing-result-submission verb -- specificity 1 (the guard)
+                // outranks the pre-existing coarse (WRITE, DOCUMENT) approval (specificity 0) for
+                // this verb only; specificity 2 (the override) outranks the guard only for a
+                // request carrying the exact, active, gateway-originated Authorization Purpose.
+                // Every principal-binding invariant documented on the AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME
+                // rules above applies identically here -- this rule alone grants Hermes nothing:
+                // the actual idempotent recording logic lives entirely inside
+                // InMemoryHermesProcessingResultRegistry, unchanged by this policy rule's mere
+                // existence.
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME,
+                ),
+                // Hermes Processing Result Intake, Task 2: the read-back verb mirrors
+                // AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME/AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME's
+                // own identical shape immediately above -- a single purpose-scoped APPROVED rule,
+                // no guard, since no coarse (READ, DOCUMENT) approval needs closing off for a
+                // read-only verb (this policy mechanism's own existing coarse READ rule already
+                // covers every read verb identically, exactly as it already does for those two).
+                PermissionPolicyRule(
+                    action = PermissionAction.READ,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME,
                 ),
             ) + (if (humanFidelityReviewConfigured) listOf(
                 PermissionPolicyRule(
@@ -2361,6 +2413,11 @@ class ParkerRuntime(
         // point (moved from immediately after evidenceRegistrationCoordinator, above) solely
         // because hermesGovernedAcquisitionWorkflow, AG-1G's own added dependency, cannot exist
         // any earlier.
+        // Hermes Processing Result Intake, Task 2. In-memory only for this unit -- see
+        // InMemoryHermesProcessingResultRegistry's own KDoc for the explicit durability scope-down
+        // and why it is safe (Hermes's own submission is idempotent, so a lost record is simply
+        // recoverable by retrying).
+        val hermesProcessingResultRegistry = parker.core.runtime.InMemoryHermesProcessingResultRegistry()
         agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
             hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
             agentGatewayPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
@@ -2368,6 +2425,7 @@ class ParkerRuntime(
             evidenceCustodian = defaultEvidenceCustodian,
             governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
             bulkIngestionBindingCoordinator = bulkIngestionBindingCoordinator,
+            processingResultRegistry = hermesProcessingResultRegistry,
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
@@ -2993,6 +3051,21 @@ class ParkerRuntime(
     internal suspend fun bindIngestionEvidenceAsAgent(batchId: String, evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.AgentGatewayBulkBindingResult {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return agentGatewayEvidenceProjection.bindIngestionEvidence(batchId, evidenceArtifactId)
+    }
+
+    /** Hermes Processing Result Intake, Task 2. See [parker.core.runtime.AgentGatewayEvidenceProjection.submitProcessingResult]. */
+    internal suspend fun submitProcessingResultAsAgent(
+        batchId: String,
+        result: parker.core.interfaces.HermesProcessingResult,
+    ): parker.core.runtime.AgentGatewayProcessingResultSubmissionResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return agentGatewayEvidenceProjection.submitProcessingResult(batchId, result)
+    }
+
+    /** Hermes Processing Result Intake, Task 2. See [parker.core.runtime.AgentGatewayEvidenceProjection.listProcessingResultsForBatch]. */
+    internal suspend fun listProcessingResultsForBatchAsAgent(batchId: String): parker.core.runtime.AgentGatewayProcessingResultListResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return agentGatewayEvidenceProjection.listProcessingResultsForBatch(batchId)
     }
 
     /** Agent Gateway read-only batch handoff; the projection intentionally omits CaseId. */
@@ -4006,6 +4079,13 @@ class ParkerRuntime(
         const val AGENT_GATEWAY_EVIDENCE_ACQUIRE_ACTION_NAME = "agent-gateway.evidence.acquire"
         val AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID = ResourceId("agent-gateway-ingestion-bind")
         const val AGENT_GATEWAY_INGESTION_BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
+
+        // Hermes Processing Result Intake, Task 2: still AG-1B's own agent-gateway.hermes-ingestion
+        // purpose -- no second or "processing-result" Agent Gateway purpose is created.
+        val AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-processing-result-submit")
+        const val AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME = "agent-gateway.processing-result.submit"
+        val AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID = ResourceId("agent-gateway-processing-result-list")
+        const val AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
 
         // Controlled Agent Run Submission (docs/implementation/
         // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and
