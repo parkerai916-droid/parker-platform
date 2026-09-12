@@ -1652,13 +1652,37 @@ class OwnerEvidenceHttpServer(
     )
 
     private fun ownerAnalysisInvocationJson(outcome: OwnerAnalysisInvocationOutcome): JsonObject = when (outcome) {
-        is OwnerAnalysisInvocationOutcome.Completed -> jsonObject("status" to "COMPLETED", "analysisRequestId" to outcome.analysisRequestId.value, "analysisType" to outcome.analysisType.name, "question" to outcome.question, "selectedEvidenceArtifactIds" to jsonArray(outcome.selectedEvidenceArtifactIds.map { it.value }), "resolvedDerivativeGenerationIds" to jsonObject(*outcome.resolvedDerivativeGenerationIds.map { it.key.value to it.value.value }.toTypedArray()), "profile" to outcome.profile, "hermesSessionId" to outcome.hermesSessionId, "analysisText" to outcome.analysisText)
+        is OwnerAnalysisInvocationOutcome.Completed -> jsonObject("status" to "COMPLETED", "analysisRequestId" to outcome.analysisRequestId.value, "analysisType" to outcome.analysisType.name, "question" to outcome.question, "selectedEvidenceArtifactIds" to jsonArray(outcome.selectedEvidenceArtifactIds.map { it.value }), "resolvedDerivativeGenerationIds" to jsonObject(*outcome.resolvedDerivativeGenerationIds.map { it.key.value to it.value.value }.toTypedArray()), "profile" to outcome.profile, "hermesSessionId" to outcome.hermesSessionId, "analysisText" to outcome.analysisText, "structuredAnalysis" to structuredAnalysisJson(outcome.structuredResult))
         is OwnerAnalysisInvocationOutcome.DerivativeAmbiguous -> jsonObject("status" to "DERIVATIVE_AMBIGUOUS", "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason, "candidates" to jsonArray(outcome.candidates.map { jsonObject("derivativeGenerationId" to it.derivativeGenerationId.value, "kind" to it.derivativeKind, "producer" to it.producerIdentity.pluginIdentity, "completeness" to it.completenessState.name, "warnings" to jsonArray(it.warnings), "contentAvailable" to it.contentAvailable) }))
         is OwnerAnalysisInvocationOutcome.NoUsableDerivative -> jsonObject("status" to "NO_USABLE_DERIVATIVE", "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason)
         is OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed -> jsonObject("status" to "GOVERNED_RETRIEVAL_FAILED", "evidenceArtifactId" to outcome.evidenceArtifactId?.value, "reason" to outcome.reason)
         is OwnerAnalysisInvocationOutcome.ReasoningFailed -> jsonObject("status" to "REASONING_FAILED", "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
         is OwnerAnalysisInvocationOutcome.ReasoningTimeout -> jsonObject("status" to "REASONING_TIMEOUT", "analysisRequestId" to outcome.analysisRequestId.value)
+        is OwnerAnalysisInvocationOutcome.StructuredOutputInvalid -> jsonObject("status" to "STRUCTURED_OUTPUT_INVALID", "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.InvalidAnalysisReference -> jsonObject("status" to "INVALID_ANALYSIS_REFERENCE", "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
     }
+
+    private fun structuredAnalysisJson(result: parker.core.interfaces.StructuredAnalysisResult): JsonObject = jsonObject(
+        "answer" to result.answer,
+        "findings" to jsonArray(result.findings.map { jsonObject("text" to it.text, "supportReferences" to jsonArray(it.supportReferences.map(::analysisReferenceJson))) }),
+        "contraryEvidence" to jsonArray(result.contraryEvidence.map { jsonObject("text" to it.text, "references" to jsonArray(it.references.map(::analysisReferenceJson))) }),
+        "uncertainties" to jsonArray(result.uncertainties.map { jsonObject("text" to it.text, "references" to jsonArray(it.references.map(::analysisReferenceJson))) }),
+        "evidenceGaps" to jsonArray(result.evidenceGaps.map { jsonObject("text" to it.text, "relatedEvidenceArtifactIds" to jsonArray(it.relatedEvidenceArtifactIds.map { id -> id.value })) }),
+        "conclusion" to result.conclusion,
+    )
+
+    private fun analysisReferenceJson(reference: parker.core.interfaces.AnalysisEvidenceReference): JsonObject = jsonObject(
+        "evidenceArtifactId" to reference.evidenceArtifactId.value,
+        "derivativeGenerationId" to reference.derivativeGenerationId.value,
+        "sourceSha256" to reference.sourceSha256,
+        "originalFilename" to reference.originalFilename,
+        "precision" to reference.precision.name,
+        "pageNumber" to reference.pageNumber,
+        "regionId" to reference.regionId,
+        "authority" to reference.authority.name,
+        "correctionId" to reference.correctionId?.value,
+        "correctionScope" to reference.correctionScope,
+    )
 
     private fun analysisOutcomeJson(outcome: OwnerDocumentAnalysisOutcome, pendingAnalysisId: PendingAnalysisId?): JsonObject = when (outcome) {
         is OwnerDocumentAnalysisOutcome.Completed -> jsonObject(

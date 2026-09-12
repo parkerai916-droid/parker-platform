@@ -48,6 +48,7 @@ sealed interface OwnerAnalysisInvocationOutcome {
         val analysisText: String,
         val hermesSessionId: String?,
         val governedPackage: AnalysisRetrievalPackage,
+        val structuredResult: parker.core.interfaces.StructuredAnalysisResult,
     ) : OwnerAnalysisInvocationOutcome
 
     data class DerivativeAmbiguous(
@@ -60,6 +61,8 @@ sealed interface OwnerAnalysisInvocationOutcome {
     data class GovernedRetrievalFailed(val evidenceArtifactId: EvidenceArtifactId?, val reason: String) : OwnerAnalysisInvocationOutcome
     data class ReasoningFailed(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
     data class ReasoningTimeout(val analysisRequestId: AnalysisRequestId, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
+    data class StructuredOutputInvalid(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
+    data class InvalidAnalysisReference(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
 }
 
 /** Owner-side logical analysis orchestration. It never retrieves content directly. */
@@ -94,9 +97,16 @@ class OwnerAnalysisInvocationCoordinator(
         } catch (e: Exception) {
             return OwnerAnalysisInvocationOutcome.ReasoningFailed(analysisRequest.requestId, e.message ?: "Hermes reasoning failed", governedPackage)
         }
+        val structured = try {
+            StructuredAnalysisOutputParser().parse(reasoning.analysisText, governedPackage)
+        } catch (e: InvalidAnalysisReferenceException) {
+            return OwnerAnalysisInvocationOutcome.InvalidAnalysisReference(analysisRequest.requestId, e.message ?: "invalid analysis reference", governedPackage)
+        } catch (e: StructuredAnalysisOutputException) {
+            return OwnerAnalysisInvocationOutcome.StructuredOutputInvalid(analysisRequest.requestId, e.message ?: "invalid structured analysis output", governedPackage)
+        }
         return OwnerAnalysisInvocationOutcome.Completed(
             analysisRequest.requestId, request.analysisType, request.question, request.evidenceArtifactIds,
-            mapping, profile, reasoning.analysisText, reasoning.sessionId, governedPackage,
+            mapping, profile, reasoning.analysisText, reasoning.sessionId, governedPackage, structured,
         )
     }
 
@@ -112,7 +122,7 @@ class ProcessBuilderHermesAnalysisInvoker(
     private val outputLimitBytes: Long = 2_000_000,
 ) : HermesAnalysisInvoker {
     override suspend fun invoke(question: String, analysisType: AnalysisType, governedPackage: AnalysisRetrievalPackage): HermesAnalysisInvocation {
-        val prompt = "Analyse the following governed Parker evidence package.\n\nAnalysis type:\n$analysisType\n\nQuestion:\n$question\n\nGoverned package:\n${GovernedAnalysisPackagePrompt.json(governedPackage)}"
+        val prompt = StructuredAnalysisPrompt.forHermes(question, analysisType, GovernedAnalysisPackagePrompt.json(governedPackage))
         val process = ProcessBuilder(
             executable, "--profile", OwnerAnalysisInvocationCoordinator.ANALYSIS_PROFILE,
             "chat", "-q", prompt, "-Q", "--max-turns", "1",
@@ -156,7 +166,7 @@ class HermesSshAnalysisInvoker(
     private val outputLimitBytes: Long = 2_000_000,
 ) : HermesAnalysisInvoker {
     override suspend fun invoke(question: String, analysisType: AnalysisType, governedPackage: AnalysisRetrievalPackage): HermesAnalysisInvocation {
-        val request = "{\"question\":${jsonQuote(question)},\"analysisType\":${jsonQuote(analysisType.name)},\"governedPackage\":${GovernedAnalysisPackagePrompt.json(governedPackage)}}"
+        val request = "{\"question\":${jsonQuote(StructuredAnalysisPrompt.task(question, analysisType))},\"analysisType\":${jsonQuote(analysisType.name)},\"governedPackage\":${GovernedAnalysisPackagePrompt.json(governedPackage)}}"
         val process = ProcessBuilder(
             "ssh", "-T", "-i", keyPath, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
             "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=$knownHostsPath", "$user@$host",
@@ -173,12 +183,12 @@ class HermesSshAnalysisInvoker(
             val stdout = out.get(2, TimeUnit.SECONDS)
             err.get(2, TimeUnit.SECONDS)
             if (process.exitValue() != 0) throw IllegalStateException("Hermes SSH transport failed")
-            val status = Regex("\"status\"\\s*:\\s*\"([^\"]+)\"").find(stdout)?.groupValues?.get(1)
-            if (status != "COMPLETED") throw IllegalStateException(Regex("\"detail\"\\s*:\\s*\"([^\"]*)\"").find(stdout)?.groupValues?.get(1) ?: "Hermes reasoning failed")
-            val analysisEncoded = Regex("\"analysis\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"").find(stdout)?.groupValues?.get(1)
+            val status = jsonStringField(stdout, "status")
+            if (status != "COMPLETED") throw IllegalStateException(jsonStringField(stdout, "detail") ?: "Hermes reasoning failed")
+            val analysisEncoded = jsonStringField(stdout, "analysis")
                 ?: throw IllegalStateException("Hermes response omitted analysis")
-            val session = Regex("\"sessionId\"\\s*:\\s*(?:\"([^\"]*)\"|null)").find(stdout)?.groupValues?.get(1)
-            return HermesAnalysisInvocation(unescapeJsonString(analysisEncoded), session)
+            val session = jsonStringField(stdout, "sessionId")
+            return HermesAnalysisInvocation(analysisEncoded, session)
         } finally {
             pool.shutdownNow()
             if (process.isAlive) process.destroyForcibly()
@@ -192,8 +202,50 @@ class HermesSshAnalysisInvoker(
     }
 }
 
+/** Bounded linear extraction for the fixed wrapper response; avoids regex backtracking on hostile output. */
+private fun jsonStringField(json: String, field: String): String? {
+    var from = 0
+    val needle = "\"$field\""
+    while (true) {
+        val key = json.indexOf(needle, from)
+        if (key < 0) return null
+        var p = key + needle.length
+        while (p < json.length && json[p].isWhitespace()) p++
+        if (p >= json.length || json[p++] != ':') { from = key + needle.length; continue }
+        while (p < json.length && json[p].isWhitespace()) p++
+        if (p >= json.length || json[p] == 'n') return null
+        if (json[p++] != '"') { from = key + needle.length; continue }
+        val value = StringBuilder()
+        while (p < json.length) {
+            when (val c = json[p++]) {
+                '"' -> return value.toString()
+                '\\' -> {
+                    if (p >= json.length) return null
+                    when (val escaped = json[p++]) {
+                        '"' -> value.append('"'); '\\' -> value.append('\\'); '/' -> value.append('/')
+                        'b' -> value.append('\b'); 'f' -> value.append('\u000c'); 'n' -> value.append('\n')
+                        'r' -> value.append('\r'); 't' -> value.append('\t')
+                        'u' -> if (p + 4 <= json.length) { value.append(json.substring(p, p + 4).toIntOrNull(16)?.toChar() ?: return null); p += 4 } else return null
+                        else -> return null
+                    }
+                }
+                else -> value.append(c)
+            }
+        }
+        return null
+    }
+}
+
 private fun jsonQuote(value: String): String = buildString {
     append('"'); value.forEach { c -> when (c) { '"' -> append("\\\""); '\\' -> append("\\\\"); '\n' -> append("\\n"); '\r' -> append("\\r"); '\t' -> append("\\t"); else -> if (c.code < 0x20) append("\\u%04x".format(c.code)) else append(c) } }; append('"')
+}
+
+private object StructuredAnalysisPrompt {
+    fun task(question: String, analysisType: AnalysisType): String = """
+        Return ONLY one valid JSON object with exactly these fields: answer (string), findings (array of {text:string, supportReferences:array}), contraryEvidence (array of {text:string, references:array}), uncertainties (array of {text:string, references:array}), evidenceGaps (array of {text:string, relatedEvidenceArtifactIds:array}), conclusion (string).
+        Every reference object must contain exactly: evidenceArtifactId, derivativeGenerationId, precision (DOCUMENT, PAGE, or REGION), authority (MACHINE_DERIVED or OWNER_AUTHORIZED_CORRECTION), correctionId (string or null), correctionScope (string or null), pageNumber (integer or null), regionId (string or null). Use only IDs and locations present in the governed package. Do not invent references or facts; use evidenceGaps for unsupported claims. Analysis type: ${analysisType.name}. Question: $question
+    """.trimIndent()
+    fun forHermes(question: String, analysisType: AnalysisType, packageJson: String): String = "Analyse the following governed Parker evidence package and return the strict structured JSON envelope requested.\n\n${task(question, analysisType)}\n\nGoverned package:\n$packageJson"
 }
 
 private fun unescapeJsonString(value: String): String = buildString {

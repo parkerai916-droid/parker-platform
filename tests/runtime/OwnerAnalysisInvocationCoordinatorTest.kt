@@ -26,13 +26,16 @@ class OwnerAnalysisInvocationCoordinatorTest {
                     invoked = true
                     assertEquals(listOf(evidence), governedPackage.scope.evidenceArtifactIds)
                     assertEquals(generation, governedPackage.scope.derivativeGenerationIds[evidence.value])
-                    return HermesAnalysisInvocation("supported", "session-1")
+                    return HermesAnalysisInvocation(
+                        """{"answer":"supported","findings":[],"contraryEvidence":[],"uncertainties":[],"evidenceGaps":[],"conclusion":"supported"}""",
+                        "session-1",
+                    )
                 }
             },
         ).invoke(OwnerAnalysisInvocationRequest("What date?", listOf(evidence)))
 
         assertIs<OwnerAnalysisInvocationOutcome.Completed>(outcome)
-        assertEquals("supported", outcome.analysisText)
+        assertEquals("""{"answer":"supported","findings":[],"contraryEvidence":[],"uncertainties":[],"evidenceGaps":[],"conclusion":"supported"}""", outcome.analysisText)
         assertEquals("parker-analysis-agent", outcome.profile)
         assertEquals(true, invoked)
     }
