@@ -207,7 +207,7 @@ fun main(args: Array<String>) = runBlocking {
             listHermesProcessingReviewAsOwner = runtime::listHermesProcessingReviewAsOwner,
             recordHermesProcessingDecisionAsOwner = runtime::recordHermesProcessingDecisionAsOwner,
             readPendingReviewSourceAsOwner = runtime::readPendingReviewSourceAsOwner,
-            analyseSelectedEvidenceAsOwner = runtime::analyseSelectedEvidenceAsOwner,
+            analyseSelectedEvidenceAsOwnerWithContext = runtime::analyseSelectedEvidenceAsOwner,
         ).also { it.start() }
     } else {
         null

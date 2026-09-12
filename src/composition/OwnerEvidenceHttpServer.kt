@@ -59,6 +59,8 @@ import parker.core.runtime.DeterministicSourcePageRenderer
 import parker.core.runtime.SourcePageRendererLimits
 import parker.core.runtime.OwnerAnalysisInvocationRequest
 import parker.core.runtime.OwnerAnalysisInvocationOutcome
+import parker.core.runtime.AnalysisWorkspaceSessionStore
+import parker.core.interfaces.AnalysisWorkspaceSessionId
 
 /** Transport-safe Owner HTTP result for creating one governed ingestion batch. */
 sealed interface OwnerIngestionBatchAuthorisation {
@@ -132,6 +134,10 @@ class OwnerEvidenceHttpServer(
     private val analyseSelectedEvidenceAsOwner: suspend (OwnerAnalysisInvocationRequest) -> OwnerAnalysisInvocationOutcome = {
         OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed(null, "analysis workspace is not configured")
     },
+    private val analyseSelectedEvidenceAsOwnerWithContext: suspend (OwnerAnalysisInvocationRequest, String?) -> OwnerAnalysisInvocationOutcome = { request, _ ->
+        analyseSelectedEvidenceAsOwner(request)
+    },
+    private val analysisSessions: AnalysisWorkspaceSessionStore = AnalysisWorkspaceSessionStore(),
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -172,9 +178,27 @@ class OwnerEvidenceHttpServer(
                 if (exchange.requestMethod != "POST" || exchange.requestURI.path != "/owner/analysis-workspace/analyse") {
                     writeJson(exchange, 404, jsonObject("error" to "not found")); return
                 }
-                val request = try { parseOwnerAnalysisInvocationRequest(readBounded(exchange.requestBody, MAX_ANALYSE_REQUEST_BODY_BYTES)) }
+                val workspaceRequest = try { parseOwnerAnalysisWorkspaceRequest(readBounded(exchange.requestBody, MAX_ANALYSE_REQUEST_BODY_BYTES)) }
                 catch (_: Exception) { writeJson(exchange, 400, jsonObject("error" to "malformed request body")); return }
-                writeJson(exchange, 200, ownerAnalysisInvocationJson(runBlocking { analyseSelectedEvidenceAsOwner(request) }))
+                val session = if (workspaceRequest.analysisSessionId == null) {
+                    if (workspaceRequest.evidenceArtifactIds.isEmpty()) {
+                        writeJson(exchange, 400, jsonObject("error" to "evidenceArtifactIds required for a new analysis session")); return
+                    }
+                    analysisSessions.create(null, workspaceRequest.evidenceArtifactIds, workspaceRequest.analysisType)
+                } else {
+                    if (workspaceRequest.evidenceArtifactIds.isNotEmpty() || workspaceRequest.analysisTypeWasSupplied) {
+                        writeJson(exchange, 400, jsonObject("status" to "SESSION_CONTEXT_INVALID", "reason" to "follow-up requests cannot change evidence scope or analysis type")); return
+                    }
+                    val found = analysisSessions.find(workspaceRequest.analysisSessionId)
+                    if (found == null) {
+                        writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_ANALYSIS_SESSION")); return
+                    }
+                    found
+                }
+                val request = OwnerAnalysisInvocationRequest(workspaceRequest.question, session.selectedEvidenceArtifactIds, session.analysisType)
+                val outcome = runBlocking { analyseSelectedEvidenceAsOwnerWithContext(request, analysisSessions.context(session)) }
+                if (outcome is OwnerAnalysisInvocationOutcome.Completed) analysisSessions.record(session.sessionId, workspaceRequest.question, outcome.structuredResult)
+                writeJson(exchange, 200, ownerAnalysisInvocationJson(outcome, session.sessionId))
             } catch (_: Exception) {
                 runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
             } finally { exchange.close() }
@@ -1651,15 +1675,15 @@ class OwnerEvidenceHttpServer(
         "mechanismVersion" to presentation.mechanismVersion,
     )
 
-    private fun ownerAnalysisInvocationJson(outcome: OwnerAnalysisInvocationOutcome): JsonObject = when (outcome) {
-        is OwnerAnalysisInvocationOutcome.Completed -> jsonObject("status" to "COMPLETED", "analysisRequestId" to outcome.analysisRequestId.value, "analysisType" to outcome.analysisType.name, "question" to outcome.question, "selectedEvidenceArtifactIds" to jsonArray(outcome.selectedEvidenceArtifactIds.map { it.value }), "resolvedDerivativeGenerationIds" to jsonObject(*outcome.resolvedDerivativeGenerationIds.map { it.key.value to it.value.value }.toTypedArray()), "profile" to outcome.profile, "hermesSessionId" to outcome.hermesSessionId, "analysisText" to outcome.analysisText, "structuredAnalysis" to structuredAnalysisJson(outcome.structuredResult))
-        is OwnerAnalysisInvocationOutcome.DerivativeAmbiguous -> jsonObject("status" to "DERIVATIVE_AMBIGUOUS", "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason, "candidates" to jsonArray(outcome.candidates.map { jsonObject("derivativeGenerationId" to it.derivativeGenerationId.value, "kind" to it.derivativeKind, "producer" to it.producerIdentity.pluginIdentity, "completeness" to it.completenessState.name, "warnings" to jsonArray(it.warnings), "contentAvailable" to it.contentAvailable) }))
-        is OwnerAnalysisInvocationOutcome.NoUsableDerivative -> jsonObject("status" to "NO_USABLE_DERIVATIVE", "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason)
-        is OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed -> jsonObject("status" to "GOVERNED_RETRIEVAL_FAILED", "evidenceArtifactId" to outcome.evidenceArtifactId?.value, "reason" to outcome.reason)
-        is OwnerAnalysisInvocationOutcome.ReasoningFailed -> jsonObject("status" to "REASONING_FAILED", "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
-        is OwnerAnalysisInvocationOutcome.ReasoningTimeout -> jsonObject("status" to "REASONING_TIMEOUT", "analysisRequestId" to outcome.analysisRequestId.value)
-        is OwnerAnalysisInvocationOutcome.StructuredOutputInvalid -> jsonObject("status" to "STRUCTURED_OUTPUT_INVALID", "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
-        is OwnerAnalysisInvocationOutcome.InvalidAnalysisReference -> jsonObject("status" to "INVALID_ANALYSIS_REFERENCE", "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
+    private fun ownerAnalysisInvocationJson(outcome: OwnerAnalysisInvocationOutcome, sessionId: AnalysisWorkspaceSessionId? = null): JsonObject = when (outcome) {
+        is OwnerAnalysisInvocationOutcome.Completed -> jsonObject("status" to "COMPLETED", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "analysisType" to outcome.analysisType.name, "question" to outcome.question, "selectedEvidenceArtifactIds" to jsonArray(outcome.selectedEvidenceArtifactIds.map { it.value }), "resolvedDerivativeGenerationIds" to jsonObject(*outcome.resolvedDerivativeGenerationIds.map { it.key.value to it.value.value }.toTypedArray()), "profile" to outcome.profile, "hermesSessionId" to outcome.hermesSessionId, "analysisText" to outcome.analysisText, "structuredAnalysis" to structuredAnalysisJson(outcome.structuredResult))
+        is OwnerAnalysisInvocationOutcome.DerivativeAmbiguous -> jsonObject("status" to "DERIVATIVE_AMBIGUOUS", "analysisSessionId" to sessionId?.value, "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason, "candidates" to jsonArray(outcome.candidates.map { jsonObject("derivativeGenerationId" to it.derivativeGenerationId.value, "kind" to it.derivativeKind, "producer" to it.producerIdentity.pluginIdentity, "completeness" to it.completenessState.name, "warnings" to jsonArray(it.warnings), "contentAvailable" to it.contentAvailable) }))
+        is OwnerAnalysisInvocationOutcome.NoUsableDerivative -> jsonObject("status" to "NO_USABLE_DERIVATIVE", "analysisSessionId" to sessionId?.value, "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed -> jsonObject("status" to "GOVERNED_RETRIEVAL_FAILED", "analysisSessionId" to sessionId?.value, "evidenceArtifactId" to outcome.evidenceArtifactId?.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.ReasoningFailed -> jsonObject("status" to "REASONING_FAILED", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.ReasoningTimeout -> jsonObject("status" to "REASONING_TIMEOUT", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value)
+        is OwnerAnalysisInvocationOutcome.StructuredOutputInvalid -> jsonObject("status" to "STRUCTURED_OUTPUT_INVALID", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.InvalidAnalysisReference -> jsonObject("status" to "INVALID_ANALYSIS_REFERENCE", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
     }
 
     private fun structuredAnalysisJson(result: parker.core.interfaces.StructuredAnalysisResult): JsonObject = jsonObject(
@@ -2224,6 +2248,31 @@ private fun parseOwnerAnalysisInvocationRequest(bodyBytes: ByteArray): OwnerAnal
     val type = (root["analysisType"] as? String)?.let { parker.core.interfaces.AnalysisType.valueOf(it) }
         ?: parker.core.interfaces.AnalysisType.ISSUE_ANALYSIS
     return OwnerAnalysisInvocationRequest(question, ids.map { parker.core.interfaces.EvidenceArtifactId(it as? String ?: throw JsonParseException("invalid evidence id")) }, type)
+}
+
+private data class OwnerAnalysisWorkspaceRequest(
+    val question: String,
+    val evidenceArtifactIds: List<parker.core.interfaces.EvidenceArtifactId>,
+    val analysisType: parker.core.interfaces.AnalysisType,
+    val analysisSessionId: AnalysisWorkspaceSessionId?,
+    val analysisTypeWasSupplied: Boolean,
+)
+
+private fun parseOwnerAnalysisWorkspaceRequest(bodyBytes: ByteArray): OwnerAnalysisWorkspaceRequest {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue() as? Map<*, *>
+        ?: throw JsonParseException("expected an object")
+    val question = root["question"] as? String ?: throw JsonParseException("question required")
+    val sessionId = (root["analysisSessionId"] as? String)?.let { AnalysisWorkspaceSessionId(it) }
+    val rawIds = root["evidenceArtifactIds"]
+    val ids = when (rawIds) {
+        null -> emptyList()
+        is List<*> -> rawIds.map { parker.core.interfaces.EvidenceArtifactId(it as? String ?: throw JsonParseException("invalid evidence id")) }
+        else -> throw JsonParseException("evidenceArtifactIds must be an array")
+    }
+    val typeSupplied = root.containsKey("analysisType")
+    val type = (root["analysisType"] as? String)?.let { parker.core.interfaces.AnalysisType.valueOf(it) }
+        ?: parker.core.interfaces.AnalysisType.ISSUE_ANALYSIS
+    return OwnerAnalysisWorkspaceRequest(question, ids, type, sessionId, typeSupplied)
 }
 
 /** Reviewed Analysis Result — Explicit Owner Save. The `POST /owner/saved-analyses` request body's own tiny, single-field shape -- `{"pendingAnalysisId":"..."}` -- never the analysis content itself. */
@@ -2930,6 +2979,8 @@ let analysisCases = [];
 let analysisEvidence = [];
 let analysisSelectedEvidence = new Set();
 let analysisRequestInFlight = false;
+let analysisSessionId = null;
+let analysisTurns = [];
 
 async function loadCases() {
   try {
@@ -2988,6 +3039,7 @@ async function loadAnalysisCases() {
 }
 
 document.getElementById('analysisCaseSelector').onchange = () => {
+  resetAnalysisSession('Evidence selection changed. A new analysis session will start.');
   analysisSelectedEvidence = new Set();
   const caseId = document.getElementById('analysisCaseSelector').value;
   if (caseId) loadAnalysisEvidence(caseId); else { analysisEvidence = []; renderAnalysisEvidence(); }
@@ -3007,13 +3059,22 @@ async function loadAnalysisEvidence(caseId) {
   } catch (e) { status.textContent = 'Could not load governed evidence.'; }
 }
 
+function resetAnalysisSession(message) {
+  analysisSessionId = null; analysisTurns = [];
+  const result = document.getElementById('analysisWorkspaceResult');
+  if (result) { result.innerHTML = ''; const p = document.createElement('p'); p.className = 'note'; p.textContent = message || 'No analysis yet.'; result.appendChild(p); }
+  const viewer = document.getElementById('analysisSourceViewer'); if (viewer) { viewer.hidden = true; viewer.innerHTML = ''; }
+  const question = document.getElementById('analysisQuestion'); if (question) question.placeholder = 'What does the evidence establish?';
+  const status = document.getElementById('analysisRequestStatus'); if (status && message) status.textContent = message;
+}
+
 function renderAnalysisEvidence() {
   const list = document.getElementById('analysisEvidenceList');
   list.innerHTML = '';
   analysisEvidence.forEach(item => {
     const label = document.createElement('label'); label.className = 'analysis-evidence-item';
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = analysisSelectedEvidence.has(item.evidenceArtifactId);
-    checkbox.onchange = () => { if (checkbox.checked) analysisSelectedEvidence.add(item.evidenceArtifactId); else analysisSelectedEvidence.delete(item.evidenceArtifactId); updateAnalysisSubmitState(); };
+    checkbox.onchange = () => { resetAnalysisSession('Evidence selection changed. A new analysis session will start.'); if (checkbox.checked) analysisSelectedEvidence.add(item.evidenceArtifactId); else analysisSelectedEvidence.delete(item.evidenceArtifactId); updateAnalysisSubmitState(); };
     label.appendChild(checkbox);
     label.appendChild(document.createTextNode(' ' + (item.originalFilename || 'Unnamed evidence')));
     const metadata = document.createElement('span'); metadata.className = 'analysis-reference-details'; metadata.textContent = ' · ' + (item.mediaType || 'unknown type') + (item.registeredAt ? ' · ' + new Date(item.registeredAt).toLocaleDateString() : ''); label.appendChild(metadata);
@@ -3026,8 +3087,9 @@ function updateAnalysisSubmitState() {
   document.getElementById('analysisSubmitButton').disabled = analysisRequestInFlight || !analysisSelectedEvidence.size || !document.getElementById('analysisQuestion').value.trim();
 }
 document.getElementById('analysisQuestion').oninput = updateAnalysisSubmitState;
-document.getElementById('analysisSelectAllButton').onclick = () => { analysisEvidence.forEach(item => analysisSelectedEvidence.add(item.evidenceArtifactId)); renderAnalysisEvidence(); };
-document.getElementById('analysisClearButton').onclick = () => { analysisSelectedEvidence = new Set(); renderAnalysisEvidence(); };
+document.getElementById('analysisTypeSelector').onchange = () => { resetAnalysisSession('Analysis type changed. A new analysis session will start.'); updateAnalysisSubmitState(); };
+document.getElementById('analysisSelectAllButton').onclick = () => { resetAnalysisSession('Evidence selection changed. A new analysis session will start.'); analysisEvidence.forEach(item => analysisSelectedEvidence.add(item.evidenceArtifactId)); renderAnalysisEvidence(); };
+document.getElementById('analysisClearButton').onclick = () => { resetAnalysisSession('Evidence selection changed. A new analysis session will start.'); analysisSelectedEvidence = new Set(); renderAnalysisEvidence(); };
 
 function analysisReferenceLabel(reference) {
   let label = reference.originalFilename || 'Governed evidence';
@@ -3070,6 +3132,11 @@ function renderStructuredAnalysis(result) {
   return container;
 }
 
+function renderAnalysisConversation() {
+  const resultDiv = document.getElementById('analysisWorkspaceResult'); resultDiv.innerHTML = '';
+  analysisTurns.forEach(turn => { const user = document.createElement('div'); user.className = 'content-panel'; appendField(user, 'You', turn.question); resultDiv.appendChild(user); const parker = document.createElement('div'); parker.className = 'content-panel'; const label = document.createElement('h3'); label.textContent = 'Parker'; parker.appendChild(label); parker.appendChild(renderStructuredAnalysis(turn.result)); resultDiv.appendChild(parker); });
+}
+
 async function openAnalysisSource(reference) {
   const viewer = document.getElementById('analysisSourceViewer'); viewer.hidden = false; viewer.innerHTML = '';
   const heading = document.createElement('h3'); heading.textContent = 'Source: ' + analysisReferenceLabel(reference); viewer.appendChild(heading);
@@ -3090,10 +3157,11 @@ document.getElementById('analysisSubmitButton').onclick = async () => {
   if (!analysisSelectedEvidence.size || !question || question.length > 8000) { status.textContent = question.length > 8000 ? 'Question must be 8,000 characters or fewer.' : 'Select evidence and enter a question.'; return; }
   analysisRequestInFlight = true; updateAnalysisSubmitState(); status.textContent = 'Analysing…';
   try {
-    const response = await fetch('/owner/analysis-workspace/analyse', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ question: question, analysisType: document.getElementById('analysisTypeSelector').value, evidenceArtifactIds: Array.from(analysisSelectedEvidence) }) });
+    const payload = analysisSessionId ? { analysisSessionId: analysisSessionId, question: question } : { question: question, analysisType: document.getElementById('analysisTypeSelector').value, evidenceArtifactIds: Array.from(analysisSelectedEvidence) };
+    const response = await fetch('/owner/analysis-workspace/analyse', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(payload) });
     const result = await response.json();
     const resultDiv = document.getElementById('analysisWorkspaceResult'); resultDiv.innerHTML = '';
-    if (result.status === 'COMPLETED' && result.structuredAnalysis) { resultDiv.appendChild(renderStructuredAnalysis(result.structuredAnalysis)); status.textContent = 'Analysis complete.'; }
+    if (result.status === 'COMPLETED' && result.structuredAnalysis) { analysisSessionId = result.analysisSessionId || analysisSessionId; analysisTurns.push({ question: question, result: result.structuredAnalysis }); renderAnalysisConversation(); document.getElementById('analysisQuestion').placeholder = 'Ask a follow-up about the same evidence'; status.textContent = analysisTurns.length > 1 ? 'Follow-up complete. Same governed evidence scope retained.' : 'Analysis complete. Follow-ups will reuse this evidence scope.'; }
     else if (result.status === 'DERIVATIVE_AMBIGUOUS') { const ambiguousItem = analysisEvidence.find(item => item.evidenceArtifactId === result.evidenceArtifactId); appendField(resultDiv, 'Analysis not started', 'Parker found more than one equally valid representation for ' + (ambiguousItem ? (ambiguousItem.originalFilename || 'the selected document') : 'the selected document') + '. Choose a representation through a future governed override flow.'); (result.candidates || []).forEach(candidate => appendField(resultDiv, 'Candidate', (candidate.kind || 'Representation') + ' — ' + (candidate.completeness || 'unknown') + (candidate.warnings && candidate.warnings.length ? ' · ' + candidate.warnings.join('; ') : ''))); status.textContent = 'Derivative choice required.'; }
     else if (result.status === 'NO_USABLE_DERIVATIVE') { appendField(resultDiv, 'Analysis not started', 'No analysis-ready governed representation is available for the selected evidence.'); status.textContent = 'No usable derivative.'; }
     else { appendField(resultDiv, 'Analysis unavailable', ({GOVERNED_RETRIEVAL_FAILED:'Governed evidence retrieval failed.', REASONING_FAILED:'The Analysis Agent could not complete reasoning.', REASONING_TIMEOUT:'The Analysis Agent timed out.', STRUCTURED_OUTPUT_INVALID:'The Analysis Agent returned an invalid structured result.', INVALID_ANALYSIS_REFERENCE:'The returned source reference did not match governed evidence.'}[result.status] || result.error || result.reason || 'Analysis could not be completed.')); status.textContent = 'Analysis could not be completed.'; }

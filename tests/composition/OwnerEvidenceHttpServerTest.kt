@@ -174,6 +174,7 @@ class OwnerEvidenceHttpServerTest {
         openAiApiCredential: OpenAiApiCredential? = null,
         runtimeConfigOverride: ParkerRuntimeConfig? = null,
         pendingPreviewSource: suspend (String, String) -> PendingReviewSource? = { _, _ -> null },
+        analysisWorkspace: suspend (parker.core.runtime.OwnerAnalysisInvocationRequest, String?) -> parker.core.runtime.OwnerAnalysisInvocationOutcome = { _, _ -> parker.core.runtime.OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed(null, "not configured") },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -243,6 +244,7 @@ class OwnerEvidenceHttpServerTest {
                 runtime.recordHermesProcessingDecisionAsOwner(batchId, sourceSha256, decision, reason, correction)
             },
             readPendingReviewSourceAsOwner = pendingPreviewSource,
+            analyseSelectedEvidenceAsOwnerWithContext = analysisWorkspace,
         )
         server.start()
         return Harness(runtime, server, authentication, runtimeLogger, serverLogger)
@@ -3219,9 +3221,48 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("Open source"))
             assertTrue(body.contains("precision"))
             assertTrue(body.contains("Owner-authorized correction"))
+            assertTrue(body.contains("analysisSessionId"))
+            assertTrue(body.contains("Ask a follow-up about the same evidence"))
+            assertTrue(body.contains("analysisTurns"))
+            assertTrue(body.contains("Evidence selection changed. A new analysis session will start."))
         } finally {
             harness.shutdown()
         }
+    }
+
+    @Test
+    fun `analysis workspace creates a session and follow-up reuses exact scope without resubmitted evidence`() {
+        val evidence = EvidenceArtifactId("evidence-session")
+        val generation = DerivativeGenerationId("generation-session")
+        val packageValue = parker.core.runtime.AnalysisRetrievalPackage(
+            AnalysisRequestId.new(), "question", AnalysisType.ISSUE_ANALYSIS,
+            AnalysisEvidenceScope(listOf(evidence), mapOf(evidence.value to generation)), emptyList(),
+        )
+        val seen = mutableListOf<Pair<String, String?>>()
+        val harness = startHarness("", analysisWorkspace = { request, context ->
+            seen += request.question to context
+            parker.core.runtime.OwnerAnalysisInvocationOutcome.Completed(
+                analysisRequestId = AnalysisRequestId.new(), analysisType = request.analysisType, question = request.question,
+                selectedEvidenceArtifactIds = request.evidenceArtifactIds, resolvedDerivativeGenerationIds = mapOf(evidence to generation),
+                profile = "parker-analysis-agent", analysisText = "{}", hermesSessionId = null, governedPackage = packageValue,
+                structuredResult = StructuredAnalysisResult("Answer", emptyList(), emptyList(), emptyList(), emptyList(), "Conclusion"),
+            )
+        })
+        try {
+            val cookie = pairedCookie(harness)
+            val uri = URI.create(harness.baseUri() + "/owner/analysis-workspace/analyse")
+            fun post(body: String) = send(HttpRequest.newBuilder(uri).header("Cookie", cookie).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build())
+            val initial = post("{\"question\":\"What is established?\",\"analysisType\":\"ISSUE_ANALYSIS\",\"evidenceArtifactIds\":[\"evidence-session\"]}")
+            assertEquals(200, initial.statusCode(), initial.body())
+            val sessionId = extractField(initial.body(), "analysisSessionId")
+            assertTrue(sessionId!!.startsWith("analysis-session-"))
+            val followUp = post("{\"analysisSessionId\":\"$sessionId\",\"question\":\"What contradicts that?\"}")
+            assertEquals(200, followUp.statusCode(), followUp.body())
+            assertEquals(2, seen.size)
+            assertTrue(followUp.body().contains("\"selectedEvidenceArtifactIds\":[\"evidence-session\"]"))
+            assertTrue(seen[1].second!!.contains("What is established?"))
+            assertEquals(400, post("{\"analysisSessionId\":\"$sessionId\",\"question\":\"new\",\"evidenceArtifactIds\":[\"other\"]}").statusCode())
+        } finally { harness.shutdown() }
     }
 
     // ANALYSIS-INGESTION-1 — Human-Reviewed Enhanced Transcription Analysis Eligibility Defect.

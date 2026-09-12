@@ -72,7 +72,7 @@ class OwnerAnalysisInvocationCoordinator(
     private val hermesInvoker: HermesAnalysisInvoker,
     private val profile: String = ANALYSIS_PROFILE,
 ) {
-    suspend fun invoke(request: OwnerAnalysisInvocationRequest): OwnerAnalysisInvocationOutcome {
+    suspend fun invoke(request: OwnerAnalysisInvocationRequest, priorContext: String? = null): OwnerAnalysisInvocationOutcome {
         val mapping = linkedMapOf<EvidenceArtifactId, DerivativeGenerationId>()
         for (evidenceId in request.evidenceArtifactIds) {
             when (val resolution = resolvePreferredDerivative(evidenceId)) {
@@ -91,7 +91,12 @@ class OwnerAnalysisInvocationCoordinator(
             is AnalysisRequestResult.Denied -> return OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed(null, result.reason)
         }
         val reasoning = try {
-            hermesInvoker.invoke(request.question, request.analysisType, governedPackage)
+            hermesInvoker.invoke(
+                if (priorContext.isNullOrBlank()) request.question else
+                    "The following is bounded conversational context only, not evidence and not a source.\n$priorContext\n\nCurrent follow-up question: ${request.question}",
+                request.analysisType,
+                governedPackage,
+            )
         } catch (e: HermesAnalysisTimeoutException) {
             return OwnerAnalysisInvocationOutcome.ReasoningTimeout(analysisRequest.requestId, governedPackage)
         } catch (e: Exception) {

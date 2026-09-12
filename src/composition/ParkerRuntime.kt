@@ -4009,9 +4009,13 @@ class ParkerRuntime(
     }
 
     suspend fun analyseSelectedEvidenceAsOwner(request: parker.core.runtime.OwnerAnalysisInvocationRequest): parker.core.runtime.OwnerAnalysisInvocationOutcome {
+        return analyseSelectedEvidenceAsOwner(request, null)
+    }
+
+    suspend fun analyseSelectedEvidenceAsOwner(request: parker.core.runtime.OwnerAnalysisInvocationRequest, priorContext: String?): parker.core.runtime.OwnerAnalysisInvocationOutcome {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         logger.info("Governed Hermes analysis invoked by owner (selectionCount=${request.evidenceArtifactIds.size})")
-        return ownerAnalysisInvocationCoordinator.invoke(request)
+        return ownerAnalysisInvocationCoordinator.invoke(request, priorContext)
     }
 
     /**

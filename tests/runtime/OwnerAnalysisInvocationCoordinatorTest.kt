@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import parker.core.interfaces.*
 
 class OwnerAnalysisInvocationCoordinatorTest {
@@ -52,6 +53,29 @@ class OwnerAnalysisInvocationCoordinatorTest {
         ).invoke(OwnerAnalysisInvocationRequest("Question", listOf(evidence)))
         assertIs<OwnerAnalysisInvocationOutcome.DerivativeAmbiguous>(result)
         assertEquals(false, called)
+    }
+
+    @Test
+    fun `bounded prior context is passed as context and current follow-up remains distinct`() = runTest {
+        var submittedQuestion = ""
+        val packageValue = AnalysisRetrievalPackage(
+            AnalysisRequestId.new(), "follow-up", AnalysisType.ISSUE_ANALYSIS,
+            AnalysisEvidenceScope(listOf(evidence), mapOf(evidence.value to generation)), emptyList(),
+        )
+        val result = coordinator(
+            { PreferredDerivativeResolution.Preferred(evidence, candidate(), "only candidate") },
+            { request -> AnalysisRequestResult.Accepted(packageValue.copy(requestId = request.requestId)) },
+            object : HermesAnalysisInvoker {
+                override suspend fun invoke(question: String, analysisType: AnalysisType, governedPackage: AnalysisRetrievalPackage): HermesAnalysisInvocation {
+                    submittedQuestion = question
+                    return HermesAnalysisInvocation("""{"answer":"follow-up","findings":[],"contraryEvidence":[],"uncertainties":[],"evidenceGaps":[],"conclusion":"follow-up"}""", null)
+                }
+            },
+        ).invoke(OwnerAnalysisInvocationRequest("What contradicts that?", listOf(evidence)), "Previous user question: What is established?\nPrevious Parker answer: The agreement is dated 15 July 2026.")
+        assertIs<OwnerAnalysisInvocationOutcome.Completed>(result)
+        assertTrue(submittedQuestion.contains("context only, not evidence"))
+        assertTrue(submittedQuestion.contains("What is established?"))
+        assertTrue(submittedQuestion.contains("Current follow-up question: What contradicts that?"))
     }
 
     private fun candidate() = DerivativeCandidateSummary(
