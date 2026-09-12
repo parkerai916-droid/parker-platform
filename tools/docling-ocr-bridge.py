@@ -720,11 +720,13 @@ def _real_docling_backend(source_file_path: str, media_type: str, model_cache_di
 
     if result.status == ConversionStatus.PARTIAL_SUCCESS:
         error_messages = "; ".join(str(e) for e in (result.errors or [])) or "Docling reported partial success"
+        warnings = [str(error) for error in (result.errors or []) if str(error).strip()]
         return DoclingRecognitionOutcome(
             status="partial",
             text=text,
             fidelity="UNVERIFIED_LITERAL_TRANSCRIPTION",
             confidence=confidence,
+            warnings=warnings,
             reason=error_messages,
             mechanism_version=_docling_version(),
             model_identity=model_identity,

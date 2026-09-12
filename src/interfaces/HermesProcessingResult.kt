@@ -91,6 +91,12 @@ enum class HermesProcessingMethod {
     STRUCTURED_DOCUMENT_EXTRACTION,
 }
 
+/** Completeness reported by the processing provider, distinct from the PASS/REVIEW_REQUIRED gate. */
+enum class HermesProcessingCompleteness {
+    COMPLETE,
+    PARTIAL,
+}
+
 /**
  * Where a [HermesProcessingIssue] applies, if known. A sealed type -- not a flat nullable
  * `pageNumber` on [HermesProcessingIssue] itself -- so a future unit adding time-range
@@ -166,6 +172,8 @@ data class HermesProcessingIssue(
     val location: HermesProcessingIssueLocation? = null,
     val hermesInterpretation: String? = null,
     val transcriptionFidelity: TranscriptionFidelity? = null,
+    /** Provider-reported confidence on its documented 0..1 scale, when available. */
+    val observedConfidence: Double? = null,
 ) {
     init {
         require(explanation.isNotBlank() && explanation.length <= MAX_HERMES_TEXT_CHARACTERS) {
@@ -176,6 +184,9 @@ data class HermesProcessingIssue(
         }
         require(transcriptionFidelity == null || kind == HermesProcessingIssueKind.LOW_FIDELITY_TRANSCRIPTION) {
             "HermesProcessingIssue.transcriptionFidelity may be supplied only for a LOW_FIDELITY_TRANSCRIPTION issue"
+        }
+        require(observedConfidence == null || observedConfidence.isFinite() && observedConfidence in 0.0..1.0) {
+            "HermesProcessingIssue.observedConfidence must be absent or a finite value in the inclusive 0..1 range"
         }
     }
 }
@@ -224,6 +235,10 @@ data class HermesProcessingResult(
     val proposedEvidenceArtifactId: EvidenceArtifactId? = null,
     val issues: List<HermesProcessingIssue> = emptyList(),
     val failure: HermesProcessingFailure? = null,
+    /** Hermes policy input, not an observed confidence score. */
+    val reviewConfidenceThreshold: Double? = null,
+    val processingCompleteness: HermesProcessingCompleteness? = null,
+    val processingWarnings: List<String> = emptyList(),
 ) {
     init {
         require(sourceSha256.matches(HERMES_SHA256_PATTERN)) {
@@ -232,6 +247,13 @@ data class HermesProcessingResult(
         require(batchId.isNotBlank()) { "HermesProcessingResult.batchId must not be blank" }
         require(methods.isNotEmpty()) { "HermesProcessingResult.methods must name at least one processing method" }
         require(issues.size <= MAX_HERMES_ISSUES) { "HermesProcessingResult.issues must contain at most $MAX_HERMES_ISSUES entries" }
+        require(reviewConfidenceThreshold == null || reviewConfidenceThreshold.isFinite() && reviewConfidenceThreshold in 0.0..1.0) {
+            "HermesProcessingResult.reviewConfidenceThreshold must be absent or a finite value in the inclusive 0..1 range"
+        }
+        require(processingWarnings.size <= MAX_HERMES_WARNINGS) { "HermesProcessingResult.processingWarnings must contain at most $MAX_HERMES_WARNINGS entries" }
+        require(processingWarnings.all { it.isNotBlank() && it.length <= MAX_HERMES_TEXT_CHARACTERS }) {
+            "HermesProcessingResult.processingWarnings must contain bounded non-blank text"
+        }
         when (status) {
             HermesProcessingStatus.PASS -> {
                 require(failure == null) { "PASS must not carry a failure reason" }
@@ -249,4 +271,5 @@ data class HermesProcessingResult(
 
 private const val MAX_HERMES_TEXT_CHARACTERS = 4_096
 private const val MAX_HERMES_ISSUES = 1_000
+private const val MAX_HERMES_WARNINGS = 1_000
 private val HERMES_SHA256_PATTERN = Regex("^[0-9a-f]{64}$")

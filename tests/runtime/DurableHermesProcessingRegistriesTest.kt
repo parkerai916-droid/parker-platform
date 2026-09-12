@@ -37,9 +37,13 @@ class DurableHermesProcessingRegistriesTest {
                 "table needs review",
                 HermesProcessingIssueLocation.DocumentPage(2, 4, 9, "table"),
                 "42?",
+                observedConfidence = 0.74,
             ),
         ) else emptyList(),
         failure = if (status == HermesProcessingStatus.FAILED) HermesProcessingFailure(HermesProcessingFailureKind.PROCESSOR_FAILURE, "stopped") else null,
+        reviewConfidenceThreshold = 0.80,
+        processingCompleteness = if (status == HermesProcessingStatus.REVIEW_REQUIRED) parker.core.interfaces.HermesProcessingCompleteness.PARTIAL else null,
+        processingWarnings = listOf("one page was incomplete"),
     )
 
     private fun decision(type: HermesProcessingHumanDecisionType, at: String) = HermesProcessingHumanDecision(
@@ -56,6 +60,11 @@ class DurableHermesProcessingRegistriesTest {
 
         val recreated = FileSystemHermesProcessingResultRegistry(root)
         assertEquals(stored, recreated.find("batch-durable", sha))
+        val restored = recreated.find("batch-durable", sha)!!
+        assertEquals(0.74, restored.issues.single().observedConfidence)
+        assertEquals(0.80, restored.reviewConfidenceThreshold)
+        assertEquals(parker.core.interfaces.HermesProcessingCompleteness.PARTIAL, restored.processingCompleteness)
+        assertEquals(listOf("one page was incomplete"), restored.processingWarnings)
         assertIs<HermesProcessingResultRecordOutcome.AlreadyRecorded>(recreated.record(stored))
         val conflict = result(HermesProcessingStatus.FAILED)
         assertIs<HermesProcessingResultRecordOutcome.Conflict>(recreated.record(conflict))

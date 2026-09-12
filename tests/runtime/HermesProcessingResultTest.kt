@@ -3,6 +3,7 @@ package parker.core.runtime
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.HermesProcessingFailure
 import parker.core.interfaces.HermesProcessingFailureKind
+import parker.core.interfaces.HermesProcessingCompleteness
 import parker.core.interfaces.HermesProcessingIssue
 import parker.core.interfaces.HermesProcessingIssueKind
 import parker.core.interfaces.HermesProcessingIssueLocation
@@ -147,6 +148,28 @@ class HermesProcessingResultTest {
         assertEquals(120, preserved.startOffsetInclusive)
         assertEquals(160, preserved.endOffsetExclusive)
         assertEquals("table, column 2", preserved.regionDescription)
+    }
+
+    @Test
+    fun `confidence and review threshold remain distinct`() {
+        val issue = HermesProcessingIssue(
+            kind = HermesProcessingIssueKind.OCR_UNCERTAINTY,
+            explanation = "OCR confidence is below threshold",
+            observedConfidence = 0.74,
+        )
+        val value = result(HermesProcessingStatus.REVIEW_REQUIRED, issues = listOf(issue))
+            .copy(reviewConfidenceThreshold = 0.80, processingCompleteness = HermesProcessingCompleteness.PARTIAL)
+
+        assertEquals(0.74, value.issues.single().observedConfidence)
+        assertEquals(0.80, value.reviewConfidenceThreshold)
+        assertEquals(HermesProcessingCompleteness.PARTIAL, value.processingCompleteness)
+    }
+
+    @Test
+    fun `confidence outside the provider scale is rejected`() {
+        assertFailsWith<IllegalArgumentException> {
+            HermesProcessingIssue(HermesProcessingIssueKind.OCR_UNCERTAINTY, "uncertain", observedConfidence = 1.01)
+        }
     }
 
     // --- FAILED ---

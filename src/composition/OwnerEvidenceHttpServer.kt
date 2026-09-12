@@ -52,6 +52,13 @@ import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
 import parker.core.runtime.OrdinaryRegionCapabilityStatus
 import parker.core.interfaces.CaseId
+import parker.core.interfaces.PendingReviewPageRenderRequest
+import parker.core.interfaces.PendingReviewPagePreviewOutcome
+import parker.core.interfaces.PageRenderProfile
+import parker.core.runtime.DeterministicSourcePageRenderer
+import parker.core.runtime.SourcePageRendererLimits
+import parker.core.runtime.OwnerAnalysisInvocationRequest
+import parker.core.runtime.OwnerAnalysisInvocationOutcome
 
 /** Transport-safe Owner HTTP result for creating one governed ingestion batch. */
 sealed interface OwnerIngestionBatchAuthorisation {
@@ -120,6 +127,11 @@ class OwnerEvidenceHttpServer(
         String, String, parker.core.interfaces.HermesProcessingHumanDecisionType, String?, parker.core.interfaces.HermesProcessingCorrection?,
     ) -> parker.core.runtime.HermesProcessingDecisionOutcome =
         { _, _, _, _, _ -> parker.core.runtime.HermesProcessingDecisionOutcome.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    /** Owner-only read seam for verified pre-ingestion pending-review custody bytes. */
+    private val readPendingReviewSourceAsOwner: suspend (String, String) -> parker.core.interfaces.PendingReviewSource? = { _, _ -> null },
+    private val analyseSelectedEvidenceAsOwner: suspend (OwnerAnalysisInvocationRequest) -> OwnerAnalysisInvocationOutcome = {
+        OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed(null, "analysis workspace is not configured")
+    },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -141,6 +153,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/cases", CasesHandler())
         httpServer.createContext("/owner/ingestion-batches", IngestionBatchesHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
+        httpServer.createContext("/owner/analysis-workspace/analyse", AnalysisWorkspaceHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
         httpServer.createContext("/owner/admin/corrected-preparation", CorrectedPreparationHandler())
@@ -150,6 +163,22 @@ class OwnerEvidenceHttpServer(
         server = httpServer
         executor = fixedThreadPool
         logger.info("Owner LAN Evidence Upload HTTP server listening on $bindAddress:${httpServer.address.port}")
+    }
+
+    private inner class AnalysisWorkspaceHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                if (exchange.requestMethod != "POST" || exchange.requestURI.path != "/owner/analysis-workspace/analyse") {
+                    writeJson(exchange, 404, jsonObject("error" to "not found")); return
+                }
+                val request = try { parseOwnerAnalysisInvocationRequest(readBounded(exchange.requestBody, MAX_ANALYSE_REQUEST_BODY_BYTES)) }
+                catch (_: Exception) { writeJson(exchange, 400, jsonObject("error" to "malformed request body")); return }
+                writeJson(exchange, 200, ownerAnalysisInvocationJson(runBlocking { analyseSelectedEvidenceAsOwner(request) }))
+            } catch (_: Exception) {
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally { exchange.close() }
+        }
     }
 
     // ---- /owner/ingestion-batches ---------------------------------------------------------
@@ -386,6 +415,8 @@ class OwnerEvidenceHttpServer(
                 val segments = path.removePrefix("/owner/hermes-processing").trim('/').split('/').filter { it.isNotEmpty() }
                 when {
                     segments.size == 1 && segments[0] == "review" && method == "GET" -> handleReviewList(exchange)
+                    segments.size == 4 && segments[0] == "review" && segments[3] == "preview" && method == "GET" ->
+                        handlePreview(exchange, segments[1], segments[2])
                     segments.size == 4 && segments[0] == "review" && segments[3] == "decision" && method == "POST" ->
                         handleDecision(exchange, segments[1], segments[2])
                     else -> {
@@ -411,6 +442,65 @@ class OwnerEvidenceHttpServer(
             }
         }
 
+        private fun handlePreview(exchange: HttpExchange, rawBatchId: String, rawSourceSha256: String) {
+            if (!SAFE_ROUTE_ID.matches(rawBatchId) || !SAFE_ROUTE_ID.matches(rawSourceSha256)) {
+                writeJson(exchange, 400, jsonObject("status" to "INVALID_TARGET", "error" to "invalid batchId or sourceSha256")); return
+            }
+            val requestedPage = parsePreviewPage(exchange.requestURI.rawQuery)
+            if (requestedPage == -1) { writeJson(exchange, 400, jsonObject("status" to "INVALID_PAGE", "error" to "page must be a positive integer")); return }
+            val page = requestedPage ?: defaultPreviewPage(rawBatchId, rawSourceSha256)
+            val source = runBlocking { readPendingReviewSourceAsOwner(rawBatchId, rawSourceSha256) }
+            if (source == null) { writeJson(exchange, 404, jsonObject("status" to "SOURCE_NOT_FOUND")); return }
+            val mediaType = source.mediaType
+            if (mediaType == null) { writeJson(exchange, 415, jsonObject("status" to "UNSUPPORTED_SOURCE_TYPE")); return }
+            val profile = if (mediaType == "application/pdf") {
+                PageRenderProfile("pending-review-preview-v1", 1, 150)
+            } else {
+                PageRenderProfile("pending-review-preview-v1", 1, null)
+            }
+            val outcome = DeterministicSourcePageRenderer(SourcePageRendererLimits()).renderPending(
+                PendingReviewPageRenderRequest(rawBatchId, rawSourceSha256, mediaType, source.bytes, page, profile),
+            )
+            when (outcome) {
+                is PendingReviewPagePreviewOutcome.Created -> {
+                    val preview = outcome.preview
+                    exchange.responseHeaders.set("Content-Type", "image/png")
+                    exchange.responseHeaders.set("Cache-Control", "no-store")
+                    exchange.responseHeaders.set("X-Parker-Preview-Page", preview.provenance.pageNumber.toString())
+                    exchange.responseHeaders.set("X-Parker-Preview-Page-Count", preview.provenance.declaredPageCount.toString())
+                    exchange.responseHeaders.set("X-Parker-Preview-Batch-Id", preview.provenance.batchId)
+                    exchange.responseHeaders.set("X-Parker-Preview-Source-Sha256", preview.provenance.sourceSha256)
+                    exchange.responseHeaders.set("X-Parker-Preview-Renderer", preview.provenance.rendererIdentity + "/" + preview.provenance.rendererVersion)
+                    val bytes = preview.encodedBytes()
+                    exchange.sendResponseHeaders(200, bytes.size.toLong()); exchange.responseBody.use { it.write(bytes) }
+                }
+                PendingReviewPagePreviewOutcome.UnsupportedMedia -> writeJson(exchange, 415, jsonObject("status" to "UNSUPPORTED_SOURCE_TYPE"))
+                PendingReviewPagePreviewOutcome.InvalidPageIndex -> writeJson(exchange, 400, jsonObject("status" to "INVALID_PAGE"))
+                PendingReviewPagePreviewOutcome.SourceDigestMismatch -> writeJson(exchange, 422, jsonObject("status" to "SOURCE_INTEGRITY_FAILURE"))
+                PendingReviewPagePreviewOutcome.CorruptSource,
+                PendingReviewPagePreviewOutcome.ExtremeDimensions,
+                PendingReviewPagePreviewOutcome.ResourceLimitExceeded,
+                PendingReviewPagePreviewOutcome.ProvenanceMismatch,
+                PendingReviewPagePreviewOutcome.RendererFailure -> writeJson(exchange, 422, jsonObject("status" to "RENDER_FAILED"))
+            }
+        }
+
+        private fun parsePreviewPage(rawQuery: String?): Int? {
+            if (rawQuery.isNullOrBlank()) return null
+            val value = rawQuery.split('&').firstOrNull { it.startsWith("page=") }?.substringAfter('=') ?: return null
+            return value.toIntOrNull()?.takeIf { it > 0 } ?: -1
+        }
+
+        private fun defaultPreviewPage(batchId: String, sourceSha256: String): Int {
+            val outcome = runBlocking { listHermesProcessingReviewAsOwner() }
+            if (outcome is parker.core.runtime.HermesProcessingReviewListOutcome.Found) {
+                val item = outcome.items.firstOrNull { it.batchId == batchId && it.sourceSha256 == sourceSha256 }
+                val location = item?.issues?.firstOrNull()?.location
+                if (location is parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage) return location.pageNumber
+            }
+            return 1
+        }
+
         private fun handleDecision(exchange: HttpExchange, rawBatchId: String, rawSourceSha256: String) {
             if (!SAFE_ROUTE_ID.matches(rawBatchId) || !SAFE_ROUTE_ID.matches(rawSourceSha256)) {
                 runCatching { exchange.requestBody.use { it.readBytes() } }
@@ -433,7 +523,11 @@ class OwnerEvidenceHttpServer(
             }
             when (outcome) {
                 is parker.core.runtime.HermesProcessingDecisionOutcome.Recorded ->
-                    writeJson(exchange, 200, jsonObject("status" to "RECORDED", "decision" to hermesProcessingHumanDecisionJson(outcome.decision)))
+                    writeJson(exchange, 200, jsonObject(
+                        "status" to "RECORDED",
+                        "decision" to hermesProcessingHumanDecisionJson(outcome.decision),
+                        "correctionPublication" to hermesCorrectionPublicationJson(outcome.correctionPublication),
+                    ))
                 parker.core.runtime.HermesProcessingDecisionOutcome.UnknownProcessingResult ->
                     writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_PROCESSING_RESULT"))
                 is parker.core.runtime.HermesProcessingDecisionOutcome.InvalidDecision ->
@@ -451,6 +545,9 @@ class OwnerEvidenceHttpServer(
         "methods" to jsonArray(item.methods.map { it.name }),
         "issues" to jsonArray(item.issues.mapIndexed { index, issue -> hermesProcessingIssueJson(index, issue) }),
         "failure" to item.failure?.let { jsonObject("kind" to it.kind.name, "detail" to it.detail) },
+        "reviewConfidenceThreshold" to item.reviewConfidenceThreshold,
+        "processingCompleteness" to item.processingCompleteness?.name,
+        "processingWarnings" to jsonArray(item.processingWarnings),
         "caseDisplayName" to item.caseDisplayName,
         "latestDecision" to item.latestDecision?.let(::hermesProcessingHumanDecisionJson),
     )
@@ -460,6 +557,7 @@ class OwnerEvidenceHttpServer(
         "kind" to issue.kind.name,
         "explanation" to issue.explanation,
         "hermesInterpretation" to issue.hermesInterpretation,
+        "observedConfidence" to issue.observedConfidence,
         "location" to (issue.location as? parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage)?.let { location ->
             jsonObject(
                 "pageNumber" to location.pageNumber,
@@ -485,6 +583,13 @@ class OwnerEvidenceHttpServer(
             )
         },
     )
+
+    private fun hermesCorrectionPublicationJson(publication: parker.core.interfaces.HermesPreIngestionCorrectionPublication): String = when (publication) {
+        parker.core.interfaces.HermesPreIngestionCorrectionPublication.NotRequired -> "NOT_REQUIRED"
+        is parker.core.interfaces.HermesPreIngestionCorrectionPublication.Created -> "CREATED"
+        is parker.core.interfaces.HermesPreIngestionCorrectionPublication.AlreadyPublished -> "ALREADY_PUBLISHED"
+        is parker.core.interfaces.HermesPreIngestionCorrectionPublication.Failed -> "FAILED"
+    }
 
     // ---- static owner page ---------------------------------------------------------------
 
@@ -581,6 +686,10 @@ class OwnerEvidenceHttpServer(
                         handleRetrieveOcrContent(exchange, segments[0], segments[2])
                     segments.size == 2 && segments[1] == "ocr-derivative-generations" && method == "GET" ->
                         handleDiscoverOcrDerivativeGenerations(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "derivative-generations" && method == "GET" ->
+                        handleDiscoverDerivativeGenerations(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "preferred-derivative" && method == "GET" ->
+                        handlePreferredDerivative(exchange, segments[0])
                     segments.size == 3 && segments[1] == "human-fidelity-review" && method == "GET" ->
                         handleGetHumanFidelityReview(exchange, segments[0], segments[2])
                     segments.size == 3 && segments[1] == "human-fidelity-review" && method == "POST" ->
@@ -1058,6 +1167,56 @@ class OwnerEvidenceHttpServer(
             )
         }
 
+        private fun handleDiscoverDerivativeGenerations(exchange: HttpExchange, rawEvidenceArtifactId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val evidenceArtifactId = try { EvidenceArtifactId(rawEvidenceArtifactId) }
+            catch (_: IllegalArgumentException) { writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id")); return }
+            val registered = runBlocking { operations.listRegisteredEvidence() }.any { it.evidenceArtifactId == evidenceArtifactId.value }
+            if (!registered) { writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_EVIDENCE")); return }
+            val summaries = runBlocking { operations.listDerivativeGenerations(evidenceArtifactId) }
+            writeJson(exchange, 200, jsonObject(
+                "status" to "DISCOVERED", "evidenceArtifactId" to evidenceArtifactId.value,
+                "derivatives" to jsonArray(summaries.map { item -> jsonObject(
+                    "derivativeGenerationId" to item.derivativeGenerationId,
+                    "rootSourceEvidenceArtifactId" to item.evidenceArtifactId,
+                    "kind" to item.kind, "producer" to item.producer, "adapter" to item.adapter,
+                    "generatedAt" to item.generatedAt, "operationalOutcome" to item.operationalOutcome,
+                    "completeness" to item.completeness, "warnings" to jsonArray(item.warnings),
+                    "transformationHistory" to jsonArray(item.transformations), "contentAvailable" to item.contentAvailable,
+                ) }),
+            ))
+        }
+
+        private fun handlePreferredDerivative(exchange: HttpExchange, rawEvidenceArtifactId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val evidenceArtifactId = try { EvidenceArtifactId(rawEvidenceArtifactId) }
+            catch (_: IllegalArgumentException) { writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id")); return }
+            val known = runBlocking { operations.listRegisteredEvidence() }.any { it.evidenceArtifactId == evidenceArtifactId.value }
+            if (!known) { writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_EVIDENCE")); return }
+            when (val outcome = runBlocking { operations.resolvePreferredDerivative(evidenceArtifactId) }) {
+                is parker.ui.OwnerPreferredDerivativeResolution.Preferred -> writeJson(exchange, 200, jsonObject(
+                    "status" to "PREFERRED", "evidenceArtifactId" to outcome.evidenceArtifactId,
+                    "reason" to outcome.reason, "derivative" to derivativeSummaryJson(outcome.derivative),
+                ))
+                is parker.ui.OwnerPreferredDerivativeResolution.Ambiguous -> writeJson(exchange, 200, jsonObject(
+                    "status" to "AMBIGUOUS", "evidenceArtifactId" to outcome.evidenceArtifactId,
+                    "reason" to outcome.reason, "candidates" to jsonArray(outcome.candidates.map(::derivativeSummaryJson)),
+                ))
+                is parker.ui.OwnerPreferredDerivativeResolution.NoUsableDerivative -> writeJson(exchange, 200, jsonObject(
+                    "status" to "NO_USABLE_DERIVATIVE", "evidenceArtifactId" to outcome.evidenceArtifactId,
+                    "reason" to outcome.reason,
+                ))
+            }
+        }
+
+        private fun derivativeSummaryJson(item: parker.ui.OwnerDerivativeGenerationSummary) = jsonObject(
+            "derivativeGenerationId" to item.derivativeGenerationId, "rootSourceEvidenceArtifactId" to item.evidenceArtifactId,
+            "kind" to item.kind, "producer" to item.producer, "adapter" to item.adapter,
+            "generatedAt" to item.generatedAt, "operationalOutcome" to item.operationalOutcome,
+            "completeness" to item.completeness, "warnings" to jsonArray(item.warnings),
+            "transformationHistory" to jsonArray(item.transformations), "contentAvailable" to item.contentAvailable,
+        )
+
         /**
          * HFR Owner UI exposure scope lock amendment: read-only effective Human Fidelity Review
          * status for one exact Tier B OCR derivative generation, via the existing, unmodified
@@ -1187,7 +1346,13 @@ class OwnerEvidenceHttpServer(
                     return
                 }
                 when (exchange.requestMethod) {
-                    "GET" -> handleListCases(exchange)
+                    "GET" -> {
+                        val segments = exchange.requestURI.path.removePrefix("/owner/cases")
+                            .split('/').filter { it.isNotEmpty() }
+                        if (segments.isEmpty()) handleListCases(exchange)
+                        else if (segments.size == 2 && segments[1] == "evidence") handleListCaseEvidence(exchange, segments[0])
+                        else writeJson(exchange, 404, jsonObject("error" to "not found"))
+                    }
                     "POST" -> handleCreateCase(exchange)
                     else -> {
                         runCatching { exchange.requestBody.use { it.readBytes() } }
@@ -1209,6 +1374,33 @@ class OwnerEvidenceHttpServer(
             writeJson(exchange, 200, jsonObject("cases" to jsonArray(cases.map {
                 jsonObject("caseId" to it.caseId, "caseName" to it.caseName, "createdAt" to it.createdAt)
             })))
+        }
+
+        /** CASE-1. Exact case-id targeting; case names are never accepted as lookup keys. */
+        private fun handleListCaseEvidence(exchange: HttpExchange, caseId: String) {
+            runCatching { exchange.requestBody.use { it.readBytes() } }
+            val outcome = runBlocking { operations.listEvidenceForCase(caseId) }
+            val (status, body) = when (outcome) {
+                is parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Found -> 200 to jsonObject(
+                    "caseId" to outcome.case.caseId,
+                    "caseName" to outcome.case.caseName,
+                    "evidence" to jsonArray(outcome.evidence.map { item ->
+                        jsonObject(
+                            "evidenceArtifactId" to item.evidenceArtifactId,
+                            "originalFilename" to item.originalFileName,
+                            "mediaType" to item.mediaType,
+                            "sourceSha256" to item.sourceSha256,
+                            "byteLength" to item.byteLength,
+                            "registeredAt" to item.registeredAt,
+                        )
+                    }),
+                )
+                parker.ui.OwnerCaseEvidenceDiscoveryOutcome.UnknownCase ->
+                    404 to jsonObject("status" to "UNKNOWN_CASE")
+                is parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Failed ->
+                    500 to jsonObject("status" to "FAILED", "reason" to outcome.reason)
+            }
+            writeJson(exchange, status, body)
         }
 
         /** CASE-1. Creates one new case/matter from an owner-supplied case name. The resulting CaseId is server-minted. */
@@ -1458,6 +1650,15 @@ class OwnerEvidenceHttpServer(
         "mechanismIdentity" to presentation.mechanismIdentity,
         "mechanismVersion" to presentation.mechanismVersion,
     )
+
+    private fun ownerAnalysisInvocationJson(outcome: OwnerAnalysisInvocationOutcome): JsonObject = when (outcome) {
+        is OwnerAnalysisInvocationOutcome.Completed -> jsonObject("status" to "COMPLETED", "analysisRequestId" to outcome.analysisRequestId.value, "analysisType" to outcome.analysisType.name, "question" to outcome.question, "selectedEvidenceArtifactIds" to jsonArray(outcome.selectedEvidenceArtifactIds.map { it.value }), "resolvedDerivativeGenerationIds" to jsonObject(*outcome.resolvedDerivativeGenerationIds.map { it.key.value to it.value.value }.toTypedArray()), "profile" to outcome.profile, "hermesSessionId" to outcome.hermesSessionId, "analysisText" to outcome.analysisText)
+        is OwnerAnalysisInvocationOutcome.DerivativeAmbiguous -> jsonObject("status" to "DERIVATIVE_AMBIGUOUS", "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason, "candidates" to jsonArray(outcome.candidates.map { jsonObject("derivativeGenerationId" to it.derivativeGenerationId.value, "kind" to it.derivativeKind, "producer" to it.producerIdentity.pluginIdentity, "completeness" to it.completenessState.name, "warnings" to jsonArray(it.warnings), "contentAvailable" to it.contentAvailable) }))
+        is OwnerAnalysisInvocationOutcome.NoUsableDerivative -> jsonObject("status" to "NO_USABLE_DERIVATIVE", "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed -> jsonObject("status" to "GOVERNED_RETRIEVAL_FAILED", "evidenceArtifactId" to outcome.evidenceArtifactId?.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.ReasoningFailed -> jsonObject("status" to "REASONING_FAILED", "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.ReasoningTimeout -> jsonObject("status" to "REASONING_TIMEOUT", "analysisRequestId" to outcome.analysisRequestId.value)
+    }
 
     private fun analysisOutcomeJson(outcome: OwnerDocumentAnalysisOutcome, pendingAnalysisId: PendingAnalysisId?): JsonObject = when (outcome) {
         is OwnerDocumentAnalysisOutcome.Completed -> jsonObject(
@@ -1991,6 +2192,16 @@ private fun parseAnalyseRequestBody(bodyBytes: ByteArray): Pair<List<EvidenceGen
     return selections to instruction
 }
 
+private fun parseOwnerAnalysisInvocationRequest(bodyBytes: ByteArray): OwnerAnalysisInvocationRequest {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue() as? Map<*, *>
+        ?: throw JsonParseException("expected an object")
+    val question = root["question"] as? String ?: throw JsonParseException("question required")
+    val ids = root["evidenceArtifactIds"] as? List<*> ?: throw JsonParseException("evidenceArtifactIds required")
+    val type = (root["analysisType"] as? String)?.let { parker.core.interfaces.AnalysisType.valueOf(it) }
+        ?: parker.core.interfaces.AnalysisType.ISSUE_ANALYSIS
+    return OwnerAnalysisInvocationRequest(question, ids.map { parker.core.interfaces.EvidenceArtifactId(it as? String ?: throw JsonParseException("invalid evidence id")) }, type)
+}
+
 /** Reviewed Analysis Result — Explicit Owner Save. The `POST /owner/saved-analyses` request body's own tiny, single-field shape -- `{"pendingAnalysisId":"..."}` -- never the analysis content itself. */
 private fun parseSaveRequestBody(bodyBytes: ByteArray): String {
     val text = String(bodyBytes, StandardCharsets.UTF_8)
@@ -2109,6 +2320,8 @@ internal class JsonParseException(message: String) : Exception(message)
 /**
  * Hermes Exception Decision Backend, Task 4. The parsed body of `POST
  * /owner/hermes-processing/review/{batchId}/{sourceSha256}/decision`.
+ * `reason` is the durable Owner explanation. It is required by the coordinator for
+ * REVIEW_REQUIRED overrides (`ACCEPT`/`CORRECT); the machine issue remains separately retained.
  */
 private data class HermesProcessingDecisionRequest(
     val decision: parker.core.interfaces.HermesProcessingHumanDecisionType,
@@ -2117,7 +2330,7 @@ private data class HermesProcessingDecisionRequest(
 )
 
 /**
- * Parses `{"decision":"ACCEPT|CORRECT|REPROCESS|REJECT","reason":"...optional",
+ * Parses `{"decision":"ACCEPT|CORRECT|REPROCESS|REJECT","reason":"...Owner explanation",
  * "correction":{"issueIndex":"0","correctedInterpretation":"...","reason":"..."} optional}` into
  * [HermesProcessingDecisionRequest]. `issueIndex` is transmitted as a JSON string, mirroring
  * [parseCorrectedPreparationRequest]'s own identical `profileVersion` convention --
@@ -2584,12 +2797,23 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   .tabs { display:flex; gap:.4rem; margin:1rem 0; }
   .tab.active { background:#2a5d3a; color:#fff; }
   #bulkIngestionPanel { border:1px solid #333; padding:1rem; margin-bottom:1rem; }
+  #ownerHermesReviewPanel { border:1px solid #6b4a24; padding:1rem; margin-bottom:1rem; }
+  .hermes-review-item { border:1px solid #444; padding:.7rem; margin:.5rem 0; cursor:pointer; }
+  .hermes-review-item.selected { border-color:#fd8; }
+  .hermes-review-detail { border:1px solid #555; padding:1rem; margin-top:1rem; }
+  .hermes-review-preview-grid { display:grid; grid-template-columns:minmax(280px, 1fr) minmax(280px, 1fr); gap:1rem; align-items:start; }
+  .hermes-review-preview { background:#000; border:1px solid #444; padding:.6rem; min-height:8rem; }
+  .hermes-review-preview img { display:block; max-width:100%; max-height:70vh; margin:auto; }
+  .hermes-review-preview-controls { display:flex; gap:.5rem; align-items:center; margin-top:.6rem; }
+  .review-machine-output { white-space:pre-wrap; background:#000; padding:.6rem; margin:.4rem 0; }
+  .review-action-row { margin-top:1rem; }
+  .review-action-row button { margin-bottom:.4rem; }
 </style>
 </head>
 <body>
 <h1>Parker Owner Evidence Upload</h1>
 <p><button id="logoutButton">Log out</button></p>
-<nav class="tabs" aria-label="Owner sections"><button class="tab active" id="ownerEvidenceTab">Evidence Library</button><button class="tab" id="ownerBulkTab">Bulk Ingestion</button></nav>
+<nav class="tabs" aria-label="Owner sections"><button class="tab active" id="ownerEvidenceTab">Evidence Library</button><button class="tab" id="ownerBulkTab">Bulk Ingestion</button><button class="tab" id="ownerHermesReviewTab">Owner Review</button></nav>
 <section id="bulkIngestionPanel" hidden>
   <h2>Bulk Ingestion</h2>
   <p>Select and confirm an existing case. Parker will mint a READY batch for Hermes. This tab never uploads files.</p>
@@ -2597,6 +2821,13 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   <p>Case: <span id="bulkCaseName">—</span></p>
   <button id="bulkConfirmButton" disabled>Confirm Case and Authorise Batch</button>
   <div id="bulkBatchStatus" class="note"></div>
+</section>
+<section id="ownerHermesReviewPanel" hidden>
+  <h2>Pre-Ingestion Owner Review</h2>
+  <p class="note">Automatic ingestion is blocked for these items. Review the machine discrepancy before choosing an explicit Owner decision.</p>
+  <p><button id="refreshHermesReviewButton">Refresh pending review</button> <span id="hermesReviewStatus" class="note"></span></p>
+  <div id="hermesReviewList"></div>
+  <div id="hermesReviewDetail" class="hermes-review-detail" hidden></div>
 </section>
 <p><button id="checkEnhancedReadinessButton">Check enhanced transcription readiness</button> <span id="enhancedReadinessStatus" class="note"></span></p>
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
@@ -2633,6 +2864,11 @@ let enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription r
 // CASE-1: every defined case, for the case filter and the per-row assign/change-case panel.
 let casesList = [];
 let selectedBulkCase = null;
+let hermesReviewItems = [];
+let selectedHermesReview = null;
+let hermesPreviewPage = 1;
+let hermesPreviewTotalPages = null;
+let hermesPreviewObjectUrl = null;
 
 async function loadCases() {
   try {
@@ -2651,8 +2887,17 @@ document.getElementById('bulkCaseSelector').onchange = e => {
   document.getElementById('bulkCaseName').textContent = selectedBulkCase ? selectedBulkCase.caseName : '—';
   document.getElementById('bulkConfirmButton').disabled = !selectedBulkCase;
 };
-document.getElementById('ownerBulkTab').onclick = () => { document.getElementById('bulkIngestionPanel').hidden = false; document.getElementById('ownerBulkTab').classList.add('active'); document.getElementById('ownerEvidenceTab').classList.remove('active'); };
-document.getElementById('ownerEvidenceTab').onclick = () => { document.getElementById('bulkIngestionPanel').hidden = true; document.getElementById('ownerEvidenceTab').classList.add('active'); document.getElementById('ownerBulkTab').classList.remove('active'); };
+function activateOwnerTab(active) {
+  const panels = { evidence: null, bulk: document.getElementById('bulkIngestionPanel'), review: document.getElementById('ownerHermesReviewPanel') };
+  Object.entries(panels).forEach(([name, panel]) => { if (panel) panel.hidden = name !== active; });
+  [['evidence', 'ownerEvidenceTab'], ['bulk', 'ownerBulkTab'], ['review', 'ownerHermesReviewTab']].forEach(([name, id]) => {
+    document.getElementById(id).classList.toggle('active', name === active);
+  });
+}
+document.getElementById('ownerBulkTab').onclick = () => activateOwnerTab('bulk');
+document.getElementById('ownerEvidenceTab').onclick = () => activateOwnerTab('evidence');
+document.getElementById('ownerHermesReviewTab').onclick = () => { activateOwnerTab('review'); loadHermesReview(); };
+document.getElementById('refreshHermesReviewButton').onclick = () => loadHermesReview();
 document.getElementById('bulkConfirmButton').onclick = async () => {
   if (!selectedBulkCase) return;
   const status = document.getElementById('bulkBatchStatus'); const button = document.getElementById('bulkConfirmButton'); button.disabled = true; status.textContent = 'Authorising…';
@@ -3728,6 +3973,215 @@ function buildEnhancedTranscriptionPanel(content, derivativeGenerationId, eviden
 
 function authHeaders() {
   return {};
+}
+
+function reviewValue(value) {
+  return value == null || value === '' ? 'Unavailable' : String(value);
+}
+
+function reviewField(container, label, value) {
+  const p = document.createElement('p');
+  const strong = document.createElement('strong');
+  strong.textContent = label + ': ';
+  p.appendChild(strong);
+  const span = document.createElement('span');
+  span.textContent = reviewValue(value);
+  p.appendChild(span);
+  container.appendChild(p);
+}
+
+function renderHermesReviewList() {
+  const list = document.getElementById('hermesReviewList');
+  list.innerHTML = '';
+  if (!hermesReviewItems.length) {
+    const empty = document.createElement('p');
+    empty.className = 'note';
+    empty.textContent = 'No pending pre-ingestion Owner review items.';
+    list.appendChild(empty);
+    return;
+  }
+  hermesReviewItems.forEach(item => {
+    const entry = document.createElement('div');
+    entry.className = 'hermes-review-item' + (selectedHermesReview === item ? ' selected' : '');
+    entry.tabIndex = 0;
+    entry.setAttribute('role', 'button');
+    const title = document.createElement('strong');
+    title.textContent = item.sourceDisplayName || ('Source ' + item.sourceSha256.slice(0, 12) + '…');
+    entry.appendChild(title);
+    reviewField(entry, 'Status', item.status);
+    reviewField(entry, 'Batch', item.batchId);
+    reviewField(entry, 'Primary issue', item.issues && item.issues.length ? item.issues[0].explanation : item.failure && item.failure.detail);
+    entry.onclick = () => { selectedHermesReview = item; renderHermesReviewList(); renderHermesReviewDetail(); };
+    entry.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); entry.click(); } };
+    list.appendChild(entry);
+  });
+}
+
+function reviewIssuePage(item) {
+  const location = item && item.issues && item.issues.length ? item.issues[0].location : null;
+  return location && Number.isInteger(Number(location.pageNumber)) && Number(location.pageNumber) > 0 ? Number(location.pageNumber) : null;
+}
+
+async function loadHermesPreview(item, image, status, pageLabel, previous, next) {
+  const page = hermesPreviewPage;
+  pageLabel.textContent = 'Loading page ' + page + '…';
+  previous.disabled = true; next.disabled = true;
+  if (hermesPreviewObjectUrl) { URL.revokeObjectURL(hermesPreviewObjectUrl); hermesPreviewObjectUrl = null; }
+  const url = '/owner/hermes-processing/review/' + encodeURIComponent(item.batchId) + '/' + encodeURIComponent(item.sourceSha256) + '/preview?page=' + page;
+  try {
+    const response = await fetch(url, { method: 'GET', headers: authHeaders(), credentials: 'same-origin' });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      image.hidden = true;
+      status.textContent = payload.status === 'UNSUPPORTED_SOURCE_TYPE' ? 'Visual preview unavailable for this source type.'
+        : payload.status === 'SOURCE_NOT_FOUND' ? 'Pending source not found.'
+        : payload.status === 'INVALID_PAGE' ? 'Invalid preview page.'
+        : payload.status === 'UNAUTHORIZED' ? 'Preview access denied.'
+        : 'Rendering failed.';
+      pageLabel.textContent = 'Preview unavailable';
+      return;
+    }
+    hermesPreviewTotalPages = Number(response.headers.get('X-Parker-Preview-Page-Count')) || 1;
+    hermesPreviewObjectUrl = URL.createObjectURL(await response.blob());
+    image.src = hermesPreviewObjectUrl; image.hidden = false;
+    status.textContent = '';
+    pageLabel.textContent = 'Page ' + hermesPreviewPage + ' of ' + hermesPreviewTotalPages;
+    previous.disabled = hermesPreviewPage <= 1;
+    next.disabled = hermesPreviewPage >= hermesPreviewTotalPages;
+  } catch (_) {
+    image.hidden = true; status.textContent = 'Preview request failed safely.'; pageLabel.textContent = 'Preview unavailable';
+  }
+}
+
+function appendHermesPreview(detail, item) {
+  const grid = document.createElement('div'); grid.className = 'hermes-review-preview-grid';
+  const panel = document.createElement('div'); panel.className = 'hermes-review-preview';
+  const title = document.createElement('h4'); title.textContent = 'SOURCE PREVIEW'; panel.appendChild(title);
+  const image = document.createElement('img'); image.alt = 'Pending review source page'; image.hidden = true; panel.appendChild(image);
+  const status = document.createElement('p'); status.className = 'note'; panel.appendChild(status);
+  const controls = document.createElement('div'); controls.className = 'hermes-review-preview-controls';
+  const previous = document.createElement('button'); previous.textContent = 'Previous';
+  const pageLabel = document.createElement('span');
+  const next = document.createElement('button'); next.textContent = 'Next';
+  previous.onclick = () => { if (hermesPreviewPage > 1) { hermesPreviewPage--; loadHermesPreview(item, image, status, pageLabel, previous, next); } };
+  next.onclick = () => { if (!hermesPreviewTotalPages || hermesPreviewPage < hermesPreviewTotalPages) { hermesPreviewPage++; loadHermesPreview(item, image, status, pageLabel, previous, next); } };
+  controls.append(previous, pageLabel, next); panel.appendChild(controls);
+  const issuePage = reviewIssuePage(item);
+  if (issuePage != null) hermesPreviewPage = issuePage;
+  else { hermesPreviewPage = 1; status.textContent = 'Issue location not available. Showing source for manual review.'; }
+  grid.appendChild(panel);
+  const explanation = document.createElement('div'); explanation.className = 'content-panel';
+  const heading = document.createElement('h4'); heading.textContent = 'DISCREPANCY'; explanation.appendChild(heading);
+  const note = document.createElement('p'); note.className = 'note'; note.textContent = issuePage == null ? 'Discrepancy page unavailable.' : 'Opening the page reported by processing.'; explanation.appendChild(note);
+  grid.appendChild(explanation); detail.appendChild(grid);
+  loadHermesPreview(item, image, status, pageLabel, previous, next);
+}
+
+function renderHermesReviewDetail() {
+  const detail = document.getElementById('hermesReviewDetail');
+  detail.innerHTML = '';
+  if (!selectedHermesReview) { detail.hidden = true; return; }
+  detail.hidden = false;
+  const heading = document.createElement('h3');
+  heading.textContent = 'Review required — ingestion blocked';
+  detail.appendChild(heading);
+  const item = selectedHermesReview;
+  appendHermesPreview(detail, item);
+  reviewField(detail, 'Source', item.sourceDisplayName || 'Unavailable');
+  reviewField(detail, 'Batch ID', item.batchId);
+  reviewField(detail, 'Source SHA-256', item.sourceSha256);
+  reviewField(detail, 'Processing status', item.status);
+  reviewField(detail, 'Processing method', item.methods && item.methods.join(', '));
+  reviewField(detail, 'Completeness', item.processingCompleteness);
+  reviewField(detail, 'Warnings', item.processingWarnings && item.processingWarnings.length ? item.processingWarnings.join('; ') : null);
+  reviewField(detail, 'Review threshold', item.reviewConfidenceThreshold == null ? null : (Number(item.reviewConfidenceThreshold) * 100).toFixed(1) + '%');
+  reviewField(detail, 'Case', item.caseDisplayName);
+
+  const issueHeading = document.createElement('h4');
+  issueHeading.textContent = 'Why automatic ingestion was blocked';
+  detail.appendChild(issueHeading);
+  (item.issues || []).forEach(issue => {
+    const issuePanel = document.createElement('div');
+    issuePanel.className = 'content-panel';
+    reviewField(issuePanel, 'Issue', issue.kind);
+    reviewField(issuePanel, 'Explanation', issue.explanation);
+    reviewField(issuePanel, 'Machine interpretation', issue.hermesInterpretation);
+    reviewField(issuePanel, 'Machine confidence', issue.observedConfidence == null ? null : (Number(issue.observedConfidence) * 100).toFixed(1) + '%');
+    const location = issue.location;
+    reviewField(issuePanel, 'Location', location ? ['page ' + location.pageNumber, location.regionDescription, location.startOffsetInclusive != null ? 'offsets ' + location.startOffsetInclusive + '–' + location.endOffsetExclusive : null].filter(Boolean).join(', ') : null);
+    detail.appendChild(issuePanel);
+  });
+  if (item.failure) {
+    reviewField(detail, 'Failure kind', item.failure.kind);
+    reviewField(detail, 'Failure detail', item.failure.detail);
+  }
+  const limitation = document.createElement('p');
+  limitation.className = 'note';
+  limitation.textContent = 'The processing result retains issue interpretations and locations where available; no additional source bytes or scratch paths are exposed here.';
+  detail.appendChild(limitation);
+
+  const explanationLabel = document.createElement('label');
+  explanationLabel.textContent = 'Your explanation (required for override/correction):';
+  const explanation = document.createElement('textarea');
+  explanation.rows = 4; explanation.style.width = '100%'; explanation.style.boxSizing = 'border-box';
+  explanation.maxLength = 4096; explanation.id = 'hermesReviewExplanation';
+  explanationLabel.appendChild(explanation); detail.appendChild(explanationLabel);
+
+  let issueSelect = null; let correctionInput = null;
+  if (item.status === 'REVIEW_REQUIRED') {
+    const correctionLabel = document.createElement('label');
+    correctionLabel.textContent = 'Correction (optional; targets the selected issue):';
+    issueSelect = document.createElement('select');
+    issueSelect.id = 'hermesReviewIssue';
+    (item.issues || []).forEach((issue, index) => {
+      const option = document.createElement('option'); option.value = String(index); option.textContent = index + ': ' + issue.kind; issueSelect.appendChild(option);
+    });
+    correctionInput = document.createElement('input'); correctionInput.type = 'text'; correctionInput.maxLength = 4096; correctionInput.style.width = '100%'; correctionInput.placeholder = 'Corrected interpretation (only if using CORRECT)';
+    correctionLabel.appendChild(issueSelect); correctionLabel.appendChild(correctionInput); detail.appendChild(correctionLabel);
+  }
+
+  const actions = document.createElement('div'); actions.className = 'review-action-row';
+  const result = document.createElement('p'); result.className = 'note';
+  const submit = async decision => {
+    const ownerExplanation = explanation.value.trim();
+    if ((decision === 'ACCEPT' || decision === 'CORRECT') && !ownerExplanation) { result.textContent = 'An Owner explanation is required for an override.'; return; }
+    if (decision === 'CORRECT' && (!correctionInput || !correctionInput.value.trim())) { result.textContent = 'Enter a corrected interpretation or choose OVERRIDE & INGEST.'; return; }
+    if (!window.confirm(decision === 'ACCEPT' ? 'Automatic ingestion was blocked. Override the block and ingest this source?' : 'Record Owner decision ' + decision + '?')) return;
+    const body = { decision: decision, reason: ownerExplanation || null };
+    if (decision === 'CORRECT') body.correction = { issueIndex: issueSelect.value, correctedInterpretation: correctionInput.value.trim(), reason: ownerExplanation };
+    try {
+      const response = await fetch('/owner/hermes-processing/review/' + encodeURIComponent(item.batchId) + '/' + encodeURIComponent(item.sourceSha256) + '/decision', { method: 'POST', headers: {'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify(body) });
+      const payload = await response.json();
+      if (!response.ok) { result.textContent = payload.reason || payload.status || 'Owner decision was not recorded.'; return; }
+      result.textContent = decision === 'REPROCESS' ? 'Reprocessing requested. Automatic rerun is not yet wired; ingestion remains blocked.'
+        : decision === 'CORRECT' && payload.correctionPublication === 'FAILED' ? 'Correction recorded but publication failed. Ingestion remains blocked.'
+        : decision === 'CORRECT' ? 'Correction saved and governed representation created. The original machine result remains unchanged.'
+        : 'Decision recorded. The original machine result remains unchanged.';
+      await loadHermesReview();
+      if (decision === 'REPROCESS') document.getElementById('hermesReviewStatus').textContent = 'Reprocessing requested. Automatic rerun is not yet wired; ingestion remains blocked.';
+    } catch (_) { result.textContent = 'Owner decision request failed safely.'; }
+  };
+  if (item.status === 'REVIEW_REQUIRED') {
+    const override = document.createElement('button'); override.textContent = 'OVERRIDE & INGEST'; override.onclick = () => submit('ACCEPT'); actions.appendChild(override);
+    const correct = document.createElement('button'); correct.textContent = 'CORRECT'; correct.onclick = () => submit('CORRECT'); actions.appendChild(correct);
+  }
+  const reject = document.createElement('button'); reject.textContent = 'DECLINE INGESTION'; reject.onclick = () => submit('REJECT'); actions.appendChild(reject);
+  const reprocess = document.createElement('button'); reprocess.textContent = 'REPROCESS'; reprocess.onclick = () => submit('REPROCESS'); actions.appendChild(reprocess);
+  detail.appendChild(actions); detail.appendChild(result);
+}
+
+async function loadHermesReview() {
+  const status = document.getElementById('hermesReviewStatus');
+  try {
+    const response = await fetch('/owner/hermes-processing/review', { method: 'GET', headers: authHeaders() });
+    if (response.status === 401) { status.textContent = 'Owner session expired or unavailable.'; return; }
+    const payload = await response.json();
+    if (!response.ok) { status.textContent = payload.error || 'Owner review unavailable.'; return; }
+    hermesReviewItems = (payload.items || []).filter(item => item.status === 'REVIEW_REQUIRED' || item.status === 'FAILED');
+    if (selectedHermesReview) selectedHermesReview = hermesReviewItems.find(item => item.batchId === selectedHermesReview.batchId && item.sourceSha256 === selectedHermesReview.sourceSha256) || null;
+    renderHermesReviewList(); renderHermesReviewDetail();
+    status.textContent = hermesReviewItems.length + ' pending item' + (hermesReviewItems.length === 1 ? '' : 's');
+  } catch (_) { status.textContent = 'Owner review request failed safely.'; }
 }
 
 document.getElementById('uploadButton').onclick = async () => {

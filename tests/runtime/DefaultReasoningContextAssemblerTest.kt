@@ -12,6 +12,7 @@ import parker.core.interfaces.EvidentialState
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.InboundOwnerMessage
 import parker.core.interfaces.KnowledgeCandidate
+import parker.core.interfaces.KnowledgeId
 import parker.core.interfaces.KnowledgeItemStatus
 import parker.core.interfaces.KnowledgeRetrievalQuery
 import parker.core.interfaces.KnowledgeSubmissionDisposition
@@ -455,11 +456,17 @@ class DefaultReasoningContextAssemblerTest {
         evidentialState: EvidentialState = EvidentialState.VERIFIED_EVIDENCE,
         status: KnowledgeItemStatus = KnowledgeItemStatus.ACTIVE,
         staleness: StalenessDisclosure = StalenessDisclosure.INDETERMINATE,
+        knowledgeId: KnowledgeId? = null,
+        evidenceReference: MemoryCoreRecordReference? = null,
+        provenanceReference: parker.core.interfaces.ProvenanceReference? = null,
     ) = SafeKnowledgeResultEntry(
         content = content,
         evidentialState = evidentialState,
         status = status,
         staleness = staleness,
+        knowledgeId = knowledgeId,
+        evidenceReference = evidenceReference,
+        provenanceReference = provenanceReference,
     )
 
     @Test
@@ -499,6 +506,34 @@ class DefaultReasoningContextAssemblerTest {
             "Memory: the owner prefers window seats (evidentialState=VERIFIED_EVIDENCE, status=ACTIVE, staleness=INDETERMINATE)",
             memoryEntries.single(),
         )
+    }
+
+    @Test
+    fun `a returned KnowledgeItem identity and provenance survive assembly structurally`() = runTest {
+        val identityService = FakeIdentityService { principal(ownerPrincipalId) }
+        val toolRegistry = FakeToolRegistry { emptyList() }
+        val knowledgeId = KnowledgeId("knowledge-context-1")
+        val evidenceReference = MemoryCoreRecordReference.ToAssertion(parker.core.interfaces.AssertionId("assertion-context-1"))
+        val provenanceReference = parker.core.interfaces.ProvenanceReference(parker.core.interfaces.ProvenanceId("provenance-context-1"))
+        val knowledgeSource = FakeReasoningKnowledgeSource {
+            listOf(
+                knowledgeEntry(
+                    "the owner prefers window seats",
+                    knowledgeId = knowledgeId,
+                    evidenceReference = evidenceReference,
+                    provenanceReference = provenanceReference,
+                ),
+            )
+        }
+        val assembler = DefaultReasoningContextAssembler(identityService, toolRegistry, FakeConversationHistorySource(), knowledgeSource, FakeWorldModelSource())
+
+        val context = assembler.assemble(resolved(message()))
+
+        val governed = assertIs<parker.core.interfaces.ReasoningContextEntry.GovernedKnowledge>(context.suppliedGovernedEntries.single())
+        assertEquals(knowledgeId, governed.knowledgeId)
+        assertEquals(evidenceReference, governed.evidenceReference)
+        assertEquals(provenanceReference, governed.provenanceReference)
+        assertEquals(context.entries.single { it.startsWith("Memory:") }, governed.text)
     }
 
     @Test

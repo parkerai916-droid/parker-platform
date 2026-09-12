@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -52,6 +53,7 @@ class ProcessedFile:
     result_submission: str
     governed_ingestion: str
     reason: str | None = None
+    pending_source_retained: bool = False
 
     def json(self) -> dict:
         return self.__dict__.copy()
@@ -139,13 +141,13 @@ def make_result(batch_id: str, source_hash: str, path: Path, data: bytes, timeou
         method = "STRUCTURED_DOCUMENT_EXTRACTION" if media == "text/csv" else "DIRECT_TEXT_EXTRACTION"
         if error:
             return {"sourceSha256": source_hash, "status": "FAILED", "methods": [method], "issues": [], "failure": {"kind": "NO_READABLE_CONTENT", "detail": error}}
-        return {"sourceSha256": source_hash, "status": "PASS", "methods": [method], "issues": [], "failure": None}
+        return {"sourceSha256": source_hash, "status": "PASS", "methods": [method], "issues": []}
     if media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         text, error = docx_text(data)
         if error:
             kind = "CORRUPT_SOURCE" if "corrupt" in error else "NO_READABLE_CONTENT"
             return {"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": {"kind": kind, "detail": error}}
-        return {"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": None}
+        return {"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": []}
     try:
         outcome = run_docling(path, media, timeout)
     except TimeoutError as error:
@@ -161,11 +163,25 @@ def make_result(batch_id: str, source_hash: str, path: Path, data: bytes, timeou
     if status not in ("recognised", "partial"):
         return {"sourceSha256": source_hash, "status": "FAILED", "methods": ["OCR"], "issues": [], "failure": {"kind": "PROCESSOR_FAILURE", "detail": "unknown Docling status"}}
     confidence = outcome.get("confidence")
-    uncertain = status == "partial" or (isinstance(confidence, (int, float)) and confidence < REVIEW_CONFIDENCE_THRESHOLD)
+    observed_confidence = confidence if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and math.isfinite(confidence) and 0.0 <= confidence <= 1.0 else None
+    warnings = outcome.get("warnings") if isinstance(outcome.get("warnings"), list) else []
+    warnings = [warning for warning in warnings if isinstance(warning, str) and warning.strip()]
+    completeness = "PARTIAL" if status == "partial" else "COMPLETE"
+    common = {
+        "sourceSha256": source_hash,
+        "methods": ["OCR"],
+        "reviewConfidenceThreshold": REVIEW_CONFIDENCE_THRESHOLD,
+        "processingCompleteness": completeness,
+        "processingWarnings": warnings,
+    }
+    uncertain = status == "partial" or (observed_confidence is not None and observed_confidence < REVIEW_CONFIDENCE_THRESHOLD)
     if uncertain:
         explanation = outcome.get("reason") or "OCR confidence is below the Hermes processing-quality threshold"
-        return {"sourceSha256": source_hash, "status": "REVIEW_REQUIRED", "methods": ["OCR"], "issues": [{"kind": "OCR_UNCERTAINTY", "explanation": explanation}], "failure": None}
-    return {"sourceSha256": source_hash, "status": "PASS", "methods": ["OCR"], "issues": [], "failure": None}
+        issue = {"kind": "OCR_UNCERTAINTY", "explanation": explanation}
+        if observed_confidence is not None:
+            issue["observedConfidence"] = observed_confidence
+        return {**common, "status": "REVIEW_REQUIRED", "issues": [issue]}
+    return {**common, "status": "PASS", "issues": []}
 
 
 class ParkerClient:
@@ -201,6 +217,10 @@ class ParkerClient:
         body = json.dumps(result, separators=(",", ":")).encode()
         return self.request(f"/agent/ingestion-batches/{batch_id}/processing-results", "POST", body, {"Content-Type": "application/json"})
 
+    def submit_pending_review_source(self, batch_id: str, source_hash: str, data: bytes, filename: str, media: str | None) -> tuple[int, object]:
+        headers = {"Content-Type": media or "application/octet-stream", "X-Parker-Original-Filename": filename}
+        return self.request(f"/agent/ingestion-batches/{batch_id}/pending-review-sources/{source_hash}", "POST", data, headers)
+
     def submit_source(self, batch_id: str, source_hash: str, data: bytes, filename: str, media: str | None) -> tuple[int, object]:
         headers = {"Content-Type": media or "application/octet-stream", "X-Parker-Original-Filename": filename}
         return self.request(f"/agent/ingestion-batches/{batch_id}/sources/{source_hash}", "POST", data, headers)
@@ -220,6 +240,10 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float)
     else:
         return ProcessedFile(path.name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED", str(payload))
     if result["status"] != "PASS":
+        if result["status"] == "REVIEW_REQUIRED":
+            custody_code, custody_payload = client.submit_pending_review_source(batch_id, digest, data, path.name, media_type_for(path))
+            if custody_code not in (200, 201) or not isinstance(custody_payload, dict) or custody_payload.get("status") not in ("STORED", "ALREADY_STORED"):
+                return ProcessedFile(path.name, digest, result["status"], result["methods"], submission, "BLOCKED", f"pending review custody failed: HTTP_{custody_code} {custody_payload}", True)
         return ProcessedFile(path.name, digest, result["status"], result["methods"], submission, "BLOCKED", result.get("failure", {}).get("detail") if result.get("failure") else (result.get("issues") or [{}])[0].get("explanation"))
     code, payload = client.submit_source(batch_id, digest, data, path.name, media_type_for(path))
     if code in (201, 200) and isinstance(payload, dict) and payload.get("status") in ("INGESTED", "ALREADY_INGESTED"):

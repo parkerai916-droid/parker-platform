@@ -1607,4 +1607,10 @@ data class SafeKnowledgeResultEntry(
     val evidentialState: EvidentialState,
     val status: KnowledgeItemStatus,
     val staleness: StalenessDisclosure,
+    /** Existing governed Knowledge identity, when this result came from a KnowledgeItem. */
+    val knowledgeId: KnowledgeId? = null,
+    /** Existing Memory Core support reference, when available. */
+    val evidenceReference: MemoryCoreRecordReference? = null,
+    /** Existing Memory Core provenance pointer, when available. */
+    val provenanceReference: ProvenanceReference? = null,
 )

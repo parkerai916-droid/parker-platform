@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.HermesProcessingCorrection
+import parker.core.interfaces.HermesProcessingCompleteness
 import parker.core.interfaces.HermesProcessingDecisionRegistry
 import parker.core.interfaces.HermesProcessingFailure
 import parker.core.interfaces.HermesProcessingFailureKind
@@ -170,22 +171,31 @@ private fun digest(value: String): String = MessageDigest.getInstance("SHA-256")
 
 private object HermesBinaryCodec {
     private const val MAGIC = 0x48524D53
-    private const val VERSION = 1
+    private const val VERSION = 2
+    private const val LEGACY_VERSION = 1
     fun writeResult(output: DataOutputStream, r: HermesProcessingResult) = with(output) {
         writeInt(MAGIC); writeInt(VERSION); writeUTF(r.sourceSha256); writeUTF(r.batchId); writeUTF(r.status.name)
         writeInt(r.methods.size); r.methods.map { it.name }.sorted().forEach(::writeUTF)
         writeNullable(r.proposedEvidenceArtifactId?.value) { writeUTF(it) }
         writeInt(r.issues.size); r.issues.forEach { writeIssue(it) }
         writeNullable(r.failure) { writeFailure(it) }
+        writeNullable(r.reviewConfidenceThreshold) { writeDouble(it) }
+        writeNullable(r.processingCompleteness) { writeUTF(it.name) }
+        writeInt(r.processingWarnings.size); r.processingWarnings.forEach(::writeUTF)
     }
     fun readResult(input: DataInputStream): HermesProcessingResult = with(input) {
-        require(readInt() == MAGIC && readInt() == VERSION) { "unsupported result header" }
+        require(readInt() == MAGIC) { "unsupported result header" }
+        val version = readInt()
+        require(version == LEGACY_VERSION || version == VERSION) { "unsupported result header" }
         val source = readUTF(); val batch = readUTF(); val status = HermesProcessingStatus.valueOf(readUTF())
         val methods = (0 until readCount("methods", 32)).map { HermesProcessingMethod.valueOf(readUTF()) }.toSet()
         val artifact = readNullable { EvidenceArtifactId(readUTF()) }
-        val issues = (0 until readCount("issues", 1_000)).map { readIssue() }
+        val issues = (0 until readCount("issues", 1_000)).map { readIssue(version) }
         val failure = readNullable { readFailure() }
-        return HermesProcessingResult(source, batch, status, methods, artifact, issues, failure)
+        val threshold = if (version >= VERSION) readNullable { readDouble() } else null
+        val completeness = if (version >= VERSION) readNullable { HermesProcessingCompleteness.valueOf(readUTF()) } else null
+        val warnings = if (version >= VERSION) (0 until readCount("processing warnings", 1_000)).map { readUTF() } else emptyList()
+        return HermesProcessingResult(source, batch, status, methods, artifact, issues, failure, threshold, completeness, warnings)
     }
     fun writeDecision(output: DataOutputStream, d: HermesProcessingHumanDecision) = with(output) {
         writeInt(MAGIC); writeInt(VERSION); writeUTF(d.batchId); writeUTF(d.sourceSha256); writeUTF(d.decision.name)
@@ -193,7 +203,9 @@ private object HermesBinaryCodec {
         writeNullable(d.correction) { writeInt(it.issueIndex); writeUTF(it.correctedInterpretation); writeUTF(it.reason) }
     }
     fun readDecision(input: DataInputStream): HermesProcessingHumanDecision = with(input) {
-        require(readInt() == MAGIC && readInt() == VERSION) { "unsupported decision header" }
+        require(readInt() == MAGIC) { "unsupported decision header" }
+        val version = readInt()
+        require(version == LEGACY_VERSION || version == VERSION) { "unsupported decision header" }
         val batch = readUTF(); val sha = readUTF(); val type = HermesProcessingHumanDecisionType.valueOf(readUTF())
         val principal = PrincipalId(readUTF()); val at = Instant.parse(readUTF()); val reason = readNullable { readUTF() }
         val correction = readNullable { HermesProcessingCorrection(readInt(), readUTF(), readUTF()) }
@@ -202,8 +214,13 @@ private object HermesBinaryCodec {
     private fun DataOutputStream.writeIssue(i: HermesProcessingIssue) {
         writeUTF(i.kind.name); writeUTF(i.explanation); writeNullable(i.location) { writeLocation(it) }
         writeNullable(i.hermesInterpretation) { writeUTF(it) }; writeNullable(i.transcriptionFidelity) { writeUTF(it.name) }
+        writeNullable(i.observedConfidence) { writeDouble(it) }
     }
-    private fun DataInputStream.readIssue() = HermesProcessingIssue(HermesProcessingIssueKind.valueOf(readUTF()), readUTF(), readNullable { readLocation() }, readNullable { readUTF() }, readNullable { TranscriptionFidelity.valueOf(readUTF()) })
+    private fun DataInputStream.readIssue(version: Int): HermesProcessingIssue = HermesProcessingIssue(
+        HermesProcessingIssueKind.valueOf(readUTF()), readUTF(), readNullable { readLocation() }, readNullable { readUTF() },
+        readNullable { TranscriptionFidelity.valueOf(readUTF()) },
+        if (version >= VERSION) readNullable { readDouble() } else null,
+    )
     private fun DataOutputStream.writeLocation(l: HermesProcessingIssueLocation) { when (l) { is HermesProcessingIssueLocation.DocumentPage -> { writeUTF("DocumentPage"); writeInt(l.pageNumber); writeNullable(l.startOffsetInclusive) { writeInt(it) }; writeNullable(l.endOffsetExclusive) { writeInt(it) }; writeNullable(l.regionDescription) { writeUTF(it) } } } }
     private fun DataInputStream.readLocation(): HermesProcessingIssueLocation { require(readUTF() == "DocumentPage") { "unsupported issue location" }; return HermesProcessingIssueLocation.DocumentPage(readInt(), readNullable { readInt() }, readNullable { readInt() }, readNullable { readUTF() }) }
     private fun DataOutputStream.writeFailure(f: HermesProcessingFailure) { writeUTF(f.kind.name); writeNullable(f.detail) { writeUTF(it) } }

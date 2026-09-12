@@ -441,8 +441,10 @@ class AgentGatewayHttpServerTest {
         assertEquals(
             setOf(
                 "retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent",
+                "retrieveEvidenceAsAnalysisAgent", "retrieveEvidenceManifestAsAnalysisAgent",
                 "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent",
-                "submitProcessingResultAsAgent", "listProcessingResultsForBatchAsAgent", "submitGovernedIngestionAsAgent",
+                "submitProcessingResultAsAgent", "submitPendingReviewSourceAsAgent", "listProcessingResultsForBatchAsAgent", "submitGovernedIngestionAsAgent",
+                "submitAnalysisRequestAsAgent",
             ),
             functionTypedFields.map { it.name }.toSet(),
         )
@@ -1118,7 +1120,7 @@ class AgentGatewayHttpServerTest {
             ),
         )
         fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(result)
-        val body = """{"sourceSha256":"${"a".repeat(64)}","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"TABLE_STRUCTURE_AMBIGUITY","explanation":"table column boundary is ambiguous","location":{"pageNumber":3}}]}"""
+        val body = """{"sourceSha256":"${"a".repeat(64)}","status":"REVIEW_REQUIRED","methods":["OCR"],"reviewConfidenceThreshold":0.8,"processingCompleteness":"PARTIAL","processingWarnings":["page 3 was incomplete"],"issues":[{"kind":"TABLE_STRUCTURE_AMBIGUITY","explanation":"table column boundary is ambiguous","observedConfidence":0.74,"location":{"pageNumber":3}}]}"""
 
         val response = postProcessingResult(fake.baseUri(), "bulk-abc", body)
 
@@ -1127,6 +1129,10 @@ class AgentGatewayHttpServerTest {
         assertEquals(parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED, submitted.status)
         val location = submitted.issues.single().location as parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage
         assertEquals(3, location.pageNumber)
+        assertEquals(0.74, submitted.issues.single().observedConfidence)
+        assertEquals(0.8, submitted.reviewConfidenceThreshold)
+        assertEquals(parker.core.interfaces.HermesProcessingCompleteness.PARTIAL, submitted.processingCompleteness)
+        assertEquals(listOf("page 3 was incomplete"), submitted.processingWarnings)
     }
 
     @Test
@@ -1799,7 +1805,7 @@ class AgentGatewayHttpServerTest {
             postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$failedSha","status":"FAILED","methods":["OCR"],"failure":{"kind":"CORRUPT_SOURCE"}}""")
             postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = passSha, status = "PASS"))
             postProcessingResult(harness.baseUri(), batchId, """{"sourceSha256":"$acceptedSha","status":"REVIEW_REQUIRED","methods":["OCR"],"issues":[{"kind":"MISSING_CONTENT","explanation":"m"}]}""")
-            harness.runtime.recordHermesProcessingDecisionAsOwner(batchId, acceptedSha, parker.core.interfaces.HermesProcessingHumanDecisionType.ACCEPT, null, null)
+            harness.runtime.recordHermesProcessingDecisionAsOwner(batchId, acceptedSha, parker.core.interfaces.HermesProcessingHumanDecisionType.ACCEPT, "Owner confirmed the discrepancy is immaterial", null)
 
             val queue = assertIs<parker.core.runtime.HermesProcessingReviewListOutcome.Found>(harness.runtime.listHermesProcessingReviewAsOwner())
             val pendingHashes = queue.items.map { it.sourceSha256 }.toSet()

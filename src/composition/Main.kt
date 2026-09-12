@@ -77,6 +77,8 @@ internal fun buildOwnerHttpAdapter(runtime: ParkerRuntime, config: ParkerRuntime
     OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
         listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
+        listDerivativeGenerationsAsOwner = runtime::listDerivativeGenerationsAsOwner,
+        resolvePreferredDerivativeAsOwner = runtime::resolvePreferredDerivativeAsOwner,
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
         importUploadedEvidenceFileAsOwner = runtime::importUploadedEvidenceFileAsOwner,
         invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
@@ -204,6 +206,8 @@ fun main(args: Array<String>) = runBlocking {
             continuePostEgress = runtime::continueOrdinaryRegionPostEgressAsOwner,
             listHermesProcessingReviewAsOwner = runtime::listHermesProcessingReviewAsOwner,
             recordHermesProcessingDecisionAsOwner = runtime::recordHermesProcessingDecisionAsOwner,
+            readPendingReviewSourceAsOwner = runtime::readPendingReviewSourceAsOwner,
+            analyseSelectedEvidenceAsOwner = runtime::analyseSelectedEvidenceAsOwner,
         ).also { it.start() }
     } else {
         null
@@ -222,19 +226,39 @@ fun main(args: Array<String>) = runBlocking {
             bindAddress = requireNotNull(config.agentGatewayHttpBindAddress),
             port = config.agentGatewayHttpPort,
             authentication = AgentGatewayAuthentication(
-                configuredToken = requireNotNull(config.agentGatewayHttpToken),
-                hermesPrincipalId = PrincipalId("agent.hermes-ingestion-operator"),
+                credentials = buildList {
+                    add(
+                        parker.composition.AgentGatewayCredentialBinding(
+                            token = requireNotNull(config.agentGatewayHttpToken),
+                            principalId = PrincipalId("agent.hermes-ingestion-operator"),
+                        ),
+                    )
+                    config.agentGatewayAnalysisHttpToken?.let { token ->
+                        add(
+                            parker.composition.AgentGatewayCredentialBinding(
+                                token = token,
+                                principalId = PrincipalId("agent.hermes-analysis-operator"),
+                            ),
+                        )
+                    }
+                },
             ),
+            ingestionPrincipalId = PrincipalId("agent.hermes-ingestion-operator"),
+            analysisPrincipalId = config.agentGatewayAnalysisHttpToken?.let { PrincipalId("agent.hermes-analysis-operator") },
             retrieveEvidenceAsAgent = runtime::retrieveEvidenceAsAgent,
             retrieveEvidenceManifestAsAgent = runtime::retrieveEvidenceManifestAsAgent,
+            retrieveEvidenceAsAnalysisAgent = runtime::retrieveEvidenceAsAnalysisAgent,
+            retrieveEvidenceManifestAsAnalysisAgent = runtime::retrieveEvidenceManifestAsAnalysisAgent,
             submitSourceAsAgent = runtime::submitSourceAsAgent,
             requestAcquisitionAsAgent = runtime::requestAcquisitionAsAgent,
             bindIngestionEvidenceAsAgent = runtime::bindIngestionEvidenceAsAgent,
             submitSourceWithBatchAsAgent = runtime::submitSourceAsAgent,
             listReadyIngestionBatchesAsAgent = runtime::listReadyBulkIngestionBatchesAsAgent,
             submitProcessingResultAsAgent = runtime::submitProcessingResultAsAgent,
+            submitPendingReviewSourceAsAgent = runtime::submitPendingReviewSourceAsAgent,
             listProcessingResultsForBatchAsAgent = runtime::listProcessingResultsForBatchAsAgent,
             submitGovernedIngestionAsAgent = runtime::submitGovernedIngestionAsAgent,
+            submitAnalysisRequestAsAgent = runtime::submitAnalysisRequestAsAgent,
             steveReviewQueueProjection = runtime.steveReviewQueueProjectionAsAgent(),
             audit = parker.core.runtime.FileSystemAgentGatewayAccessAudit(
                 java.nio.file.Path.of(requireNotNull(config.agentGatewayAccessAuditLogPath)),

@@ -111,6 +111,7 @@ ENV PATH="/usr/local/bin:${PATH}"
 # shared libraries below, nothing pulled in as a "recommended" extra.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        openssh-client \
         libgl1 \
         libglib2.0-0 \
         libx11-6 \

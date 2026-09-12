@@ -33,6 +33,9 @@ sealed class HermesEffectiveGateDecision {
 
     /** A human decision is on record that this R0 vocabulary does not permit for the current machine status (for example, ACCEPT against FAILED). */
     data object InvalidHumanDecision : HermesEffectiveGateDecision()
+
+    /** CORRECT was recorded, but its separate governed corrected representation is unavailable. */
+    data object CorrectionUnavailable : HermesEffectiveGateDecision()
 }
 
 /**
@@ -43,7 +46,9 @@ sealed class HermesEffectiveGateDecision {
  * human REJECT      -> BLOCK (HumanRejected), regardless of machine status
  * human REPROCESS   -> BLOCK (ReprocessRequired), regardless of machine status
  * machine PASS       -> ALLOW (human ACCEPT/CORRECT on top of an already-PASS result changes nothing)
- * machine REVIEW_REQUIRED + human ACCEPT or CORRECT -> ALLOW
+ * machine REVIEW_REQUIRED + human ACCEPT -> ALLOW
+ * machine REVIEW_REQUIRED + human CORRECT + governed correction -> ALLOW
+ * machine REVIEW_REQUIRED + human CORRECT without governed correction -> BLOCK (CorrectionUnavailable)
  * machine REVIEW_REQUIRED + no decision              -> BLOCK (HeldForReview)
  * machine FAILED + no decision                        -> BLOCK (ProcessingFailed)
  * machine FAILED + human CORRECT                       -> BLOCK (ProcessingFailed) -- see below
@@ -68,7 +73,11 @@ sealed class HermesEffectiveGateDecision {
  */
 object HermesProcessingEffectiveGate {
 
-    fun evaluate(result: HermesProcessingResult, latestDecision: HermesProcessingHumanDecision?): HermesEffectiveGateDecision {
+    fun evaluate(
+        result: HermesProcessingResult,
+        latestDecision: HermesProcessingHumanDecision?,
+        correctedRepresentationAvailable: Boolean = true,
+    ): HermesEffectiveGateDecision {
         when (latestDecision?.decision) {
             HermesProcessingHumanDecisionType.REJECT -> return HermesEffectiveGateDecision.HumanRejected
             HermesProcessingHumanDecisionType.REPROCESS -> return HermesEffectiveGateDecision.ReprocessRequired
@@ -77,7 +86,8 @@ object HermesProcessingEffectiveGate {
         return when (result.status) {
             HermesProcessingStatus.PASS -> HermesEffectiveGateDecision.Allow
             HermesProcessingStatus.REVIEW_REQUIRED -> when (latestDecision?.decision) {
-                HermesProcessingHumanDecisionType.ACCEPT, HermesProcessingHumanDecisionType.CORRECT -> HermesEffectiveGateDecision.Allow
+                HermesProcessingHumanDecisionType.ACCEPT -> HermesEffectiveGateDecision.Allow
+                HermesProcessingHumanDecisionType.CORRECT -> if (correctedRepresentationAvailable) HermesEffectiveGateDecision.Allow else HermesEffectiveGateDecision.CorrectionUnavailable
                 else -> HermesEffectiveGateDecision.HeldForReview
             }
             HermesProcessingStatus.FAILED -> when (latestDecision?.decision) {

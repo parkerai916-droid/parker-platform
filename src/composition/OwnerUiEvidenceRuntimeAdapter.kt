@@ -78,6 +78,8 @@ import parker.ui.OwnerOrdinaryRegionAuthorizationView
 import parker.ui.OwnerOrdinaryRegionExecutionView
 import parker.ui.OwnerExternalTranscriptionAuthorizationView
 import parker.ui.OwnerRegisteredEvidenceView
+import parker.ui.OwnerDerivativeGenerationSummary
+import parker.ui.OwnerPreferredDerivativeResolution
 import parker.core.runtime.OwnerRegisteredEvidence
 import parker.core.runtime.ORDINARY_REGION_CAPABILITY_ID
 import parker.core.interfaces.*
@@ -201,6 +203,10 @@ private fun mechanismLabel(mechanism: EvidenceAcquisitionMechanism) = when (mech
 class OwnerUiEvidenceRuntimeAdapter(
     private val ownerPrincipalId: PrincipalId,
     private val listRegisteredEvidenceAsOwner: suspend () -> List<OwnerRegisteredEvidence> = { emptyList() },
+    private val listDerivativeGenerationsAsOwner: suspend (EvidenceArtifactId) -> List<parker.core.runtime.DerivativeCandidateSummary> = { emptyList() },
+    private val resolvePreferredDerivativeAsOwner: suspend (EvidenceArtifactId) -> parker.core.runtime.PreferredDerivativeResolution = {
+        parker.core.runtime.PreferredDerivativeResolution.NoUsableDerivative(it, "Preferred derivative resolution is not configured")
+    },
     private val importEvidenceFileAsOwner: suspend (String, String?) -> OwnerLocalFileIngressOutcome,
     private val importUploadedEvidenceFileAsOwner: (suspend (String, String?, String) -> OwnerLocalFileIngressOutcome)? = null,
     private val invokeTierAIngestionAsOwner: suspend (EvidenceArtifactId) -> TierAOwnerInvocationOutcome,
@@ -294,6 +300,29 @@ class OwnerUiEvidenceRuntimeAdapter(
                 caseName = caseId?.let { caseNamesById[it.value] },
             )
         }
+    }
+
+    override suspend fun listDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerDerivativeGenerationSummary> =
+        listDerivativeGenerationsAsOwner(evidenceArtifactId).map {
+            OwnerDerivativeGenerationSummary(it.derivativeGenerationId.value, it.rootSourceEvidenceArtifactId.value,
+                it.derivativeKind, it.producerIdentity.pluginIdentity, it.producerIdentity.adapterIdentity,
+                it.generatedAt.toString(), it.operationalOutcome.name, it.completenessState.name, it.warnings,
+                it.transformationHistory.map { transformation -> transformation.name }, it.contentAvailable)
+        }
+
+    override suspend fun resolvePreferredDerivative(evidenceArtifactId: EvidenceArtifactId): OwnerPreferredDerivativeResolution =
+        resolvePreferredDerivativeAsOwner(evidenceArtifactId).toOwnerResolution()
+
+    private fun parker.core.runtime.DerivativeCandidateSummary.toOwnerSummary() = OwnerDerivativeGenerationSummary(
+        derivativeGenerationId.value, rootSourceEvidenceArtifactId.value, derivativeKind,
+        producerIdentity.pluginIdentity, producerIdentity.adapterIdentity, generatedAt.toString(),
+        operationalOutcome.name, completenessState.name, warnings, transformationHistory.map { it.name }, contentAvailable,
+    )
+
+    private fun parker.core.runtime.PreferredDerivativeResolution.toOwnerResolution(): OwnerPreferredDerivativeResolution = when (this) {
+        is parker.core.runtime.PreferredDerivativeResolution.Preferred -> OwnerPreferredDerivativeResolution.Preferred(evidenceArtifactId.value, derivative.toOwnerSummary(), reason)
+        is parker.core.runtime.PreferredDerivativeResolution.Ambiguous -> OwnerPreferredDerivativeResolution.Ambiguous(evidenceArtifactId.value, candidates.map { it.toOwnerSummary() }, reason)
+        is parker.core.runtime.PreferredDerivativeResolution.NoUsableDerivative -> OwnerPreferredDerivativeResolution.NoUsableDerivative(evidenceArtifactId.value, reason)
     }
 
     override suspend fun createCase(caseName: String): parker.ui.OwnerCaseCreationOutcome {

@@ -362,8 +362,11 @@ data class ParkerRuntimeConfig(
     val agentGatewayHttpBindAddress: String? = null,
     val agentGatewayHttpPort: Int? = null,
     val agentGatewayHttpToken: String? = null,
+    /** Separate bearer credential for the retrieval-only Hermes Analysis Agent. */
+    val agentGatewayAnalysisHttpToken: String? = null,
     val agentGatewayAccessAuditLogPath: String? = null,
     val agentGatewayHermesActive: Boolean = false,
+    val agentGatewayAnalysisActive: Boolean = false,
     /** Optional Parker-controlled root for durable Hermes processing results and Owner decisions. */
     val hermesProcessingStorageRootPath: String? = null,
 )
@@ -443,8 +446,10 @@ object ParkerRuntimeConfigLoader {
     const val KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS = "PARKER_AGENT_GATEWAY_HTTP_BIND_ADDRESS"
     const val KEY_AGENT_GATEWAY_HTTP_PORT = "PARKER_AGENT_GATEWAY_HTTP_PORT"
     const val KEY_AGENT_GATEWAY_HTTP_TOKEN = "PARKER_AGENT_GATEWAY_HTTP_TOKEN"
+    const val KEY_AGENT_GATEWAY_ANALYSIS_HTTP_TOKEN = "PARKER_ANALYSIS_AGENT_GATEWAY_HTTP_TOKEN"
     const val KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH = "PARKER_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH"
     const val KEY_AGENT_GATEWAY_HERMES_ACTIVE = "PARKER_AGENT_GATEWAY_HERMES_ACTIVE"
+    const val KEY_AGENT_GATEWAY_ANALYSIS_ACTIVE = "PARKER_AGENT_GATEWAY_ANALYSIS_ACTIVE"
     const val KEY_HERMES_PROCESSING_STORAGE_ROOT = "PARKER_HERMES_PROCESSING_STORAGE_ROOT"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
@@ -578,6 +583,7 @@ object ParkerRuntimeConfigLoader {
         }
         val agentGatewayHttpBindAddress = environment[KEY_AGENT_GATEWAY_HTTP_BIND_ADDRESS]?.takeIf { it.isNotBlank() }
         val agentGatewayHttpToken = environment[KEY_AGENT_GATEWAY_HTTP_TOKEN]?.takeIf { it.isNotBlank() }
+        val agentGatewayAnalysisHttpToken = environment[KEY_AGENT_GATEWAY_ANALYSIS_HTTP_TOKEN]?.takeIf { it.isNotBlank() }
         val agentGatewayAccessAuditLogPath = environment[KEY_AGENT_GATEWAY_ACCESS_AUDIT_LOG_PATH]?.takeIf { it.isNotBlank() }
         if (agentGatewayHttpPort != null) {
             if (agentGatewayHttpBindAddress == null) {
@@ -606,6 +612,13 @@ object ParkerRuntimeConfigLoader {
             )
         }
 
+        if (agentGatewayAnalysisHttpToken != null && agentGatewayHttpPort == null) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_AGENT_GATEWAY_ANALYSIS_HTTP_TOKEN,
+                "analysis agent bearer token requires the Agent Gateway HTTP port",
+            )
+        }
+
         // Parker Agent Gateway, production enablement: the narrowest explicit,
         // owner-controlled production activation for Hermes's own principal --
         // `agent.hermes-ingestion-operator` is always registered CREATED on every startup
@@ -624,6 +637,25 @@ object ParkerRuntimeConfigLoader {
             throw ParkerRuntimeException.InvalidConfiguration(
                 KEY_AGENT_GATEWAY_HERMES_ACTIVE,
                 "requires the Agent Gateway HTTP port to be configured -- activating Hermes with no Gateway HTTP surface for it to reach is never a useful state",
+            )
+        }
+
+        val agentGatewayAnalysisActiveRaw = environment[KEY_AGENT_GATEWAY_ANALYSIS_ACTIVE]?.takeIf { it.isNotBlank() }
+        val agentGatewayAnalysisActive = agentGatewayAnalysisActiveRaw?.trim()?.toBooleanStrictOrNull()
+            ?: if (agentGatewayAnalysisActiveRaw == null) false else throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_AGENT_GATEWAY_ANALYSIS_ACTIVE,
+                "must be true or false; was '$agentGatewayAnalysisActiveRaw'",
+            )
+        if (agentGatewayAnalysisActive && agentGatewayHttpPort == null) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_AGENT_GATEWAY_ANALYSIS_ACTIVE,
+                "requires the Agent Gateway HTTP port to be configured",
+            )
+        }
+        if (agentGatewayAnalysisActive && agentGatewayAnalysisHttpToken == null) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_AGENT_GATEWAY_ANALYSIS_HTTP_TOKEN,
+                "analysis agent activation requires a separate bearer token",
             )
         }
 
@@ -756,8 +788,10 @@ object ParkerRuntimeConfigLoader {
             agentGatewayHttpBindAddress = agentGatewayHttpBindAddress,
             agentGatewayHttpPort = agentGatewayHttpPort,
             agentGatewayHttpToken = agentGatewayHttpToken,
+            agentGatewayAnalysisHttpToken = agentGatewayAnalysisHttpToken,
             agentGatewayAccessAuditLogPath = agentGatewayAccessAuditLogPath,
             agentGatewayHermesActive = agentGatewayHermesActive,
+            agentGatewayAnalysisActive = agentGatewayAnalysisActive,
             hermesProcessingStorageRootPath = environment[KEY_HERMES_PROCESSING_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
         )
     }

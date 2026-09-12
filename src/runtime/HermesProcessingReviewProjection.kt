@@ -25,6 +25,9 @@ data class HermesProcessingReviewItem(
     val methods: Set<HermesProcessingMethod>,
     val issues: List<HermesProcessingIssue>,
     val failure: HermesProcessingFailure?,
+    val reviewConfidenceThreshold: Double?,
+    val processingCompleteness: parker.core.interfaces.HermesProcessingCompleteness?,
+    val processingWarnings: List<String>,
     val latestDecision: HermesProcessingHumanDecision?,
     val caseDisplayName: String?,
 )
@@ -63,6 +66,9 @@ class HermesProcessingReviewProjection(
                 methods = result.methods,
                 issues = result.issues,
                 failure = result.failure,
+                reviewConfidenceThreshold = result.reviewConfidenceThreshold,
+                processingCompleteness = result.processingCompleteness,
+                processingWarnings = result.processingWarnings,
                 latestDecision = latestDecision,
                 caseDisplayName = caseDisplayNameForBatch(result.batchId),
             )

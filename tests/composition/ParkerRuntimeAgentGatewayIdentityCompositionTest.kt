@@ -82,10 +82,12 @@ class ParkerRuntimeAgentGatewayIdentityCompositionTest {
         agentGatewayHttpBindAddress = if (agentGatewayHttpConfigured) "127.0.0.1" else null,
         agentGatewayHttpPort = if (agentGatewayHttpConfigured) 0 else null,
         agentGatewayHttpToken = if (agentGatewayHttpConfigured) "test-hermes-bearer-token" else null,
+        agentGatewayAnalysisHttpToken = if (agentGatewayHttpConfigured) "test-analysis-bearer-token" else null,
         agentGatewayAccessAuditLogPath = if (agentGatewayHttpConfigured) {
             Files.createTempDirectory("agent-gateway-identity-access-audit").resolve("audit.log").toString()
         } else null,
         agentGatewayHermesActive = agentGatewayHermesActive,
+        agentGatewayAnalysisActive = agentGatewayHermesActive,
     )
 
     private fun <T> Any.privateField(name: String): T {
@@ -100,7 +102,25 @@ class ParkerRuntimeAgentGatewayIdentityCompositionTest {
     private fun composedIdentityService(runtime: ParkerRuntime): IdentityService = composedEngine(runtime).privateField("identityService")
 
     private val hermesPrincipalId = PrincipalId("agent.hermes-ingestion-operator")
+    private val analysisPrincipalId = PrincipalId("agent.hermes-analysis-operator")
     private val agentGatewayPurpose = AuthorizationPurposeId("agent-gateway.hermes-ingestion")
+
+    @Test
+    fun `Analysis Agent principal is distinct and independently activated`() = runTest {
+        val runtime = ParkerRuntime(config(agentGatewayHermesActive = true), RecordingParkerLogger())
+        runtime.start()
+
+        val identityService = composedIdentityService(runtime)
+        val analysis = identityService.resolve(analysisPrincipalId)
+
+        assertTrue(analysis != null)
+        assertEquals(PrincipalType.EXTERNAL_AGENT, analysis!!.principalType)
+        assertEquals(PrincipalStatus.ACTIVE, analysis.status)
+        assertNotEquals(hermesPrincipalId, analysis.principalId)
+        assertNotEquals(analysisPrincipalId, PrincipalId("user.owner-agent-gateway-identity-test"))
+
+        runtime.shutdown()
+    }
 
     // ================= A/C. Hermes exists, correctly shaped, CREATED =================
 

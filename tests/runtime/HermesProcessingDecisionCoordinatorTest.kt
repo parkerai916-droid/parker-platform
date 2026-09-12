@@ -29,6 +29,7 @@ import parker.core.interfaces.ResourceType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -50,6 +51,7 @@ class HermesProcessingDecisionCoordinatorTest {
         val identityService: InMemoryIdentityService,
         val processingResults: HermesProcessingResultRegistry,
         val decisions: InMemoryHermesProcessingDecisionRegistry,
+        val corrections: InMemoryHermesPreIngestionCorrectionRegistry,
         val coordinator: HermesProcessingDecisionCoordinator,
     )
 
@@ -81,8 +83,12 @@ class HermesProcessingDecisionCoordinatorTest {
         val engine = DefaultPermissionEngine(identityService, policy)
         val processingResults = InMemoryHermesProcessingResultRegistry()
         val decisions = InMemoryHermesProcessingDecisionRegistry()
-        val coordinator = HermesProcessingDecisionCoordinator(engine, processingResults, decisions, caseDisplayNameForBatch)
-        return Environment(identityService, processingResults, decisions, coordinator)
+        val corrections = InMemoryHermesPreIngestionCorrectionRegistry()
+        val coordinator = HermesProcessingDecisionCoordinator(
+            engine, processingResults, decisions, caseDisplayNameForBatch,
+            preIngestionCorrectionRegistry = corrections,
+        )
+        return Environment(identityService, processingResults, decisions, corrections, coordinator)
     }
 
     @Test
@@ -96,6 +102,36 @@ class HermesProcessingDecisionCoordinatorTest {
         val recorded = assertIs<HermesProcessingDecisionOutcome.Recorded>(outcome)
         assertEquals(ownerPrincipalId, recorded.decision.decidedBy)
         assertEquals(HermesProcessingHumanDecisionType.ACCEPT, env.decisions.latest("bulk-abc", "a".repeat(64))?.decision)
+    }
+
+    @Test
+    fun `a REVIEW_REQUIRED override without an Owner explanation is refused and is not recorded`() = runTest {
+        val env = buildEnvironment()
+        env.identityService.updateStatus(ownerPrincipalId, PrincipalStatus.ACTIVE)
+        env.processingResults.record(result(status = HermesProcessingStatus.REVIEW_REQUIRED, issues = listOf(HermesProcessingIssue(HermesProcessingIssueKind.MISSING_CONTENT, "missing"))))
+
+        val outcome = env.coordinator.recordDecision(
+            ownerPrincipalId, "bulk-abc", "a".repeat(64), HermesProcessingHumanDecisionType.ACCEPT, "  ", null,
+        )
+
+        val invalid = assertIs<HermesProcessingDecisionOutcome.InvalidDecision>(outcome)
+        assertTrue(invalid.reason.contains("Owner explanation"))
+        assertEquals(null, env.decisions.latest("bulk-abc", "a".repeat(64)))
+    }
+
+    @Test
+    fun `a corrected REVIEW_REQUIRED override requires both an Owner explanation and a valid correction`() = runTest {
+        val env = buildEnvironment()
+        env.identityService.updateStatus(ownerPrincipalId, PrincipalStatus.ACTIVE)
+        env.processingResults.record(result(status = HermesProcessingStatus.REVIEW_REQUIRED, issues = listOf(HermesProcessingIssue(HermesProcessingIssueKind.MISSING_CONTENT, "missing"))))
+        val correction = HermesProcessingCorrection(0, "corrected", "verified against source")
+
+        val outcome = env.coordinator.recordDecision(
+            ownerPrincipalId, "bulk-abc", "a".repeat(64), HermesProcessingHumanDecisionType.CORRECT, null, correction,
+        )
+
+        assertIs<HermesProcessingDecisionOutcome.InvalidDecision>(outcome)
+        assertEquals(null, env.decisions.latest("bulk-abc", "a".repeat(64)))
     }
 
     @Test
@@ -145,6 +181,30 @@ class HermesProcessingDecisionCoordinatorTest {
 
         assertIs<HermesProcessingDecisionOutcome.InvalidDecision>(outcome)
         assertEquals(null, env.decisions.latest("bulk-abc", "a".repeat(64)))
+    }
+
+    @Test
+    fun `a valid CORRECT decision publishes a separate governed representation and leaves the machine result unchanged`() = runTest {
+        val env = buildEnvironment()
+        env.identityService.updateStatus(ownerPrincipalId, PrincipalStatus.ACTIVE)
+        val machine = result(status = HermesProcessingStatus.REVIEW_REQUIRED, issues = listOf(
+            HermesProcessingIssue(HermesProcessingIssueKind.TABLE_STRUCTURE_AMBIGUITY, "table ambiguous", hermesInterpretation = "42,871"),
+        ))
+        env.processingResults.record(machine)
+        val correction = HermesProcessingCorrection(0, "42,871.00", "verified against source")
+
+        val outcome = env.coordinator.recordDecision(
+            ownerPrincipalId, machine.batchId, machine.sourceSha256, HermesProcessingHumanDecisionType.CORRECT,
+            "The source clearly shows the cents value.", correction,
+        )
+
+        val recorded = assertIs<HermesProcessingDecisionOutcome.Recorded>(outcome)
+        assertIs<parker.core.interfaces.HermesPreIngestionCorrectionPublication.Created>(recorded.correctionPublication)
+        val published = assertNotNull(env.corrections.findForDecision(machine, recorded.decision))
+        assertEquals("42,871", published.machineInterpretation)
+        assertEquals("42,871.00", published.correctedInterpretation)
+        assertEquals("The source clearly shows the cents value.", published.ownerExplanation)
+        assertEquals(machine, env.processingResults.find(machine.batchId, machine.sourceSha256))
     }
 
     @Test
@@ -199,7 +259,7 @@ class HermesProcessingDecisionCoordinatorTest {
         // Hermes's own PrincipalId -- ParkerRuntime.recordHermesProcessingDecisionAsOwner (the sole
         // production caller) has no parameter through which any caller, including Hermes's own HTTP
         // surface (AgentGatewayHttpServer/AgentGatewayEvidenceProjection), could ever substitute it.
-        val outcome = env.coordinator.recordDecision(hermesPrincipalId, "bulk-abc", "a".repeat(64), HermesProcessingHumanDecisionType.ACCEPT, null, null)
+        val outcome = env.coordinator.recordDecision(hermesPrincipalId, "bulk-abc", "a".repeat(64), HermesProcessingHumanDecisionType.ACCEPT, "test explanation", null)
 
         assertIs<HermesProcessingDecisionOutcome.Recorded>(outcome, "documents the known, disclosed caveat DefaultOwnerEvidenceDeletionAuthority's own KDoc already establishes for this codebase's policy mechanism")
     }

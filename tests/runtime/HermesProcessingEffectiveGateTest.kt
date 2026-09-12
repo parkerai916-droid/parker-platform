@@ -76,6 +76,19 @@ class HermesProcessingEffectiveGateTest {
     }
 
     @Test
+    fun `REVIEW_REQUIRED plus CORRECT without a published correction remains blocked`() {
+        val correction = parker.core.interfaces.HermesProcessingCorrection(0, "corrected", "reason")
+        assertEquals(
+            HermesEffectiveGateDecision.CorrectionUnavailable,
+            HermesProcessingEffectiveGate.evaluate(
+                result(HermesProcessingStatus.REVIEW_REQUIRED, oneIssue),
+                decision(HermesProcessingHumanDecisionType.CORRECT, correction),
+                correctedRepresentationAvailable = false,
+            ),
+        )
+    }
+
+    @Test
     fun `FAILED plus ACCEPT is InvalidHumanDecision -- never allows`() {
         val outcome = HermesProcessingEffectiveGate.evaluate(
             result(HermesProcessingStatus.FAILED, failure = HermesProcessingFailure(HermesProcessingFailureKind.ENCRYPTED_SOURCE)),

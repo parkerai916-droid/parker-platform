@@ -38,10 +38,109 @@ package parker.core.interfaces
  *   Section 2 -- a Turn may carry no prior context, e.g. the first Turn of
  *   a new Conversation).
  */
-data class ReasoningContext(val entries: List<String>) {
+/*
+ * One structurally typed reasoning-context entry. The rendered text remains
+ * an ordinary provider-boundary concern, while governed entries retain their
+ * Parker identity here and cannot be manufactured by the provider.
+ */
+sealed interface ReasoningContextEntry {
+    val text: String
+
+    data class PlainText(override val text: String) : ReasoningContextEntry {
+        init {
+            require(text.isNotBlank()) { "ReasoningContextEntry.PlainText.text must not be blank" }
+        }
+    }
+
+    data class GovernedEvidence(
+        override val text: String,
+        val evidenceArtifactId: EvidenceArtifactId,
+        val derivativeGenerationId: DerivativeGenerationId? = null,
+        val sourceSha256: String? = null,
+        val pageNumber: Int? = null,
+        val sourceRegionId: SourceRegionId? = null,
+        val assurance: AnalysisAcquisitionAssurance? = null,
+    ) : ReasoningContextEntry {
+        init {
+            require(text.isNotBlank()) { "ReasoningContextEntry.GovernedEvidence.text must not be blank" }
+            require(sourceSha256 == null || sourceSha256.matches(Regex("^[0-9a-f]{64}$"))) {
+                "ReasoningContextEntry.GovernedEvidence.sourceSha256 must be lowercase SHA-256 when present"
+            }
+            require(pageNumber == null || pageNumber > 0) {
+                "ReasoningContextEntry.GovernedEvidence.pageNumber must be positive when present"
+            }
+        }
+    }
+
+    data class GovernedKnowledge(
+        override val text: String,
+        val knowledgeId: KnowledgeId,
+        val evidenceReference: MemoryCoreRecordReference? = null,
+        val provenanceReference: ProvenanceReference? = null,
+    ) : ReasoningContextEntry {
+        init {
+            require(text.isNotBlank()) { "ReasoningContextEntry.GovernedKnowledge.text must not be blank" }
+        }
+    }
+
+    data class GovernedMemoryCore(
+        override val text: String,
+        val reference: RelationshipEndpoint,
+    ) : ReasoningContextEntry {
+        init {
+            require(text.isNotBlank()) { "ReasoningContextEntry.GovernedMemoryCore.text must not be blank" }
+        }
+    }
+
+    /** An existing governed conflict fact projected into one invocation. */
+    data class GovernedConflict(
+        override val text: String,
+        val conflictId: String,
+        val conflictType: KnownConflictType,
+        val resolutionState: KnownConflictResolutionState,
+        val participants: List<RelationshipEndpoint>,
+        val provenanceId: ProvenanceId? = null,
+    ) : ReasoningContextEntry {
+        init {
+            require(text.isNotBlank()) { "ReasoningContextEntry.GovernedConflict.text must not be blank" }
+            require(conflictId.isNotBlank()) { "ReasoningContextEntry.GovernedConflict.conflictId must not be blank" }
+            require(participants.size >= 2 && participants.distinct().size == participants.size) {
+                "Governed conflict must retain at least two distinct governed participants"
+            }
+        }
+    }
+}
+
+enum class KnownConflictType { CONTRADICTS, DISPUTES, COMPETING_EXPLANATIONS, HUMAN_FIDELITY_REVIEW_CONFLICT }
+
+enum class KnownConflictResolutionState { UNRESOLVED, AUTHORITATIVE_RESOLVED }
+
+/**
+ * The existing textual reasoning context with an additive structural view.
+ * Existing callers may continue constructing it from ordinary strings.
+ */
+data class ReasoningContext(
+    val entries: List<String>,
+    val typedEntries: List<ReasoningContextEntry> = entries.map { ReasoningContextEntry.PlainText(it) },
+) {
     init {
         require(entries.all { it.isNotBlank() }) {
             "ReasoningContext entries must not be blank"
+        }
+        require(typedEntries.map { it.text } == entries) {
+            "ReasoningContext typedEntries must render to entries in the same order"
+        }
+    }
+
+    /** Governed context objects actually supplied in this immutable context value. */
+    val suppliedGovernedEntries: List<ReasoningContextEntry>
+        get() = typedEntries.filter { it !is ReasoningContextEntry.PlainText }
+
+    companion object {
+        /** Constructs a context from typed entries without flattening their identity. */
+        fun fromTypedEntries(entries: List<ReasoningContextEntry>): ReasoningContext {
+            val snapshot = entries.toList()
+            return ReasoningContext(snapshot.map { it.text }, snapshot)
         }
     }
 }

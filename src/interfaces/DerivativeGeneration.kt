@@ -189,6 +189,11 @@ interface DerivativeGenerationStorage {
     suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId): DerivativeGenerationRecord?
 }
 
+/** Exact-evidence, read-only discovery of all published generation records. */
+fun interface DerivativeGenerationDiscovery {
+    suspend fun findGenerationsForEvidence(evidenceArtifactId: EvidenceArtifactId): List<DerivativeGenerationRecord>
+}
+
 /**
  * UI-INGESTION-8B: exact-evidence discovery of admitted Tier B OCR derivative generations.
  * Governed by `DOCUMENT_INGESTION_TIER_B_OCR_EXACT_EVIDENCE_DERIVATIVE_GENERATION_DISCOVERY_SCOPE_LOCK_AMENDMENT.md`,

@@ -7,6 +7,9 @@ import parker.core.interfaces.HermesProcessingCorrection
 import parker.core.interfaces.HermesProcessingDecisionRegistry
 import parker.core.interfaces.HermesProcessingHumanDecision
 import parker.core.interfaces.HermesProcessingHumanDecisionType
+import parker.core.interfaces.HermesPreIngestionCorrectedRepresentation
+import parker.core.interfaces.HermesPreIngestionCorrectionPublication
+import parker.core.interfaces.HermesPreIngestionCorrectionRegistry
 import parker.core.interfaces.HermesProcessingResultRegistry
 import parker.core.interfaces.HermesProcessingStatus
 import parker.core.interfaces.PermissionDecision
@@ -49,6 +52,7 @@ class HermesProcessingDecisionCoordinator(
     private val decisionRegistry: HermesProcessingDecisionRegistry,
     private val caseDisplayNameForBatch: suspend (String) -> String? = { null },
     private val clock: () -> Instant = Instant::now,
+    private val preIngestionCorrectionRegistry: HermesPreIngestionCorrectionRegistry? = null,
 ) {
 
     /**
@@ -66,6 +70,9 @@ class HermesProcessingDecisionCoordinator(
      *   the stored result's own `issues` list -> [HermesProcessingDecisionOutcome.InvalidDecision].
      *   Nothing is recorded. (This structurally also covers every FAILED result with no `issues`
      *   at all -- the ordinary case -- without a FAILED-specific special case.)
+     * - `ACCEPT` or `CORRECT` against `REVIEW_REQUIRED` without a non-blank Owner explanation ->
+     *   [HermesProcessingDecisionOutcome.InvalidDecision]. The machine discrepancy and the Owner's
+     *   explanation remain separate facts; an override is never a reasonless approval flag.
      * - Otherwise -> durably appended via [decisionRegistry], returned as
      *   [HermesProcessingDecisionOutcome.Recorded].
      */
@@ -88,13 +95,24 @@ class HermesProcessingDecisionCoordinator(
             ?: return HermesProcessingDecisionOutcome.UnknownProcessingResult
 
         when (decisionType) {
-            HermesProcessingHumanDecisionType.ACCEPT ->
+            HermesProcessingHumanDecisionType.ACCEPT -> {
                 if (stored.status == HermesProcessingStatus.FAILED) {
                     return HermesProcessingDecisionOutcome.InvalidDecision(
                         "ACCEPT is not permitted while the Hermes processing status is FAILED",
                     )
                 }
+                if (stored.status == HermesProcessingStatus.REVIEW_REQUIRED && reason.isNullOrBlank()) {
+                    return HermesProcessingDecisionOutcome.InvalidDecision(
+                        "an Owner explanation is required to override REVIEW_REQUIRED",
+                    )
+                }
+            }
             HermesProcessingHumanDecisionType.CORRECT -> {
+                if (stored.status == HermesProcessingStatus.REVIEW_REQUIRED && reason.isNullOrBlank()) {
+                    return HermesProcessingDecisionOutcome.InvalidDecision(
+                        "an Owner explanation is required to override REVIEW_REQUIRED",
+                    )
+                }
                 val index = correction?.issueIndex
                 if (index == null || index !in stored.issues.indices) {
                     return HermesProcessingDecisionOutcome.InvalidDecision(
@@ -116,7 +134,34 @@ class HermesProcessingDecisionCoordinator(
                 correction = correction,
             ),
         )
-        return HermesProcessingDecisionOutcome.Recorded(recorded)
+        val publication = if (decisionType == HermesProcessingHumanDecisionType.CORRECT && stored.status == HermesProcessingStatus.REVIEW_REQUIRED) {
+            val correction = requireNotNull(correction)
+            val issue = stored.issues[correction.issueIndex]
+            try {
+                preIngestionCorrectionRegistry?.publish(
+                    HermesPreIngestionCorrectedRepresentation(
+                        representationId = HermesPreIngestionCorrectedRepresentation.deriveId(
+                            stored.batchId, stored.sourceSha256, correction.issueIndex, issue.kind, issue.explanation,
+                            issue.hermesInterpretation, correction.correctedInterpretation, requireNotNull(reason), requestingPrincipalId,
+                        ),
+                        batchId = stored.batchId,
+                        sourceSha256 = stored.sourceSha256,
+                        machineResultStatus = stored.status,
+                        issueIndex = correction.issueIndex,
+                        machineIssueKind = issue.kind,
+                        machineIssueExplanation = issue.explanation,
+                        machineInterpretation = issue.hermesInterpretation,
+                        correctedInterpretation = correction.correctedInterpretation,
+                        ownerExplanation = requireNotNull(reason),
+                        ownerPrincipalId = requestingPrincipalId,
+                        decisionAt = recorded.decidedAt,
+                    ),
+                ) ?: HermesPreIngestionCorrectionPublication.Failed("CORRECTION_PUBLICATION_NOT_CONFIGURED")
+            } catch (e: Exception) {
+                HermesPreIngestionCorrectionPublication.Failed(e.message ?: "CORRECTION_PUBLICATION_FAILED")
+            }
+        } else HermesPreIngestionCorrectionPublication.NotRequired
+        return HermesProcessingDecisionOutcome.Recorded(recorded, publication)
     }
 
     /** The Owner review queue (see [HermesProcessingReviewProjection]), gated by the same, separate `hermes-processing.review.list` verb. */
@@ -165,7 +210,10 @@ class HermesProcessingDecisionCoordinator(
 
 /** The typed outcome of [HermesProcessingDecisionCoordinator.recordDecision]. */
 sealed class HermesProcessingDecisionOutcome {
-    data class Recorded(val decision: HermesProcessingHumanDecision) : HermesProcessingDecisionOutcome()
+    data class Recorded(
+        val decision: HermesProcessingHumanDecision,
+        val correctionPublication: HermesPreIngestionCorrectionPublication = HermesPreIngestionCorrectionPublication.NotRequired,
+    ) : HermesProcessingDecisionOutcome()
 
     /** No stored [parker.core.interfaces.HermesProcessingResult] exists for this exact (batchId, sourceSha256). */
     data object UnknownProcessingResult : HermesProcessingDecisionOutcome()

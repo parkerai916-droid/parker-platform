@@ -17,8 +17,9 @@ import parker.core.interfaces.DerivativeGenerationStorageException
 import parker.core.interfaces.DerivativeTransformation
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.OcrDerivativeGenerationDiscovery
+import parker.core.interfaces.DerivativeGenerationDiscovery
 
-class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGenerationStorage, OcrDerivativeGenerationDiscovery {
+class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGenerationStorage, DerivativeGenerationDiscovery, OcrDerivativeGenerationDiscovery {
     private val storageRoot = storageRoot.toAbsolutePath().normalize()
     private val tempDirectory: Path
     private val preparedDirectory: Path
@@ -142,6 +143,25 @@ class FileSystemDerivativeGenerationStorage(storageRoot: Path) : DerivativeGener
             }
             record
         }
+    }
+
+    override suspend fun findGenerationsForEvidence(evidenceArtifactId: EvidenceArtifactId): List<DerivativeGenerationRecord> {
+        val records = try {
+            mutex.withLock {
+                Files.list(storageRoot).use { paths ->
+                    paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".derivative") }
+                        .map { path ->
+                            val size = Files.size(path)
+                            if (size > MAX_RECORD_BYTES) throw DerivativeGenerationStorageException.CorruptRecord(
+                                DerivativeGenerationId(path.fileName.toString().removeSuffix(".derivative")), "record exceeds size limit")
+                            DerivativeGenerationRecordCodec.decode(Files.readAllBytes(path))
+                        }.toList()
+                }
+            }
+        } catch (e: DerivativeGenerationStorageException) { throw e }
+        catch (e: Exception) { throw IllegalStateException("derivative generation discovery unavailable", e) }
+        return records.filter { it.rootSourceEvidenceArtifactId == evidenceArtifactId }
+            .sortedWith(compareByDescending<DerivativeGenerationRecord> { it.generatedAt }.thenByDescending { it.derivativeGenerationId.value })
     }
 
     /**

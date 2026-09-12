@@ -4,6 +4,7 @@ import parker.core.interfaces.ConversationHistorySource
 import parker.core.interfaces.IdentityService
 import parker.core.interfaces.KnowledgeRetrievalQuery
 import parker.core.interfaces.ReasoningContext
+import parker.core.interfaces.ReasoningContextEntry
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ReasoningKnowledgeSource
 import parker.core.interfaces.ResolvedInboundMessage
@@ -285,28 +286,34 @@ class DefaultReasoningContextAssembler(
     override suspend fun assemble(resolvedMessage: ResolvedInboundMessage): ReasoningContext {
         val message = resolvedMessage.message
         val entries = mutableListOf<String>()
+        val typedEntries = mutableListOf<ReasoningContextEntry>()
+
+        fun addPlainText(text: String) {
+            entries += text
+            typedEntries += ReasoningContextEntry.PlainText(text)
+        }
 
         val requester = identityService.resolve(message.senderPrincipalId)
-        entries += if (requester != null) {
+        addPlainText(if (requester != null) {
             "Requesting principal: ${requester.displayName} (${message.senderPrincipalId.value})"
         } else {
             "Requesting principal: ${message.senderPrincipalId.value} (identity not resolved)"
-        }
+        })
 
-        entries += "Communication channel: ${message.channelId.value}"
-        entries += "Current time: ${message.timestamp}"
+        addPlainText("Communication channel: ${message.channelId.value}")
+        addPlainText("Current time: ${message.timestamp}")
         // Sprint 11 Unit 5: the already-resolved ConversationId, read only -- no lookup, no
         // resolution, no mutation (Continuity Contract Design Section 4.4/11). This class never
         // calls ConversationEngine; resolvedMessage.conversationId was decided entirely by the
         // Production Composition Root before assemble() was invoked.
-        entries += "Current conversation: ${resolvedMessage.conversationId.value}"
+        addPlainText("Current conversation: ${resolvedMessage.conversationId.value}")
 
         // Sprint 11 Unit 6: prior Turns for this conversation, oldest first, rendered as-is --
         // no ranking, no truncation, no summarisation (Conversation History Source Contract
         // Design Section 5). One-sided: only the owner's own prior messages are ever available
         // (Contract Design Section 4.3) -- no Turn record anywhere captures Parker's own replies.
         conversationHistorySource.history(resolvedMessage.conversationId).forEach { turn ->
-            entries += "Prior message: ${turn.message.text} (from ${turn.message.senderPrincipalId.value}, at ${turn.receivedAt})"
+            addPlainText("Prior message: ${turn.message.text} (from ${turn.message.senderPrincipalId.value}, at ${turn.receivedAt})")
         }
 
         // Knowledge Discoverability and Governed Retrieval into Reasoning Context, Implementation
@@ -324,7 +331,22 @@ class DefaultReasoningContextAssembler(
             maximumResults = MEMORY_QUERY_MAXIMUM_RESULTS,
         )
         knowledgeSource.recall(message.senderPrincipalId, knowledgeRetrievalQuery).forEach { entry ->
-            entries += renderKnowledgeEntry(entry)
+            val rendered = renderKnowledgeEntry(entry)
+            entries += rendered
+            val typed = if (entry.knowledgeId != null) {
+                ReasoningContextEntry.GovernedKnowledge(
+                    text = rendered,
+                    knowledgeId = entry.knowledgeId,
+                    evidenceReference = entry.evidenceReference,
+                    provenanceReference = entry.provenanceReference,
+                )
+            } else {
+                // Legacy/custom sources may return a safe textual result
+                // without a KnowledgeItem identity. It remains ordinary
+                // context and is never falsely represented as governed.
+                ReasoningContextEntry.PlainText(rendered)
+            }
+            typedEntries += typed
         }
 
         // Sprint 11 Unit 8: current world-model beliefs, rendered in the exact order
@@ -338,16 +360,16 @@ class DefaultReasoningContextAssembler(
             minimumConfidence = null,
         )
         worldModelSource.recall(worldQuery).forEach { belief ->
-            entries += "World belief: ${belief.subject} = ${belief.value} (confidence: ${belief.confidence}, source: ${belief.source})"
+            addPlainText("World belief: ${belief.subject} = ${belief.value} (confidence: ${belief.confidence}, source: ${belief.source})")
         }
 
         toolRegistry.listAll().forEach { tool ->
-            entries += "Available tool: ${tool.displayName} -- ${tool.description}"
+            addPlainText("Available tool: ${tool.displayName} -- ${tool.description}")
         }
 
-        entries += "Current request: ${message.text}"
+        addPlainText("Current request: ${message.text}")
 
-        return ReasoningContext(entries.toList())
+        return ReasoningContext(entries.toList(), typedEntries.toList())
     }
 
     /**

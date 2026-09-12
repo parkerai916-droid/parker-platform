@@ -11,6 +11,11 @@ import parker.core.interfaces.EvidenceManifestRetrievalResult
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.EvidenceSourceSubmissionResult
 import parker.core.interfaces.ExecutionRequest
+import parker.core.interfaces.HermesPreIngestionCorrectionBindingResult
+import parker.core.interfaces.HermesPreIngestionCorrectionLineage
+import parker.core.interfaces.HermesPreIngestionCorrectedRepresentation
+import parker.core.interfaces.HermesPreIngestionCorrectionId
+import parker.core.interfaces.HermesOwnerCorrectedContent
 import parker.core.interfaces.PermissionDecision
 import parker.core.interfaces.PermissionDecisionOutcome
 import parker.core.interfaces.PermissionEngine
@@ -115,11 +120,23 @@ internal class AgentGatewayEvidenceProjection(
      * never through this Hermes-scoped class) ever records a decision.
      */
     private val humanDecisionRegistry: parker.core.interfaces.HermesProcessingDecisionRegistry? = null,
+    /** Production-only bridge proving a CORRECT decision has a separately governed representation. */
+    private val preIngestionCorrectionRegistry: parker.core.interfaces.HermesPreIngestionCorrectionRegistry? = null,
 ) {
 
     suspend fun retrieveEvidence(evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceRetrievalResult {
+        return retrieveEvidenceAs(hermesPrincipalId, evidenceArtifactId)
+    }
+
+    /**
+     * The same governed retrieval projection for a separately authenticated Agent Gateway
+     * principal. The caller is selected by Parker's composition root, never by request data.
+     * Write/acquisition methods remain structurally bound to [hermesPrincipalId].
+     */
+    suspend fun retrieveEvidenceAs(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceRetrievalResult {
         val decision = permissionEngine.evaluate(
             buildRequest(
+                principalId = requestingPrincipalId,
                 resourceId = AGENT_GATEWAY_EVIDENCE_RETRIEVAL_RESOURCE_ID,
                 actionName = AGENT_GATEWAY_EVIDENCE_RETRIEVE_ACTION_NAME,
                 requestIdPrefix = "agent-gateway-evidence-retrieve",
@@ -129,7 +146,7 @@ internal class AgentGatewayEvidenceProjection(
         if (!decision.isApproved()) {
             return AgentGatewayEvidenceRetrievalResult.Denied(evidenceArtifactId, decision.decision)
         }
-        return when (val result = evidenceCustodian.retrieve(hermesPrincipalId, evidenceArtifactId)) {
+        return when (val result = evidenceCustodian.retrieve(requestingPrincipalId, evidenceArtifactId)) {
             is EvidenceRetrievalResult.Found -> AgentGatewayEvidenceRetrievalResult.Found(
                 evidenceArtifactId = result.evidenceArtifactId,
                 byteLength = result.content.size,
@@ -140,8 +157,14 @@ internal class AgentGatewayEvidenceProjection(
     }
 
     suspend fun retrieveEvidenceManifest(evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceManifestResult {
+        return retrieveEvidenceManifestAs(hermesPrincipalId, evidenceArtifactId)
+    }
+
+    /** Same governed manifest projection for Parker's separately configured analysis principal. */
+    suspend fun retrieveEvidenceManifestAs(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceManifestResult {
         val decision = permissionEngine.evaluate(
             buildRequest(
+                principalId = requestingPrincipalId,
                 resourceId = AGENT_GATEWAY_EVIDENCE_MANIFEST_RETRIEVAL_RESOURCE_ID,
                 actionName = AGENT_GATEWAY_EVIDENCE_RETRIEVE_MANIFEST_ACTION_NAME,
                 requestIdPrefix = "agent-gateway-evidence-retrieve-manifest",
@@ -151,16 +174,21 @@ internal class AgentGatewayEvidenceProjection(
         if (!decision.isApproved()) {
             return AgentGatewayEvidenceManifestResult.Denied(evidenceArtifactId, decision.decision)
         }
-        return when (val result = evidenceCustodian.retrieveManifest(hermesPrincipalId, evidenceArtifactId)) {
-            is EvidenceManifestRetrievalResult.Found -> AgentGatewayEvidenceManifestResult.Found(
-                AgentGatewayEvidenceManifestProjection(
+        return when (val result = evidenceCustodian.retrieveManifest(requestingPrincipalId, evidenceArtifactId)) {
+            is EvidenceManifestRetrievalResult.Found -> {
+                val lineage = preIngestionCorrectionRegistry?.findLineageForEvidence(result.manifest.evidenceArtifactId)
+                AgentGatewayEvidenceManifestResult.Found(
+                    AgentGatewayEvidenceManifestProjection(
                     evidenceArtifactId = result.manifest.evidenceArtifactId,
                     sha256 = result.manifest.sha256,
                     byteLength = result.manifest.byteLength,
                     receivedMediaType = result.manifest.receivedMediaType,
                     originalFileName = result.manifest.originalFileName,
-                ),
-            )
+                    correctionLineage = lineage,
+                    correctedContent = lineage?.correctedContent(result.manifest.evidenceArtifactId),
+                    ),
+                )
+            }
             is EvidenceManifestRetrievalResult.NotFound -> AgentGatewayEvidenceManifestResult.NotFound(evidenceArtifactId)
             is EvidenceManifestRetrievalResult.Rejected -> AgentGatewayEvidenceManifestResult.Denied(evidenceArtifactId, PermissionDecisionOutcome.DENIED)
         }
@@ -320,18 +348,26 @@ internal class AgentGatewayEvidenceProjection(
         // when humanDecisionRegistry is not wired reproduces Task 3's own unmodified behaviour
         // exactly ("no human decision -> machine PASS only").
         val latestDecision = humanDecisionRegistry?.latest(batchId, computedSha256)
-        when (val gate = HermesProcessingEffectiveGate.evaluate(stored, latestDecision)) {
+        val publishedCorrection = if (latestDecision?.decision == parker.core.interfaces.HermesProcessingHumanDecisionType.CORRECT) {
+            preIngestionCorrectionRegistry?.findForDecision(stored, latestDecision)
+        } else {
+            null
+        }
+        val correctionAvailable = latestDecision?.decision != parker.core.interfaces.HermesProcessingHumanDecisionType.CORRECT ||
+            publishedCorrection != null
+        when (val gate = HermesProcessingEffectiveGate.evaluate(stored, latestDecision, correctionAvailable)) {
             HermesEffectiveGateDecision.Allow -> Unit
             HermesEffectiveGateDecision.HumanRejected -> return AgentGatewayGovernedIngestionResult.HumanRejected
             HermesEffectiveGateDecision.ReprocessRequired -> return AgentGatewayGovernedIngestionResult.ReprocessRequired
             HermesEffectiveGateDecision.HeldForReview -> return AgentGatewayGovernedIngestionResult.HeldForReview
             is HermesEffectiveGateDecision.ProcessingFailed -> return AgentGatewayGovernedIngestionResult.ProcessingFailed(gate.failure)
             HermesEffectiveGateDecision.InvalidHumanDecision -> return AgentGatewayGovernedIngestionResult.InvalidHumanDecision
+            HermesEffectiveGateDecision.CorrectionUnavailable -> return AgentGatewayGovernedIngestionResult.HeldForReview
         }
 
         return when (val submission = submitSource(candidate, computedSha256, batchId)) {
-            is AgentGatewaySourceSubmissionResult.Registered -> completeGovernedIngestion(batchId, submission.projection, alreadyIngested = false)
-            is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> completeGovernedIngestion(batchId, submission.projection, alreadyIngested = true)
+            is AgentGatewaySourceSubmissionResult.Registered -> completeGovernedIngestion(batchId, submission.projection, alreadyIngested = false, publishedCorrection)
+            is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> completeGovernedIngestion(batchId, submission.projection, alreadyIngested = true, publishedCorrection)
             is AgentGatewaySourceSubmissionResult.HashMismatch -> AgentGatewayGovernedIngestionResult.HashMismatch(submission.computedSha256, submission.advisorySha256)
             is AgentGatewaySourceSubmissionResult.Denied -> AgentGatewayGovernedIngestionResult.Denied(submission.decision)
             is AgentGatewaySourceSubmissionResult.Conflict -> AgentGatewayGovernedIngestionResult.Conflict(submission.evidenceArtifactId, submission.computedSha256, submission.reason)
@@ -349,7 +385,20 @@ internal class AgentGatewayEvidenceProjection(
         batchId: String,
         projection: AgentGatewayEvidenceManifestProjection,
         alreadyIngested: Boolean,
+        correction: HermesPreIngestionCorrectedRepresentation? = null,
     ): AgentGatewayGovernedIngestionResult {
+        if (correction != null) {
+            val registry = preIngestionCorrectionRegistry
+                ?: return AgentGatewayGovernedIngestionResult.CorrectionLineageFailed("CORRECTION_LINEAGE_NOT_CONFIGURED")
+            when (val correctionBinding = registry.bindToEvidence(correction, projection.evidenceArtifactId, projection.sha256, clock())) {
+                is HermesPreIngestionCorrectionBindingResult.Bound,
+                is HermesPreIngestionCorrectionBindingResult.AlreadyBound -> Unit
+                is HermesPreIngestionCorrectionBindingResult.Conflict ->
+                    return AgentGatewayGovernedIngestionResult.CorrectionLineageFailed(correctionBinding.reason)
+                is HermesPreIngestionCorrectionBindingResult.Failed ->
+                    return AgentGatewayGovernedIngestionResult.CorrectionLineageFailed(correctionBinding.reason)
+            }
+        }
         when (val binding = bindIngestionEvidence(batchId, projection.evidenceArtifactId)) {
             is AgentGatewayBulkBindingResult.Assigned -> Unit
             AgentGatewayBulkBindingResult.Denied -> return AgentGatewayGovernedIngestionResult.Denied(PermissionDecisionOutcome.DENIED)
@@ -358,7 +407,11 @@ internal class AgentGatewayEvidenceProjection(
             is AgentGatewayBulkBindingResult.Rejected -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
             is AgentGatewayBulkBindingResult.Failed -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
         }
-        return if (alreadyIngested) AgentGatewayGovernedIngestionResult.AlreadyIngested(projection) else AgentGatewayGovernedIngestionResult.Ingested(projection)
+        return if (alreadyIngested) {
+            AgentGatewayGovernedIngestionResult.AlreadyIngested(projection, correction?.representationId)
+        } else {
+            AgentGatewayGovernedIngestionResult.Ingested(projection, correction?.representationId)
+        }
     }
 
     /**
@@ -495,6 +548,7 @@ internal class AgentGatewayEvidenceProjection(
         decision == PermissionDecisionOutcome.APPROVED || decision == PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
 
     private fun buildRequest(
+        principalId: PrincipalId = hermesPrincipalId,
         resourceId: ResourceId,
         actionName: String,
         requestIdPrefix: String,
@@ -503,7 +557,7 @@ internal class AgentGatewayEvidenceProjection(
         val now = clock()
         return ExecutionRequest(
             requestId = RequestId("$requestIdPrefix-$contextId-${UUID.randomUUID()}"),
-            principalId = hermesPrincipalId,
+            principalId = principalId,
             origin = RequestOrigin.AGENT,
             intent = "Agent Gateway R0/R1 evidence supervision request",
             targetResources = listOf(resourceId),
@@ -577,10 +631,16 @@ sealed class AgentGatewayProcessingResultListResult {
 sealed class AgentGatewayGovernedIngestionResult {
 
     /** No prior evidence existed for this hash; governed submission and case binding both newly completed. */
-    data class Ingested(val projection: AgentGatewayEvidenceManifestProjection) : AgentGatewayGovernedIngestionResult()
+    data class Ingested(
+        val projection: AgentGatewayEvidenceManifestProjection,
+        val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+    ) : AgentGatewayGovernedIngestionResult()
 
     /** This exact source hash was already governed-ingested (by an earlier attempt or a repeat of this same one) -- idempotent, not a duplicate. */
-    data class AlreadyIngested(val projection: AgentGatewayEvidenceManifestProjection) : AgentGatewayGovernedIngestionResult()
+    data class AlreadyIngested(
+        val projection: AgentGatewayEvidenceManifestProjection,
+        val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+    ) : AgentGatewayGovernedIngestionResult()
 
     /** The stored processing result's status is REVIEW_REQUIRED -- no EvidenceArtifactId is minted or registered. */
     data object HeldForReview : AgentGatewayGovernedIngestionResult()
@@ -599,6 +659,9 @@ sealed class AgentGatewayGovernedIngestionResult {
 
     /** Hermes Exception Decision Backend, Task 4. A recorded human decision is not permitted for the current machine status (for example, ACCEPT against FAILED) -- see [HermesProcessingEffectiveGate]'s own KDoc. No evidence admission occurs. */
     data object InvalidHumanDecision : AgentGatewayGovernedIngestionResult()
+
+    /** A CORRECT decision could not be durably linked to the resulting evidence identity. */
+    data class CorrectionLineageFailed(val reason: String) : AgentGatewayGovernedIngestionResult()
 
     /** The actual submitted bytes hash to something other than the caller's own declared [expectedSha256] -- rejected outright, never merely logged. */
     data class HashMismatch(val computedSha256: String, val expectedSha256: String) : AgentGatewayGovernedIngestionResult()
@@ -658,6 +721,8 @@ data class AgentGatewayEvidenceManifestProjection(
     val byteLength: Long,
     val receivedMediaType: String?,
     val originalFileName: String?,
+    val correctionLineage: HermesPreIngestionCorrectionLineage? = null,
+    val correctedContent: HermesOwnerCorrectedContent? = null,
 )
 
 /**

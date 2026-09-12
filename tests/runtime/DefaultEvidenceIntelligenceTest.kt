@@ -232,7 +232,7 @@ class DefaultEvidenceIntelligenceTest {
     // ================= The documented ReasoningContext limitation =================
 
     @Test
-    fun `analyse always supplies an empty ReasoningContext to the Reasoning Provider invocation, never one derived from the request`() = runTest {
+    fun `analyse supplies only the current invocation's resolved governed references to the Reasoning Provider`() = runTest {
         val artifactId = EvidenceArtifactId("artifact-1")
         val nestedContext = ReasoningContext(listOf("must never reach the Reasoning Provider"))
         val evidenceCustodian = FakeEvidenceCustodianForUnit5 { _, id -> EvidenceRetrievalResult.Found(id, byteArrayOf(1)) }
@@ -251,7 +251,9 @@ class DefaultEvidenceIntelligenceTest {
             ),
         )
 
-        assertEquals(ReasoningContext(emptyList()), reasoningProvider.lastRequest?.reasoningContext)
+        val context = reasoningProvider.lastRequest?.reasoningContext
+        assertEquals(1, context?.suppliedGovernedEntries?.size)
+        assertEquals(artifactId, (context?.suppliedGovernedEntries?.single() as parker.core.interfaces.ReasoningContextEntry.GovernedEvidence).evidenceArtifactId)
     }
 
     // ================= Dependency boundaries =================

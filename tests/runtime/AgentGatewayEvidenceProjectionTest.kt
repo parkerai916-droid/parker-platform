@@ -9,6 +9,13 @@ import parker.core.interfaces.ActionVocabularyEntry
 import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceSourceManifest
+import parker.core.interfaces.DerivativeContentEntry
+import parker.core.interfaces.DerivativeContentStorage
+import parker.core.interfaces.DerivativeGenerationId
+import parker.core.interfaces.DerivativeGenerationStorage
+import parker.core.interfaces.DerivativeGenerationTest
+import parker.core.interfaces.TierADerivativePayload
+import parker.core.interfaces.TierADerivativePayloadFixtures
 import parker.core.interfaces.ExecutionRequest
 import parker.core.interfaces.IdentityService
 import parker.core.interfaces.PermissionAction
@@ -193,6 +200,97 @@ class AgentGatewayEvidenceProjectionTest {
     }
 
     @Test
+    fun `GA-4 analysis coordinator resolves only the explicit evidence scope through governed manifests`() = runTest {
+        val env = buildEnvironment()
+        val analysisPrincipal = PrincipalId("agent.hermes-analysis-operator")
+        val now = Instant.parse("2026-01-01T00:00:00Z")
+        env.identityService.register(
+            Principal(analysisPrincipal, PrincipalType.EXTERNAL_AGENT, "Hermes Parker Analysis Operator", PrincipalId("user.owner-agent-gateway-projection-test"), PrincipalStatus.CREATED, now, now),
+        )
+        env.identityService.updateStatus(analysisPrincipal, PrincipalStatus.ACTIVE)
+        val evidenceId = EvidenceArtifactId("evidence-analysis-1")
+        val generationId = DerivativeGenerationId("generation-analysis-1")
+        env.manifestStorage.write(EvidenceSourceManifest(evidenceId, "c".repeat(64), 9L, "text/plain", "controlled.txt"))
+        val record = DerivativeGenerationTest.record(generationId.value).copy(
+            rootSourceEvidenceArtifactId = evidenceId,
+            parents = listOf(parker.core.interfaces.DerivativeParentReference.RootEvidenceArtifact(evidenceId)),
+        )
+        val payload = TierADerivativePayload.Csv(TierADerivativePayloadFixtures.csv())
+        val content = TierAContentRetrievalCoordinator(
+            generationStorage = object : DerivativeGenerationStorage {
+                override suspend fun prepare(record: parker.core.interfaces.DerivativeGenerationRecord) = Unit
+                override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) = Unit
+                override suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId) = record.takeIf { it.derivativeGenerationId == derivativeGenerationId }
+            },
+            contentStorage = object : DerivativeContentStorage {
+                override suspend fun prepare(entry: DerivativeContentEntry) = Unit
+                override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) = Unit
+                override suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId) = DerivativeContentEntry(generationId, evidenceId, payload).takeIf { generationId == derivativeGenerationId }
+            },
+        )
+
+        val coordinator = ParkerAnalysisRequestCoordinator(env.projection, analysisPrincipal, content)
+        val result = coordinator.submit(
+            parker.core.interfaces.AnalysisRequest(
+                parker.core.interfaces.AnalysisRequestId("analysis-00000000-0000-0000-0000-000000000001"),
+                "Identify the controlled test issue",
+                parker.core.interfaces.AnalysisType.ISSUE_ANALYSIS,
+                parker.core.interfaces.AnalysisEvidenceScope(listOf(evidenceId), mapOf(evidenceId.value to generationId)),
+            ),
+        )
+
+        assertIs<AnalysisRequestResult.Accepted>(result)
+        assertEquals(listOf(evidenceId), result.retrievalPackage.scope.evidenceArtifactIds)
+        assertEquals(evidenceId, result.retrievalPackage.evidence.single().evidenceArtifactId)
+        assertEquals("controlled.txt", result.retrievalPackage.evidence.single().manifest.originalFileName)
+        assertEquals(payload, result.retrievalPackage.evidence.single().governedContent?.payload)
+    }
+
+    @Test
+    fun `GA-4A analysis coordinator returns existing governed derivative content with source identity`() = runTest {
+        val env = buildEnvironment()
+        val analysisPrincipal = PrincipalId("agent.hermes-analysis-operator")
+        val now = Instant.parse("2026-01-01T00:00:00Z")
+        env.identityService.register(Principal(analysisPrincipal, PrincipalType.EXTERNAL_AGENT, "Hermes Parker Analysis Operator", PrincipalId("user.owner-agent-gateway-projection-test"), PrincipalStatus.CREATED, now, now))
+        env.identityService.updateStatus(analysisPrincipal, PrincipalStatus.ACTIVE)
+        val evidenceId = EvidenceArtifactId("evidence-analysis-content")
+        val generationId = DerivativeGenerationId("generation-analysis-content")
+        env.manifestStorage.write(EvidenceSourceManifest(evidenceId, "c".repeat(64), 9L, "text/plain", "controlled.txt"))
+        val record = DerivativeGenerationTest.record(generationId.value).copy(
+            rootSourceEvidenceArtifactId = evidenceId,
+            parents = listOf(parker.core.interfaces.DerivativeParentReference.RootEvidenceArtifact(evidenceId)),
+        )
+        val payload = TierADerivativePayload.Csv(TierADerivativePayloadFixtures.csv())
+        val content = TierAContentRetrievalCoordinator(
+            generationStorage = object : DerivativeGenerationStorage {
+                override suspend fun prepare(record: parker.core.interfaces.DerivativeGenerationRecord) = Unit
+                override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) = Unit
+                override suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId) = record.takeIf { it.derivativeGenerationId == derivativeGenerationId }
+            },
+            contentStorage = object : DerivativeContentStorage {
+                override suspend fun prepare(entry: DerivativeContentEntry) = Unit
+                override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) = Unit
+                override suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId) = DerivativeContentEntry(generationId, evidenceId, payload).takeIf { generationId == derivativeGenerationId }
+            },
+        )
+        val coordinator = ParkerAnalysisRequestCoordinator(env.projection, analysisPrincipal, content)
+        val result = coordinator.submit(
+            parker.core.interfaces.AnalysisRequest(
+                parker.core.interfaces.AnalysisRequestId("analysis-00000000-0000-0000-0000-000000000002"),
+                "Read the controlled content",
+                parker.core.interfaces.AnalysisType.ISSUE_ANALYSIS,
+                parker.core.interfaces.AnalysisEvidenceScope(listOf(evidenceId), mapOf(evidenceId.value to generationId)),
+            ),
+        )
+
+        val accepted = assertIs<AnalysisRequestResult.Accepted>(result)
+        val item = accepted.retrievalPackage.evidence.single()
+        assertEquals(generationId, item.governedContent?.derivativeGenerationId)
+        assertEquals(evidenceId, item.governedContent?.record?.rootSourceEvidenceArtifactId)
+        assertEquals(payload, item.governedContent?.payload)
+    }
+
+    @Test
     fun `retrieveEvidenceManifest constructs a request naming exactly Hermes, the gateway purpose, the gateway manifest verb, and its own resource`() = runTest {
         val env = buildEnvironment()
         env.registerHermes(PrincipalStatus.CREATED)
@@ -317,7 +415,7 @@ class AgentGatewayEvidenceProjectionTest {
     fun `AgentGatewayEvidenceManifestProjection carries only opaque, already-narrow manifest fields`() {
         val fields = AgentGatewayEvidenceManifestProjection::class.java.declaredFields.filterNot { it.isSynthetic }
         assertEquals(
-            setOf("evidenceArtifactId", "sha256", "byteLength", "receivedMediaType", "originalFileName"),
+            setOf("evidenceArtifactId", "sha256", "byteLength", "receivedMediaType", "originalFileName", "correctionLineage", "correctedContent"),
             fields.map { it.name }.toSet(),
         )
     }
@@ -345,7 +443,7 @@ class AgentGatewayEvidenceProjectionTest {
         // bindIngestionEvidence, both already in this set.
         assertEquals(
             setOf(
-                "retrieveEvidence", "retrieveEvidenceManifest", "submitSource", "requestAcquisition",
+                "retrieveEvidence", "retrieveEvidenceAs", "retrieveEvidenceManifest", "retrieveEvidenceManifestAs", "submitSource", "requestAcquisition",
                 "bindIngestionEvidence", "submitProcessingResult", "listProcessingResultsForBatch",
                 "submitGovernedIngestion",
             ),

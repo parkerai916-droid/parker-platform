@@ -122,6 +122,27 @@ class HermesProcessingReviewProjectionTest {
     }
 
     @Test
+    fun `pending owner projection retains confidence threshold completeness and warnings`() = runTest {
+        val results = InMemoryHermesProcessingResultRegistry()
+        val enriched = HermesProcessingResult(
+            "a".repeat(64), "bulk-x", HermesProcessingStatus.REVIEW_REQUIRED,
+            setOf(HermesProcessingMethod.OCR),
+            issues = listOf(HermesProcessingIssue(HermesProcessingIssueKind.OCR_UNCERTAINTY, "uncertain", observedConfidence = 0.74)),
+            reviewConfidenceThreshold = 0.80,
+            processingCompleteness = parker.core.interfaces.HermesProcessingCompleteness.PARTIAL,
+            processingWarnings = listOf("page 3 was incomplete"),
+        )
+        results.record(enriched)
+
+        val item = HermesProcessingReviewProjection(results, InMemoryHermesProcessingDecisionRegistry()).listPendingForOwner().single()
+
+        assertEquals(0.74, item.issues.single().observedConfidence)
+        assertEquals(0.80, item.reviewConfidenceThreshold)
+        assertEquals(parker.core.interfaces.HermesProcessingCompleteness.PARTIAL, item.processingCompleteness)
+        assertEquals(listOf("page 3 was incomplete"), item.processingWarnings)
+    }
+
+    @Test
     fun `each pending item carries the latest decision when one exists`() = runTest {
         val results = InMemoryHermesProcessingResultRegistry()
         val decisions = InMemoryHermesProcessingDecisionRegistry()

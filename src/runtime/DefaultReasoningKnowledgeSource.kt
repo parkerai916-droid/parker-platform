@@ -158,7 +158,15 @@ internal class DefaultReasoningKnowledgeSource(
         // Step 9: safe result construction -- from either the structural match, or (RKS.4) the freshly
         // re-verified Pre-disclosure state; never from a stale Pre-computation snapshot on either path.
         val entries = relevant.map { (item, content) ->
-            SafeKnowledgeResultEntry(content, item.evidentialState, item.status, disclosureFor(item))
+            SafeKnowledgeResultEntry(
+                content = content,
+                evidentialState = item.evidentialState,
+                status = item.status,
+                staleness = disclosureFor(item),
+                knowledgeId = item.knowledgeId,
+                evidenceReference = item.evidenceReference,
+                provenanceReference = item.provenanceReference,
+            )
         }
 
         // Step 10: bounds applied last, after every authorization/visibility/relevance/fallback filter,

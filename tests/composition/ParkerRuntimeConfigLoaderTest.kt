@@ -923,4 +923,29 @@ class ParkerRuntimeConfigLoaderTest {
         assertEquals(false, config.agentGatewayHermesActive)
         assertEquals(9090, config.agentGatewayHttpPort)
     }
+
+    @Test
+    fun `analysis credential is independently loaded and activation requires it`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-analysis-config")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + mapOf(
+            ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_ANALYSIS_HTTP_TOKEN to "analysis-token",
+            ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_ANALYSIS_ACTIVE to "true",
+        )
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment(overrides))
+
+        assertEquals("analysis-token", config.agentGatewayAnalysisHttpToken)
+        assertEquals(true, config.agentGatewayAnalysisActive)
+    }
+
+    @Test
+    fun `analysis activation without a separate credential fails closed`() {
+        val auditLogDir = Files.createTempDirectory("agent-gateway-analysis-config-missing-token")
+        val overrides = completeAgentGatewayOverrides(auditLogDir) + mapOf(
+            ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_ANALYSIS_ACTIVE to "true",
+        )
+        val thrown = assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(fullEnvironment(overrides))
+        }
+        assertEquals(ParkerRuntimeConfigLoader.KEY_AGENT_GATEWAY_ANALYSIS_HTTP_TOKEN, thrown.key)
+    }
 }

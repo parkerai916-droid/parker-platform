@@ -1,5 +1,7 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.gradle.jvm.tasks.Jar
+import org.gradle.api.tasks.testing.Test
+import java.nio.file.Files
 
 plugins {
     kotlin("jvm") version "1.9.24"
@@ -103,6 +105,58 @@ sourceSets {
         kotlin {
             srcDirs("tests/contracts", "tests/runtime", "tests/composition", "tests/ui")
         }
+    }
+}
+
+// Parker test scratch storage is ephemeral and confined to the owning build
+// directory. Every JVM Test task, including detached/custom acceptance tasks,
+// receives its own workspace and a finalizer that removes only that workspace.
+// Durable/governed Parker storage is configured explicitly by tests and is not
+// part of this cleanup boundary.
+tasks.withType<Test>().configureEach {
+    val testTask = this
+    maxParallelForks = 1
+    maxHeapSize = "1g"
+    val parkerTestTempRoot = layout.buildDirectory.dir("parker-test-tmp")
+    val parkerTestTempDirectory = parkerTestTempRoot.map { it.dir(testTask.name) }
+
+    fun checkedTempDirectory(): java.io.File {
+        val expectedRoot = parkerTestTempRoot.get().asFile.toPath().toAbsolutePath().normalize()
+        val target = parkerTestTempDirectory.get().asFile.toPath().toAbsolutePath().normalize()
+        check(target != expectedRoot && target.startsWith(expectedRoot)) {
+            "Refusing Parker test-temp cleanup outside $expectedRoot: $target"
+        }
+        return target.toFile()
+    }
+
+    systemProperty("java.io.tmpdir", parkerTestTempDirectory.get().asFile.absolutePath)
+
+    doFirst {
+        val tempDirectory = checkedTempDirectory()
+        project.delete(tempDirectory)
+        Files.createDirectories(tempDirectory.toPath())
+    }
+
+}
+
+// Finalizer tasks are registered after the Test task collection has been
+// realized; Gradle does not permit registering a task from inside a
+// configureEach callback while that callback is configuring the task itself.
+afterEvaluate {
+    tasks.withType<Test>().forEach { testTask ->
+        val parkerTestTempRoot = layout.buildDirectory.dir("parker-test-tmp")
+        val parkerTestTempDirectory = parkerTestTempRoot.map { it.dir(testTask.name) }
+        val cleanupTask = tasks.register("${testTask.name}CleanupParkerTestTmp") {
+            doLast {
+                val expectedRoot = parkerTestTempRoot.get().asFile.toPath().toAbsolutePath().normalize()
+                val target = parkerTestTempDirectory.get().asFile.toPath().toAbsolutePath().normalize()
+                check(target != expectedRoot && target.startsWith(expectedRoot)) {
+                    "Refusing Parker test-temp cleanup outside $expectedRoot: $target"
+                }
+                project.delete(target.toFile())
+            }
+        }
+        testTask.finalizedBy(cleanupTask)
     }
 }
 

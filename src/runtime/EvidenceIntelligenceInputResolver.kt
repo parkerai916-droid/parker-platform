@@ -166,7 +166,7 @@ import parker.core.interfaces.RelationshipId
  */
 internal class EvidenceIntelligenceInputResolver(
     private val evidenceCustodian: EvidenceCustodian,
-    private val memoryRetrieval: MemoryRetrieval,
+    internal val memoryRetrieval: MemoryRetrieval,
 ) {
 
     /**

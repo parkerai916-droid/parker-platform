@@ -64,6 +64,10 @@ import parker.core.interfaces.OwnerLocalFileIngressOutcome
 import parker.core.interfaces.OwnerVerificationCredential
 import parker.core.interfaces.PermissionAction
 import parker.core.interfaces.PermissionDecisionOutcome
+import parker.core.interfaces.ReasoningProvider
+import parker.core.interfaces.ReasoningProviderRequest
+import parker.core.interfaces.ReasoningProviderResponse
+import parker.core.interfaces.ReasoningSubject
 import parker.core.interfaces.PermissionEngine
 import parker.core.interfaces.PermissionLevel
 import parker.core.interfaces.PlanningSessionResult
@@ -144,6 +148,9 @@ import parker.core.runtime.DurableKnowledgeItemPersistence
 import parker.core.runtime.EvidenceIntelligenceAcceptanceCoordinator
 import parker.core.runtime.EvidenceIntelligenceInputResolver
 import parker.core.runtime.EvidenceIntelligenceInvocationGate
+import parker.core.runtime.StrictEvidenceReasoningInvocation
+import parker.core.runtime.StrictEvidenceReasoningFailure
+import parker.core.runtime.StrictEvidenceReasoningResult
 import parker.core.runtime.ExternalTranscriptionInvocationGate
 import parker.core.runtime.ExternalTranscriptionOwnerInvocationCoordinator
 import parker.core.runtime.FidelityFirstAcceptanceCoordinator
@@ -235,6 +242,8 @@ import parker.core.runtime.FileSystemCaseGovernanceAudit
 import parker.core.runtime.FileSystemCaseStorage
 import parker.core.interfaces.CaseId
 import parker.core.interfaces.CaseRecord
+import parker.core.interfaces.CaseStorage
+import parker.core.interfaces.CaseAssignmentStorage
 import parker.core.runtime.TierBHumanFidelityReviewSubmission
 import parker.core.runtime.TierBFidelityDiscrepancySubmission
 import parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome
@@ -383,6 +392,8 @@ class ParkerRuntime(
     // never a caller-supplied identity. Only this class's own retrieveEvidenceAsAgent/
     // retrieveEvidenceManifestAsAgent methods below ever read it.
     private lateinit var agentGatewayEvidenceProjection: parker.core.runtime.AgentGatewayEvidenceProjection
+    private lateinit var parkerAnalysisRequestCoordinator: parker.core.runtime.ParkerAnalysisRequestCoordinator
+    private lateinit var ownerAnalysisInvocationCoordinator: parker.core.runtime.OwnerAnalysisInvocationCoordinator
 
     // Document Ingestion, Owner-Authorized Local File Ingress. Held as its own narrow class,
     // exactly mirroring ownerEvidenceDeletionAuthority's own "only this class's own entry-point
@@ -411,6 +422,8 @@ class ParkerRuntime(
     // mirroring its own isolation.
     private lateinit var tierBOcrContentRetrievalCoordinator: TierBOcrContentRetrievalCoordinator
     private lateinit var tierBOcrDerivativeGenerationDiscoveryCoordinator: TierBOcrDerivativeGenerationDiscoveryCoordinator
+    private lateinit var derivativeGenerationDiscoveryProjection: parker.core.runtime.DerivativeGenerationDiscoveryProjection
+    private lateinit var preferredDerivativeResolver: parker.core.runtime.PreferredDerivativeResolver
 
     // External transcription Unit E: a separate owner-only, pre-admission operation. The real
     // provider is composed only after the enablement, profile, and credential gates are all Ready.
@@ -472,6 +485,9 @@ class ParkerRuntime(
     // CASE-1: null unless caseStorageRootPath/caseAssignmentStorageRootPath/caseGovernanceAuditLogPath
     // are all configured together, mirroring every other optional collaborator in this file.
     private var caseAssignmentCoordinator: CaseAssignmentCoordinator? = null
+    private var caseStorageForProjection: CaseStorage? = null
+    private var caseAssignmentStorageForProjection: CaseAssignmentStorage? = null
+    private var bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null
     // Hermes Exception Decision Backend, Task 4: null only in the sense that no production
     // composition path ever leaves this unset (constructed unconditionally, mirroring
     // hermesProcessingResultRegistry's own identical always-constructed convention below) -- kept
@@ -479,13 +495,16 @@ class ParkerRuntime(
     // (Denied(PermissionDecisionOutcome.DENIED)) rather than throw, exactly like every other
     // optional collaborator in this file.
     private var hermesProcessingDecisionRegistry: parker.core.interfaces.HermesProcessingDecisionRegistry? = null
+    private var hermesProcessingResultRegistry: parker.core.interfaces.HermesProcessingResultRegistry? = null
+    private var pendingReviewSourceStorage: parker.core.interfaces.PendingReviewSourceStorage? = null
     private var hermesProcessingDecisionCoordinator: parker.core.runtime.HermesProcessingDecisionCoordinator? = null
-    private var bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null
+    private var hermesPreIngestionCorrectionRegistry: parker.core.interfaces.HermesPreIngestionCorrectionRegistry? = null
     private var governedHumanCorrectionService: GovernedHumanCorrectionService? = null
     private var humanCorrectedRepresentationStorage: HumanCorrectedRepresentationStorage? = null
     private var humanCorrectionAudit: HumanCorrectionAudit? = null
     private var humanCorrectionExactTargetRegistrar: HumanCorrectionExactTargetRegistrar? = null
     private var humanCorrectedRepresentationRetrievalService: HumanCorrectedRepresentationRetrievalService? = null
+    private var steveReviewQueueProjection: parker.core.runtime.SteveReviewQueueProjection? = null
 
     // Document Ingestion, Derivative-to-Memory-Core Registration. Held as its own narrow class,
     // exactly mirroring tierAOwnerInvocationCoordinator's own isolation -- no other coordinator
@@ -506,6 +525,7 @@ class ParkerRuntime(
     private lateinit var permissionEngine: PermissionEngine
     private lateinit var evidenceIntelligence: EvidenceIntelligence
     private lateinit var evidenceIntelligenceAcceptanceCoordinator: EvidenceIntelligenceAcceptanceCoordinator
+    private lateinit var strictEvidenceReasoningInvocation: StrictEvidenceReasoningInvocation
 
     // Programme 3, Knowledge Memory, Unit 9.6 ("Runtime Composition"). knowledgeRetrieval is held
     // as its own narrow public interface type (mirroring evidenceIntelligence's own identical
@@ -896,6 +916,7 @@ class ParkerRuntime(
                 )
             }
         }
+
         stage("action vocabulary registration") {
             vocabulary.register(
                 ActionVocabularyEntry(
@@ -1753,6 +1774,8 @@ class ParkerRuntime(
             effectiveHumanFidelityReviewProjector,
             humanCorrectedRepresentationRetrievalService,
         )
+        derivativeGenerationDiscoveryProjection = parker.core.runtime.DerivativeGenerationDiscoveryProjection(derivativeGenerationStorage, derivativeContentStorage)
+        preferredDerivativeResolver = parker.core.runtime.PreferredDerivativeResolver(derivativeGenerationDiscoveryProjection)
 
         val deliverTool = stage("Local Text Channel deliver Tool construction") {
             LocalTextChannelDeliverTool(onOwnerNotified = ownerNotificationSink::notify)
@@ -2038,6 +2061,19 @@ class ParkerRuntime(
 
         val evidenceIntelligenceInputResolver = EvidenceIntelligenceInputResolver(defaultEvidenceCustodian, evidenceIntelligenceMemoryRetrieval)
         val evidenceIntelligenceReasoningCoordinator = EvidenceIntelligenceReasoningCoordinator(reasoningProvider)
+        val strictEvidenceReasoningProvider = object : ReasoningProvider {
+            override suspend fun reason(request: ReasoningProviderRequest): ReasoningProviderResponse {
+                val subject = request.subject as? ReasoningSubject.OfEvidenceAnalysisRequest
+                    ?: throw IllegalArgumentException("Strict Evidence provider requires an evidence-analysis subject")
+                val prompt = request.reasoningContext.entries.joinToString("\n") +
+                    "\n\nStrict evidence question: ${subject.request.analysisKind}"
+                return ReasoningProviderResponse.Reply(modelInferenceClient.infer(prompt))
+            }
+        }
+        strictEvidenceReasoningInvocation = StrictEvidenceReasoningInvocation(
+            evidenceIntelligenceInputResolver,
+            strictEvidenceReasoningProvider,
+        )
 
         // OCR Mechanism, Unit 12 ("Runtime Composition"). Governed in full by
         // docs/architecture/OCR_MECHANISM_UNIT_12_RUNTIME_INVOCATION_SCOPE_LOCK.md and
@@ -2435,6 +2471,8 @@ class ParkerRuntime(
             val caseAssignmentStorage = stage("Case assignment storage construction") {
                 FileSystemCaseAssignmentStorage(Path.of(requireNotNull(config.caseAssignmentStorageRootPath)))
             }
+            caseStorageForProjection = caseStorage
+            caseAssignmentStorageForProjection = caseAssignmentStorage
             val caseGovernanceAudit = stage("Case governance audit construction") {
                 FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath)))
             }
@@ -2467,9 +2505,12 @@ class ParkerRuntime(
         // InMemoryHermesProcessingResultRegistry's own KDoc for the explicit durability scope-down
         // and why it is safe (Hermes's own submission is idempotent, so a lost record is simply
         // recoverable by retrying).
-        val hermesProcessingResultRegistry: parker.core.interfaces.HermesProcessingResultRegistry = config.hermesProcessingStorageRootPath?.let {
+        hermesProcessingResultRegistry = config.hermesProcessingStorageRootPath?.let {
             parker.core.runtime.FileSystemHermesProcessingResultRegistry(Path.of(it))
         } ?: parker.core.runtime.InMemoryHermesProcessingResultRegistry()
+        pendingReviewSourceStorage = config.hermesProcessingStorageRootPath?.let {
+            parker.core.runtime.FileSystemPendingReviewSourceStorage(Path.of(it).resolve("pending-review-sources"))
+        } ?: parker.core.runtime.InMemoryPendingReviewSourceStorage()
         // Hermes Exception Decision Backend, Task 4. In-memory only for this unit, mirroring
         // hermesProcessingResultRegistry's own identical, explicitly disclosed durability
         // scope-down immediately above -- see InMemoryHermesProcessingDecisionRegistry's own KDoc.
@@ -2480,12 +2521,16 @@ class ParkerRuntime(
         hermesProcessingDecisionRegistry = config.hermesProcessingStorageRootPath?.let {
             parker.core.runtime.FileSystemHermesProcessingDecisionRegistry(Path.of(it))
         } ?: parker.core.runtime.InMemoryHermesProcessingDecisionRegistry()
+        hermesPreIngestionCorrectionRegistry = config.hermesProcessingStorageRootPath?.let {
+            parker.core.runtime.FileSystemHermesPreIngestionCorrectionRegistry(Path.of(it))
+        } ?: parker.core.runtime.InMemoryHermesPreIngestionCorrectionRegistry()
         hermesProcessingDecisionCoordinator = parker.core.runtime.HermesProcessingDecisionCoordinator(
             permissionEngine = permissionEngine,
-            processingResultRegistry = hermesProcessingResultRegistry,
+            processingResultRegistry = requireNotNull(hermesProcessingResultRegistry),
             decisionRegistry = requireNotNull(hermesProcessingDecisionRegistry),
             caseDisplayNameForBatch = { batchId -> bulkIngestionBindingCoordinator?.caseNameForBatch(batchId) },
             clock = clock,
+            preIngestionCorrectionRegistry = requireNotNull(hermesPreIngestionCorrectionRegistry),
         )
         agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
             hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
@@ -2494,11 +2539,37 @@ class ParkerRuntime(
             evidenceCustodian = defaultEvidenceCustodian,
             governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
             bulkIngestionBindingCoordinator = bulkIngestionBindingCoordinator,
-            processingResultRegistry = hermesProcessingResultRegistry,
+            processingResultRegistry = requireNotNull(hermesProcessingResultRegistry),
             humanDecisionRegistry = hermesProcessingDecisionRegistry,
+            preIngestionCorrectionRegistry = hermesPreIngestionCorrectionRegistry,
+        )
+        parkerAnalysisRequestCoordinator = parker.core.runtime.ParkerAnalysisRequestCoordinator(
+            projection = agentGatewayEvidenceProjection,
+            analysisPrincipalId = HERMES_ANALYSIS_OPERATOR_PRINCIPAL_ID,
+            tierAContentRetrievalCoordinator = tierAContentRetrievalCoordinator,
+        )
+        ownerAnalysisInvocationCoordinator = parker.core.runtime.OwnerAnalysisInvocationCoordinator(
+            resolvePreferredDerivative = this::resolvePreferredDerivativeAsOwner,
+            submitGovernedAnalysis = parkerAnalysisRequestCoordinator::submit,
+            hermesInvoker = parker.core.runtime.HermesSshAnalysisInvoker(
+                keyPath = "/home/steve/.ssh/parker_hermes_analysis_ed25519",
+                knownHostsPath = "/home/steve/.ssh/parker_hermes_analysis_known_hosts",
+            ),
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
+        steveReviewQueueProjection = parker.core.runtime.SteveReviewQueueProjection(
+            listEvidence = ownerEvidenceListing::listRegistered,
+            assignments = caseAssignmentStorageForProjection,
+            cases = caseStorageForProjection,
+            batches = bulkIngestionBindingCoordinator,
+            generations = derivativeGenerationStorage,
+            contents = derivativeContentStorage,
+            derivativeReviews = null,
+            fidelityReviews = composedHumanFidelityStorage,
+            fidelityProjector = effectiveHumanFidelityReviewProjector,
+            corrections = humanCorrectedRepresentationStorage,
+        )
         if (humanFidelityReviewConfigured) {
             tierBOcrHumanFidelityReviewCoordinator = TierBOcrHumanFidelityReviewCoordinator(
                 derivativeGenerationStorage,
@@ -2758,6 +2829,20 @@ class ParkerRuntime(
             // consulted -- unchanged from every prior Agent Gateway unit.
             if (config.agentGatewayHermesActive) {
                 identityService.updateStatus(HERMES_INGESTION_OPERATOR_PRINCIPAL_ID, PrincipalStatus.ACTIVE)
+            }
+            identityService.register(
+                Principal(
+                    principalId = HERMES_ANALYSIS_OPERATOR_PRINCIPAL_ID,
+                    principalType = PrincipalType.EXTERNAL_AGENT,
+                    displayName = "Hermes Parker Analysis Operator",
+                    owner = PrincipalId(config.ownerPrincipalId),
+                    status = PrincipalStatus.CREATED,
+                    createdAt = clock(),
+                    lastSeenAt = clock(),
+                ),
+            )
+            if (config.agentGatewayAnalysisActive) {
+                identityService.updateStatus(HERMES_ANALYSIS_OPERATOR_PRINCIPAL_ID, PrincipalStatus.ACTIVE)
             }
         }
     }
@@ -3038,6 +3123,13 @@ class ParkerRuntime(
         return agentGatewayEvidenceProjection.retrieveEvidence(evidenceArtifactId)
     }
 
+    /** Retrieval-only projection for the separately authenticated Parker Analysis Agent. */
+    internal suspend fun retrieveEvidenceAsAnalysisAgent(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.AgentGatewayEvidenceRetrievalResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        logger.info("Analysis Agent evidence retrieval requested (evidenceArtifactId=${evidenceArtifactId.value})")
+        return agentGatewayEvidenceProjection.retrieveEvidenceAs(HERMES_ANALYSIS_OPERATOR_PRINCIPAL_ID, evidenceArtifactId)
+    }
+
     /**
      * Parker Agent Gateway, AG-1D -- the manifest-retrieval counterpart to [retrieveEvidenceAsAgent]
      * immediately above. Every guarantee documented there applies identically here: no
@@ -3053,6 +3145,21 @@ class ParkerRuntime(
         }
         logger.info("Agent Gateway evidence manifest retrieval requested (evidenceArtifactId=${evidenceArtifactId.value})")
         return agentGatewayEvidenceProjection.retrieveEvidenceManifest(evidenceArtifactId)
+    }
+
+    /** Manifest retrieval-only projection for the separately authenticated Parker Analysis Agent. */
+    internal suspend fun retrieveEvidenceManifestAsAnalysisAgent(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.AgentGatewayEvidenceManifestResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        logger.info("Analysis Agent evidence manifest retrieval requested (evidenceArtifactId=${evidenceArtifactId.value})")
+        return agentGatewayEvidenceProjection.retrieveEvidenceManifestAs(HERMES_ANALYSIS_OPERATOR_PRINCIPAL_ID, evidenceArtifactId)
+    }
+
+    /** GA-4 transient, retrieval-only analysis request boundary; no reasoning is invoked. */
+    internal suspend fun submitAnalysisRequestAsAgent(
+        request: parker.core.interfaces.AnalysisRequest,
+    ): parker.core.runtime.AnalysisRequestResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return parkerAnalysisRequestCoordinator.submit(request)
     }
 
     /**
@@ -3132,6 +3239,32 @@ class ParkerRuntime(
         return agentGatewayEvidenceProjection.submitProcessingResult(batchId, result)
     }
 
+    /** Stores only a REVIEW_REQUIRED source under pre-ingestion custody; no evidence identity is minted. */
+    internal suspend fun submitPendingReviewSourceAsAgent(
+        batchId: String,
+        sourceSha256: String,
+        bytes: ByteArray,
+        mediaType: String?,
+        originalDisplayName: String?,
+    ): parker.core.interfaces.PendingReviewSourceStoreResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val result = requireNotNull(hermesProcessingResultRegistry?.find(batchId, sourceSha256)) {
+            "processing result is not recorded"
+        }
+        require(result.status == parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED) {
+            "pending-review custody is only available for REVIEW_REQUIRED results"
+        }
+        require(bulkIngestionBindingCoordinator?.isAuthorised(batchId) == true) { "unknown or unauthorised batch" }
+        val source = parker.core.interfaces.PendingReviewSource(batchId, sourceSha256, bytes.size.toLong(), mediaType, originalDisplayName, clock(), bytes)
+        return requireNotNull(pendingReviewSourceStorage).store(source)
+    }
+
+    /** Owner-side internal read seam for the later governed renderer; returns bytes only, never a path. */
+    internal suspend fun readPendingReviewSourceAsOwner(batchId: String, sourceSha256: String): parker.core.interfaces.PendingReviewSource? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return pendingReviewSourceStorage?.find(batchId, sourceSha256)
+    }
+
     /** Hermes Processing Result Intake, Task 2. See [parker.core.runtime.AgentGatewayEvidenceProjection.listProcessingResultsForBatch]. */
     internal suspend fun listProcessingResultsForBatchAsAgent(batchId: String): parker.core.runtime.AgentGatewayProcessingResultListResult {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
@@ -3153,6 +3286,13 @@ class ParkerRuntime(
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return bulkIngestionBindingCoordinator?.listReady() ?: emptyList()
     }
+
+    internal suspend fun listSteveReviewQueueAsAgent(): List<parker.core.runtime.SteveReviewQueueItem> {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return steveReviewQueueProjection?.enumerate() ?: emptyList()
+    }
+
+    internal fun steveReviewQueueProjectionAsAgent(): parker.core.runtime.SteveReviewQueueProjection? = steveReviewQueueProjection
 
     /**
      * Evidence Custodian Runtime Integration (Implementation Plan Phase 10).
@@ -3244,6 +3384,16 @@ class ParkerRuntime(
     suspend fun listRegisteredEvidenceAsOwner(): List<parker.core.runtime.OwnerRegisteredEvidence> {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return ownerEvidenceListing.listRegistered()
+    }
+
+    suspend fun listDerivativeGenerationsAsOwner(evidenceArtifactId: EvidenceArtifactId): List<parker.core.runtime.DerivativeCandidateSummary> {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return derivativeGenerationDiscoveryProjection.discover(evidenceArtifactId)
+    }
+
+    suspend fun resolvePreferredDerivativeAsOwner(evidenceArtifactId: EvidenceArtifactId): parker.core.runtime.PreferredDerivativeResolution {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return preferredDerivativeResolver.resolve(evidenceArtifactId)
     }
 
     /**
@@ -3858,6 +4008,12 @@ class ParkerRuntime(
         return DocumentAnalysisInvocationResult(outcome, pendingAnalysisId)
     }
 
+    suspend fun analyseSelectedEvidenceAsOwner(request: parker.core.runtime.OwnerAnalysisInvocationRequest): parker.core.runtime.OwnerAnalysisInvocationOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        logger.info("Governed Hermes analysis invoked by owner (selectionCount=${request.evidenceArtifactIds.size})")
+        return ownerAnalysisInvocationCoordinator.invoke(request)
+    }
+
     /**
      * Reviewed Analysis Result — Explicit Owner Save. The one production entry point through
      * which an already-completed, still-pending analysis (identified only by the opaque
@@ -4085,6 +4241,40 @@ class ParkerRuntime(
     }
 
     /**
+     * Executes the existing strict-evidence path against this runtime's
+     * governed stores. The caller identity is checked both at the invocation
+     * gate and against the request so it cannot use this entry point to
+     * resolve another principal's evidence. This path is deliberately
+     * separate from [analyseEvidence]: it never dispatches or accepts an
+     * Evidence Intelligence result.
+     */
+    suspend fun reasonStrictlyFromEvidenceAsAgent(
+        requestingPrincipalId: PrincipalId,
+        request: EvidenceAnalysisRequest,
+    ): StrictEvidenceReasoningResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        if (request.requestingPrincipalId != requestingPrincipalId) {
+            return StrictEvidenceReasoningResult.Failed(StrictEvidenceReasoningFailure.AUTHORIZATION_FAILURE)
+        }
+        val decision = permissionEngine.evaluate(
+            EvidenceIntelligenceInvocationGate.buildExecutionRequest(requestingPrincipalId),
+        )
+        if (decision.decision != PermissionDecisionOutcome.APPROVED &&
+            decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
+        ) {
+            logger.info(
+                "Strict Evidence invocation not authorised (principal=${requestingPrincipalId.value}, " +
+                    "decision=${decision.decision})",
+            )
+            return StrictEvidenceReasoningResult.Failed(StrictEvidenceReasoningFailure.AUTHORIZATION_FAILURE)
+        }
+        logger.info("Strict Evidence invocation authorised (principal=${requestingPrincipalId.value})")
+        return strictEvidenceReasoningInvocation.invoke(request)
+    }
+
+    /**
      * Graceful shutdown: cancels every [RuntimeEventLogger] subscription,
      * transitions to [RuntimeLifecycleState.STOPPED], and logs "Runtime
      * shutting down" / "Runtime stopped". Best-effort, not
@@ -4155,6 +4345,7 @@ class ParkerRuntime(
         // itself in this unit -- the Principal is provisioned at status CREATED (never
         // ACTIVE) and no PermissionPolicyRule references this purpose yet.
         val HERMES_INGESTION_OPERATOR_PRINCIPAL_ID = PrincipalId("agent.hermes-ingestion-operator")
+        val HERMES_ANALYSIS_OPERATOR_PRINCIPAL_ID = PrincipalId("agent.hermes-analysis-operator")
         val AGENT_GATEWAY_HERMES_INGESTION_PURPOSE = AuthorizationPurposeId("agent-gateway.hermes-ingestion")
 
         // Parker Agent Gateway, AG-1C (R0 Permission Vocabulary,

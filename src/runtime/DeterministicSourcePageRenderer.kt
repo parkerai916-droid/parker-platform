@@ -21,6 +21,21 @@ data class SourcePageRendererLimits(
 
 /** Direct custody-byte rendering only. No text extraction, OCR, segmentation, or semantic ordering. */
 class DeterministicSourcePageRenderer(private val limits: SourcePageRendererLimits = SourcePageRendererLimits()) : SourcePageRenderer {
+    /** Renders verified pre-ingestion custody bytes without manufacturing an EvidenceArtifactId. */
+    fun renderPending(request: PendingReviewPageRenderRequest): PendingReviewPagePreviewOutcome {
+        val safeRequest = request.copy(sourceBytes = request.sourceBytes.copyOf())
+        if (safeRequest.sourceBytes.size.toLong() > limits.maximumSourceBytes) return PendingReviewPagePreviewOutcome.ResourceLimitExceeded
+        if (CanonicalPagePixelDigests.sha256(safeRequest.sourceBytes) != safeRequest.sourceSha256) return PendingReviewPagePreviewOutcome.SourceDigestMismatch
+        return try {
+            when (safeRequest.sourceMediaType) {
+                "application/pdf" -> if (safeRequest.profile.dpi == null) PendingReviewPagePreviewOutcome.ProvenanceMismatch else renderPendingPdf(safeRequest)
+                "image/png" -> if (safeRequest.profile.dpi != null) PendingReviewPagePreviewOutcome.ProvenanceMismatch else renderPendingPng(safeRequest)
+                else -> PendingReviewPagePreviewOutcome.UnsupportedMedia
+            }
+        } catch (_: java.io.IOException) { PendingReviewPagePreviewOutcome.CorruptSource }
+        catch (_: Exception) { PendingReviewPagePreviewOutcome.RendererFailure }
+    }
+
     override fun render(request: SourcePageRenderRequest): SourcePageRepresentationOutcome {
         val safeRequest = request.copy(sourceBytes = request.sourceBytes.copyOf())
         if (safeRequest.sourceBytes.size.toLong() > limits.maximumSourceBytes) return SourcePageRepresentationOutcome.ResourceLimitExceeded
@@ -58,6 +73,29 @@ class DeterministicSourcePageRenderer(private val limits: SourcePageRendererLimi
             IMAGEIO_ID, System.getProperty("java.version"), System.getProperty("java.vendor") + ":" + System.getProperty("java.runtime.version"))
     }
 
+    private fun renderPendingPdf(request: PendingReviewPageRenderRequest): PendingReviewPagePreviewOutcome = Loader.loadPDF(request.sourceBytes).use { doc ->
+        if (doc.numberOfPages !in 1..limits.maximumPages) return PendingReviewPagePreviewOutcome.ResourceLimitExceeded
+        if (request.pageNumber !in 1..doc.numberOfPages) return PendingReviewPagePreviewOutcome.InvalidPageIndex
+        val page = doc.getPage(request.pageNumber - 1); val box = page.cropBox; val rotation = ((page.rotation % 360) + 360) % 360
+        if (rotation !in setOf(0, 90, 180, 270)) return PendingReviewPagePreviewOutcome.RendererFailure
+        val dpi = requireNotNull(request.profile.dpi)
+        val rotated = rotation == 90 || rotation == 270
+        val width = Math.ceil((if (rotated) box.height else box.width) * dpi / 72.0).toLong()
+        val height = Math.ceil((if (rotated) box.width else box.height) * dpi / 72.0).toLong()
+        if (!withinLimits(width, height)) return PendingReviewPagePreviewOutcome.ExtremeDimensions
+        return createPending(request, PDFRenderer(doc).renderImageWithDPI(request.pageNumber - 1, dpi.toFloat(), ImageType.RGB),
+            doc.numberOfPages, SourcePageDimensions(decimal(box.width), decimal(box.height), "PDF_POINT"), rotation,
+            PDFBOX_ID, PDFBOX_VERSION, PDFBOX_BUILD)
+    }
+
+    private fun renderPendingPng(request: PendingReviewPageRenderRequest): PendingReviewPagePreviewOutcome {
+        if (request.pageNumber != 1) return PendingReviewPagePreviewOutcome.InvalidPageIndex
+        val image = ImageIO.read(ByteArrayInputStream(request.sourceBytes)) ?: return PendingReviewPagePreviewOutcome.CorruptSource
+        if (!withinLimits(image.width.toLong(), image.height.toLong())) return PendingReviewPagePreviewOutcome.ExtremeDimensions
+        return createPending(request, image, 1, SourcePageDimensions(image.width.toString(), image.height.toString(), "SOURCE_PIXEL"), 0,
+            IMAGEIO_ID, System.getProperty("java.version"), System.getProperty("java.vendor") + ":" + System.getProperty("java.runtime.version"))
+    }
+
     private fun create(request: SourcePageRenderRequest, source: BufferedImage, pageCount: Int, sourceDimensions: SourcePageDimensions,
         rotation: Int, rendererId: String, rendererVersion: String, rendererBuild: String): SourcePageRepresentationOutcome {
         if (!withinLimits(source.width.toLong(), source.height.toLong())) return SourcePageRepresentationOutcome.ExtremeDimensions
@@ -70,6 +108,20 @@ class DeterministicSourcePageRenderer(private val limits: SourcePageRendererLimi
             request.sourceMediaType, request.pageNumber, pageCount, rendererId, rendererVersion, rendererBuild, request.profile,
             sourceDimensions, rotation, dimensions, pixelDigest, CanonicalPagePixelDigests.sha256(encoded))
         return SourcePageRepresentationOutcome.Created(AuthoritativePageRepresentation(representationId(provenance), provenance, encoded, pixels))
+    }
+
+    private fun createPending(request: PendingReviewPageRenderRequest, source: BufferedImage, pageCount: Int, sourceDimensions: SourcePageDimensions,
+        rotation: Int, rendererId: String, rendererVersion: String, rendererBuild: String): PendingReviewPagePreviewOutcome {
+        if (!withinLimits(source.width.toLong(), source.height.toLong())) return PendingReviewPagePreviewOutcome.ExtremeDimensions
+        val image = BufferedImage(source.width, source.height, BufferedImage.TYPE_INT_RGB); val g = image.createGraphics(); configure(g)
+        g.color = Color.WHITE; g.fillRect(0, 0, image.width, image.height); g.drawImage(source, 0, 0, null); g.dispose()
+        val pixels = rgbBytes(image); val dimensions = PagePixelDimensions(image.width, image.height)
+        val pixelDigest = CanonicalPagePixelDigests.digest(dimensions, request.profile.pixelFormat, pixels)
+        val encoded = ByteArrayOutputStream().use { out -> check(ImageIO.write(image, "png", out)); out.toByteArray() }
+        val provenance = PendingReviewPagePreviewProvenance(request.batchId, request.sourceSha256, request.sourceBytes.size.toLong(),
+            request.sourceMediaType, request.pageNumber, pageCount, rendererId, rendererVersion, rendererBuild, request.profile,
+            sourceDimensions, rotation, dimensions, pixelDigest, CanonicalPagePixelDigests.sha256(encoded))
+        return PendingReviewPagePreviewOutcome.Created(PendingReviewPagePreview(provenance, encoded))
     }
 
     fun crop(page: AuthoritativePageRepresentation, bounds: PixelCropBounds): DeterministicPageCrop {

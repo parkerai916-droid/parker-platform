@@ -26,6 +26,36 @@ interface OwnerEvidenceOperations {
     /** Fresh durable custody-backed listing. Never uploads, executes, authorizes, or invokes a provider. */
     suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> = emptyList()
 
+    suspend fun listDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerDerivativeGenerationSummary> = emptyList()
+
+    suspend fun resolvePreferredDerivative(evidenceArtifactId: EvidenceArtifactId): OwnerPreferredDerivativeResolution =
+        OwnerPreferredDerivativeResolution.NoUsableDerivative(evidenceArtifactId.value, "Preferred derivative resolution is not configured")
+
+    /**
+     * CASE-1. Exact, owner-facing case-scoped evidence projection. This deliberately composes the
+     * existing validated evidence listing and its assignment join; it is not a second evidence
+     * enumeration or a reverse-index authority.
+     */
+    suspend fun listEvidenceForCase(caseId: String): OwnerCaseEvidenceDiscoveryOutcome {
+        val case = listCases().firstOrNull { it.caseId == caseId }
+            ?: return OwnerCaseEvidenceDiscoveryOutcome.UnknownCase
+        val evidence = listRegisteredEvidence()
+            .asSequence()
+            .filter { it.caseId == caseId }
+            .map {
+                OwnerCaseEvidenceView(
+                    evidenceArtifactId = it.evidenceArtifactId,
+                    originalFileName = it.originalFileName,
+                    mediaType = it.mediaType,
+                    sourceSha256 = it.sha256,
+                    byteLength = it.byteLength,
+                    registeredAt = it.registeredAt,
+                )
+            }
+            .toList()
+        return OwnerCaseEvidenceDiscoveryOutcome.Found(case, evidence)
+    }
+
     /** Read-only governed acquisition decision for one exact custodied source; never executes acquisition. */
     suspend fun governedAcquisitionDecision(evidenceArtifactId: EvidenceArtifactId): OwnerAcquisitionDecisionView =
         OwnerAcquisitionDecisionView.Indeterminate(
@@ -275,12 +305,48 @@ data class OwnerRegisteredEvidenceView(
     val caseName: String? = null,
 )
 
+data class OwnerDerivativeGenerationSummary(
+    val derivativeGenerationId: String,
+    val evidenceArtifactId: String,
+    val kind: String,
+    val producer: String,
+    val adapter: String?,
+    val generatedAt: String,
+    val operationalOutcome: String,
+    val completeness: String,
+    val warnings: List<String>,
+    val transformations: List<String>,
+    val contentAvailable: Boolean,
+)
+
+sealed interface OwnerPreferredDerivativeResolution {
+    data class Preferred(val evidenceArtifactId: String, val derivative: OwnerDerivativeGenerationSummary, val reason: String) : OwnerPreferredDerivativeResolution
+    data class Ambiguous(val evidenceArtifactId: String, val candidates: List<OwnerDerivativeGenerationSummary>, val reason: String) : OwnerPreferredDerivativeResolution
+    data class NoUsableDerivative(val evidenceArtifactId: String, val reason: String) : OwnerPreferredDerivativeResolution
+}
+
 /** CASE-1. One owner-defined case/matter, for display and for the Owner UI's case filter/selector. */
 data class OwnerCaseView(
     val caseId: String,
     val caseName: String,
     val createdAt: String,
 )
+
+/** CASE-1. Human-friendly evidence row for one exact case projection. */
+data class OwnerCaseEvidenceView(
+    val evidenceArtifactId: String,
+    val originalFileName: String?,
+    val mediaType: String?,
+    val sourceSha256: String,
+    val byteLength: Long,
+    val registeredAt: String?,
+)
+
+sealed interface OwnerCaseEvidenceDiscoveryOutcome {
+    data class Found(val case: OwnerCaseView, val evidence: List<OwnerCaseEvidenceView>) : OwnerCaseEvidenceDiscoveryOutcome
+    data object UnknownCase : OwnerCaseEvidenceDiscoveryOutcome
+    data class Failed(val reason: String) : OwnerCaseEvidenceDiscoveryOutcome
+}
 
 /** The truthful result of one [OwnerEvidenceOperations.createCase] call. */
 sealed interface OwnerCaseCreationOutcome {

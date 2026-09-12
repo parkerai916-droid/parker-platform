@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.awt.image.BufferedImage
+import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -171,6 +173,7 @@ class OwnerEvidenceHttpServerTest {
         openAiExternalTranscriptionProviderProfilePath: String? = null,
         openAiApiCredential: OpenAiApiCredential? = null,
         runtimeConfigOverride: ParkerRuntimeConfig? = null,
+        pendingPreviewSource: suspend (String, String) -> PendingReviewSource? = { _, _ -> null },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -239,6 +242,7 @@ class OwnerEvidenceHttpServerTest {
             recordHermesProcessingDecisionAsOwner = { batchId, sourceSha256, decision, reason, correction ->
                 runtime.recordHermesProcessingDecisionAsOwner(batchId, sourceSha256, decision, reason, correction)
             },
+            readPendingReviewSourceAsOwner = pendingPreviewSource,
         )
         server.start()
         return Harness(runtime, server, authentication, runtimeLogger, serverLogger)
@@ -247,6 +251,26 @@ class OwnerEvidenceHttpServerTest {
     private fun pairedCookie(harness: Harness): String {
         val paired = requireNotNull(harness.authentication.pair(harness.authentication.initiatePairing()))
         return "ParkerOwnerDeviceId=${paired.deviceId}; ParkerOwnerDeviceCredential=${paired.deviceCredential}; ParkerOwnerSession=${paired.sessionId}"
+    }
+
+    @Test
+    fun `owner preview renders pending PNG through batch and hash seam`() {
+        val image = BufferedImage(12, 8, BufferedImage.TYPE_INT_RGB)
+        val bytes = ByteArrayOutputStream().use { out -> ImageIO.write(image, "png", out); out.toByteArray() }
+        val sha = CanonicalPagePixelDigests.sha256(bytes)
+        val pending = PendingReviewSource("bulk-preview-http", sha, bytes.size.toLong(), "image/png", "review.png", Instant.now(), bytes)
+        val harness = startHarness("", pendingPreviewSource = { batchId, sourceSha256 -> if (batchId == pending.batchId && sourceSha256 == sha) pending else null })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/hermes-processing/review/${pending.batchId}/$sha/preview?page=1")
+            val unauthorised = send(HttpRequest.newBuilder(uri).GET().build())
+            assertEquals(401, unauthorised.statusCode())
+            val response = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness)).GET().build())
+            assertEquals(200, response.statusCode(), response.body())
+            assertTrue(response.headers().firstValue("Content-Type").orElse("").startsWith("image/png"))
+            assertEquals("1", response.headers().firstValue("X-Parker-Preview-Page").orElse(null))
+            assertEquals("1", response.headers().firstValue("X-Parker-Preview-Page-Count").orElse(null))
+            assertTrue(response.body().isNotEmpty())
+        } finally { harness.shutdown() }
     }
 
     @Test
@@ -899,6 +923,12 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("bulkCaseSelector"))
             assertTrue(body.contains("Confirm Case and Authorise Batch"))
             assertTrue(body.contains("fetch('/owner/ingestion-batches'"))
+            assertTrue(body.contains("Pre-Ingestion Owner Review"))
+            assertTrue(body.contains("/owner/hermes-processing/review"))
+            assertTrue(body.contains("OVERRIDE & INGEST"))
+            assertTrue(body.contains("DECLINE INGESTION"))
+            assertTrue(body.contains("Automatic rerun is not yet wired"))
+            assertTrue(body.contains("An Owner explanation is required for an override."))
             val bulkPanel = body.substringAfter("<section id=\"bulkIngestionPanel\"").substringBefore("</section>")
             assertTrue(bulkPanel.contains("This tab never uploads files."))
             assertFalse(bulkPanel.contains("filePicker"))
@@ -2944,6 +2974,85 @@ class OwnerEvidenceHttpServerTest {
         try {
             val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/cases")).GET().build())
             assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `GET general derivative generations requires authentication`() {
+        val harness = startHarness("")
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/evidence-1/derivative-generations")).GET().build())
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `GET case evidence requires authentication`() {
+        val harness = startHarness("")
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/cases/case-unknown/evidence")).GET().build())
+            assertEquals(401, response.statusCode())
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `case evidence projection returns empty evidence for a valid case and rejects unknown cases`() {
+        val harness = startHarness("")
+        try {
+            val created = postPaired(harness, "/owner/cases", "{\"caseName\":\"Empty analysis case\"}")
+            assertEquals(200, created.statusCode(), created.body())
+            val caseId = extractField(created.body(), "caseId") ?: error("expected case id")
+
+            val empty = getPaired(harness, "/owner/cases/$caseId/evidence")
+            assertEquals(200, empty.statusCode(), empty.body())
+            assertTrue(empty.body().contains("\"caseName\":\"Empty analysis case\""))
+            assertTrue(empty.body().contains("\"evidence\":[]"))
+            assertFalse(empty.body().contains("/home/"))
+
+            val unknown = getPaired(harness, "/owner/cases/case-does-not-exist/evidence")
+            assertEquals(404, unknown.statusCode(), unknown.body())
+            assertEquals("UNKNOWN_CASE", extractField(unknown.body(), "status"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
+    fun `case evidence projection returns only evidence assigned to the exact requested case`() {
+        val harness = startHarness("")
+        try {
+            val caseA = extractField(postPaired(harness, "/owner/cases", "{\"caseName\":\"Case A\"}").body(), "caseId")!!
+            val caseB = extractField(postPaired(harness, "/owner/cases", "{\"caseName\":\"Case B\"}").body(), "caseId")!!
+            val boundary = "CaseEvidenceProjectionBoundary"
+            val upload = send(
+                HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence"))
+                    .header("Cookie", pairedCookie(harness))
+                    .header("Content-Type", "multipart/form-data; boundary=$boundary")
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody(boundary, listOf(
+                        UploadPart("files", "case-a-document.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))),
+                    )))).build(),
+            )
+            assertEquals(200, upload.statusCode(), upload.body())
+            val evidenceId = extractField(upload.body(), "evidenceArtifactId")!!
+            val assignment = postPaired(harness, "/owner/evidence/$evidenceId/case", "{\"caseId\":\"$caseA\"}")
+            assertEquals(200, assignment.statusCode(), assignment.body())
+
+            val found = getPaired(harness, "/owner/cases/$caseA/evidence")
+            assertEquals(200, found.statusCode(), found.body())
+            assertTrue(found.body().contains("case-a-document.pdf"))
+            assertTrue(found.body().contains(evidenceId))
+            assertFalse(found.body().contains("/home/"))
+
+            val other = getPaired(harness, "/owner/cases/$caseB/evidence")
+            assertEquals(200, other.statusCode(), other.body())
+            assertTrue(other.body().contains("\"evidence\":[]"))
+            assertFalse(other.body().contains(evidenceId))
         } finally {
             harness.shutdown()
         }

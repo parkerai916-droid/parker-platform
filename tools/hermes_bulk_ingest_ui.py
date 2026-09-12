@@ -165,9 +165,17 @@ class Handler(BaseHTTPRequestHandler):
         if media_type_for(Path(filename)) != media or media not in SUPPORTED: self.send_json(200, {"status":"FAILED", "reason":"unsupported media type"}); return
         if len(data) > MAX_FILE: self.send_json(413, {"status":"FAILED", "reason":"file is too large"}); return
         try:
-            with tempfile.NamedTemporaryFile(prefix="hermes-ui-", suffix=Path(filename).suffix, delete=True) as source:
-                source.write(data); source.flush()
-                item = process_one(ParkerClient(os.environ.get("PARKER_GATEWAY_URL", "http://127.0.0.1:8090"), self.token, 120), batch, Path(source.name), 120)
+            source_path = None
+            retain_source = False
+            try:
+                with tempfile.NamedTemporaryFile(prefix="hermes-ui-", suffix=Path(filename).suffix, delete=False) as source:
+                    source_path = Path(source.name)
+                    source.write(data); source.flush()
+                item = process_one(ParkerClient(os.environ.get("PARKER_GATEWAY_URL", "http://127.0.0.1:8090"), self.token, 120), batch, source_path, 120)
+                retain_source = item.pending_source_retained
+            finally:
+                if source_path is not None and not retain_source:
+                    source_path.unlink(missing_ok=True)
             payload = item.json(); payload["filename"] = filename
             self.send_json(200, payload)
         except Exception as error:

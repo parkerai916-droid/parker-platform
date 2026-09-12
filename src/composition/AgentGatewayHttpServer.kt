@@ -15,6 +15,8 @@ import parker.core.interfaces.AgentGatewayAccessOutcome
 import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.PermissionDecisionOutcome
+import parker.core.interfaces.PendingReviewSourceStoreResult
 import parker.core.runtime.AgentGatewayAcquisitionResult
 import parker.core.runtime.AgentGatewayEvidenceManifestResult
 import parker.core.runtime.AgentGatewayEvidenceRetrievalResult
@@ -85,8 +87,12 @@ class AgentGatewayHttpServer(
     private val bindAddress: String,
     private val port: Int,
     private val authentication: AgentGatewayAuthentication,
+    private val ingestionPrincipalId: PrincipalId = PrincipalId("agent.hermes-ingestion-operator"),
+    private val analysisPrincipalId: PrincipalId? = null,
     private val retrieveEvidenceAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayEvidenceRetrievalResult,
     private val retrieveEvidenceManifestAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayEvidenceManifestResult,
+    private val retrieveEvidenceAsAnalysisAgent: (suspend (EvidenceArtifactId) -> AgentGatewayEvidenceRetrievalResult)? = null,
+    private val retrieveEvidenceManifestAsAnalysisAgent: (suspend (EvidenceArtifactId) -> AgentGatewayEvidenceManifestResult)? = null,
     private val submitSourceAsAgent: suspend (CandidateEvidenceArtifact, String?) -> AgentGatewaySourceSubmissionResult,
     private val requestAcquisitionAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayAcquisitionResult,
     private val bindIngestionEvidenceAsAgent: suspend (String, EvidenceArtifactId) -> AgentGatewayBulkBindingResult = { _, _ -> AgentGatewayBulkBindingResult.Denied },
@@ -96,12 +102,17 @@ class AgentGatewayHttpServer(
     /** Hermes Processing Result Intake, Task 2. See [handleSubmitProcessingResult]. */
     private val submitProcessingResultAsAgent: suspend (String, parker.core.interfaces.HermesProcessingResult) -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult =
         { _, _ -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    /** Pre-ingestion REVIEW_REQUIRED source custody; never creates an EvidenceArtifactId. */
+    private val submitPendingReviewSourceAsAgent: suspend (String, String, ByteArray, String?, String?) -> PendingReviewSourceStoreResult =
+        { _, _, _, _, _ -> throw IllegalStateException("pending-review source custody unavailable") },
     /** Hermes Processing Result Intake, Task 2. See [handleListProcessingResults]. */
     private val listProcessingResultsForBatchAsAgent: suspend (String) -> parker.core.runtime.AgentGatewayProcessingResultListResult =
         { parker.core.runtime.AgentGatewayProcessingResultListResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
     /** Hermes Governed Ingestion, Task 3. See [handleSubmitGovernedIngestion]. */
-    private val submitGovernedIngestionAsAgent: suspend (String, String, CandidateEvidenceArtifact) -> parker.core.runtime.AgentGatewayGovernedIngestionResult =
+        private val submitGovernedIngestionAsAgent: suspend (String, String, CandidateEvidenceArtifact) -> parker.core.runtime.AgentGatewayGovernedIngestionResult =
         { _, _, _ -> parker.core.runtime.AgentGatewayGovernedIngestionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    /** GA-4 retrieval-only text analysis request boundary. */
+    private val submitAnalysisRequestAsAgent: (suspend (parker.core.interfaces.AnalysisRequest) -> parker.core.runtime.AnalysisRequestResult)? = null,
     private val audit: AgentGatewayAccessAudit,
     private val logger: ParkerLogger,
 ) {
@@ -118,11 +129,68 @@ class AgentGatewayHttpServer(
         httpServer.executor = fixedThreadPool
         httpServer.createContext("/agent/evidence", EvidenceHandler())
         httpServer.createContext("/agent/ingestion-batches", ReadyBatchesHandler())
+        httpServer.createContext("/agent/analysis", AnalysisHandler())
         httpServer.createContext("/agent/review-queue", SteveReviewQueueHandler())
         httpServer.start()
         server = httpServer
         executor = fixedThreadPool
         logger.info("Agent Gateway HTTP server started on $bindAddress:${boundPort}")
+    }
+
+    private inner class AnalysisHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            val correlationId = UUID.randomUUID().toString()
+            try {
+                val token = bearerToken(exchange)
+                val principalId = token?.let(authentication::authenticate)
+                if (principalId == null) {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
+                    recordAudit(correlationId, null, ANALYSIS_REQUEST_ACTION_NAME, null, if (token == null) AgentGatewayAccessOutcome.UNAUTHENTICATED else AgentGatewayAccessOutcome.AUTHENTICATION_FAILED)
+                    writeJson(exchange, 401, jsonObject("error" to "unauthorised")); return
+                }
+                if (analysisPrincipalId == null || principalId != analysisPrincipalId) {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
+                    recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, null, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied")); return
+                }
+                if (exchange.requestMethod != "POST" || exchange.requestURI.path != "/agent/analysis") {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
+                    recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, null, AgentGatewayAccessOutcome.NOT_FOUND_ROUTE)
+                    writeJson(exchange, 404, jsonObject("error" to "not found")); return
+                }
+                val request = try {
+                    parseAnalysisRequest(readBounded(exchange.requestBody, MAX_ANALYSIS_REQUEST_BODY_BYTES))
+                } catch (_: RequestBodyTooLargeException) {
+                    recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, null, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                    writeJson(exchange, 413, jsonObject("error" to "request body too large")); return
+                } catch (e: Exception) {
+                    recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, null, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                    writeJson(exchange, 400, jsonObject("error" to "malformed analysis request", "detail" to (e.message ?: "invalid request"))); return
+                }
+                val submit = submitAnalysisRequestAsAgent
+                if (submit == null) {
+                    recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, request.requestId.value, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 503, jsonObject("error" to "analysis boundary unavailable")); return
+                }
+                when (val result = runBlocking { submit(request) }) {
+                    is parker.core.runtime.AnalysisRequestResult.Accepted -> {
+                        recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, request.requestId.value, AgentGatewayAccessOutcome.APPROVED)
+                        writeJson(exchange, 200, analysisPackageJson(result.retrievalPackage))
+                    }
+                    is parker.core.runtime.AnalysisRequestResult.ScopeRejected -> {
+                        recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, request.requestId.value, AgentGatewayAccessOutcome.NOT_FOUND)
+                        writeJson(exchange, 404, jsonObject("status" to "SCOPE_REJECTED", "requestId" to request.requestId.value, "reason" to result.reason, "evidenceArtifactId" to result.evidenceArtifactId?.value))
+                    }
+                    is parker.core.runtime.AnalysisRequestResult.Denied -> {
+                        recordAudit(correlationId, principalId, ANALYSIS_REQUEST_ACTION_NAME, request.requestId.value, AgentGatewayAccessOutcome.DENIED)
+                        writeJson(exchange, 403, jsonObject("status" to "DENIED", "requestId" to request.requestId.value, "reason" to result.reason))
+                    }
+                }
+            } catch (e: Exception) {
+                logger.error("Agent Gateway HTTP: analysis request failed safely (correlationId=$correlationId)", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
+            } finally { exchange.close() }
+        }
     }
 
     private inner class SteveReviewQueueHandler : HttpHandler {
@@ -134,6 +202,10 @@ class AgentGatewayHttpServer(
                 if (principalId == null) {
                     recordAudit(correlationId, null, null, null, if (token == null) AgentGatewayAccessOutcome.UNAUTHENTICATED else AgentGatewayAccessOutcome.AUTHENTICATION_FAILED)
                     writeJson(exchange, 401, jsonObject("error" to "unauthorised")); return
+                }
+                if (principalId != ingestionPrincipalId) {
+                    recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied")); return
                 }
                 if (exchange.requestMethod != "GET" || exchange.requestURI.path != "/agent/review-queue") {
                     writeJson(exchange, 404, jsonObject("error" to "not found")); return
@@ -204,6 +276,11 @@ class AgentGatewayHttpServer(
                     recordAudit(correlationId, null, null, null, if (token == null) AgentGatewayAccessOutcome.UNAUTHENTICATED else AgentGatewayAccessOutcome.AUTHENTICATION_FAILED)
                     writeJson(exchange, 401, jsonObject("error" to "unauthorised")); return
                 }
+                if (principalId != ingestionPrincipalId) {
+                    runCatching { exchange.requestBody.use { it.readBytes() } }
+                    recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 403, jsonObject("error" to "denied")); return
+                }
                 if (exchange.requestMethod == "GET" && exchange.requestURI.path == "/agent/ingestion-batches") {
                     val batches = runBlocking { listReadyIngestionBatchesAsAgent() }
                     recordAudit(correlationId, principalId, "agent.ingestion-batches.ready", null, AgentGatewayAccessOutcome.APPROVED)
@@ -227,6 +304,10 @@ class AgentGatewayHttpServer(
                     handleSubmitGovernedIngestion(exchange, correlationId, principalId, segments[0], segments[2])
                     return
                 }
+                if (segments.size == 3 && segments[1] == "pending-review-sources" && exchange.requestMethod == "POST") {
+                    handleSubmitPendingReviewSource(exchange, correlationId, principalId, segments[0], segments[2])
+                    return
+                }
                 runCatching { exchange.requestBody.use { it.readBytes() } }
                 recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.NOT_FOUND_ROUTE)
                 writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -235,6 +316,39 @@ class AgentGatewayHttpServer(
                 runCatching { recordAudit(correlationId, null, null, null, AgentGatewayAccessOutcome.INTERNAL_FAILURE) }
                 runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
             } finally { exchange.close() }
+        }
+
+        private fun handleSubmitPendingReviewSource(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, batchId: String, sourceSha256: String) {
+            if (!SAFE_ROUTE_ID.matches(batchId) || !SHA256_PATTERN.matches(sourceSha256)) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                recordAudit(correlationId, principalId, PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid pending-review source identity")); return
+            }
+            val body = try { readBounded(exchange.requestBody, MAX_SUBMISSION_BYTES) } catch (_: RequestBodyTooLargeException) {
+                recordAudit(correlationId, principalId, PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 413, jsonObject("error" to "request body too large")); return
+            }
+            val mediaType = exchange.requestHeaders.getFirst("Content-Type")?.takeIf { it.isNotBlank() }
+            val displayName = exchange.requestHeaders.getFirst(ORIGINAL_FILENAME_HEADER)?.takeIf { it.isNotBlank() }
+            try {
+                when (runBlocking { submitPendingReviewSourceAsAgent(batchId, sourceSha256, body, mediaType, displayName) }) {
+                    is PendingReviewSourceStoreResult.Stored -> {
+                        recordAudit(correlationId, principalId, PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.REGISTERED)
+                        writeJson(exchange, 201, jsonObject("status" to "STORED", "batchId" to batchId, "sourceSha256" to sourceSha256, "byteLength" to body.size))
+                    }
+                    is PendingReviewSourceStoreResult.AlreadyStored -> {
+                        recordAudit(correlationId, principalId, PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.ALREADY_REGISTERED)
+                        writeJson(exchange, 200, jsonObject("status" to "ALREADY_STORED", "batchId" to batchId, "sourceSha256" to sourceSha256, "byteLength" to body.size))
+                    }
+                    is PendingReviewSourceStoreResult.Conflict -> {
+                        recordAudit(correlationId, principalId, PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.SOURCE_IDENTITY_CONFLICT)
+                        writeJson(exchange, 409, jsonObject("status" to "CONFLICT"))
+                    }
+                }
+            } catch (_: IllegalArgumentException) {
+                recordAudit(correlationId, principalId, PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "pending-review source hash mismatch or invalid metadata"))
+            }
         }
 
         /**
@@ -337,11 +451,11 @@ class AgentGatewayHttpServer(
             when (val outcome = runBlocking { submitGovernedIngestionAsAgent(batchId, expectedSha256, candidate) }) {
                 is parker.core.runtime.AgentGatewayGovernedIngestionResult.Ingested -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
-                    writeJson(exchange, 201, governedIngestionJson("INGESTED", outcome.projection))
+                    writeJson(exchange, 201, governedIngestionJson("INGESTED", outcome.projection, outcome.correctionRepresentationId))
                 }
                 is parker.core.runtime.AgentGatewayGovernedIngestionResult.AlreadyIngested -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.ALREADY_REGISTERED)
-                    writeJson(exchange, 200, governedIngestionJson("ALREADY_INGESTED", outcome.projection))
+                    writeJson(exchange, 200, governedIngestionJson("ALREADY_INGESTED", outcome.projection, outcome.correctionRepresentationId))
                 }
                 parker.core.runtime.AgentGatewayGovernedIngestionResult.HeldForReview -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
@@ -370,6 +484,10 @@ class AgentGatewayHttpServer(
                 parker.core.runtime.AgentGatewayGovernedIngestionResult.InvalidHumanDecision -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
                     writeJson(exchange, 409, jsonObject("status" to "INVALID_HUMAN_DECISION"))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.CorrectionLineageFailed -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("status" to "CORRECTION_LINEAGE_FAILED", "reason" to outcome.reason))
                 }
                 is parker.core.runtime.AgentGatewayGovernedIngestionResult.HashMismatch -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.HASH_MISMATCH)
@@ -401,6 +519,9 @@ class AgentGatewayHttpServer(
         "status" to result.status.name,
         "methods" to JsonArray(result.methods.map { it.name }),
         "proposedEvidenceArtifactId" to result.proposedEvidenceArtifactId?.value,
+        "reviewConfidenceThreshold" to result.reviewConfidenceThreshold,
+        "processingCompleteness" to result.processingCompleteness?.name,
+        "processingWarnings" to JsonArray(result.processingWarnings),
         "issues" to JsonArray(result.issues.map { issue ->
             jsonObject(
                 "kind" to issue.kind.name,
@@ -415,20 +536,195 @@ class AgentGatewayHttpServer(
                 },
                 "hermesInterpretation" to issue.hermesInterpretation,
                 "transcriptionFidelity" to issue.transcriptionFidelity?.name,
+                "observedConfidence" to issue.observedConfidence,
             )
         }),
         "failure" to result.failure?.let { failure -> jsonObject("kind" to failure.kind.name, "detail" to failure.detail) },
     )
 
     /** Hermes Governed Ingestion, Task 3. Mirrors [EvidenceHandler]'s own `submissionJson` shape exactly -- the same flat, opaque-identifier-only manifest fields, plus the governed-ingestion-specific status token. */
-    private fun governedIngestionJson(status: String, projection: parker.core.runtime.AgentGatewayEvidenceManifestProjection) = jsonObject(
+    private fun governedIngestionJson(
+        status: String,
+        projection: parker.core.runtime.AgentGatewayEvidenceManifestProjection,
+        correctionRepresentationId: parker.core.interfaces.HermesPreIngestionCorrectionId? = null,
+    ) = jsonObject(
         "status" to status,
         "evidenceArtifactId" to projection.evidenceArtifactId.value,
         "sha256" to projection.sha256,
         "byteLength" to projection.byteLength,
         "receivedMediaType" to projection.receivedMediaType,
         "originalFileName" to projection.originalFileName,
+        "correctionRepresentationId" to correctionRepresentationId?.value,
     )
+
+    private fun analysisPackageJson(packageValue: parker.core.runtime.AnalysisRetrievalPackage) = jsonObject(
+        "status" to "ACCEPTED",
+        "requestId" to packageValue.requestId.value,
+        "question" to packageValue.question,
+        "analysisType" to packageValue.analysisType.name,
+        "scope" to jsonObject(
+            "evidenceArtifactIds" to JsonArray(packageValue.scope.evidenceArtifactIds.map { it.value }),
+            "derivativeGenerationIds" to jsonObject(*packageValue.scope.derivativeGenerationIds.map { (evidence, generation) -> evidence to generation.value }.toTypedArray()),
+        ),
+        "evidence" to JsonArray(packageValue.evidence.map { item ->
+            jsonObject(
+                "evidenceArtifactId" to item.evidenceArtifactId.value,
+                "manifest" to jsonObject(
+                    "evidenceArtifactId" to item.manifest.evidenceArtifactId.value,
+                    "sha256" to item.manifest.sha256,
+                    "byteLength" to item.manifest.byteLength,
+                    "receivedMediaType" to item.manifest.receivedMediaType,
+                    "originalFileName" to item.manifest.originalFileName,
+                    "correctionLineage" to correctionLineageJson(item.manifest.correctionLineage),
+                    "correctedContent" to correctedContentJson(item.manifest.correctedContent),
+                ),
+                "governedContent" to item.governedContent?.let { governedContentJson(it) },
+            )
+        }),
+    )
+
+    private fun correctionLineageJson(lineage: parker.core.interfaces.HermesPreIngestionCorrectionLineage?): JsonObject? = lineage?.let {
+        jsonObject(
+            "correctionId" to it.correction.representationId.value,
+            "evidenceArtifactId" to it.binding.evidenceArtifactId.value,
+            "sourceSha256" to it.binding.sourceSha256,
+            "createdAt" to it.binding.createdAt.toString(),
+            "batchId" to it.correction.batchId,
+            "issueIndex" to it.correction.issueIndex,
+            "machineIssueKind" to it.correction.machineIssueKind.name,
+            "machineIssueExplanation" to it.correction.machineIssueExplanation,
+            "machineInterpretation" to it.correction.machineInterpretation,
+            "correctedInterpretation" to it.correction.correctedInterpretation,
+            "ownerExplanation" to it.correction.ownerExplanation,
+            "ownerPrincipalId" to it.correction.ownerPrincipalId.value,
+            "decisionAt" to it.correction.decisionAt.toString(),
+        )
+    }
+
+    private fun correctedContentJson(content: parker.core.interfaces.HermesOwnerCorrectedContent?): JsonObject? = content?.let {
+        jsonObject(
+            "authority" to it.authority,
+            "scope" to it.scope,
+            "evidenceArtifactId" to it.evidenceArtifactId.value,
+            "correctionId" to it.correctionId.value,
+            "sourceSha256" to it.sourceSha256,
+            "issueIndex" to it.issueIndex,
+            "machineInterpretation" to it.machineInterpretation,
+            "correctedInterpretation" to it.correctedInterpretation,
+            "ownerExplanation" to it.ownerExplanation,
+            "ownerPrincipalId" to it.ownerPrincipalId.value,
+            "decisionAt" to it.decisionAt.toString(),
+        )
+    }
+
+    private fun governedContentJson(content: parker.core.runtime.AnalysisGovernedContent) = jsonObject(
+        "derivativeGenerationId" to content.derivativeGenerationId.value,
+        "rootSourceEvidenceArtifactId" to content.record.rootSourceEvidenceArtifactId.value,
+        "derivativeKind" to content.record.derivativeKind,
+        "generatedAt" to content.record.generatedAt.toString(),
+        "parents" to JsonArray(content.record.parents.map { parent ->
+            when (parent) {
+                is parker.core.interfaces.DerivativeParentReference.RootEvidenceArtifact -> jsonObject("kind" to "ROOT_EVIDENCE_ARTIFACT", "evidenceArtifactId" to parent.evidenceArtifactId.value)
+                is parker.core.interfaces.DerivativeParentReference.ChildSourceEvidenceArtifact -> jsonObject("kind" to "CHILD_SOURCE_EVIDENCE_ARTIFACT", "evidenceArtifactId" to parent.evidenceArtifactId.value)
+                is parker.core.interfaces.DerivativeParentReference.ParentGeneration -> jsonObject("kind" to "PARENT_GENERATION", "derivativeGenerationId" to parent.derivativeGenerationId.value)
+            }
+        }),
+        "producerIdentity" to jsonObject(
+            "pluginIdentity" to content.record.producerIdentity.pluginIdentity,
+            "pluginVersion" to content.record.producerIdentity.pluginVersion,
+            "configurationIdentity" to content.record.producerIdentity.configurationIdentity,
+            "adapterIdentity" to content.record.producerIdentity.adapterIdentity,
+            "adapterVersion" to content.record.producerIdentity.adapterVersion,
+            "modelIdentity" to content.record.producerIdentity.modelIdentity,
+            "modelVersion" to content.record.producerIdentity.modelVersion,
+        ),
+        "contentIdentity" to when (val identity = content.record.contentIdentity) {
+            is parker.core.interfaces.DerivativeContentIdentity.NoCanonicalSerialization -> jsonObject("kind" to "NO_CANONICAL_SERIALIZATION")
+            is parker.core.interfaces.DerivativeContentIdentity.Digest -> jsonObject("kind" to "DIGEST", "algorithm" to identity.algorithm, "digest" to identity.digest)
+        },
+        "confidence" to content.record.confidence,
+        "transformationHistory" to JsonArray(content.record.transformationHistory.map { it.name }),
+        "completenessState" to content.record.completenessState.name,
+        "operationalOutcome" to content.record.operationalOutcome.name,
+        "warnings" to JsonArray(content.record.warnings),
+        "payload" to governedPayloadJson(content.payload),
+    )
+
+    private fun governedPayloadJson(payload: parker.core.interfaces.TierADerivativePayload): JsonObject = when (payload) {
+        is parker.core.interfaces.TierADerivativePayload.Pdf -> jsonObject(
+            "kind" to "PDF",
+            "documentText" to payload.value.documentText,
+            "pageCount" to payload.value.pageCount,
+            "pageTextAssociationAvailable" to payload.value.pageTextAssociationAvailable,
+            "metadata" to JsonArray(payload.value.metadata.map { jsonObject("name" to it.name, "value" to it.value, "representation" to it.representation) }),
+            "warnings" to JsonArray(payload.value.warnings),
+        )
+        is parker.core.interfaces.TierADerivativePayload.Docx -> jsonObject(
+            "kind" to "DOCX",
+            "paragraphs" to JsonArray(payload.value.paragraphs.map { paragraph ->
+                jsonObject("order" to paragraph.order, "text" to paragraph.text, "styleId" to paragraph.styleId, "numberingId" to paragraph.numberingId, "numberingLevel" to paragraph.numberingLevel, "hardPageBreakCount" to paragraph.hardPageBreakCount, "runs" to JsonArray(paragraph.runs.map { run -> jsonObject("order" to run.order, "text" to run.text, "bold" to run.bold, "italic" to run.italic) }))
+            }),
+            "tables" to JsonArray(payload.value.tables.map { table -> jsonObject("order" to table.order, "styleId" to table.styleId, "rows" to JsonArray(table.rows.map { row -> jsonObject("order" to row.order, "cells" to JsonArray(row.cells.map { cell -> jsonObject("order" to cell.order, "text" to cell.text) })) })) }),
+            "headers" to JsonArray(payload.value.headers.map { header -> jsonObject("kind" to header.kind, "order" to header.order, "relationshipId" to header.relationshipId, "paragraphs" to JsonArray(header.paragraphs.map { it.text })) }),
+            "footers" to JsonArray(payload.value.footers.map { footer -> jsonObject("kind" to footer.kind, "order" to footer.order, "relationshipId" to footer.relationshipId, "paragraphs" to JsonArray(footer.paragraphs.map { it.text })) }),
+            "metadata" to jsonObject("title" to payload.value.metadata.title, "author" to payload.value.metadata.author, "subject" to payload.value.metadata.subject, "parsedCreated" to payload.value.metadata.parsedCreated?.toString(), "application" to payload.value.metadata.application, "applicationVersion" to payload.value.metadata.applicationVersion),
+            "parts" to JsonArray(payload.value.parts.map { jsonObject("name" to it.name, "contentType" to it.contentType, "uncompressedBytes" to it.uncompressedBytes) }),
+            "relationshipCount" to payload.value.relationshipCount,
+            "relationshipTypes" to JsonArray(payload.value.relationshipTypes),
+            "mediaPartNames" to JsonArray(payload.value.mediaPartNames),
+            "warnings" to JsonArray(payload.value.warnings),
+        )
+        is parker.core.interfaces.TierADerivativePayload.Csv -> jsonObject(
+            "kind" to "CSV",
+            "headers" to JsonArray(payload.value.headers),
+            "rows" to JsonArray(payload.value.rows.map { JsonArray(it) }),
+            "delimiter" to payload.value.delimiter.toString(),
+            "quoteCharacter" to payload.value.quoteCharacter.toString(),
+            "lineEnding" to payload.value.lineEnding,
+            "warnings" to JsonArray(payload.value.warnings),
+        )
+        is parker.core.interfaces.TierADerivativePayload.Eml -> jsonObject(
+            "kind" to "EML",
+            "from" to payload.value.from,
+            "to" to payload.value.to,
+            "cc" to payload.value.cc,
+            "rawDate" to payload.value.rawDate,
+            "parsedDate" to payload.value.parsedDate?.toString(),
+            "subject" to payload.value.subject,
+            "messageId" to payload.value.messageId,
+            "mimeVersion" to payload.value.mimeVersion,
+            "contentType" to payload.value.contentType,
+            "headers" to JsonArray(payload.value.headers.map { jsonObject("name" to it.name, "value" to it.value, "rawRepresentation" to it.rawRepresentation) }),
+            "mimeEntities" to JsonArray(payload.value.mimeEntities.map { jsonObject("entityId" to it.entityId, "parentEntityId" to it.parentEntityId, "order" to it.order, "mediaType" to it.mediaType, "disposition" to it.disposition, "transferEncoding" to it.transferEncoding, "filename" to it.filename, "charset" to it.charset, "childEntityIds" to JsonArray(it.childEntityIds), "contentId" to it.contentId) }),
+            "bodyAlternatives" to JsonArray(payload.value.bodyAlternatives.map { jsonObject("mimeEntityId" to it.mimeEntityId, "mediaType" to it.mediaType, "charset" to it.charset, "decodedText" to it.decodedText) }),
+            "attachmentCandidates" to JsonArray(payload.value.attachmentCandidates.map { jsonObject("mimeEntityId" to it.mimeEntityId, "parentMimeEntityId" to it.parentMimeEntityId, "filename" to it.filename, "declaredMimeType" to it.declaredMimeType, "disposition" to it.disposition, "transferEncoding" to it.transferEncoding, "charset" to it.charset, "byteLength" to it.byteLength, "sha256" to it.sha256, "contentId" to it.contentId) }),
+            "childSourceCandidateCount" to payload.childSourceCandidateCount,
+            "warnings" to JsonArray(payload.value.warnings),
+        )
+        is parker.core.interfaces.TierADerivativePayload.Ocr -> jsonObject(
+            "kind" to "OCR",
+            "recognisedText" to payload.value.recognisedText,
+            "fidelity" to payload.value.fidelity.name,
+            "outcomeKind" to payload.value.outcomeKind.name,
+            "degradationReason" to payload.value.degradationReason,
+            "warnings" to JsonArray(payload.value.warnings),
+            "segments" to JsonArray(payload.value.segments.map { jsonObject("text" to it.text, "fidelity" to it.fidelity.name, "pageNumber" to it.pageNumber) }),
+        )
+        is parker.core.interfaces.TierADerivativePayload.RegionTranscription -> jsonObject(
+            "kind" to "REGION_TRANSCRIPTION",
+            "evidenceArtifactId" to payload.value.evidenceArtifactId,
+            "sourceSha256" to payload.value.sourceSha256,
+            "pageBindings" to JsonArray(payload.value.pageBindings),
+            "regionBindings" to JsonArray(payload.value.regionBindings),
+            "transcriptionBlocks" to JsonArray(payload.value.transcriptionBlocks),
+            "providerReturnedOrder" to JsonArray(payload.value.providerReturnedOrder),
+            "parkerSourceOrder" to JsonArray(payload.value.parkerSourceOrder),
+            "provider" to payload.value.provider,
+            "model" to payload.value.model,
+            "processingProfile" to payload.value.processingProfile,
+            "admissionProvenance" to payload.value.admissionProvenance,
+        )
+    }
 
     fun stop() {
         server?.stop(1)
@@ -465,12 +761,24 @@ class AgentGatewayHttpServer(
                     return
                 }
 
+                val analysisRequest = analysisPrincipalId != null && principalId == analysisPrincipalId
+
                 if (exchange.requestMethod == "POST" && exchange.requestURI.path == "/agent/evidence") {
+                    if (analysisRequest) {
+                        runCatching { exchange.requestBody.use { it.readBytes() } }
+                        recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.DENIED)
+                        writeJson(exchange, 403, jsonObject("error" to "denied")); return
+                    }
                     handleSubmit(exchange, correlationId, principalId)
                     return
                 }
 
                 if (exchange.requestMethod == "POST") {
+                    if (analysisRequest) {
+                        runCatching { exchange.requestBody.use { it.readBytes() } }
+                        recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.DENIED)
+                        writeJson(exchange, 403, jsonObject("error" to "denied")); return
+                    }
                     val postSegments = exchange.requestURI.path.removePrefix("/agent/evidence/").split('/').filter { it.isNotEmpty() }
                     if (postSegments.size == 2 && postSegments[1] == "acquire") {
                         handleAcquire(exchange, correlationId, principalId, postSegments[0])
@@ -492,9 +800,9 @@ class AgentGatewayHttpServer(
 
                 val segments = exchange.requestURI.path.removePrefix("/agent/evidence/").split('/').filter { it.isNotEmpty() }
                 when (segments.size) {
-                    1 -> handleRetrieve(exchange, correlationId, principalId, segments[0])
+                    1 -> handleRetrieve(exchange, correlationId, principalId, segments[0], analysisRequest)
                     2 -> if (segments[1] == "manifest") {
-                        handleRetrieveManifest(exchange, correlationId, principalId, segments[0])
+                        handleRetrieveManifest(exchange, correlationId, principalId, segments[0], analysisRequest)
                     } else {
                         recordAudit(correlationId, principalId, null, null, AgentGatewayAccessOutcome.NOT_FOUND_ROUTE)
                         writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -528,9 +836,13 @@ class AgentGatewayHttpServer(
             }
         }
 
-        private fun handleRetrieve(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, rawId: String) {
+        private fun handleRetrieve(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, rawId: String, analysisRequest: Boolean) {
             val id = parseEvidenceId(exchange, correlationId, principalId, rawId) ?: return
-            when (val result = runBlocking { retrieveEvidenceAsAgent(id) }) {
+            when (val result = runBlocking {
+                if (analysisRequest) retrieveEvidenceAsAnalysisAgent?.invoke(id)
+                    ?: AgentGatewayEvidenceRetrievalResult.Denied(id, PermissionDecisionOutcome.DENIED)
+                else retrieveEvidenceAsAgent(id)
+            }) {
                 is AgentGatewayEvidenceRetrievalResult.Found -> {
                     recordAudit(correlationId, principalId, RETRIEVE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.APPROVED)
                     writeJson(exchange, 200, jsonObject(
@@ -550,9 +862,13 @@ class AgentGatewayHttpServer(
             }
         }
 
-        private fun handleRetrieveManifest(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, rawId: String) {
+        private fun handleRetrieveManifest(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, rawId: String, analysisRequest: Boolean) {
             val id = parseEvidenceId(exchange, correlationId, principalId, rawId) ?: return
-            when (val result = runBlocking { retrieveEvidenceManifestAsAgent(id) }) {
+            when (val result = runBlocking {
+                if (analysisRequest) retrieveEvidenceManifestAsAnalysisAgent?.invoke(id)
+                    ?: AgentGatewayEvidenceManifestResult.Denied(id, PermissionDecisionOutcome.DENIED)
+                else retrieveEvidenceManifestAsAgent(id)
+            }) {
                 is AgentGatewayEvidenceManifestResult.Found -> {
                     recordAudit(correlationId, principalId, RETRIEVE_MANIFEST_ACTION_NAME, id.value, AgentGatewayAccessOutcome.APPROVED)
                     writeJson(exchange, 200, jsonObject(
@@ -562,6 +878,8 @@ class AgentGatewayHttpServer(
                         "byteLength" to result.manifest.byteLength,
                         "receivedMediaType" to result.manifest.receivedMediaType,
                         "originalFileName" to result.manifest.originalFileName,
+                        "correctionLineage" to correctionLineageJson(result.manifest.correctionLineage),
+                        "correctedContent" to correctedContentJson(result.manifest.correctedContent),
                     ))
                 }
                 is AgentGatewayEvidenceManifestResult.NotFound -> {
@@ -811,6 +1129,7 @@ class AgentGatewayHttpServer(
         const val BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
         const val PROCESSING_RESULT_SUBMIT_ACTION_NAME = "agent-gateway.processing-result.submit"
         const val PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
+        const val PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME = "agent-gateway.pending-review-source.submit"
         /**
          * Hermes Governed Ingestion, Task 3. An audit-log label only -- distinct from
          * [AGENT_GATEWAY_EVIDENCE_SUBMIT_ACTION_NAME], which is what [handleSubmitGovernedIngestion]
@@ -820,6 +1139,7 @@ class AgentGatewayHttpServer(
          * `/agent/evidence` submission even though both share one permission verb.
          */
         const val GOVERNED_INGESTION_ACTION_NAME = "agent-gateway.governed-ingestion.submit"
+        const val ANALYSIS_REQUEST_ACTION_NAME = "agent-gateway.analysis.request"
 
         /**
          * Hermes Processing Result Intake, Task 2. A processing result is metadata only (no raw
@@ -829,6 +1149,7 @@ class AgentGatewayHttpServer(
          * effectively unbounded.
          */
         const val MAX_PROCESSING_RESULT_REQUEST_BODY_BYTES: Long = 8L * 1024L * 1024L
+        const val MAX_ANALYSIS_REQUEST_BODY_BYTES: Long = 64L * 1024L
 
         /**
          * Mirrors `OwnerEvidenceHttpServer.MAX_PART_BYTES` -- the same 64 MiB ingress bound
@@ -853,9 +1174,9 @@ private const val MAX_HERMES_JSON_NESTING_DEPTH = 10
 
 /**
  * The smallest generic JSON value reader Task 2's own request shape needs -- objects, arrays,
- * strings, and bounded non-negative integers (page numbers, character offsets). No boolean or
- * floating-point support: nothing in [parker.core.interfaces.HermesProcessingResult]'s own shape
- * needs either. Deliberately not a reuse of [OwnerEvidenceHttpServer.kt]'s own `SimpleJsonReader`
+ * strings, bounded non-negative integers (page numbers, character offsets), and finite doubles
+ * for provider confidence. Deliberately not a reuse of [OwnerEvidenceHttpServer.kt]'s own
+ * `SimpleJsonReader`
  * -- that class is `private` to its own file (this repository's own established convention that
  * each HTTP server file owns its own private JSON helpers, exactly as this file's own JSON
  * *writer* below already mirrors that file's writer, per its own KDoc).
@@ -972,14 +1293,27 @@ private class AgentGatewayJsonReader(private val text: String) {
         }
     }
 
-    /** Integer only -- no fractional or exponent part, matching what page numbers/offsets need. */
-    private fun parseNumber(): Long {
+    /** Parses integral values as Long and finite fractional values as Double. */
+    private fun parseNumber(): Any {
         val start = pos
         if (peek() == '-') pos++
         if (pos >= text.length || !text[pos].isDigit()) throw JsonParseException("invalid number at position $start")
         while (pos < text.length && text[pos].isDigit()) pos++
         if (pos < text.length && (text[pos] == '.' || text[pos] == 'e' || text[pos] == 'E')) {
-            throw JsonParseException("non-integer numbers are not supported")
+            if (text[pos] == '.') {
+                pos++
+                while (pos < text.length && text[pos].isDigit()) pos++
+            }
+            if (pos < text.length && (text[pos] == 'e' || text[pos] == 'E')) {
+                pos++
+                if (pos < text.length && (text[pos] == '+' || text[pos] == '-')) pos++
+                if (pos >= text.length || !text[pos].isDigit()) throw JsonParseException("invalid number at position $start")
+                while (pos < text.length && text[pos].isDigit()) pos++
+            }
+            val value = text.substring(start, pos).toDoubleOrNull()
+                ?: throw JsonParseException("number out of range at position $start")
+            if (!value.isFinite()) throw JsonParseException("non-finite number at position $start")
+            return value
         }
         return text.substring(start, pos).toLongOrNull() ?: throw JsonParseException("number out of range at position $start")
     }
@@ -990,12 +1324,56 @@ private class AgentGatewayJsonReader(private val text: String) {
 }
 
 private val HERMES_PROCESSING_RESULT_REQUEST_FIELDS =
-    setOf("sourceSha256", "status", "methods", "proposedEvidenceArtifactId", "issues", "failure")
+    setOf("sourceSha256", "status", "methods", "proposedEvidenceArtifactId", "issues", "failure", "reviewConfidenceThreshold", "processingCompleteness", "processingWarnings")
 private val HERMES_PROCESSING_ISSUE_FIELDS =
-    setOf("kind", "explanation", "location", "hermesInterpretation", "transcriptionFidelity")
+    setOf("kind", "explanation", "location", "hermesInterpretation", "transcriptionFidelity", "observedConfidence")
 private val HERMES_PROCESSING_ISSUE_LOCATION_FIELDS =
     setOf("pageNumber", "startOffsetInclusive", "endOffsetExclusive", "regionDescription")
 private val HERMES_PROCESSING_FAILURE_FIELDS = setOf("kind", "detail")
+
+private val ANALYSIS_REQUEST_FIELDS = setOf("question", "analysisType", "scope")
+private val ANALYSIS_SCOPE_FIELDS = setOf("evidenceArtifactIds", "derivativeGenerationIds")
+
+private fun parseAnalysisRequest(bodyBytes: ByteArray): parker.core.interfaces.AnalysisRequest {
+    val root = AgentGatewayJsonReader(bodyBytes.toString(StandardCharsets.UTF_8)).parseRootValue()
+    val obj = requireJsonObject(root)
+    requireExactJsonFields(obj, ANALYSIS_REQUEST_FIELDS, "analysis request")
+    val question = obj["question"] as? String ?: throw JsonParseException("expected a 'question' string")
+    val analysisTypeName = obj["analysisType"] as? String ?: throw JsonParseException("expected an 'analysisType' string")
+    val analysisType = try {
+        parker.core.interfaces.AnalysisType.valueOf(analysisTypeName)
+    } catch (_: IllegalArgumentException) {
+        throw JsonParseException("invalid analysisType '$analysisTypeName'")
+    }
+    val scope = requireJsonObject(obj["scope"])
+    requireKeysSubsetOf(scope.keys, ANALYSIS_SCOPE_FIELDS, "analysis scope")
+    if ("evidenceArtifactIds" !in scope.keys) throw JsonParseException("missing analysis scope field(s): [evidenceArtifactIds]")
+    val rawIds = scope["evidenceArtifactIds"] as? List<*> ?: throw JsonParseException("expected a 'evidenceArtifactIds' array")
+    val ids = rawIds.map { raw ->
+        val value = raw as? String ?: throw JsonParseException("expected evidence artifact IDs as strings")
+        try { parker.core.interfaces.EvidenceArtifactId(value) }
+        catch (e: IllegalArgumentException) { throw JsonParseException(e.message ?: "invalid evidence artifact ID") }
+    }
+    val derivativeGenerationIds = (scope["derivativeGenerationIds"] as? Map<*, *>)?.map { (rawEvidence, rawGeneration) ->
+        val evidence = rawEvidence as? String ?: throw JsonParseException("expected derivative-generation map keys as strings")
+        val generation = rawGeneration as? String ?: throw JsonParseException("expected derivative-generation map values as strings")
+        try {
+            evidence to parker.core.interfaces.DerivativeGenerationId(generation)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException(e.message ?: "invalid derivative generation ID")
+        }
+    }?.toMap() ?: emptyMap()
+    return try {
+        parker.core.interfaces.AnalysisRequest(
+            requestId = parker.core.interfaces.AnalysisRequestId.new(),
+            question = question,
+            analysisType = analysisType,
+            scope = parker.core.interfaces.AnalysisEvidenceScope(ids, derivativeGenerationIds),
+        )
+    } catch (e: IllegalArgumentException) {
+        throw JsonParseException(e.message ?: "invalid analysis request")
+    }
+}
 
 /**
  * Parses one `POST /agent/ingestion-batches/{batchId}/processing-results` request body into a
@@ -1018,6 +1396,11 @@ private fun parseHermesProcessingResultRequest(bodyBytes: ByteArray, batchId: St
     }
     val issues = (obj["issues"] as? List<*> ?: emptyList<Any?>()).map(::parseHermesProcessingIssue)
     val failure = (obj["failure"] as? Map<*, *>)?.let(::parseHermesProcessingFailure)
+    val reviewConfidenceThreshold = parseOptionalConfidence(obj["reviewConfidenceThreshold"], "reviewConfidenceThreshold")
+    val processingCompleteness = obj["processingCompleteness"]?.let { parseEnum<parker.core.interfaces.HermesProcessingCompleteness>(it, "processingCompleteness") }
+    val processingWarnings = (obj["processingWarnings"] as? List<*> ?: emptyList<Any?>()).map {
+        it as? String ?: throw JsonParseException("expected processing warnings as strings")
+    }
 
     return try {
         parker.core.interfaces.HermesProcessingResult(
@@ -1028,6 +1411,9 @@ private fun parseHermesProcessingResultRequest(bodyBytes: ByteArray, batchId: St
             proposedEvidenceArtifactId = proposedEvidenceArtifactId,
             issues = issues,
             failure = failure,
+            reviewConfidenceThreshold = reviewConfidenceThreshold,
+            processingCompleteness = processingCompleteness,
+            processingWarnings = processingWarnings,
         )
     } catch (e: IllegalArgumentException) {
         throw JsonParseException(e.message ?: "invalid processing result")
@@ -1042,11 +1428,19 @@ private fun parseHermesProcessingIssue(raw: Any?): parker.core.interfaces.Hermes
     val location = (obj["location"] as? Map<*, *>)?.let(::parseHermesProcessingIssueLocation)
     val hermesInterpretation = obj["hermesInterpretation"] as? String
     val transcriptionFidelity = obj["transcriptionFidelity"]?.let { parseEnum<parker.core.interfaces.TranscriptionFidelity>(it, "transcriptionFidelity") }
+    val observedConfidence = parseOptionalConfidence(obj["observedConfidence"], "observedConfidence")
     return try {
-        parker.core.interfaces.HermesProcessingIssue(kind, explanation, location, hermesInterpretation, transcriptionFidelity)
+        parker.core.interfaces.HermesProcessingIssue(kind, explanation, location, hermesInterpretation, transcriptionFidelity, observedConfidence)
     } catch (e: IllegalArgumentException) {
         throw JsonParseException(e.message ?: "invalid processing issue")
     }
+}
+
+private fun parseOptionalConfidence(raw: Any?, field: String): Double? = when (raw) {
+    null -> null
+    is Long -> raw.toDouble()
+    is Double -> raw
+    else -> throw JsonParseException("expected numeric '$field'")
 }
 
 private fun parseHermesProcessingIssueLocation(obj: Map<*, *>): parker.core.interfaces.HermesProcessingIssueLocation.DocumentPage {
@@ -1078,6 +1472,12 @@ private fun requireJsonObject(raw: Any?): Map<*, *> = raw as? Map<*, *> ?: throw
 private fun requireKeysSubsetOf(keys: Set<*>, allowed: Set<String>, label: String) {
     val unexpected = keys.filterNot { it in allowed }
     if (unexpected.isNotEmpty()) throw JsonParseException("unexpected $label field(s): $unexpected")
+}
+
+private fun requireExactJsonFields(obj: Map<*, *>, expected: Set<String>, label: String) {
+    requireKeysSubsetOf(obj.keys, expected, label)
+    val missing = expected - obj.keys.filterIsInstance<String>().toSet()
+    if (missing.isNotEmpty()) throw JsonParseException("missing $label field(s): $missing")
 }
 
 private inline fun <reified T : Enum<T>> parseEnum(raw: Any?, fieldName: String): T {

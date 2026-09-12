@@ -9,6 +9,7 @@ import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.ReasoningContext
+import parker.core.interfaces.ReasoningContextEntry
 import parker.core.interfaces.ReasoningProviderResponse
 import parker.core.interfaces.RelationshipEndpoint
 
@@ -216,19 +217,56 @@ internal class DefaultEvidenceIntelligence(
 
         val ocrResults = collectOcrResults(request, evidenceResults)
 
-        val coordinator = reasoningCoordinator ?: return ocrResults
-
-        return try {
-            val response = coordinator.reason(request, ReasoningContext(emptyList()))
-            ocrResults + convertReasoningResponse(response, resolvedEvidenceArtifactIds, resolvedMemoryCoreReferences)
-        } catch (fault: TimeoutCancellationException) {
-            if (ocrResults.isNotEmpty()) ocrResults else throw fault
-        } catch (fault: CancellationException) {
-            throw fault
-        } catch (fault: Exception) {
-            if (ocrResults.isNotEmpty()) ocrResults else throw fault
+        val results = if (reasoningCoordinator == null) {
+            ocrResults
+        } else {
+            try {
+                val response = reasoningCoordinator.reason(
+                    request,
+                    reasoningContextFor(resolvedEvidenceArtifactIds, resolvedMemoryCoreReferences),
+                )
+                ocrResults + convertReasoningResponse(response, resolvedEvidenceArtifactIds, resolvedMemoryCoreReferences)
+            } catch (fault: TimeoutCancellationException) {
+                if (ocrResults.isNotEmpty()) ocrResults else throw fault
+            } catch (fault: CancellationException) {
+                throw fault
+            } catch (fault: Exception) {
+                if (ocrResults.isNotEmpty()) ocrResults else throw fault
+            }
         }
+
+        // R0: this gate is intentionally outside the provider-fault recovery
+        // block. A grounding failure is not a recoverable provider fault and
+        // must never be reduced to an apparently valid partial result.
+        return EvidenceIntelligenceGroundingValidationGate.validate(
+            request = request,
+            evidenceResults = evidenceResults,
+            memoryCoreResults = memoryCoreResults,
+            results = results,
+        )
     }
+
+    /**
+     * Builds the provider input from only the successful resolutions of this
+     * invocation. The rendered text is for the existing prompt boundary;
+     * identity remains in the typed entry and is never parsed back from text.
+     */
+    private fun reasoningContextFor(
+        evidenceArtifactIds: List<EvidenceArtifactId>,
+        memoryCoreReferences: List<RelationshipEndpoint>,
+    ): ReasoningContext = ReasoningContext.fromTypedEntries(
+        evidenceArtifactIds.map {
+            ReasoningContextEntry.GovernedEvidence(
+                text = "Governed evidence supplied: ${it.value}",
+                evidenceArtifactId = it,
+            )
+        } + memoryCoreReferences.map {
+            ReasoningContextEntry.GovernedMemoryCore(
+                text = "Governed Memory Core reference supplied: ${it.recordKind}:${it.recordId}",
+                reference = it,
+            )
+        },
+    )
 
     /**
      * OCR Mechanism, Unit 12 ("Runtime Composition"), Implementation Plan

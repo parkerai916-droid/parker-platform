@@ -59,6 +59,26 @@ class DeterministicSourcePageRendererTest {
         assertIs<SourcePageRepresentationOutcome.ExtremeDimensions>(DeterministicSourcePageRenderer(SourcePageRendererLimits(maximumDecodedPixels = 10)).render(good))
     }
 
+    @Test fun `pending review PDF preview reuses deterministic rendering without evidence identity`() {
+        val pdf = syntheticPdf(); val sha = CanonicalPagePixelDigests.sha256(pdf)
+        val request = PendingReviewPageRenderRequest("bulk-preview-1", sha, "application/pdf", pdf, 2, profile(150))
+        val result = assertIs<PendingReviewPagePreviewOutcome.Created>(renderer.renderPending(request)).preview
+        assertEquals("bulk-preview-1", result.provenance.batchId)
+        assertEquals(sha, result.provenance.sourceSha256)
+        assertEquals(2, result.provenance.pageNumber)
+        assertEquals(2, result.provenance.declaredPageCount)
+        assertTrue(result.encodedBytes().isNotEmpty())
+    }
+
+    @Test fun `pending review PNG preview rejects page two and source digest mismatch`() {
+        val image = BufferedImage(20, 10, BufferedImage.TYPE_INT_RGB)
+        val bytes = ByteArrayOutputStream().use { out -> ImageIO.write(image, "png", out); out.toByteArray() }
+        val request = PendingReviewPageRenderRequest("bulk-preview-1", CanonicalPagePixelDigests.sha256(bytes), "image/png", bytes, 1, profile(null))
+        assertIs<PendingReviewPagePreviewOutcome.Created>(renderer.renderPending(request))
+        assertIs<PendingReviewPagePreviewOutcome.InvalidPageIndex>(renderer.renderPending(request.copy(pageNumber = 2)))
+        assertIs<PendingReviewPagePreviewOutcome.SourceDigestMismatch>(renderer.renderPending(request.copy(sourceSha256 = "0".repeat(64))))
+    }
+
     @Test fun `defensive copies preserve source and representation immutability`() {
         val pdf = syntheticPdf(); val original = pdf.copyOf(); val page = renderPdf(pdf, 1, 200); pdf.fill(0); assertFalse(pdf.contentEquals(original))
         val encoded = page.encodedBytes(); encoded.fill(0); assertNotEquals("0".repeat(64), page.provenance.encodedRepresentationSha256)
@@ -68,7 +88,7 @@ class DeterministicSourcePageRendererTest {
         val req = SourcePageRenderRequest(artifact, CanonicalPagePixelDigests.sha256(bytes), "application/pdf", bytes, page, profile(dpi))
         return assertIs<SourcePageRepresentationOutcome.Created>(renderer.render(req)).representation
     }
-    private fun profile(dpi: Int) = PageRenderProfile("authoritative-page-region-raster-v1", 1, dpi)
+    private fun profile(dpi: Int?) = PageRenderProfile("authoritative-page-region-raster-v1", 1, dpi)
 
     private fun syntheticPdf(): ByteArray = PDDocument().use { doc ->
         val font = PDType1Font(Standard14Fonts.FontName.HELVETICA); val bold = PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD)
