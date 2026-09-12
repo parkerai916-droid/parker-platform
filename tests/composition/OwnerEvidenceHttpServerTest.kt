@@ -3204,6 +3204,26 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
+    @Test
+    fun `analysis workspace is a dedicated owner tab using case evidence and structured source actions`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            assertTrue(body.contains("id=\"ownerAnalysisTab\""))
+            assertTrue(body.contains("id=\"ownerAnalysisPanel\""))
+            assertTrue(body.contains("/owner/cases/"))
+            assertTrue(body.contains("/owner/analysis-workspace/analyse"))
+            assertTrue(body.contains("evidenceArtifactIds: Array.from(analysisSelectedEvidence)"))
+            assertFalse(body.contains("resolvedDerivativeGenerationIds: Array.from(analysisSelectedEvidence)"))
+            assertTrue(body.contains("structuredAnalysis"))
+            assertTrue(body.contains("Open source"))
+            assertTrue(body.contains("precision"))
+            assertTrue(body.contains("Owner-authorized correction"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
     // ANALYSIS-INGESTION-1 — Human-Reviewed Enhanced Transcription Analysis Eligibility Defect.
 
     private fun analysisEligibilityFunctionBody(harness: Harness): String {

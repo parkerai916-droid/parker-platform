@@ -2820,6 +2820,18 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   .status-label { white-space: nowrap; }
   .tabs { display:flex; gap:.4rem; margin:1rem 0; }
   .tab.active { background:#2a5d3a; color:#fff; }
+  #ownerAnalysisPanel { border:1px solid #335b75; padding:1rem; margin-bottom:1rem; }
+  .analysis-layout { display:grid; grid-template-columns:minmax(260px, .8fr) minmax(420px, 1.6fr); gap:1rem; align-items:start; }
+  .analysis-evidence-list { border:1px solid #333; padding:.6rem; max-height:32rem; overflow:auto; }
+  .analysis-evidence-item { display:block; padding:.5rem; border-bottom:1px solid #333; }
+  .analysis-evidence-item:last-child { border-bottom:0; }
+  .analysis-result { border:1px solid #444; padding:1rem; background:#171717; }
+  .analysis-result h3 { margin-top:1rem; }
+  .analysis-reference { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin:.35rem 0; }
+  .analysis-reference-label { font-weight:600; }
+  .analysis-reference-details { color:#aaa; font-size:.8rem; }
+  .analysis-source-viewer { border:1px solid #555; padding:1rem; margin-top:1rem; background:#0b0b0b; }
+  @media (max-width: 800px) { .analysis-layout { grid-template-columns:1fr; } }
   #bulkIngestionPanel { border:1px solid #333; padding:1rem; margin-bottom:1rem; }
   #ownerHermesReviewPanel { border:1px solid #6b4a24; padding:1rem; margin-bottom:1rem; }
   .hermes-review-item { border:1px solid #444; padding:.7rem; margin:.5rem 0; cursor:pointer; }
@@ -2837,7 +2849,28 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <body>
 <h1>Parker Owner Evidence Upload</h1>
 <p><button id="logoutButton">Log out</button></p>
-<nav class="tabs" aria-label="Owner sections"><button class="tab active" id="ownerEvidenceTab">Evidence Library</button><button class="tab" id="ownerBulkTab">Bulk Ingestion</button><button class="tab" id="ownerHermesReviewTab">Owner Review</button></nav>
+<nav class="tabs" aria-label="Owner sections"><button class="tab active" id="ownerEvidenceTab">Evidence Library</button><button class="tab" id="ownerBulkTab">Bulk Ingestion</button><button class="tab" id="ownerHermesReviewTab">Owner Review</button><button class="tab" id="ownerAnalysisTab">Analysis</button></nav>
+<section id="ownerAnalysisPanel" hidden>
+  <h2>Analysis</h2>
+  <p class="note">Choose a case and governed evidence, then ask one evidence-grounded question. Technical evidence and derivative IDs stay hidden from the ordinary workflow.</p>
+  <div class="analysis-layout">
+    <div>
+      <label for="analysisCaseSelector">Case</label>
+      <select id="analysisCaseSelector"><option value="">Select a case</option></select>
+      <p id="analysisCaseStatus" class="note">Select a case to begin.</p>
+      <div class="analysis-evidence-list" id="analysisEvidenceList" aria-label="Evidence available to selected case"></div>
+      <p><button id="analysisSelectAllButton" type="button">Select all</button><button id="analysisClearButton" type="button">Clear</button></p>
+    </div>
+    <div>
+      <label for="analysisQuestion">Question</label>
+      <textarea id="analysisQuestion" rows="6" maxlength="8000" style="width:100%;box-sizing:border-box;" placeholder="What does the evidence establish?"></textarea>
+      <p><label for="analysisTypeSelector">Analysis type</label> <select id="analysisTypeSelector"><option value="ISSUE_ANALYSIS">Issue analysis</option><option value="CHRONOLOGY">Chronology</option><option value="CONTRADICTION_ANALYSIS">Contradictions</option><option value="EVIDENCE_GAP_ANALYSIS">Evidence gaps</option><option value="CLAIM_EVIDENCE_MAPPING">Claim / evidence mapping</option><option value="DOCUMENT_COMPARISON">Document comparison</option><option value="FINANCIAL_ANALYSIS">Financial analysis</option></select></p>
+      <p><button id="analysisSubmitButton" type="button" disabled>Analyse</button> <span id="analysisRequestStatus" class="note"></span></p>
+      <div id="analysisWorkspaceResult" aria-live="polite"><p class="note">No analysis yet.</p></div>
+      <div id="analysisSourceViewer" class="analysis-source-viewer" hidden></div>
+    </div>
+  </div>
+</section>
 <section id="bulkIngestionPanel" hidden>
   <h2>Bulk Ingestion</h2>
   <p>Select and confirm an existing case. Parker will mint a READY batch for Hermes. This tab never uploads files.</p>
@@ -2893,6 +2926,10 @@ let selectedHermesReview = null;
 let hermesPreviewPage = 1;
 let hermesPreviewTotalPages = null;
 let hermesPreviewObjectUrl = null;
+let analysisCases = [];
+let analysisEvidence = [];
+let analysisSelectedEvidence = new Set();
+let analysisRequestInFlight = false;
 
 async function loadCases() {
   try {
@@ -2912,15 +2949,16 @@ document.getElementById('bulkCaseSelector').onchange = e => {
   document.getElementById('bulkConfirmButton').disabled = !selectedBulkCase;
 };
 function activateOwnerTab(active) {
-  const panels = { evidence: null, bulk: document.getElementById('bulkIngestionPanel'), review: document.getElementById('ownerHermesReviewPanel') };
+  const panels = { evidence: null, bulk: document.getElementById('bulkIngestionPanel'), review: document.getElementById('ownerHermesReviewPanel'), analysis: document.getElementById('ownerAnalysisPanel') };
   Object.entries(panels).forEach(([name, panel]) => { if (panel) panel.hidden = name !== active; });
-  [['evidence', 'ownerEvidenceTab'], ['bulk', 'ownerBulkTab'], ['review', 'ownerHermesReviewTab']].forEach(([name, id]) => {
+  [['evidence', 'ownerEvidenceTab'], ['bulk', 'ownerBulkTab'], ['review', 'ownerHermesReviewTab'], ['analysis', 'ownerAnalysisTab']].forEach(([name, id]) => {
     document.getElementById(id).classList.toggle('active', name === active);
   });
 }
 document.getElementById('ownerBulkTab').onclick = () => activateOwnerTab('bulk');
 document.getElementById('ownerEvidenceTab').onclick = () => activateOwnerTab('evidence');
 document.getElementById('ownerHermesReviewTab').onclick = () => { activateOwnerTab('review'); loadHermesReview(); };
+document.getElementById('ownerAnalysisTab').onclick = () => { activateOwnerTab('analysis'); loadAnalysisCases(); };
 document.getElementById('refreshHermesReviewButton').onclick = () => loadHermesReview();
 document.getElementById('bulkConfirmButton').onclick = async () => {
   if (!selectedBulkCase) return;
@@ -2932,6 +2970,135 @@ document.getElementById('bulkConfirmButton').onclick = async () => {
     if (!response.ok || !result.batchId) throw new Error(result.status === 'UNKNOWN_CASE' ? 'The selected case no longer exists.' : (result.reason || 'Batch authorisation failed.'));
     status.textContent = 'Case: ' + selectedBulkCase.caseName + ' · Batch status: READY · Batch ID: ' + result.batchId;
   } catch (e) { status.textContent = e.message; button.disabled = false; }
+};
+
+async function loadAnalysisCases() {
+  const selector = document.getElementById('analysisCaseSelector');
+  try {
+    const response = await fetch('/owner/cases', { method: 'GET', headers: authHeaders() });
+    if (response.status === 401) { document.getElementById('analysisCaseStatus').textContent = 'Owner session expired or unavailable.'; return; }
+    const result = await response.json();
+    analysisCases = result.cases || [];
+    const previous = selector.value;
+    selector.innerHTML = '<option value="">Select a case</option>';
+    analysisCases.forEach(c => { const option = document.createElement('option'); option.value = c.caseId; option.textContent = c.caseName; selector.appendChild(option); });
+    if (analysisCases.some(c => c.caseId === previous)) selector.value = previous;
+    if (selector.value) await loadAnalysisEvidence(selector.value); else renderAnalysisEvidence();
+  } catch (e) { document.getElementById('analysisCaseStatus').textContent = 'Could not load governed cases.'; }
+}
+
+document.getElementById('analysisCaseSelector').onchange = () => {
+  analysisSelectedEvidence = new Set();
+  const caseId = document.getElementById('analysisCaseSelector').value;
+  if (caseId) loadAnalysisEvidence(caseId); else { analysisEvidence = []; renderAnalysisEvidence(); }
+};
+
+async function loadAnalysisEvidence(caseId) {
+  const status = document.getElementById('analysisCaseStatus');
+  status.textContent = 'Loading governed evidence…';
+  try {
+    const response = await fetch('/owner/cases/' + encodeURIComponent(caseId) + '/evidence', { method: 'GET', headers: authHeaders() });
+    if (response.status === 401) { status.textContent = 'Owner session expired or unavailable.'; return; }
+    const result = await response.json();
+    if (!response.ok || result.status === 'UNKNOWN_CASE') { analysisEvidence = []; status.textContent = 'The selected case is unavailable.'; renderAnalysisEvidence(); return; }
+    analysisEvidence = result.evidence || [];
+    status.textContent = analysisEvidence.length ? analysisEvidence.length + ' governed evidence item(s) available.' : 'No governed evidence is currently assigned to this case.';
+    renderAnalysisEvidence();
+  } catch (e) { status.textContent = 'Could not load governed evidence.'; }
+}
+
+function renderAnalysisEvidence() {
+  const list = document.getElementById('analysisEvidenceList');
+  list.innerHTML = '';
+  analysisEvidence.forEach(item => {
+    const label = document.createElement('label'); label.className = 'analysis-evidence-item';
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = analysisSelectedEvidence.has(item.evidenceArtifactId);
+    checkbox.onchange = () => { if (checkbox.checked) analysisSelectedEvidence.add(item.evidenceArtifactId); else analysisSelectedEvidence.delete(item.evidenceArtifactId); updateAnalysisSubmitState(); };
+    label.appendChild(checkbox);
+    label.appendChild(document.createTextNode(' ' + (item.originalFilename || 'Unnamed evidence')));
+    const metadata = document.createElement('span'); metadata.className = 'analysis-reference-details'; metadata.textContent = ' · ' + (item.mediaType || 'unknown type') + (item.registeredAt ? ' · ' + new Date(item.registeredAt).toLocaleDateString() : ''); label.appendChild(metadata);
+    list.appendChild(label);
+  });
+  updateAnalysisSubmitState();
+}
+
+function updateAnalysisSubmitState() {
+  document.getElementById('analysisSubmitButton').disabled = analysisRequestInFlight || !analysisSelectedEvidence.size || !document.getElementById('analysisQuestion').value.trim();
+}
+document.getElementById('analysisQuestion').oninput = updateAnalysisSubmitState;
+document.getElementById('analysisSelectAllButton').onclick = () => { analysisEvidence.forEach(item => analysisSelectedEvidence.add(item.evidenceArtifactId)); renderAnalysisEvidence(); };
+document.getElementById('analysisClearButton').onclick = () => { analysisSelectedEvidence = new Set(); renderAnalysisEvidence(); };
+
+function analysisReferenceLabel(reference) {
+  let label = reference.originalFilename || 'Governed evidence';
+  if (reference.precision === 'PAGE') label += ' — page ' + reference.pageNumber;
+  if (reference.precision === 'REGION') label += ' — page ' + reference.pageNumber + ', region ' + reference.regionId;
+  return label;
+}
+
+function renderAnalysisReferences(container, references) {
+  (references || []).forEach(reference => {
+    const row = document.createElement('div'); row.className = 'analysis-reference';
+    const label = document.createElement('span'); label.className = 'analysis-reference-label'; label.textContent = analysisReferenceLabel(reference); row.appendChild(label);
+    const precision = document.createElement('span'); precision.className = 'analysis-reference-details'; precision.textContent = reference.precision + (reference.authority === 'OWNER_AUTHORIZED_CORRECTION' ? ' · Owner-authorized correction' : ' · Machine-derived'); row.appendChild(precision);
+    const open = document.createElement('button'); open.type = 'button'; open.textContent = 'Open source'; open.onclick = () => openAnalysisSource(reference); row.appendChild(open);
+    const technical = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Provenance'; technical.appendChild(summary); appendField(technical, 'EvidenceArtifactId', reference.evidenceArtifactId); appendField(technical, 'DerivativeGenerationId', reference.derivativeGenerationId); appendField(technical, 'Source SHA-256', reference.sourceSha256); if (reference.correctionId) appendField(technical, 'Correction', reference.correctionId + ' (' + reference.correctionScope + ')'); row.appendChild(technical);
+    container.appendChild(row);
+  });
+}
+
+function appendAnalysisSection(container, headingText, items, referenceKey) {
+  if (!items || !items.length) return;
+  const heading = document.createElement('h3'); heading.textContent = headingText; container.appendChild(heading);
+  items.forEach(item => { const block = document.createElement('div'); block.className = 'content-panel'; appendExtractedText(block, '', item.text); renderAnalysisReferences(block, item[referenceKey]); container.appendChild(block); });
+}
+
+function appendAnalysisGaps(container, gaps) {
+  if (!gaps || !gaps.length) return;
+  const heading = document.createElement('h3'); heading.textContent = 'Evidence gaps'; container.appendChild(heading);
+  gaps.forEach(gap => { const block = document.createElement('div'); block.className = 'content-panel'; appendExtractedText(block, '', gap.text); container.appendChild(block); });
+}
+
+function renderStructuredAnalysis(result) {
+  const container = document.createElement('div'); container.className = 'analysis-result';
+  appendExtractedText(container, 'Answer', result.answer);
+  appendAnalysisSection(container, 'Supporting findings', result.findings, 'supportReferences');
+  appendAnalysisSection(container, 'Contrary evidence', result.contraryEvidence, 'references');
+  appendAnalysisSection(container, 'Uncertainty', result.uncertainties, 'references');
+  appendAnalysisGaps(container, result.evidenceGaps);
+  const heading = document.createElement('h3'); heading.textContent = 'Conclusion'; container.appendChild(heading); appendExtractedText(container, '', result.conclusion);
+  return container;
+}
+
+async function openAnalysisSource(reference) {
+  const viewer = document.getElementById('analysisSourceViewer'); viewer.hidden = false; viewer.innerHTML = '';
+  const heading = document.createElement('h3'); heading.textContent = 'Source: ' + analysisReferenceLabel(reference); viewer.appendChild(heading);
+  appendField(viewer, 'Precision', reference.precision + (reference.pageNumber ? ' · page ' + reference.pageNumber : '') + (reference.regionId ? ' · region ' + reference.regionId : ''));
+  if (reference.authority === 'OWNER_AUTHORIZED_CORRECTION') appendField(viewer, 'Authority', 'Owner-authorized correction (' + reference.correctionScope + ')');
+  const status = document.createElement('p'); status.className = 'note'; status.textContent = 'Loading governed source representation…'; viewer.appendChild(status);
+  try {
+    const response = await fetch('/owner/evidence/' + encodeURIComponent(reference.evidenceArtifactId) + '/content/' + encodeURIComponent(reference.derivativeGenerationId), { method: 'GET', headers: authHeaders() });
+    const result = await response.json();
+    viewer.removeChild(status);
+    if (result.status === 'RETRIEVED' && result.content) viewer.appendChild(buildContentPanel(result.content));
+    else { const failure = document.createElement('p'); failure.className = 'note'; failure.textContent = 'The governed source representation could not be opened: ' + (result.status || 'unavailable'); viewer.appendChild(failure); }
+  } catch (e) { status.textContent = 'The governed source representation could not be opened.'; }
+}
+
+document.getElementById('analysisSubmitButton').onclick = async () => {
+  const button = document.getElementById('analysisSubmitButton'); const status = document.getElementById('analysisRequestStatus'); const question = document.getElementById('analysisQuestion').value.trim();
+  if (!analysisSelectedEvidence.size || !question || question.length > 8000) { status.textContent = question.length > 8000 ? 'Question must be 8,000 characters or fewer.' : 'Select evidence and enter a question.'; return; }
+  analysisRequestInFlight = true; updateAnalysisSubmitState(); status.textContent = 'Analysing…';
+  try {
+    const response = await fetch('/owner/analysis-workspace/analyse', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ question: question, analysisType: document.getElementById('analysisTypeSelector').value, evidenceArtifactIds: Array.from(analysisSelectedEvidence) }) });
+    const result = await response.json();
+    const resultDiv = document.getElementById('analysisWorkspaceResult'); resultDiv.innerHTML = '';
+    if (result.status === 'COMPLETED' && result.structuredAnalysis) { resultDiv.appendChild(renderStructuredAnalysis(result.structuredAnalysis)); status.textContent = 'Analysis complete.'; }
+    else if (result.status === 'DERIVATIVE_AMBIGUOUS') { const ambiguousItem = analysisEvidence.find(item => item.evidenceArtifactId === result.evidenceArtifactId); appendField(resultDiv, 'Analysis not started', 'Parker found more than one equally valid representation for ' + (ambiguousItem ? (ambiguousItem.originalFilename || 'the selected document') : 'the selected document') + '. Choose a representation through a future governed override flow.'); (result.candidates || []).forEach(candidate => appendField(resultDiv, 'Candidate', (candidate.kind || 'Representation') + ' — ' + (candidate.completeness || 'unknown') + (candidate.warnings && candidate.warnings.length ? ' · ' + candidate.warnings.join('; ') : ''))); status.textContent = 'Derivative choice required.'; }
+    else if (result.status === 'NO_USABLE_DERIVATIVE') { appendField(resultDiv, 'Analysis not started', 'No analysis-ready governed representation is available for the selected evidence.'); status.textContent = 'No usable derivative.'; }
+    else { appendField(resultDiv, 'Analysis unavailable', ({GOVERNED_RETRIEVAL_FAILED:'Governed evidence retrieval failed.', REASONING_FAILED:'The Analysis Agent could not complete reasoning.', REASONING_TIMEOUT:'The Analysis Agent timed out.', STRUCTURED_OUTPUT_INVALID:'The Analysis Agent returned an invalid structured result.', INVALID_ANALYSIS_REFERENCE:'The returned source reference did not match governed evidence.'}[result.status] || result.error || result.reason || 'Analysis could not be completed.')); status.textContent = 'Analysis could not be completed.'; }
+  } catch (e) { status.textContent = 'Analysis request failed safely.'; }
+  finally { analysisRequestInFlight = false; updateAnalysisSubmitState(); }
 };
 
 function renderCaseFilterOptions() {
