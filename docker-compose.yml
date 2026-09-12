@@ -261,6 +261,12 @@ services:
       - /home/steve/.cache/qmd/models:/opt/qmd-models:ro
       - /home/steve/.config/parker/openai-external-transcription.properties:/run/parker/openai-external-transcription.properties:ro
       - /home/steve/.config/parker/openai-eml-external-transcription.properties:/run/parker/openai-eml-external-transcription.properties:ro
+      # Parker -> Hermes governed Analysis/STT transport credentials.
+      # Host copies are provisioned under /mnt/parker-secrets/parker,
+      # owned by the production Parker runtime UID/GID and mounted read-only.
+      - /mnt/parker-secrets/parker/parker_hermes_analysis_ed25519:/home/steve/.ssh/parker_hermes_analysis_ed25519:ro
+      - /mnt/parker-secrets/parker/parker_hermes_stt_ed25519:/home/steve/.ssh/parker_hermes_stt_ed25519:ro
+      - /mnt/parker-secrets/parker/parker_hermes_analysis_known_hosts:/home/steve/.ssh/parker_hermes_analysis_known_hosts:ro
       # Docling Production Runtime Enablement. The Parker host's own
       # already-populated Hugging Face cache (the document-layout model
       # Docling itself fetches on first use, docling-project/docling-layout-heron
