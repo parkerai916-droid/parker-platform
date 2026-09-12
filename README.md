@@ -20,10 +20,10 @@ Everything else follows from that.
 
 Today's AI assistants are powerful, but they commonly assume that:
 
-- conversations belong in someone else's cloud;
-- memories belong in someone else's database;
-- automation depends on someone else's service;
-- intelligence is tied to someone else's model.
+* conversations belong in someone else's cloud;
+* memories belong in someone else's database;
+* automation depends on someone else's service;
+* intelligence is tied to someone else's model.
 
 Parker was created to reverse those assumptions.
 
@@ -53,11 +53,11 @@ Parker is not built around any single AI model.
 
 Reasoning engines are replaceable components. They may include local or remote models such as:
 
-- Qwen
-- Gemma
-- Claude
-- GPT
-- Llama
+* Qwen
+* Gemma
+* Claude
+* GPT
+* Llama
 
 Parker remains the governing platform regardless of which model provides reasoning.
 
@@ -81,7 +81,9 @@ Parker is governed by published architectural principles.
 
 # What Works Today
 
-Parker's constitutional foundation is complete and frozen. The project has moved well beyond isolated runtime components and now includes a production-composed pipeline covering intake, context assembly, reasoning, reply delivery, Goal handoff, Plan Candidate generation, Planner Runtime invocation, and — as of the Controlled Agent Run Submission milestone — controlled Agent Run submission and synchronous execution.
+Parker's constitutional foundation is complete and frozen. The project has moved well beyond isolated runtime components and now includes a production-composed pipeline covering intake, context assembly, reasoning, reply delivery, Goal handoff, Plan Candidate generation, Planner Runtime invocation, controlled Agent Run submission and synchronous execution, governed Evidence Custody, durable owner Memory and Knowledge retrieval, case-aware evidence handling, and an operational Parker↔Hermes bulk-ingestion handoff.
+
+The current development focus is no longer whether Parker can accept documents at all. Governed source submission, case binding, authorised bulk-ingestion batches, Hermes-side batch discovery, browser-based folder submission, and evidence-to-case assignment are now implemented. The remaining ingestion programme is focused on source fidelity, processing quality, uncertainty handling, human review, and consolidation of the Parker and Hermes operator surfaces.
 
 This represents a meaningful architectural transition, not merely an additive one. Parker now has a production composition root: a single, real assembly point where the runtime components built and verified across previous units are wired together into the platform's canonical runtime, rather than remaining a set of independently verified, isolated pieces. The conversation, reasoning, reply, planning, and execution pipeline described below exists today as a production-composed system — constructed once, in one place, and exercised by real production code — not merely as a design proven correct only inside isolated tests.
 
@@ -123,106 +125,126 @@ Architecture is reviewed and locked before code is written, and native verificat
 
 Trust and execution substrate:
 
-- Identity Service
-- Identity-aware Permission Engine
-- Permission Policy model
-- Execution Pipeline
-- Tool Registry
-- Tool Invocation Binding
-- Resource Registry
-- Event Bus and runtime event coordination
-- Task Manager Runtime
-- controlled Agent Run submission from the Task Manager Runtime
-- explicit `START` run-initiation permission evaluation
-- two-phase Agent Run acceptance and execution
-- `AgentRunExecutionTrigger`
-- deterministic production `AgentStepSource`
-- Multi-step Agent Runtime
-- Agent Run lifecycle ordering through `READY`, `RUNNING`, and terminal Agent events
-- suspend, resume, and cancel semantics
-- auditable runtime outcomes
+* Identity Service
+* Identity-aware Permission Engine
+* Permission Policy model
+* Execution Pipeline
+* Tool Registry
+* Tool Invocation Binding
+* Resource Registry
+* Event Bus and runtime event coordination
+* Task Manager Runtime
+* controlled Agent Run submission from the Task Manager Runtime
+* explicit `START` run-initiation permission evaluation
+* two-phase Agent Run acceptance and execution
+* `AgentRunExecutionTrigger`
+* deterministic production `AgentStepSource`
+* Multi-step Agent Runtime
+* Agent Run lifecycle ordering through `READY`, `RUNNING`, and terminal Agent events
+* suspend, resume, and cancel semantics
+* auditable runtime outcomes
 
 Communication, conversation, and reasoning:
 
-- Local Text Channel
-- Communication Intake
-- CommunicationConversationCoordinator
-- Conversation Engine
-- ConversationTurnReasoningCoordinator
-- production `ReasoningContext` assembly
-- Conversation History source
-- World Model source
-- model-backed Reasoning Provider
-- ConversationReplyCoordinator
+* Local Text Channel
+* Communication Intake
+* CommunicationConversationCoordinator
+* Conversation Engine
+* ConversationTurnReasoningCoordinator
+* production `ReasoningContext` assembly
+* Conversation History source
+* World Model source
+* model-backed Reasoning Provider
+* ConversationReplyCoordinator
 
 Memory and Knowledge (durable owner memory and governed retrieval):
 
-- Memory Core (canonical assertions, entities, and provenance) with durable, replayable persistence
-- Knowledge Item persistence and promotion, backed by the same durability discipline
-- explicit owner `REMEMBER` recognition — deterministic, model-independent classification of an explicit persistence directive
-- `MemoryAdmissionCoordinator` — governed admission of owner-directed memory into Memory Core and Knowledge Items
-- canonical recovery on restart — recovered from durable storage, never resubmitted
-- `DefaultReasoningKnowledgeSource` — governed retrieval into the real Reasoning Context, structural (literal) matching first
-- Bounded Relevance Computation — a governed, fail-closed fallback used only when structural matching finds nothing, backed by a subordinate, shared relevance mechanism (QMD) that proposes candidate identifiers only; every candidate is independently re-verified and resolved against live canonical state before Parker discloses it
-- `DefaultKnowledgeRetrieval` — the analogous governed retrieval surface for direct Knowledge queries, sharing the same relevance mechanism instance
+* Memory Core (canonical assertions, entities, and provenance) with durable, replayable persistence
+* Knowledge Item persistence and promotion, backed by the same durability discipline
+* explicit owner `REMEMBER` recognition — deterministic, model-independent classification of an explicit persistence directive
+* `MemoryAdmissionCoordinator` — governed admission of owner-directed memory into Memory Core and Knowledge Items
+* canonical recovery on restart — recovered from durable storage, never resubmitted
+* `DefaultReasoningKnowledgeSource` — governed retrieval into the real Reasoning Context, structural (literal) matching first
+* Bounded Relevance Computation — a governed, fail-closed fallback used only when structural matching finds nothing, backed by a subordinate, shared relevance mechanism (QMD) that proposes candidate identifiers only; every candidate is independently re-verified and resolved against live canonical state before Parker discloses it
+* `DefaultKnowledgeRetrieval` — the analogous governed retrieval surface for direct Knowledge queries, sharing the same relevance mechanism instance
 
 Owner-facing interfaces:
 
-- Local Text Channel / CLI `--interactive` owner console
-- Compose Desktop owner UI (`ui-desktop`), wired directly into the real production runtime
-- `scripts/run-owner-ui.sh` — the supported launcher for the owner UI, with environment/pre-flight validation and a one-shot Gradle execution model
+* Local Text Channel / CLI `--interactive` owner console
+* Compose Desktop owner UI (`ui-desktop`), wired directly into the real production runtime
+* `scripts/run-owner-ui.sh` — the supported launcher for the owner UI, with environment/pre-flight validation and a one-shot Gradle execution model
 
 Reply delivery:
 
-- ResponseComposer
-- ReplyDeliveryCoordinator
-- ResponseDelivery
-- permission-gated delivery through the existing runtime path
+* ResponseComposer
+* ReplyDeliveryCoordinator
+* ResponseDelivery
+* permission-gated delivery through the existing runtime path
 
 Goal and planning path:
 
-- Reasoning-to-Planning handoff
-- `PlanningRequest`
-- `PlanCandidateGenerator`
-- deterministic `DefaultPlanCandidateGenerator`
-- production `PlannerRuntime` invocation
-- `PlanningSessionResult` propagation through conversation and Parker runtime outcomes
-- production composition of the concrete Planner and Task Manager runtimes
-- system identity registration for Planner Runtime and Task Manager Runtime
+* Reasoning-to-Planning handoff
+* `PlanningRequest`
+* `PlanCandidateGenerator`
+* deterministic `DefaultPlanCandidateGenerator`
+* production `PlannerRuntime` invocation
+* `PlanningSessionResult` propagation through conversation and Parker runtime outcomes
+* production composition of the concrete Planner and Task Manager runtimes
+* system identity registration for Planner Runtime and Task Manager Runtime
 
 Evidence custody and registration:
 
-- Evidence Custodian (technical custody subsystem, independent of Memory Core)
-- Evidence Identity (`EvidenceArtifactId`)
-- write-once `EvidenceArtifactStorage`
-- governed evidence acceptance (`DefaultEvidenceCustodian.accept`, Permission-Engine-gated)
-- governed evidence retrieval (`DefaultEvidenceCustodian.retrieve`, Permission-Engine-gated)
-- `EvidenceRegistrationCoordinator` — Runtime-layer orchestration of Evidence Custodian acceptance with Memory Core provenance and document registration, without either subsystem calling the other
-- derivative relationship support, verified by behavioural tests against the real Evidence Custodian, Memory Core, and Registration Coordinator implementations
-- owner-authorised evidence deletion (`OwnerEvidenceDeletionAuthority` / `DefaultOwnerEvidenceDeletionAuthority`) — a structurally separate capability from `EvidenceCustodian`, never exposed to reasoning providers or ordinary consumers
-- durable, append-only deletion audit (`EvidenceDeletionAudit` / `FileSystemEvidenceDeletionAudit`) — an `AUTHORISED` record durably precedes physical deletion; a `COMPLETED` record durably follows it; a caller can never observe a successful deletion without both
-- Constitutional Optimisation Safeguard enforcement, verified structurally: no class outside its one authorised holder can obtain a deletion-capable dependency, and no Evidence Custodian type declares a compact/optimise/prune/replace/discard operation
-- full production Runtime Integration — `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed and wired into `ParkerRuntime`, with their Resources, action-vocabulary entries, and permission rules registered, and reachable through `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`
+* Evidence Custodian (technical custody subsystem, independent of Memory Core)
+* Evidence Identity (`EvidenceArtifactId`)
+* write-once `EvidenceArtifactStorage`
+* governed evidence acceptance (`DefaultEvidenceCustodian.accept`, Permission-Engine-gated)
+* governed evidence retrieval (`DefaultEvidenceCustodian.retrieve`, Permission-Engine-gated)
+* `EvidenceRegistrationCoordinator` — Runtime-layer orchestration of Evidence Custodian acceptance with Memory Core provenance and document registration, without either subsystem calling the other
+* derivative relationship support, verified by behavioural tests against the real Evidence Custodian, Memory Core, and Registration Coordinator implementations
+* owner-authorised evidence deletion (`OwnerEvidenceDeletionAuthority` / `DefaultOwnerEvidenceDeletionAuthority`) — a structurally separate capability from `EvidenceCustodian`, never exposed to reasoning providers or ordinary consumers
+* durable, append-only deletion audit (`EvidenceDeletionAudit` / `FileSystemEvidenceDeletionAudit`) — an `AUTHORISED` record durably precedes physical deletion; a `COMPLETED` record durably follows it; a caller can never observe a successful deletion without both
+* Constitutional Optimisation Safeguard enforcement, verified structurally: no class outside its one authorised holder can obtain a deletion-capable dependency, and no Evidence Custodian type declares a compact/optimise/prune/replace/discard operation
+* full production Runtime Integration — `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed and wired into `ParkerRuntime`, with their Resources, action-vocabulary entries, and permission rules registered, and reachable through `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`
+
+Document ingestion and Parker↔Hermes handoff:
+
+* owner-controlled Case selection before bulk ingestion
+* Parker-minted opaque bulk-ingestion batch identifiers
+* durable batch-to-Case binding held by Parker
+* Hermes discovery of Parker-authorised `READY` batches without receiving a `CaseId`
+* browser-based Hermes bulk folder submission
+* Parker Agent Gateway submission of supported files
+* evidence membership binding to the authorised batch
+* Parker-side assignment of submitted evidence to the pre-authorised Case
+* explicit separation between source submission, case authority, downstream processing, and reasoning
+* no automatic provider processing merely because a file was submitted
+* human-review workflow under active development for uncertain or low-confidence processing outcomes
+* combined Parker + Hermes owner/operator interface under active development
 
 ## Implementation Maturity
 
-| Area | Status |
-|---|---|
-| Constitutional Architecture | Complete |
-| Runtime Foundation | Complete |
-| Conversation Pipeline | Complete |
-| Reasoning Context | Complete |
-| Durable Memory / Knowledge Persistence | Complete (Memory Core, Knowledge Items, explicit owner `REMEMBER`, canonical recovery) |
-| Reasoning Context Relevance (Bounded Semantic Fallback / RKS.1–RKS.6) | Complete |
-| Reply Delivery | Complete |
-| Goal Routing | Complete |
-| Planner Integration | Complete |
-| Agent Execution | Controlled Submission Complete |
-| Evidence Custodian | Complete (Phases 1–10; full native verification passed) |
-| Owner-Facing UI | Complete (Desktop, real production runtime) |
-| Document Ingestion | Not started (next development focus) |
-| Workflow Engine | Planned |
-| Android Product | Planned |
+| Area                                                                  | Status                                                                                              |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Constitutional Architecture                                           | Complete                                                                                            |
+| Runtime Foundation                                                    | Complete                                                                                            |
+| Conversation Pipeline                                                 | Complete                                                                                            |
+| Reasoning Context                                                     | Complete                                                                                            |
+| Durable Memory / Knowledge Persistence                                | Complete (Memory Core, Knowledge Items, explicit owner `REMEMBER`, canonical recovery)              |
+| Reasoning Context Relevance (Bounded Semantic Fallback / RKS.1–RKS.6) | Complete                                                                                            |
+| Reply Delivery                                                        | Complete                                                                                            |
+| Goal Routing                                                          | Complete                                                                                            |
+| Planner Integration                                                   | Complete                                                                                            |
+| Agent Execution                                                       | Controlled Submission Complete                                                                      |
+| Evidence Custodian                                                    | Complete (Phases 1–10; full native verification passed)                                             |
+| Owner-Facing UI                                                       | Operational (existing Parker owner surfaces; consolidated Parker + Hermes UI in active development) |
+| Case Management                                                       | Operational                                                                                         |
+| Parker-Authorised Bulk Ingestion                                      | Operational                                                                                         |
+| Parker↔Hermes Batch Handoff                                           | Operational                                                                                         |
+| Hermes Browser Ingestion                                              | Operational                                                                                         |
+| Document Processing / Source Fidelity                                 | Active development                                                                                  |
+| Human Review Workflow                                                 | Active development                                                                                  |
+| Workflow Engine                                                       | Planned                                                                                             |
+| Android Product                                                       | Planned                                                                                             |
 
 ---
 
@@ -366,10 +388,10 @@ A Planner Runtime may propose a Task Proposal, but nothing may submit or execute
 
 Submission and execution are deliberately two separate phases, not one combined call, in order to preserve:
 
-- truthful lifecycle semantics — an Agent Run only reaches `RUNNING` once execution has actually begun;
-- correct event ordering — `task.agent_run_started` is always published before execution begins;
-- mutex safety — the Task Manager Runtime releases its own lock before execution runs; and
-- explicit Trust control — acceptance and execution remain independently governed steps.
+* truthful lifecycle semantics — an Agent Run only reaches `RUNNING` once execution has actually begun;
+* correct event ordering — `task.agent_run_started` is always published before execution begins;
+* mutex safety — the Task Manager Runtime releases its own lock before execution runs; and
+* explicit Trust control — acceptance and execution remain independently governed steps.
 
 An earlier single-phase design was found, during native verification, to risk a runtime deadlock under this ordering; the two-phase design above is the corrected, adopted result.
 
@@ -381,16 +403,16 @@ Parker now includes a first-class Evidence Custodian subsystem — a peer of Mem
 
 Completed:
 
-- **Evidence Identity** — a stable, non-vacuous artefact identity (`EvidenceArtifactId`).
-- **Immutable Evidence Storage** — write-once artefact storage; an accepted artefact's content can never be overwritten or replaced.
-- **Governed Evidence Acceptance** — an artefact enters custody only following Permission Engine authorisation; nothing is accepted implicitly or as a side effect.
-- **Governed Evidence Retrieval** — read access to a custodied artefact is itself an authorised, observational-only proposal.
-- **Runtime Evidence Registration Coordinator** — a Runtime-layer coordinator sequencing Evidence Custodian acceptance with Memory Core's own provenance and document registration, so that Evidence Custodian and Memory Core remain fully independent: neither subsystem holds a reference to, or calls, the other.
-- **Derivative Relationship Support** — verified by behavioural tests: an original and a derivative artefact always receive distinct identities, distinct Provenance records, and distinct Document records, with traceability preserved solely through Memory Core's existing Provenance mechanism.
-- **Owner-Authorised Deletion** — the sole path by which Evidence Custodian custody ends. `OwnerEvidenceDeletionAuthority` is a structurally separate interface from `EvidenceCustodian`, implemented by a separate class (`DefaultOwnerEvidenceDeletionAuthority`) with no dependency on `EvidenceCustodian` or Memory Core; its own production entry point (`ParkerRuntime.deleteEvidenceAsOwner`) takes no caller-supplied principal at all, always acting as the configured owner.
-- **Deletion Audit** — a durable, append-only audit record precedes and follows every deletion: an `AUTHORISED` record must be durably confirmed before physical deletion is even attempted, and a `COMPLETED` record must be durably confirmed before a caller can ever observe a successful result.
-- **Optimisation Safeguard** — verified structurally, not merely by convention: no class outside its one authorised holder can obtain a reference to a deletion-capable dependency anywhere in the production or composition packages, and no Evidence Custodian type declares a compact, optimise, prune, replace, or discard operation of any kind.
-- **Runtime Integration** — `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed in `ParkerRuntime`'s production composition root via dependency injection, with their Resources, action-vocabulary entries, and permission rules registered, and reachable through three production entry points: `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`.
+* **Evidence Identity** — a stable, non-vacuous artefact identity (`EvidenceArtifactId`).
+* **Immutable Evidence Storage** — write-once artefact storage; an accepted artefact's content can never be overwritten or replaced.
+* **Governed Evidence Acceptance** — an artefact enters custody only following Permission Engine authorisation; nothing is accepted implicitly or as a side effect.
+* **Governed Evidence Retrieval** — read access to a custodied artefact is itself an authorised, observational-only proposal.
+* **Runtime Evidence Registration Coordinator** — a Runtime-layer coordinator sequencing Evidence Custodian acceptance with Memory Core's own provenance and document registration, so that Evidence Custodian and Memory Core remain fully independent: neither subsystem holds a reference to, or calls, the other.
+* **Derivative Relationship Support** — verified by behavioural tests: an original and a derivative artefact always receive distinct identities, distinct Provenance records, and distinct Document records, with traceability preserved solely through Memory Core's existing Provenance mechanism.
+* **Owner-Authorised Deletion** — the sole path by which Evidence Custodian custody ends. `OwnerEvidenceDeletionAuthority` is a structurally separate interface from `EvidenceCustodian`, implemented by a separate class (`DefaultOwnerEvidenceDeletionAuthority`) with no dependency on `EvidenceCustodian` or Memory Core; its own production entry point (`ParkerRuntime.deleteEvidenceAsOwner`) takes no caller-supplied principal at all, always acting as the configured owner.
+* **Deletion Audit** — a durable, append-only audit record precedes and follows every deletion: an `AUTHORISED` record must be durably confirmed before physical deletion is even attempted, and a `COMPLETED` record must be durably confirmed before a caller can ever observe a successful result.
+* **Optimisation Safeguard** — verified structurally, not merely by convention: no class outside its one authorised holder can obtain a reference to a deletion-capable dependency anywhere in the production or composition packages, and no Evidence Custodian type declares a compact, optimise, prune, replace, or discard operation of any kind.
+* **Runtime Integration** — `DefaultEvidenceCustodian`, `EvidenceRegistrationCoordinator`, and `DefaultOwnerEvidenceDeletionAuthority` are constructed in `ParkerRuntime`'s production composition root via dependency injection, with their Resources, action-vocabulary entries, and permission rules registered, and reachable through three production entry points: `submitEvidence`, `retrieveEvidence`, and `deleteEvidenceAsOwner`.
 
 ```text
 Owner
@@ -429,6 +451,118 @@ This milestone completes Parker's constitutional evidence foundation. Original e
 The Evidence Custodian programme is complete. Parker now provides constitutional evidence identity, immutable evidence storage, governed evidence acceptance, governed evidence retrieval, independent Memory Core registration, owner-authorised evidence deletion, durable append-only deletion audit, structural Optimisation Safeguards, and full production runtime integration — each governed by its own frozen Contract Design, Scope Lock, and Implementation Plan, and each verified against the real, wired production graph rather than isolated tests alone.
 
 This closes the constitutional Evidence Custodian layer. Any future evidence-related work — analysis, interpretation, OCR, comparison, or any other capability consuming custodied evidence — belongs to a higher-level capability such as Evidence Intelligence, governed separately and later, never to the Evidence Custodian itself.
+
+---
+
+## Milestone: Parker↔Hermes Governed Bulk Ingestion
+
+Parker now supports a governed bulk-ingestion handoff in which the owner chooses the target Case in Parker before Hermes is allowed to submit source material.
+
+The authority boundary is intentional:
+
+```text
+Owner
+  ↓
+Parker Owner Interface
+  ↓
+Select existing Case
+  ↓
+Explicitly confirm Case
+  ↓
+Parker mints authorised opaque batch
+  ↓
+Batch stored with durable Case binding
+  ↓
+Hermes discovers READY batch
+  ↓
+Owner selects source folder in Hermes
+  ↓
+Hermes submits supported files
+  ↓
+Parker registers evidence under the batch
+  ↓
+Parker resolves the pre-existing Case binding
+  ↓
+Evidence assigned to Case
+```
+
+Hermes never receives authority to decide or alter Parker's target Case. The batch identifier is the handoff mechanism. Parker remains the authoritative holder of the Case binding.
+
+The current browser workflow is:
+
+1. the owner opens Parker's Bulk Ingestion surface;
+2. selects an existing Case;
+3. explicitly confirms that Case;
+4. Parker mints a `READY` ingestion batch;
+5. Hermes queries the Agent Gateway for authorised `READY` batches;
+6. the owner selects the matching batch in the Hermes ingestion UI;
+7. the owner selects or drags a source folder;
+8. Hermes submits supported files through the Parker Agent Gateway;
+9. Parker registers the submitted evidence and associates it with the batch; and
+10. Parker performs Case assignment from the durable batch binding rather than from any Case value supplied by Hermes.
+
+This design deliberately separates:
+
+* **Case authority** — Parker;
+* **source processing and submission** — Hermes;
+* **canonical evidence identity and custody** — Parker;
+* **admission and provenance** — Parker;
+* **human review** — owner-controlled;
+* **reasoning** — downstream and separately governed.
+
+The ingestion path is therefore not a shortcut around Parker's constitutional architecture. Hermes is a processing capability beneath Parker's authority.
+
+### Processing and Human Review Direction
+
+The target processing contract for material moving through Hermes is:
+
+```text
+SOURCE MATERIAL
+      ↓
+HERMES
+      ↓
+process / extract / classify / assess
+      ↓
+PASS ───────────────────────────────┐
+REVIEW_REQUIRED → Owner → decision  │
+FAILED → Owner / reprocess          │
+                                    ↓
+                         PARKER GOVERNED INGESTION
+                                    ↓
+                         trusted source material
+                                    ↓
+                          governed retrieval
+                                    ↓
+                              reasoning
+                                    ↓
+                 evidence-grounded proposed answer
+                                    ↓
+                           grounding validation
+                                    ↓
+                 ACCEPT / HUMAN_REVIEW_REQUIRED
+                                    ↓
+                                  Owner
+```
+
+The human-review capability is still under active development. Its purpose is to ensure that uncertain OCR, transcription, extraction, layout interpretation, page/region geometry, or other questionable processing does not silently become trusted Parker content.
+
+### Source Fidelity
+
+The present ingestion programme is particularly focused on source fidelity.
+
+Parker's objective is not simply to extract text. A processed result must remain traceable to the source material from which it was derived, including page, region, processing method, provenance, and material uncertainty where applicable.
+
+For evidence-oriented use, a plausible extracted sentence is not sufficient if Parker cannot establish where it came from.
+
+The operating principle is therefore:
+
+> **Derived interpretation may assist understanding, but it must not erase the source.**
+
+### Combined Parker + Hermes Interface
+
+The existing Parker and Hermes operational surfaces are also being consolidated into a combined interface.
+
+That work is currently under active development. Its purpose is to provide one owner-facing surface for Parker status, Cases, evidence, authorised batches, Hermes processing, ingestion progress, processing outcomes, and human-review work without weakening the trust boundary between the systems.
 
 ---
 
@@ -477,13 +611,12 @@ Structural matching always runs first and is never bypassed. Bounded Relevance C
 
 ## Current Verified Baseline
 
-- **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
-- **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10); durable owner memory and governed relevance retrieval (RKS.1–RKS.6) complete; owner-facing UI operational
-- **Latest repository commit:** `68faf46` — `fix(ui): make run-owner-ui.sh immune to a stale wrong-group Gradle daemon` (a bounded, launcher-only shell-script correction)
-- **Latest production implementation milestone:** Reasoning Knowledge Source — Bounded Semantic Relevance (RKS.1–RKS.6), commit `7a1678c` — `feat(reasoning-context): implement RKS.1-RKS.6 bounded semantic relevance fallback`
-- **Latest full native regression baseline:** 2,290 tests, 0 failures, 0 errors, 7 skipped — established at commit `7a1678c`. The commits after it touch only the owner-UI launcher shell script, not Kotlin or Gradle build configuration, and were verified individually rather than by re-running the full suite.
-- **Build result:** `BUILD SUCCESSFUL`
-- **Repository state:** `main` synchronized with `origin/main`; working tree clean
+* **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
+* **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete; durable owner memory and governed relevance retrieval complete; owner-facing Parker UI operational; Parker-authorised bulk ingestion operational; Parker↔Hermes batch handoff operational; Hermes browser ingestion operational
+* **Recent repository ingestion milestone:** `88bbae4` — `feat(ingest): add parker hermes bulk handoff`
+* **Recent repository operator fix:** `bd71e8b` — `fix(hermes): support python 3.13 multipart parsing`
+* **Current development focus:** document fidelity, document-processing review semantics, source/page/region traceability, human review, and the combined Parker + Hermes UI
+* **Verification note:** the historical full-suite counts below remain valid for the milestones at which they were recorded; this README does not claim a new repository-wide regression count unless a current native full-suite run has actually established one
 
 ---
 
@@ -491,38 +624,58 @@ Structural matching always runs first and is never bypassed. Bounded Relevance C
 
 Parker is not yet a finished consumer assistant.
 
-Controlled Agent Run submission is now live, and synchronous execution through the Agent Runtime is now wired into the production path. The remaining boundary is the transition from an accepted, executing Agent Run into real Tool execution against planned Goals, and the broader Task lifecycle behaviour that follows an Agent Run's outcome.
+The platform now has working governance, runtime composition, controlled Agent Run execution, Evidence Custody, durable Memory/Knowledge retrieval, Cases, owner-authorised bulk ingestion, and a governed Parker↔Hermes source-ingestion handoff. The remaining work has shifted from basic ingestion plumbing toward trustworthy interpretation and broader agent capability.
 
 Still under development:
 
-- document ingestion — transforming external documents (PDFs, scans, email, images, and similar) into governed, Parker-consumable Memory/Knowledge content
-- production tool execution initiated from planned Goals
-- broader Task lifecycle handling after Agent failure
-- richer production completion and recovery semantics
-- scheduling and workflow orchestration
-- Workflow Engine
-- live validation of `LocalHttpModelInferenceClient` against the intended local model server
-- plugin ecosystem
-- Android runtime and user experience
-- multi-device deployment
-- public SDK
-- security hardening
-- release packaging
+* source-faithful document processing across real-world PDFs, scans, email, images, and similar material
+* reliable preservation of page/region/source relationships for derived text and interpretation
+* explicit `PASS`, `REVIEW_REQUIRED`, and `FAILED` processing semantics across the ingestion pipeline
+* owner-facing human review of uncertain processing
+* the consolidated Parker + Hermes operational UI
+* production Tool execution initiated from planned Goals
+* broader Task lifecycle handling after Agent failure
+* richer production completion and recovery semantics
+* scheduling and workflow orchestration
+* Workflow Engine
+* live validation and operational hardening of supported local inference paths
+* plugin ecosystem
+* Android runtime and user experience
+* multi-device deployment
+* public SDK
+* security hardening
+* release packaging
 
-Document ingestion is a distinct capability from what already exists, and the boundary matters: the Evidence Custodian already provides governed custody of artefacts an owner explicitly submits. Memory and Knowledge now provide durable canonical owner memory and governed retrieval for what an owner explicitly tells Parker to remember. Reasoning Context now includes bounded semantic relevance for recalling that memory. None of this means Parker can read an arbitrary document and turn its contents into governed knowledge on its own — that transformation, from external documents into Parker-consumable Memory/Knowledge, is the next planned development programme and does not exist yet.
+Document ingestion should therefore no longer be described as "not started." The ingestion authority and transport path now exist. Parker can authorise a batch against an existing Case, Hermes can discover that authorised batch, submit supported source files, and request assignment, while Parker retains the authoritative Case binding.
 
-The production `AgentStepSource` used today, `DeterministicAgentStepSource`, is a deliberate, deterministic stand-in for a future Planner-backed step source, not tool execution driven by real planned Goals. A configured Agent Run may still terminate in `agent.failed` where no executable action mapping exists for its proposed action — an expected outcome for an unmapped action today, not a defect this milestone resolves.
+What remains incomplete is the higher-level transformation of those source artefacts into consistently source-faithful, reviewable, Parker-consumable representations suitable for governed retrieval and reasoning.
+
+The boundary matters:
+
+* Evidence Custodian provides governed custody of submitted artefacts.
+* Bulk ingestion provides governed source intake and Case binding.
+* Hermes provides processing capability.
+* Human review governs uncertain processing.
+* Memory and Knowledge remain Parker's canonical stores.
+* Reasoning consumes governed context downstream.
+
+The production `AgentStepSource` used today remains a deliberate controlled implementation rather than proof that Parker has completed general-purpose planned Goal → real Tool execution.
 
 Therefore:
 
-- planning is live;
-- task proposal and queueing infrastructure exists;
-- controlled Agent Run submission is live;
-- synchronous execution through the Agent Runtime is wired;
-- a configured Agent Run may still terminate in `agent.failed` where no executable action mapping exists;
-- planned Goal to real Tool execution remains incomplete.
+* planning is live;
+* task proposal and queueing infrastructure exists;
+* controlled Agent Run submission is live;
+* synchronous execution through the Agent Runtime is wired;
+* Evidence Custody is live;
+* durable Memory and governed retrieval are live;
+* Parker-authorised bulk ingestion is live;
+* Parker↔Hermes batch handoff is live;
+* Hermes browser ingestion is live;
+* source-fidelity processing and human review are still being completed;
+* planned Goal to general real-world Tool execution remains incomplete.
 
-This boundary is intentional and remains subject to future governance.
+These boundaries are intentional and remain subject to Parker's existing governance.
 
 ---
 
@@ -681,11 +834,11 @@ The conversation path is now constructed by the production composition root. Rep
 
 Parker organises knowledge into three layers:
 
-| Layer | Purpose |
-|---|---|
-| **Memory** | What Parker has learned — durably, in canonical Memory Core and Knowledge Item storage |
-| **World Model** | What Parker currently believes to be true |
-| **Reasoning Context** | What matters for the current turn or task |
+| Layer                 | Purpose                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| **Memory**            | What Parker has learned — durably, in canonical Memory Core and Knowledge Item storage |
+| **World Model**       | What Parker currently believes to be true                                              |
+| **Reasoning Context** | What matters for the current turn or task                                              |
 
 Production Reasoning Context assembly now draws from Conversation History, Memory, and World Model sources while preserving their distinct ownership and lifecycle boundaries.
 
@@ -720,16 +873,16 @@ QMD cannot create, modify, delete, promote, or redefine Parker memory, and it ne
 
 Parker aims to become a complete personal intelligence platform capable of:
 
-- personal assistance;
-- home automation;
-- workflow automation;
-- knowledge management;
-- long-term memory;
-- local AI reasoning;
-- secure tool execution;
-- multi-device operation;
-- plugin extensibility;
-- local and hybrid deployment.
+* personal assistance;
+* home automation;
+* workflow automation;
+* knowledge management;
+* long-term memory;
+* local AI reasoning;
+* secure tool execution;
+* multi-device operation;
+* plugin extensibility;
+* local and hybrid deployment.
 
 ---
 
@@ -737,16 +890,16 @@ Parker aims to become a complete personal intelligence platform capable of:
 
 Parker is built around non-negotiable principles:
 
-- Owner authority
-- Trust before execution
-- Local-first operation
-- Model independence
-- Plugin extensibility
-- Explicit permissions
-- Explainable decisions
-- Constitutional governance
-- Auditable runtime behaviour
-- Replaceable reasoning providers
+* Owner authority
+* Trust before execution
+* Local-first operation
+* Model independence
+* Plugin extensibility
+* Explicit permissions
+* Explainable decisions
+* Constitutional governance
+* Auditable runtime behaviour
+* Replaceable reasoning providers
 
 ---
 
@@ -771,12 +924,12 @@ Future implementation should extend the existing platform through controlled exe
 
 Parker is governed by four complementary documents:
 
-| Document | Purpose |
-|---|---|
-| **Parker Constitution** | Defines what Parker is. |
-| **Architecture Decisions** | Define how Parker is architected and why major decisions were made. |
-| **Parker Engineering Standard (PES-001)** | Defines how Parker is engineered, verified, reviewed, and evolved. |
-| **Project Governance** | Defines the relationship between the governing documents and the platform governance model. |
+| Document                                  | Purpose                                                                                     |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **Parker Constitution**                   | Defines what Parker is.                                                                     |
+| **Architecture Decisions**                | Define how Parker is architected and why major decisions were made.                         |
+| **Parker Engineering Standard (PES-001)** | Defines how Parker is engineered, verified, reviewed, and evolved.                          |
+| **Project Governance**                    | Defines the relationship between the governing documents and the platform governance model. |
 
 Future Architecture Decisions that alter engineering practice must explicitly reference the relevant PES-001 section.
 
@@ -788,12 +941,12 @@ Parker Engineering Standard (**PES-001**) governs the engineering lifecycle used
 
 The standard establishes:
 
-- Architecture before implementation
-- Evidence before opinion
-- Verification before acceptance
-- Documentation as a first-class engineering artefact
-- Explicit implementation-gap management
-- Engineering reviews and retrospectives as part of development
+* Architecture before implementation
+* Evidence before opinion
+* Verification before acceptance
+* Documentation as a first-class engineering artefact
+* Explicit implementation-gap management
+* Engineering reviews and retrospectives as part of development
 
 Implementation is performed as incremental, independently verified engineering units, each progressing through the Engineering Workflow described above.
 
@@ -805,15 +958,15 @@ Every completed unit must satisfy the Definition of Complete defined by PES-001 
 
 The Constitutional Foundation establishes that:
 
-- **Parker owns authority. Modules provide capability.**
-- **Cognition proposes. Trust authorises. Runtime executes.**
-- **The owner remains in control.**
-- **Trust is earned through architecture, not marketing.**
-- **Local-first and trust-first operation are the defaults.**
-- **User rights are protected as constitutional principles.**
-- **Knowledge is organised into Memory, World Model, and Reasoning Context.**
-- **Reasoning providers are model-agnostic and interchangeable.**
-- **No module may grant itself authority or bypass the Trust Framework.**
+* **Parker owns authority. Modules provide capability.**
+* **Cognition proposes. Trust authorises. Runtime executes.**
+* **The owner remains in control.**
+* **Trust is earned through architecture, not marketing.**
+* **Local-first and trust-first operation are the defaults.**
+* **User rights are protected as constitutional principles.**
+* **Knowledge is organised into Memory, World Model, and Reasoning Context.**
+* **Reasoning providers are model-agnostic and interchangeable.**
+* **No module may grant itself authority or bypass the Trust Framework.**
 
 ---
 
@@ -821,14 +974,14 @@ The Constitutional Foundation establishes that:
 
 The constitutional foundation is defined by:
 
-- Architecture History
-- Parker Constitution
-- Architecture Decisions
-- Parker Engineering Standard (PES-001)
-- Project Governance
-- User Authorship & Evidence
-- Reasoning Context
-- Trust Framework
+* Architecture History
+* Parker Constitution
+* Architecture Decisions
+* Parker Engineering Standard (PES-001)
+* Project Governance
+* User Authorship & Evidence
+* Reasoning Context
+* Trust Framework
 
 ---
 
@@ -836,13 +989,13 @@ The constitutional foundation is defined by:
 
 ## Current Status
 
-- **Architecture:** Constitutional Foundation complete and frozen
-- **Runtime Foundation:** Complete
-- **Sprint status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete (Phases 1–10); durable owner memory and governed relevance retrieval (RKS.1–RKS.6) complete; owner-facing UI operational
-- **Latest repository commit:** `68faf46` — a bounded, launcher-only shell-script correction; see "Current Verified Baseline" for why this is distinguished from the production milestone below
-- **Latest production implementation milestone:** Reasoning Knowledge Source — Bounded Semantic Relevance, commit `7a1678c`, verified by behavioural and structural tests against the real `DefaultReasoningKnowledgeSource`, `DefaultKnowledgeRetrieval`, shared relevance mechanism, and production composition root, and by a real owner-facing UI acceptance
-- **Latest full native regression baseline:** 2,290 tests, 0 failures, 0 errors, 7 skipped (see "Build Status")
-- **Current focus:** document ingestion — transforming external documents into governed, Parker-consumable Memory/Knowledge content; production Tool execution from planned Goals and broader Task lifecycle handling remain separately open
+* **Architecture:** Constitutional Foundation complete and frozen
+* **Runtime Foundation:** Complete
+* **Current platform state:** Controlled Agent Run Submission complete; Evidence Custodian programme complete; durable owner memory and governed relevance retrieval complete; owner-facing Parker UI operational; Case-aware Parker↔Hermes bulk ingestion operational
+* **Recent ingestion milestone:** `88bbae4` — `feat(ingest): add parker hermes bulk handoff`
+* **Recent Hermes compatibility fix:** `bd71e8b` — `fix(hermes): support python 3.13 multipart parsing`
+* **Current focus:** source-faithful document handling, review semantics, human review, and consolidation of Parker + Hermes into a combined owner/operator UI
+* **Separately open:** production Tool execution from planned Goals, broader Task lifecycle handling, workflow orchestration, plugins, Android, and multi-device production support
 
 ---
 
@@ -946,15 +1099,22 @@ tools/
 
 ## Current Repository Snapshot
 
-| Item | Status |
-|---|---|
-| Architecture | Constitutional Foundation (Frozen) |
-| Implementation | Controlled Agent Run Submission complete; Evidence Custodian programme complete; durable owner memory and governed relevance retrieval (RKS.1–RKS.6) complete; owner-facing UI operational |
-| Latest Repository Commit | `68faf46` — `fix(ui): make run-owner-ui.sh immune to a stale wrong-group Gradle daemon` |
-| Latest Production Milestone | `7a1678c` — `feat(reasoning-context): implement RKS.1-RKS.6 bounded semantic relevance fallback` |
-| Build Status | `BUILD SUCCESSFUL` (2,290 tests, 0 failures, 0 errors, 7 skipped, at `7a1678c`) |
-| Branch | `main` |
-| Repository | Clean • Synced with origin |
+| Item                             | Status                                                           |
+| -------------------------------- | ---------------------------------------------------------------- |
+| Architecture                     | Constitutional Foundation (Frozen)                               |
+| Runtime                          | Production-composed and operational                              |
+| Evidence Custodian               | Complete                                                         |
+| Durable Memory / Knowledge       | Operational                                                      |
+| Case Management                  | Operational                                                      |
+| Parker-Authorised Bulk Ingestion | Operational                                                      |
+| Parker↔Hermes Batch Handoff      | Operational                                                      |
+| Hermes Browser Ingestion         | Operational                                                      |
+| Source-Fidelity Processing       | Active development                                               |
+| Human Review Workflow            | Active development                                               |
+| Combined Parker + Hermes UI      | Active development                                               |
+| Recent Ingestion Milestone       | `88bbae4` — `feat(ingest): add parker hermes bulk handoff`       |
+| Recent Hermes Fix                | `bd71e8b` — `fix(hermes): support python 3.13 multipart parsing` |
+| Branch                           | `main`                                                           |
 
 ---
 
@@ -971,13 +1131,18 @@ Parker is being developed in deliberate stages:
 7. Planner Runtime production integration ✅
 8. Controlled Agent Run submission ✅
 9. Evidence Custodian ✅
-10. Durable owner memory and governed relevance retrieval (Memory Core, Knowledge Items, RKS.1–RKS.6) ✅
-11. Owner-facing UI ✅
-12. Document ingestion ← next
-13. Workflow Engine
-14. Plugins and richer tools
-15. Android product integration
-16. Multi-device production platform
+10. Durable owner memory and governed relevance retrieval ✅
+11. Owner-facing Parker UI ✅
+12. Case management and Parker-authorised bulk ingestion ✅
+13. Parker↔Hermes governed batch handoff ✅
+14. Hermes browser ingestion ✅
+15. Source-faithful document processing ← current
+16. Human review workflow ← current
+17. Combined Parker + Hermes UI ← current
+18. Workflow Engine
+19. Plugins and richer tools
+20. Android product integration
+21. Multi-device production platform
 
 The controlled transition from an authorised Task Proposal into Agent Run submission and synchronous execution is now implemented:
 
@@ -993,9 +1158,9 @@ Authorised execution
 
 This does not make Agent Execution complete overall. The next unresolved boundary is:
 
-- production Tool execution from planned Goals;
-- broader Task lifecycle completion and failure handling;
-- workflow orchestration.
+* production Tool execution from planned Goals;
+* broader Task lifecycle completion and failure handling;
+* workflow orchestration.
 
 That transition must continue to preserve the constitutional separation between cognition, trust, and execution.
 
@@ -1026,14 +1191,14 @@ Parker remains in active foundational development.
 
 Contributors interested in:
 
-- runtime systems;
-- Android;
-- AI;
-- security;
-- distributed systems;
-- local-first computing;
-- developer tooling;
-- personal intelligence platforms
+* runtime systems;
+* Android;
+* AI;
+* security;
+* distributed systems;
+* local-first computing;
+* developer tooling;
+* personal intelligence platforms
 
 are welcome.
 
@@ -1041,12 +1206,12 @@ Before submitting significant changes, read the constitutional documents and Par
 
 Contributions must preserve Parker's core guarantees:
 
-- Owner authority
-- Trust-first execution
-- Model independence
-- Local-first operation
-- Auditable runtime behaviour
-- Architecture-led implementation
+* Owner authority
+* Trust-first execution
+* Model independence
+* Local-first operation
+* Auditable runtime behaviour
+* Architecture-led implementation
 
 ---
 
@@ -1056,7 +1221,9 @@ Parker is not another chatbot. It is a governed runtime platform for trustworthy
 
 It is an attempt to build one where the owner remains in control, AI remains replaceable, and trust is enforced by architecture rather than promised through policy.
 
-The Runtime Foundation, production conversation path, Reasoning Context integration, reply delivery, Goal handoff, Plan Candidate generation, Planner Runtime integration, durable owner memory with governed relevance retrieval, and an owner-facing user interface now exist as working, verified parts of the platform.
+The Runtime Foundation, production conversation path, Reasoning Context integration, reply delivery, Goal handoff, Plan Candidate generation, Planner Runtime integration, Evidence Custody, durable owner memory with governed relevance retrieval, Case management, owner-authorised bulk ingestion, and the Parker↔Hermes batch handoff now exist as working parts of the platform.
+
+The present phase is completing source-faithful document processing, explicit human-review semantics, and a consolidated Parker + Hermes owner interface without weakening those existing guarantees.
 
 The next phase is not to loosen Parker's safeguards in the name of capability. It is to extend capability while preserving them.
 
