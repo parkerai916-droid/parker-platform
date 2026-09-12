@@ -5,6 +5,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.system.exitProcess
 import parker.core.interfaces.ModuleId
 import parker.core.interfaces.PrincipalId
+import parker.core.runtime.HermesSshSpeechTranscriber
 
 private fun runOwnerUiPairingAdmin(args: List<String>, environment: Map<String, String>) {
     val root = environment[ParkerRuntimeConfigLoader.KEY_OWNER_UI_AUTHENTICATION_ROOT]
@@ -208,6 +209,7 @@ fun main(args: Array<String>) = runBlocking {
             recordHermesProcessingDecisionAsOwner = runtime::recordHermesProcessingDecisionAsOwner,
             readPendingReviewSourceAsOwner = runtime::readPendingReviewSourceAsOwner,
             analyseSelectedEvidenceAsOwnerWithContext = runtime::analyseSelectedEvidenceAsOwner,
+            transcribeSpeechAsOwner = { audio, mediaType -> HermesSshSpeechTranscriber().transcribe(audio, mediaType) },
         ).also { it.start() }
     } else {
         null

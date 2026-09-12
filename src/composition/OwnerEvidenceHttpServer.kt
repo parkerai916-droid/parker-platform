@@ -61,6 +61,7 @@ import parker.core.runtime.OwnerAnalysisInvocationRequest
 import parker.core.runtime.OwnerAnalysisInvocationOutcome
 import parker.core.runtime.AnalysisWorkspaceSessionStore
 import parker.core.interfaces.AnalysisWorkspaceSessionId
+import parker.core.interfaces.SpeechTranscriptionOutcome
 
 /** Transport-safe Owner HTTP result for creating one governed ingestion batch. */
 sealed interface OwnerIngestionBatchAuthorisation {
@@ -138,6 +139,8 @@ class OwnerEvidenceHttpServer(
         analyseSelectedEvidenceAsOwner(request)
     },
     private val analysisSessions: AnalysisWorkspaceSessionStore = AnalysisWorkspaceSessionStore(),
+    private val transcribeSpeechAsOwner: suspend (ByteArray, String) -> SpeechTranscriptionOutcome =
+        { _, _ -> SpeechTranscriptionOutcome.BackendUnavailable },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -160,6 +163,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/ingestion-batches", IngestionBatchesHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/analysis-workspace/analyse", AnalysisWorkspaceHandler())
+        httpServer.createContext("/owner/analysis-workspace/transcribe", SpeechTranscriptionHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
         httpServer.createContext("/owner/admin/corrected-preparation", CorrectedPreparationHandler())
@@ -202,6 +206,28 @@ class OwnerEvidenceHttpServer(
             } catch (_: Exception) {
                 runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
             } finally { exchange.close() }
+        }
+    }
+
+    private inner class SpeechTranscriptionHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                if (exchange.requestMethod != "POST" || exchange.requestURI.path != "/owner/analysis-workspace/transcribe") { writeJson(exchange, 404, jsonObject("error" to "not found")); return }
+                val mediaType = exchange.requestHeaders.getFirst("Content-Type")?.substringBefore(';')?.trim()?.lowercase()
+                if (mediaType == null || mediaType !in parker.core.runtime.HermesSshSpeechTranscriber.SUPPORTED_MEDIA_TYPES) { exchange.requestBody.close(); writeJson(exchange, 415, jsonObject("status" to "UNSUPPORTED_AUDIO")); return }
+                val audio = try { exchange.requestBody.use { readBounded(it, parker.core.runtime.HermesSshSpeechTranscriber.MAX_AUDIO_BYTES.toLong()) } }
+                catch (_: RequestBodyTooLargeException) { writeJson(exchange, 413, jsonObject("status" to "AUDIO_TOO_LARGE")); return }
+                if (audio.isEmpty()) { writeJson(exchange, 400, jsonObject("status" to "INVALID_AUDIO")); return }
+                when (val result = runBlocking { transcribeSpeechAsOwner(audio, mediaType) }) {
+                    is SpeechTranscriptionOutcome.Completed -> writeJson(exchange, 200, jsonObject("status" to "COMPLETED", "transcript" to result.transcript))
+                    SpeechTranscriptionOutcome.BackendUnavailable -> writeJson(exchange, 503, jsonObject("status" to "TRANSCRIPTION_BACKEND_UNAVAILABLE"))
+                    SpeechTranscriptionOutcome.UnsupportedAudio -> writeJson(exchange, 415, jsonObject("status" to "UNSUPPORTED_AUDIO"))
+                    SpeechTranscriptionOutcome.Timeout -> writeJson(exchange, 504, jsonObject("status" to "TRANSCRIPTION_TIMEOUT"))
+                    is SpeechTranscriptionOutcome.Failed -> writeJson(exchange, 502, jsonObject("status" to "TRANSCRIPTION_FAILED", "reason" to result.reason))
+                }
+            } catch (_: Exception) { runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) } }
+            finally { exchange.close() }
         }
     }
 
@@ -2913,6 +2939,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
     <div>
       <label for="analysisQuestion">Question</label>
       <textarea id="analysisQuestion" rows="6" maxlength="8000" style="width:100%;box-sizing:border-box;" placeholder="What does the evidence establish?"></textarea>
+      <p><label for="analysisMicrophoneSelector">Microphone</label> <select id="analysisMicrophoneSelector"><option value="">Default microphone</option></select> <button id="analysisSpeakButton" type="button">🎤 Speak</button> <span id="analysisSpeechStatus" class="note">Keyboard input is always available.</span></p>
       <p><label for="analysisTypeSelector">Analysis type</label> <select id="analysisTypeSelector"><option value="ISSUE_ANALYSIS">Issue analysis</option><option value="CHRONOLOGY">Chronology</option><option value="CONTRADICTION_ANALYSIS">Contradictions</option><option value="EVIDENCE_GAP_ANALYSIS">Evidence gaps</option><option value="CLAIM_EVIDENCE_MAPPING">Claim / evidence mapping</option><option value="DOCUMENT_COMPARISON">Document comparison</option><option value="FINANCIAL_ANALYSIS">Financial analysis</option></select></p>
       <p><button id="analysisSubmitButton" type="button" disabled>Analyse</button> <span id="analysisRequestStatus" class="note"></span></p>
       <div id="analysisWorkspaceResult" aria-live="polite"><p class="note">No analysis yet.</p></div>
@@ -2981,6 +3008,10 @@ let analysisSelectedEvidence = new Set();
 let analysisRequestInFlight = false;
 let analysisSessionId = null;
 let analysisTurns = [];
+let analysisSpeechRecorder = null;
+let analysisSpeechChunks = [];
+let analysisSpeechTimer = null;
+const ANALYSIS_MAX_RECORDING_MS = 300000;
 
 async function loadCases() {
   try {
@@ -3087,6 +3118,21 @@ function updateAnalysisSubmitState() {
   document.getElementById('analysisSubmitButton').disabled = analysisRequestInFlight || !analysisSelectedEvidence.size || !document.getElementById('analysisQuestion').value.trim();
 }
 document.getElementById('analysisQuestion').oninput = updateAnalysisSubmitState;
+async function loadAnalysisMicrophones() {
+  const selector = document.getElementById('analysisMicrophoneSelector'); const button = document.getElementById('analysisSpeakButton');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) { selector.disabled = true; button.disabled = true; return; }
+  try { const devices = await navigator.mediaDevices.enumerateDevices(); const inputs = devices.filter(device => device.kind === 'audioinput'); selector.innerHTML = '<option value="">Default microphone</option>'; inputs.forEach((device, index) => { const option = document.createElement('option'); option.value = device.deviceId; option.textContent = device.label || ('Microphone ' + (index + 1)); selector.appendChild(option); }); selector.disabled = !inputs.length; button.disabled = !inputs.length; if (!inputs.length) document.getElementById('analysisSpeechStatus').textContent = 'No microphone is available. You can continue by typing.'; } catch (e) { document.getElementById('analysisSpeechStatus').textContent = 'Microphone access is not available. You can continue by typing your question.'; }
+}
+function analysisRecorderMimeType() { const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']; return candidates.find(type => window.MediaRecorder && MediaRecorder.isTypeSupported(type)) || ''; }
+function stopAnalysisRecording() { if (analysisSpeechRecorder && analysisSpeechRecorder.state !== 'inactive') analysisSpeechRecorder.stop(); }
+async function startAnalysisRecording() {
+  const status = document.getElementById('analysisSpeechStatus'); const button = document.getElementById('analysisSpeakButton');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) { status.textContent = 'Microphone access is not available. You can continue by typing your question.'; return; }
+  const mimeType = analysisRecorderMimeType(); if (!mimeType) { status.textContent = 'This browser cannot record a supported audio format. You can continue by typing.'; return; }
+  try { const deviceId = document.getElementById('analysisMicrophoneSelector').value; const stream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true }); analysisSpeechChunks = []; analysisSpeechRecorder = new MediaRecorder(stream, { mimeType }); analysisSpeechRecorder.ondataavailable = event => { if (event.data && event.data.size) analysisSpeechChunks.push(event.data); }; analysisSpeechRecorder.onerror = () => { stream.getTracks().forEach(track => track.stop()); button.textContent = '🎤 Speak'; status.textContent = 'Recording failed. You can continue by typing your question.'; }; analysisSpeechRecorder.onstop = async () => { stream.getTracks().forEach(track => track.stop()); clearTimeout(analysisSpeechTimer); button.textContent = '🎤 Speak'; button.disabled = true; status.textContent = 'Transcribing…'; try { await transcribeAnalysisRecording(new Blob(analysisSpeechChunks, { type: mimeType })); } finally { button.disabled = false; loadAnalysisMicrophones(); } }; analysisSpeechRecorder.start(); button.textContent = '■ Stop'; status.textContent = 'Listening…'; analysisSpeechTimer = setTimeout(stopAnalysisRecording, ANALYSIS_MAX_RECORDING_MS); } catch (e) { status.textContent = 'Microphone access was not permitted. You can continue by typing your question.'; }
+}
+async function transcribeAnalysisRecording(blob) { const status = document.getElementById('analysisSpeechStatus'); try { const response = await fetch('/owner/analysis-workspace/transcribe', { method: 'POST', headers: Object.assign({ 'Content-Type': blob.type }, authHeaders()), body: blob }); const result = await response.json(); if (result.status !== 'COMPLETED') { status.textContent = ({TRANSCRIPTION_BACKEND_UNAVAILABLE:'Speech transcription is not configured yet. You can continue by typing.', AUDIO_TOO_LARGE:'The recording is too large.', UNSUPPORTED_AUDIO:'This audio format is not supported.', TRANSCRIPTION_TIMEOUT:'Speech transcription timed out.', TRANSCRIPTION_FAILED:'Transcription could not be completed.'}[result.status] || 'Transcription could not be completed.'); return; } const question = document.getElementById('analysisQuestion'); const prefix = question.value && !question.value.endsWith(' ') ? ' ' : ''; question.value += prefix + result.transcript; question.focus(); question.setSelectionRange(question.value.length, question.value.length); updateAnalysisSubmitState(); status.textContent = 'Transcript ready — review and edit it before analysing.'; } catch (e) { status.textContent = 'Transcription could not be completed. You can continue by typing your question.'; } }
+document.getElementById('analysisSpeakButton').onclick = () => { if (analysisSpeechRecorder && analysisSpeechRecorder.state === 'recording') stopAnalysisRecording(); else startAnalysisRecording(); }; if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', loadAnalysisMicrophones); loadAnalysisMicrophones();
 document.getElementById('analysisTypeSelector').onchange = () => { resetAnalysisSession('Analysis type changed. A new analysis session will start.'); updateAnalysisSubmitState(); };
 document.getElementById('analysisSelectAllButton').onclick = () => { resetAnalysisSession('Evidence selection changed. A new analysis session will start.'); analysisEvidence.forEach(item => analysisSelectedEvidence.add(item.evidenceArtifactId)); renderAnalysisEvidence(); };
 document.getElementById('analysisClearButton').onclick = () => { resetAnalysisSession('Evidence selection changed. A new analysis session will start.'); analysisSelectedEvidence = new Set(); renderAnalysisEvidence(); };
