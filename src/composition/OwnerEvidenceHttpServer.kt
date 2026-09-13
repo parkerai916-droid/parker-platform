@@ -3046,6 +3046,7 @@ document.getElementById('ownerBulkTab').onclick = () => activateOwnerTab('bulk')
 document.getElementById('ownerEvidenceTab').onclick = () => activateOwnerTab('evidence');
 document.getElementById('ownerHermesReviewTab').onclick = () => { activateOwnerTab('review'); loadHermesReview(); };
 document.getElementById('ownerAnalysisTab').onclick = () => { activateOwnerTab('analysis'); loadAnalysisCases(); };
+if (window.location.hash === '#analysis') document.getElementById('ownerAnalysisTab').click();
 document.getElementById('refreshHermesReviewButton').onclick = () => loadHermesReview();
 document.getElementById('bulkConfirmButton').onclick = async () => {
   if (!selectedBulkCase) return;
