@@ -33,7 +33,8 @@ class ConsoleBoundaryTest(unittest.TestCase):
         source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
         self.assertIn("batches.find(b=>b.batchId===", source)
         self.assertIn("const matching=visible.filter(b=>b.batchId===prior)", source)
-        self.assertIn("function scopedBatches(){const caseId=$('case').value", source)
+        self.assertIn("function scopedBatches(){const selected=cases.find(c=>c.caseId===", source)
+        self.assertIn("b.caseName===selected?.caseName", source)
         self.assertIn("batchHistory", source)
         self.assertIn("function label(b)", source)
         self.assertIn("const caseId=$('case').value", source)
@@ -45,6 +46,24 @@ class ConsoleBoundaryTest(unittest.TestCase):
         self.assertIn("validate_authoritative_batch", source)
         self.assertIn('"CASE_BINDING_MISMATCH"', source)
         self.assertIn('if not validate_authoritative_batch(cookie, batch)', source)
+
+    def test_ready_batch_discovery_uses_current_parker_agent_projection(self):
+        ready = {"batches": [{"batchId": "bulk-current", "caseName": "Current case", "status": "READY"}]}
+        with patch.object(console, "ready_batches", return_value=ready), patch.object(console, "owner", side_effect=AssertionError("owner GET must not discover READY batches")):
+            code, raw = console.authoritative_batches("owner-cookie")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw), ready)
+
+    def test_ready_batch_validation_rechecks_exact_current_ready_projection(self):
+        ready = {"batches": [{"batchId": "bulk-current", "caseName": "Current case", "status": "READY"}]}
+        with patch.object(console, "ready_batches", return_value=ready):
+            self.assertTrue(console.validate_authoritative_batch("owner-cookie", "bulk-current"))
+            self.assertFalse(console.validate_authoritative_batch("owner-cookie", "bulk-other"))
+
+    def test_ready_batch_discovery_failure_is_not_converted_to_fabricated_empty_state(self):
+        with patch.object(console, "ready_batches", side_effect=RuntimeError("Parker READY batch discovery failed")):
+            with self.assertRaises(RuntimeError):
+                console.authoritative_batches("owner-cookie")
 
     def test_ids_are_only_in_advanced_details_and_history(self):
         source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
@@ -61,6 +80,7 @@ class ConsoleBoundaryTest(unittest.TestCase):
         source = SCRIPT.read_text()
         self.assertIn("/owner/cases", source)
         self.assertIn("/owner/ingestion-batches", source)
+        self.assertIn("/agent/ingestion-batches", (ROOT / "src" / "composition" / "AgentGatewayHttpServer.kt").read_text())
         self.assertIn("/owner/hermes-processing/review", source)
         self.assertNotIn("/agent/", source)
         self.assertNotIn("PARKER_AGENT_GATEWAY_TOKEN", source)

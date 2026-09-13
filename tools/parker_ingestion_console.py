@@ -65,33 +65,24 @@ def ready_batches():
     return value(raw)
 
 
-def authoritative_batches(cookie):
-    owner_code, owner_raw = owner("/owner/ingestion-batches", "GET", None, cookie)
-    if owner_code != 200:
-        return owner_code, owner_raw
-    owner_data = value(owner_raw)
+def authoritative_batches(_cookie):
+    """Return Parker's current READY-batch projection via the existing Hermes adapter."""
     ready = ready_batches()
-    processing_by_batch = {b.get("batchId"): b.get("processingResults", []) for b in ready.get("batches", [])}
-    batches = []
-    for batch in owner_data.get("batches", []):
-        batch = dict(batch)
-        batch["processingResults"] = processing_by_batch.get(batch.get("batchId"), [])
-        batches.append(batch)
-    return 200, json.dumps({"batches": batches}, separators=(",", ":")).encode()
+    return 200, json.dumps(ready, separators=(",", ":")).encode()
 
 
-def validate_authoritative_batch(cookie, batch_id):
-    code, raw = owner("/owner/ingestion-batches/" + batch_id, "GET", None, cookie)
-    if code != 200:
+def validate_authoritative_batch(_cookie, batch_id):
+    """Revalidate one exact batch against Parker's current READY projection."""
+    try:
+        ready = ready_batches()
+    except Exception:
         return False
-    data = value(raw)
-    batches = data.get("batches", []) if isinstance(data, dict) else []
-    return (
-        len(batches) == 1
-        and batches[0].get("batchId") == batch_id
-        and batches[0].get("status") == "READY"
-        and bool(batches[0].get("caseId"))
-        and bool(batches[0].get("caseName"))
+    batches = ready.get("batches", []) if isinstance(ready, dict) else []
+    return any(
+        item.get("batchId") == batch_id
+        and item.get("status") == "READY"
+        and bool(item.get("caseName"))
+        for item in batches
     )
 
 
