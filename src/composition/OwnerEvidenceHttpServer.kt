@@ -2924,7 +2924,7 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <body>
 <h1>Parker Owner Evidence Upload</h1>
 <p><button id="logoutButton">Log out</button></p>
-<nav class="tabs" aria-label="Owner sections"><button class="tab active" id="ownerEvidenceTab">Evidence Library</button><button class="tab" id="ownerBulkTab">Bulk Ingestion</button><button class="tab" id="ownerHermesReviewTab">Owner Review</button><button class="tab" id="ownerAnalysisTab">Analysis</button></nav>
+<nav class="tabs" aria-label="Owner sections"><button class="tab active" id="ownerEvidenceTab">Evidence Library</button><button class="tab" id="ownerBulkTab">Bulk Ingestion</button><button class="tab" id="ownerHermesReviewTab">Owner Review</button><button class="tab" id="ownerAnalysisTab">Analysis</button><a class="tab" href="http://192.168.178.44:8088/" target="_blank" rel="noopener noreferrer">Dual Ingestion</a><a class="tab" href="http://192.168.178.45:8765/" target="_blank" rel="noopener noreferrer">Hermes Bulk Ingestion</a></nav>
 <section id="ownerAnalysisPanel" hidden>
   <h2>Analysis</h2>
   <p class="note">Choose a case and governed evidence, then ask one evidence-grounded question. Technical evidence and derivative IDs stay hidden from the ordinary workflow.</p>

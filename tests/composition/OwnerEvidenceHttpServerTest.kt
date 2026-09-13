@@ -591,6 +591,24 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
+    fun `owner navigation retains existing tabs and links to deployed ingestion surfaces`() {
+        val page = startHarness("")
+        try {
+            val root = send(HttpRequest.newBuilder(URI.create(page.baseUri() + "/"))
+                .header("Cookie", pairedCookie(page)).GET().build()).body()
+            assertTrue(root.contains("id=\"ownerEvidenceTab\">Evidence Library"))
+            assertTrue(root.contains("id=\"ownerBulkTab\">Bulk Ingestion"))
+            assertTrue(root.contains("id=\"ownerHermesReviewTab\">Owner Review"))
+            assertTrue(root.contains("id=\"ownerAnalysisTab\">Analysis"))
+            assertTrue(root.contains("href=\"http://192.168.178.44:8088/\""))
+            assertTrue(root.contains(">Dual Ingestion</a>"))
+            assertTrue(root.contains("href=\"http://192.168.178.45:8765/\""))
+            assertTrue(root.contains(">Hermes Bulk Ingestion</a>"))
+            assertTrue(root.contains("target=\"_blank\" rel=\"noopener noreferrer\""))
+        } finally { page.shutdown() }
+    }
+
+    @Test
     fun `disabled enhanced transcription never invokes external operation`() {
         var calls = 0
         val harness = startHarness("", externalReadiness = { EnhancedTranscriptionReadiness.Disabled }, invokeExternal = { calls++; error("must not run") })
