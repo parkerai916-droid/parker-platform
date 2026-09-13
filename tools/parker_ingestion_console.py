@@ -103,7 +103,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        if path == "/": self.output(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8"); return
+        if path == "/":
+            page = (ROOT / "index.html").read_text().replace("__HERMES_CONSOLE_URL__", HERMES).encode()
+            self.output(200, page, "text/html; charset=utf-8"); return
         if path == "/api/health":
             try:
                 parker, _ = call(OWNER + "/", timeout=HEALTH_TIMEOUT_SECONDS)
