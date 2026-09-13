@@ -486,7 +486,10 @@ class OwnerEvidenceHttpServer(
             runCatching { exchange.requestBody.use { it.readBytes() } }
             when (val outcome = runBlocking { listHermesProcessingReviewAsOwner() }) {
                 is parker.core.runtime.HermesProcessingReviewListOutcome.Found ->
-                    writeJson(exchange, 200, jsonObject("items" to jsonArray(outcome.items.map(::hermesProcessingReviewItemJson))))
+                    writeJson(exchange, 200, jsonObject("items" to jsonArray(outcome.items.map { item ->
+                        val source = runBlocking { readPendingReviewSourceAsOwner(item.batchId, item.sourceSha256) }
+                        hermesProcessingReviewItemJson(item, source)
+                    })))
                 is parker.core.runtime.HermesProcessingReviewListOutcome.Denied ->
                     writeJson(exchange, 403, jsonObject("error" to "denied"))
             }
@@ -588,9 +591,11 @@ class OwnerEvidenceHttpServer(
         }
     }
 
-    private fun hermesProcessingReviewItemJson(item: parker.core.runtime.HermesProcessingReviewItem) = jsonObject(
+    private fun hermesProcessingReviewItemJson(item: parker.core.runtime.HermesProcessingReviewItem, source: parker.core.interfaces.PendingReviewSource? = null) = jsonObject(
         "batchId" to item.batchId,
         "sourceSha256" to item.sourceSha256,
+        "fileName" to source?.originalDisplayName,
+        "fileType" to source?.mediaType,
         "status" to item.status.name,
         "methods" to jsonArray(item.methods.map { it.name }),
         "issues" to jsonArray(item.issues.mapIndexed { index, issue -> hermesProcessingIssueJson(index, issue) }),
