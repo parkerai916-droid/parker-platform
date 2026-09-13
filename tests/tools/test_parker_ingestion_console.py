@@ -19,15 +19,12 @@ spec.loader.exec_module(console)
 
 
 class ConsoleBoundaryTest(unittest.TestCase):
-    def test_console_renders_configured_hermes_analysis_link_in_new_tab(self):
+    def test_console_renders_parker_analysis_link_in_new_tab(self):
         page = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
-        adapter = SCRIPT.read_text()
-        self.assertIn('Open Hermes Analysis ↗', page)
-        self.assertIn('href="__HERMES_ANALYSIS_URL__/chat"', page)
+        self.assertIn('Open Parker Analysis ↗', page)
+        self.assertIn('href="https://parker.home.arpa"', page)
         self.assertIn('target="_blank" rel="noopener noreferrer"', page)
-        self.assertIn('HERMES = os.environ.get("HERMES_CONSOLE_URL", "http://192.168.178.45:8765")', adapter)
-        self.assertIn('HERMES_ANALYSIS_URL', adapter)
-        self.assertIn('replace("__HERMES_ANALYSIS_URL__", HERMES_ANALYSIS)', adapter)
+        self.assertNotIn('HERMES_ANALYSIS_URL', page)
         self.assertIn('id="newBatch">New batch</button>', page)
         self.assertIn('data-view="split">Split View', page)
 

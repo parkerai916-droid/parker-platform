@@ -14,14 +14,6 @@ from urllib.parse import urlsplit, parse_qs
 
 ROOT = Path(__file__).with_name("parker_ingestion_console")
 HERMES = os.environ.get("HERMES_CONSOLE_URL", "http://192.168.178.45:8765").rstrip("/")
-_hermes_parts = urlsplit(HERMES)
-_hermes_host = _hermes_parts.hostname or "127.0.0.1"
-if ":" in _hermes_host and not _hermes_host.startswith("["):
-    _hermes_host = f"[{_hermes_host}]"
-HERMES_ANALYSIS = os.environ.get(
-    "HERMES_ANALYSIS_URL",
-    f"{_hermes_parts.scheme}://{_hermes_host}:9119",
-).rstrip("/")
 OWNER = os.environ.get("PARKER_OWNER_URL", "http://127.0.0.1:8080").rstrip("/")
 MAX_BODY = 65 * 1024 * 1024
 BATCH = re.compile(r"^bulk-[a-f0-9-]+$")
@@ -113,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/":
             page = (ROOT / "index.html").read_text()
-            page = page.replace("__HERMES_CONSOLE_URL__", HERMES).replace("__HERMES_ANALYSIS_URL__", HERMES_ANALYSIS).encode()
+            page = page.encode()
             self.output(200, page, "text/html; charset=utf-8"); return
         if path == "/api/health":
             try:
