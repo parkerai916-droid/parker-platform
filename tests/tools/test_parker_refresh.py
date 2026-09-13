@@ -39,6 +39,28 @@ class ParkerRefreshScriptTest(unittest.TestCase):
         self.assertIn('[[ "$stt_result" == \'{"status":"INVALID_REQUEST"}\' ]]', self.source)
         self.assertNotIn('ssh -n', self.source)
 
+    def test_startup_readiness_retries_until_all_signals_are_present(self):
+        self.assertIn('STARTUP_TIMEOUT_SECONDS=30', self.source)
+        self.assertIn('STARTUP_POLL_SECONDS=1', self.source)
+        self.assertIn('while (( SECONDS < startup_deadline )); do', self.source)
+        self.assertIn('Runtime started', self.source)
+        self.assertIn('Owner LAN Evidence Upload HTTP server listening on 0.0.0.0:8080', self.source)
+        self.assertIn('Agent Gateway HTTP server started on 0.0.0.0:8090', self.source)
+        self.assertIn('sleep "$STARTUP_POLL_SECONDS"', self.source)
+        self.assertIn('within ${STARTUP_TIMEOUT_SECONDS}s', self.source)
+
+    def test_existing_current_container_can_reuse_prior_health(self):
+        self.assertIn('pre_deploy_healthy=false', self.source)
+        self.assertIn('pre_deploy_commit', self.source)
+        self.assertIn('pre_deploy_running', self.source)
+        self.assertIn('if [[ "$pre_deploy_healthy" != true || "$container_id" != "$pre_deploy_container_id" ]]; then', self.source)
+
+    def test_readiness_keeps_commit_port_and_running_checks_before_logs(self):
+        readiness = self.source.index('if [[ "$pre_deploy_healthy" != true')
+        self.assertLess(self.source.index('[[ "$deployed_commit" == "$production_commit" ]]'), readiness)
+        self.assertLess(self.source.index('Parker runtime container is not running'), readiness)
+        self.assertLess(self.source.index('Parker port $port is not published'), readiness)
+
 
 if __name__ == "__main__":
     unittest.main()

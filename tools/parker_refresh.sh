@@ -11,6 +11,8 @@ CONSOLE_SERVICE="parker-hermes-console.service"
 OWNER_PORT=8080
 AGENT_PORT=8090
 CONSOLE_URL="http://192.168.178.44:8088/"
+STARTUP_TIMEOUT_SECONDS=30
+STARTUP_POLL_SECONDS=1
 
 ANALYSIS_KEY_SOURCE="/mnt/parker-secrets/parker/parker_hermes_analysis_ed25519"
 ANALYSIS_KEY_TARGET="/home/steve/.ssh/parker_hermes_analysis_ed25519"
@@ -36,6 +38,25 @@ if ! /usr/bin/git -C "$PARKER_DIR" diff --quiet ||
 fi
 echo "Production commit: $production_commit"
 
+# An already-current healthy container may retain startup logs older than the
+# log window below, so capture that safe state before deployment.
+pre_deploy_container_id="$(/usr/bin/docker inspect --format '{{.Id}}' "$PARKER_CONTAINER" 2>/dev/null || true)"
+pre_deploy_commit="$(/usr/bin/docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$PARKER_CONTAINER" 2>/dev/null |
+    /usr/bin/awk -F= '$1 == "PARKER_PRODUCTION_COMMIT" { print substr($0, index($0, "=") + 1) }' || true)"
+pre_deploy_running="$(/usr/bin/docker inspect --format '{{.State.Running}}' "$PARKER_CONTAINER" 2>/dev/null || true)"
+pre_deploy_healthy=false
+if [[ -n "$pre_deploy_container_id" && "$pre_deploy_running" == "true" &&
+      "$pre_deploy_commit" == "$production_commit" ]]; then
+    pre_deploy_healthy=true
+    for port in "$OWNER_PORT" "$AGENT_PORT"; do
+        if ! /usr/bin/docker port "$PARKER_CONTAINER" "$port/tcp" 2>/dev/null | /usr/bin/grep -Fq ":$port" ||
+           ! /usr/bin/ss -ltnH | /usr/bin/awk -v suffix=":$port" '$4 ~ suffix "$" { found=1 } END { exit !found }'; then
+            pre_deploy_healthy=false
+            break
+        fi
+    done
+fi
+
 "$PARKER_DEPLOY" || fail "authoritative Parker deployment failed"
 
 deployed_commit="$(/usr/bin/docker exec "$PARKER_CONTAINER" printenv PARKER_PRODUCTION_COMMIT 2>/dev/null)" ||
@@ -57,9 +78,22 @@ for port in "$OWNER_PORT" "$AGENT_PORT"; do
         fail "Parker port $port is not listening"
 done
 
-recent_logs="$(/usr/bin/docker logs --since 180s "$PARKER_CONTAINER" 2>&1 || true)"
-/usr/bin/grep -Fq "Runtime started" <<<"$recent_logs" ||
-    fail "Parker startup success was not found in recent logs"
+if [[ "$pre_deploy_healthy" != true || "$container_id" != "$pre_deploy_container_id" ]]; then
+    startup_deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+    startup_ready=false
+    while (( SECONDS < startup_deadline )); do
+        recent_logs="$(/usr/bin/docker logs --since 180s "$PARKER_CONTAINER" 2>&1 || true)"
+        if /usr/bin/grep -Fq "Runtime started" <<<"$recent_logs" &&
+           /usr/bin/grep -Fq "Owner LAN Evidence Upload HTTP server listening on 0.0.0.0:8080" <<<"$recent_logs" &&
+           /usr/bin/grep -Fq "Agent Gateway HTTP server started on 0.0.0.0:8090" <<<"$recent_logs"; then
+            startup_ready=true
+            break
+        fi
+        /usr/bin/sleep "$STARTUP_POLL_SECONDS"
+    done
+    [[ "$startup_ready" == true ]] ||
+        fail "Parker startup readiness was not observed within ${STARTUP_TIMEOUT_SECONDS}s"
+fi
 
 steve_uid="$(/usr/bin/id -u steve)" || fail "Steve user is unavailable"
 as_steve_systemctl() {
