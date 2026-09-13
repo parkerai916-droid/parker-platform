@@ -3382,7 +3382,6 @@ function render() {
       const b = document.createElement('button');
       b.textContent = 'Run local OCR';
       b.title = 'Legacy/manual compatibility control; this is not a fallback from governed acquisition.';
-      b.disabled = true;
       b.onclick = () => ocrRow(index);
       actions.appendChild(b);
     }
@@ -3394,7 +3393,6 @@ function render() {
       const bd = document.createElement('button');
       bd.textContent = 'Run local OCR (Durable)';
       bd.title = 'Legacy/manual specialist operation; this is not automatic fallback.';
-      bd.disabled = true;
       bd.onclick = () => ocrDurableRow(index);
       actions.appendChild(bd);
     }

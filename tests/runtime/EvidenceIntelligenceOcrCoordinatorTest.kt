@@ -200,15 +200,17 @@ class EvidenceIntelligenceOcrCoordinatorTest {
     }
 
     @Test
-    fun `image media type is OCR-eligible`() = runTest {
-        val custodian = FakeEvidenceCustodian { _, _ -> EvidenceManifestRetrievalResult.Found(manifest(receivedMediaType = "image/png")) }
-        val ocrMechanism = FakeOcrMechanism { OcrRecognitionOutcome.Recognised(sampleResult()) }
-        val coordinator = EvidenceIntelligenceOcrCoordinator(custodian, ocrMechanism)
+    fun `JPEG and PNG image media are OCR-eligible`() = runTest {
+        listOf("image/jpeg", "image/png").forEach { mediaType ->
+            val custodian = FakeEvidenceCustodian { _, _ -> EvidenceManifestRetrievalResult.Found(manifest(receivedMediaType = mediaType)) }
+            val ocrMechanism = FakeOcrMechanism { OcrRecognitionOutcome.Recognised(sampleResult()) }
+            val coordinator = EvidenceIntelligenceOcrCoordinator(custodian, ocrMechanism)
 
-        val outcome = coordinator.recognise(principalId, evidenceArtifactId, content)
+            val outcome = coordinator.recognise(principalId, evidenceArtifactId, content)
 
-        assertIs<OcrCoordinatorOutcome.Recognised>(outcome)
-        assertEquals(1, ocrMechanism.invocationCount)
+            assertIs<OcrCoordinatorOutcome.Recognised>(outcome)
+            assertEquals(1, ocrMechanism.invocationCount, "OCR invocation count for $mediaType")
+        }
     }
 
     // ---- Exactly-once invocation, exact request construction ----

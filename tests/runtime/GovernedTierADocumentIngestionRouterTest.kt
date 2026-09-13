@@ -5,6 +5,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.io.ByteArrayOutputStream
+import java.awt.image.BufferedImage
+import javax.imageio.ImageIO
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.test.*
@@ -85,6 +87,22 @@ class GovernedTierADocumentIngestionRouterTest {
         assertIs<TierADocumentRoutingResult.Unsupported>(router.ingest(context("fake.eml", text, "text/plain", sha256(text))))
         val png = Files.readAllBytes(FIXTURE_ROOT.resolve("07-text-image.png"))
         assertIs<TierADocumentRoutingResult.RequiresTierB>(router.ingest(context("misleading.pdf", png, "application/octet-stream", sha256(png))))
+    }
+
+    @Test fun `JPEG and PNG image media are both routed to the governed Tier B OCR boundary`() = runTest {
+        val router = router(RecordingStorage(), RecordingAudit())
+        val jpeg = ByteArrayOutputStream().also { out ->
+            check(ImageIO.write(BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB), "jpeg", out))
+        }.toByteArray()
+        val jpegResult = assertIs<TierADocumentRoutingResult.RequiresTierB>(
+            router.ingest(context("scan.jpg", jpeg, "image/jpeg", sha256(jpeg))),
+        )
+        val png = Files.readAllBytes(FIXTURE_ROOT.resolve("07-text-image.png"))
+        val pngResult = assertIs<TierADocumentRoutingResult.RequiresTierB>(
+            router.ingest(context("scan.png", png, "image/png", sha256(png))),
+        )
+        assertEquals("image/jpeg", jpegResult.mediaFacts.receivedMediaType)
+        assertEquals("image/png", pngResult.mediaFacts.receivedMediaType)
     }
 
     @Test fun `each route invokes exactly one specialist and non routes invoke none`() = runTest {

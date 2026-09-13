@@ -935,7 +935,7 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(bulkPanel.contains("This tab never uploads files."))
             assertFalse(bulkPanel.contains("filePicker"))
             assertTrue(body.contains("Legacy/manual specialist operation"))
-            assertTrue(body.contains("bd.disabled = true"))
+            assertFalse(body.contains("bd.disabled = true"))
             assertTrue(body.contains("external.disabled = !(ready && authorized)"))
             assertTrue(body.contains("Machine transcription — unverified"))
             assertTrue(body.contains("Fluent machine transcription may contain plausible text that is inconsistent with the source."))
@@ -1989,6 +1989,7 @@ class OwnerEvidenceHttpServerTest {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(body.contains(durableOcrRenderCondition))
             assertTrue(body.contains("bd.textContent = 'Run local OCR (Durable)'"))
+            assertFalse(body.contains("bd.disabled = true"), "the existing durable image-OCR action must be callable")
         } finally {
             harness.shutdown()
         }
