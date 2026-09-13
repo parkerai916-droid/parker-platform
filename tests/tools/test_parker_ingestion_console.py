@@ -23,10 +23,11 @@ class ConsoleBoundaryTest(unittest.TestCase):
         page = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
         adapter = SCRIPT.read_text()
         self.assertIn('Open Hermes Analysis ↗', page)
-        self.assertIn('href="__HERMES_CONSOLE_URL__/"', page)
+        self.assertIn('href="__HERMES_ANALYSIS_URL__/chat"', page)
         self.assertIn('target="_blank" rel="noopener noreferrer"', page)
         self.assertIn('HERMES = os.environ.get("HERMES_CONSOLE_URL", "http://192.168.178.45:8765")', adapter)
-        self.assertIn('replace("__HERMES_CONSOLE_URL__", HERMES)', adapter)
+        self.assertIn('HERMES_ANALYSIS_URL', adapter)
+        self.assertIn('replace("__HERMES_ANALYSIS_URL__", HERMES_ANALYSIS)', adapter)
         self.assertIn('id="newBatch">New batch</button>', page)
         self.assertIn('data-view="split">Split View', page)
 
