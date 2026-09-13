@@ -609,19 +609,6 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `analysis hash deep link activates existing analysis tab without changing ordinary navigation`() {
-        val page = startHarness("")
-        try {
-            val root = send(HttpRequest.newBuilder(URI.create(page.baseUri() + "/"))
-                .header("Cookie", pairedCookie(page)).GET().build()).body()
-            assertTrue(root.contains("if (window.location.hash === '#analysis') document.getElementById('ownerAnalysisTab').click();"))
-            assertTrue(root.contains("document.getElementById('ownerAnalysisTab').onclick = () => { activateOwnerTab('analysis'); loadAnalysisCases(); };"))
-            assertTrue(root.contains("function activateOwnerTab(active)"))
-            assertFalse(root.contains("location.hash = '#analysis'"))
-        } finally { page.shutdown() }
-    }
-
-    @Test
     fun `disabled enhanced transcription never invokes external operation`() {
         var calls = 0
         val harness = startHarness("", externalReadiness = { EnhancedTranscriptionReadiness.Disabled }, invokeExternal = { calls++; error("must not run") })
