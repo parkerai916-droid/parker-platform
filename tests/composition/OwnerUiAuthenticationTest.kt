@@ -49,7 +49,7 @@ class OwnerUiAuthenticationTest {
         val source = Files.readString(Path.of("src/composition/OwnerEvidenceHttpServer.kt"))
         assertFalse(source.contains("id=\"token\""))
         assertFalse(source.contains("localStorage."))
-        assertTrue(source.contains("HttpOnly; SameSite=Strict"))
+        assertTrue(source.contains("HttpOnly; SameSite=Lax"))
         assertFalse(source.contains("OWNER_HIGH_AUTHORITY_VERIFICATION_SECRET"))
     }
 }

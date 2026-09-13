@@ -1889,6 +1889,22 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
+    fun `persistent paired device cookies re-establish a session for a new browser tab`() = runTest {
+        val harness = startHarness("")
+        try {
+            val paired = requireNotNull(harness.authentication.pair(harness.authentication.initiatePairing()))
+            val deviceCookies = "ParkerOwnerDeviceId=${paired.deviceId}; ParkerOwnerDeviceCredential=${paired.deviceCredential}"
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", deviceCookies).GET().build())
+            assertTrue(response.body().contains("Parker Owner Evidence Upload"))
+            assertTrue(response.headers().allValues("Set-Cookie").any { it.startsWith("ParkerOwnerSession=") })
+            assertTrue(response.headers().allValues("Set-Cookie").all { it.contains("Path=/") && it.contains("Max-Age=") && it.contains("HttpOnly") && it.contains("SameSite=Lax") })
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
     fun `the server never embeds a real token into the page and never places it in a URL or query parameter`() = runTest {
         val harness = startHarness("")
         try {

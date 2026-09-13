@@ -310,7 +310,7 @@ class OwnerEvidenceHttpServer(
     private fun cookies(exchange: HttpExchange): Map<String, String> = exchange.requestHeaders["Cookie"].orEmpty()
         .flatMap { it.split(';') }.mapNotNull { part -> part.trim().split('=', limit=2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }.toMap()
     private fun setCookie(exchange: HttpExchange, name: String, value: String, maxAge: Int) {
-        exchange.responseHeaders.add("Set-Cookie", "$name=$value; Path=/; Max-Age=$maxAge; HttpOnly; SameSite=Strict")
+        exchange.responseHeaders.add("Set-Cookie", "$name=$value; Path=/; Max-Age=$maxAge; HttpOnly; SameSite=Lax")
     }
 
     private fun rejectUnauthorised(exchange: HttpExchange) {
