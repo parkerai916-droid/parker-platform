@@ -32,7 +32,7 @@ class DeterministicEvidenceAcquisitionRouter {
         }
 
         val nativeState = source.characteristics.nativeSearchableText
-        if (source.mediaType != "application/pdf" && nativeState == AcquisitionCharacteristicState.PRESENT) {
+        if (nativeState == AcquisitionCharacteristicState.PRESENT) {
             val native = eligible.filter { it.mechanism == EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION }
             if (native.isNotEmpty()) return selectAmong(source, native, egressAuthorisation,
                 setOf(AcquisitionSelectionReason.NATIVE_TEXT_DIRECTLY_AVAILABLE))

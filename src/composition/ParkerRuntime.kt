@@ -2408,6 +2408,18 @@ class ParkerRuntime(
                         null,
                     ),
                     tierAOwnerInvocationCoordinator,
+                    findExisting = { evidenceArtifactId ->
+                        derivativeGenerationDiscoveryProjection.discover(evidenceArtifactId)
+                            .firstOrNull { candidate ->
+                                candidate.derivativeKind == "PDF structure" &&
+                                    candidate.contentAvailable &&
+                                    candidate.operationalOutcome == parker.core.interfaces.DerivativeOperationalOutcome.USABLE &&
+                                    candidate.completenessState in setOf(
+                                        parker.core.interfaces.DerivativeCompletenessState.ACCOUNTED_FOR,
+                                        parker.core.interfaces.DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
+                                    )
+                            }?.derivativeGenerationId
+                    },
                 ),
                 LocalOcrAcquisitionExecutor(
                     AcquisitionExecutorBinding(

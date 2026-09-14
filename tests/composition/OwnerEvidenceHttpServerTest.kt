@@ -650,8 +650,8 @@ class OwnerEvidenceHttpServerTest {
             assertEquals(401, unauthorised.statusCode())
             val decision = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition"))
                 .header("Cookie", pairedCookie(harness)).GET().build())
-            assertEquals(200, decision.statusCode()); assertEquals("NO_ELIGIBLE_CAPABILITY", extractField(decision.body(), "status"))
-            assertTrue(decision.body().contains("EXTERNAL_EGRESS_NOT_AUTHORISED"))
+            assertEquals(200, decision.statusCode()); assertEquals("SELECTED", extractField(decision.body(), "status"))
+            assertEquals("parker-tier-a-native-v1", extractField(decision.body(), "capabilityId"))
             val stale = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
                 .header("Cookie", pairedCookie(harness)).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"wrong-capability\"}")).build())
@@ -659,8 +659,8 @@ class OwnerEvidenceHttpServerTest {
             val execute = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
                 .header("Cookie", pairedCookie(harness)).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"parker-tier-a-native-v1\"}")).build())
-            assertEquals(409, execute.statusCode())
-            assertEquals("STALE_DECISION", extractField(execute.body(), "status"))
+            assertEquals(200, execute.statusCode())
+            assertEquals("COMPLETED", extractField(execute.body(), "status"))
         } finally { harness.shutdown() }
     }
 

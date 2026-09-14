@@ -193,10 +193,14 @@ internal class GovernedAcquisitionExecutionCoordinator(
 internal class TierANativeAcquisitionExecutor(
     override val binding: AcquisitionExecutorBinding,
     private val coordinator: TierAOwnerInvocationCoordinator,
+    private val findExisting: suspend (EvidenceArtifactId) -> DerivativeGenerationId? = { null },
     private val correlationFactory: () -> String = { UUID.randomUUID().toString() },
 ) : BoundAcquisitionCapabilityExecutor {
-    override suspend fun execute(request: GovernedAcquisitionExecutionRequest): BoundAcquisitionExecutorOutcome =
-        when (val outcome = coordinator.invoke(
+    override suspend fun execute(request: GovernedAcquisitionExecutionRequest): BoundAcquisitionExecutorOutcome {
+        findExisting(request.authoritativeSource.evidenceArtifactId)?.let {
+            return BoundAcquisitionExecutorOutcome.Admitted(it)
+        }
+        return when (val outcome = coordinator.invoke(
             request.principalId, request.authoritativeSource.evidenceArtifactId, correlationFactory(),
         )) {
             is TierAOwnerInvocationOutcome.Routed -> when (val routed = outcome.result) {
@@ -210,6 +214,7 @@ internal class TierANativeAcquisitionExecutor(
             }
             else -> failed()
         }
+    }
 }
 
 internal class LocalOcrAcquisitionExecutor(

@@ -122,6 +122,13 @@ console.log(JSON.stringify([
         self.assertNotIn("(c.cases||[])[0]", source)
         self.assertNotIn("batches[Number($('batch').value)]", source)
 
+    def test_current_run_metrics_and_rows_do_not_accumulate_batch_history(self):
+        source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
+        ingest = source[source.index("async function ingest()"):source.index("function reviewIssue")]
+        self.assertIn("for(const k of Object.keys(state))state[k]=0", ingest)
+        self.assertIn("$('progress').innerHTML=''", ingest)
+        self.assertNotIn("(b.processingResults||[]).forEach", source[source.index("function render()"):source.index("async function health")])
+
     def test_ingestion_requires_authoritative_batch_binding(self):
         source = SCRIPT.read_text()
         self.assertIn("validate_authoritative_batch", source)

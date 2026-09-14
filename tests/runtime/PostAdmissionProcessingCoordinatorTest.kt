@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import parker.core.interfaces.DerivativeGenerationId
+import parker.core.interfaces.EvidenceAcquisitionMechanism
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.TierADocumentFormat
 import parker.core.interfaces.TierADocumentRoutingResult
@@ -16,8 +17,9 @@ class PostAdmissionProcessingCoordinatorTest {
     private val facts = TierAMediaFacts("application/pdf", "application/pdf", "test.pdf", false)
 
     @Test
-    fun `native Tier A admission is analysis ready without OCR`() = runTest {
+    fun `native Tier A admission must still pass governed acquisition`() = runTest {
         var acquisitions = 0
+        val generation = DerivativeGenerationId("generation-native-test")
         val coordinator = PostAdmissionProcessingCoordinator(
             invokeTierA = { TierAOwnerInvocationOutcome.Routed(TierADocumentRoutingResult.Admitted(
                 TierADocumentFormat.PDF,
@@ -32,13 +34,13 @@ class PostAdmissionProcessingCoordinatorTest {
                     ),
                 ), facts,
             )) },
-            executeGovernedAcquisition = { acquisitions++; error("OCR/acquisition must not run for native Tier A") },
+            executeGovernedAcquisition = { acquisitions++; AgentGatewayAcquisitionResult.Completed(evidence, generation, "parker-tier-a-native-v1", EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION) },
         )
 
         val result = coordinator.process(evidence)
         val ready = assertIs<PostAdmissionProcessingOutcome.AnalysisReady>(result)
-        assertEquals("TIER_A_NATIVE_REPRESENTATION", ready.capabilityId)
-        assertEquals(0, acquisitions)
+        assertEquals("parker-tier-a-native-v1", ready.capabilityId)
+        assertEquals(1, acquisitions)
     }
 
     @Test
@@ -65,16 +67,18 @@ class PostAdmissionProcessingCoordinatorTest {
     @Test
     fun `existing governed derivative makes retry a no-op`() = runTest {
         var tierACalls = 0
+        var acquisitions = 0
         val generation = DerivativeGenerationId("generation-existing-test")
         val coordinator = PostAdmissionProcessingCoordinator(
             invokeTierA = { tierACalls++; error("retry must not rerun Tier A") },
-            executeGovernedAcquisition = { error("retry must not reacquire") },
+            executeGovernedAcquisition = { acquisitions++; AgentGatewayAcquisitionResult.Completed(evidence, generation, "persisted", EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION) },
             findExistingAuthoritativeDerivative = { generation },
         )
 
         val ready = assertIs<PostAdmissionProcessingOutcome.AnalysisReady>(coordinator.process(evidence))
         assertEquals(generation, ready.derivativeGenerationId)
         assertEquals(0, tierACalls)
+        assertEquals(1, acquisitions)
     }
 
     private fun testRecord() = parker.core.interfaces.DerivativeGenerationRecord(

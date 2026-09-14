@@ -13,13 +13,12 @@ class FidelityFirstAcquisitionRouterTest {
         ), HumanAuthorisedCustody.CONFIRMED,
     )
 
-    @Test fun `searchable PDF does not early-select source-inaccurate native extraction`() {
+    @Test fun `searchable PDF selects native extraction when no stronger accepted capability exists`() {
         val outcome = DeterministicEvidenceAcquisitionRouter().route(
             source, ProductionAcquisitionCapabilityCatalogue.create().capabilities(), ExternalEgressAuthorisation.AUTHORISED,
         )
-        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
-        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY)
-        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+        val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
     }
 
     @Test fun `accepted lifecycle projection makes fidelity-first external capability primary`() {
@@ -34,8 +33,8 @@ class FidelityFirstAcquisitionRouterTest {
             source, ProductionAcquisitionCapabilityCatalogue.create(external).capabilities(), ExternalEgressAuthorisation.AUTHORISED,
         )
         val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
-        assertEquals(ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID, selected.decision.capability.capabilityId)
-        assertContains(selected.decision.selectionReasons, AcquisitionSelectionReason.FIDELITY_SUITABILITY_ACCEPTED)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
+        assertContains(selected.decision.selectionReasons, AcquisitionSelectionReason.NATIVE_TEXT_DIRECTLY_AVAILABLE)
     }
 
     @Test fun `STEP 3 -- text-csv is externally supported in the production capability catalogue, and only text-csv was added`() {
@@ -160,8 +159,8 @@ class FidelityFirstAcquisitionRouterTest {
         assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED), fidelityFirst.availability)
 
         val outcome = DeterministicEvidenceAcquisitionRouter().route(source, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
-        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
-        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+        val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
     }
 
     @Test fun `fidelity-first and EML accepted profiles coexist -- each routes independently for its own media type`() {
@@ -174,7 +173,7 @@ class FidelityFirstAcquisitionRouterTest {
 
         val pdfOutcome = DeterministicEvidenceAcquisitionRouter().route(source, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
         assertEquals(
-            ProductionAcquisitionCapabilityCatalogue.FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID,
+            ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
             assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(pdfOutcome).decision.capability.capabilityId,
         )
 
@@ -185,10 +184,11 @@ class FidelityFirstAcquisitionRouterTest {
         )
 
         // No side-effect on native's own per-media-type fidelity suitability from accepting either
-        // or both externals -- native remains NOT_ACCEPTED for every media type regardless.
+        // or both externals -- structured formats remain NOT_ACCEPTED, while searchable PDF is
+        // intentionally accepted as the authoritative native representation.
         val native = catalogue.capabilities().single { it.capabilityId == ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID }
         assertEquals(AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType["message/rfc822"])
-        assertEquals(AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
+        assertEquals(AcquisitionFidelitySuitability.ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
     }
 
     // Three narrow acceptance extensions -- projectExternalTranscriptionCapability (the shared,

@@ -49,7 +49,7 @@ class NativeTierAProductionIneligibilityTest {
                 "expected NOT_ACCEPTED for $mediaType",
             )
         }
-        assertEquals(AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
+        assertEquals(AcquisitionFidelitySuitability.ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
     }
 
     @Test fun `eligibility evaluation returns FIDELITY_NOT_ACCEPTED for native on CSV, EML, and DOCX`() {
@@ -104,13 +104,12 @@ class NativeTierAProductionIneligibilityTest {
         }
     }
 
-    @Test fun `searchable PDF still fails closed exactly as before this unit`() {
+    @Test fun `searchable PDF selects the durable native representation path`() {
         val outcome = DeterministicEvidenceAcquisitionRouter().route(
             searchablePdfSource, ProductionAcquisitionCapabilityCatalogue.create().capabilities(), ExternalEgressAuthorisation.AUTHORISED,
         )
-        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
-        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY)
-        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+        val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
     }
 
     @Test fun `scanned image still fails closed exactly as before this unit, under real production Local OCR disablement`() {

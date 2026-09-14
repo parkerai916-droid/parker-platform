@@ -23,15 +23,24 @@ internal class PostAdmissionProcessingCoordinator(
 ) {
     suspend fun process(evidenceArtifactId: EvidenceArtifactId): PostAdmissionProcessingOutcome {
         findExistingAuthoritativeDerivative(evidenceArtifactId)?.let {
-            return PostAdmissionProcessingOutcome.AnalysisReady(evidenceArtifactId, it, "PERSISTED_GOVERNED_REPRESENTATION")
+            return when (val acquisition = executeGovernedAcquisition(evidenceArtifactId)) {
+                is AgentGatewayAcquisitionResult.Completed -> PostAdmissionProcessingOutcome.AnalysisReady(
+                    evidenceArtifactId, acquisition.derivativeGenerationId, acquisition.capabilityId,
+                )
+                is AgentGatewayAcquisitionResult.AuthorizationRequired -> PostAdmissionProcessingOutcome.RequiresOcr(
+                    "Authorised external OCR is required before this evidence can become analysis-ready",
+                )
+                is AgentGatewayAcquisitionResult.ProviderNotReady -> PostAdmissionProcessingOutcome.CapabilityUnavailable(
+                    "The authoritative OCR capability is not ready",
+                )
+                is AgentGatewayAcquisitionResult.NotFound -> PostAdmissionProcessingOutcome.Failed("SOURCE_NOT_FOUND", "Admitted evidence was not available for governed acquisition")
+                is AgentGatewayAcquisitionResult.Denied -> PostAdmissionProcessingOutcome.CapabilityUnavailable("Governed acquisition was not authorised")
+                is AgentGatewayAcquisitionResult.Failed -> PostAdmissionProcessingOutcome.CapabilityUnavailable(acquisition.reason)
+            }
         }
         return when (val tierA = invokeTierA(evidenceArtifactId)) {
             is TierAOwnerInvocationOutcome.Routed -> when (val result = tierA.result) {
-                is TierADocumentRoutingResult.Admitted -> PostAdmissionProcessingOutcome.AnalysisReady(
-                    evidenceArtifactId,
-                    result.record.derivativeGenerationId,
-                    "TIER_A_NATIVE_REPRESENTATION",
-                )
+                is TierADocumentRoutingResult.Admitted -> continueWithGovernedAcquisition(evidenceArtifactId)
                 is TierADocumentRoutingResult.RequiresTierB -> continueWithGovernedAcquisition(evidenceArtifactId)
                 is TierADocumentRoutingResult.Unsupported -> PostAdmissionProcessingOutcome.Failed("UNSUPPORTED", result.reason)
                 is TierADocumentRoutingResult.ExtractionFailed -> PostAdmissionProcessingOutcome.Failed("EXTRACTION", result.reason)

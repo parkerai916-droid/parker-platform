@@ -36,6 +36,10 @@ services:
       PARKER_PRODUCTION_COMMIT: "${PARKER_PRODUCTION_COMMIT:?Set exact production commit}"
       PARKER_CASE_STORAGE_ROOT: /data/cases
       PARKER_CASE_ASSIGNMENT_STORAGE_ROOT: /data/case-assignments
+      # Hermes processing results and review decisions are durable operational state. Keeping
+      # this root on the Parker data volume preserves the (batchId, sourceSha256) idempotency
+      # key across runtime restarts instead of silently reverting to an in-memory registry.
+      PARKER_HERMES_PROCESSING_STORAGE_ROOT: /data/hermes-processing
       PARKER_CASE_GOVERNANCE_AUDIT_LOG_PATH: /data/case-governance-audit/case-audit.log
       PARKER_DERIVATIVE_GENERATION_STORAGE_ROOT: /data/derivative-generations
       PARKER_DERIVATIVE_CONTENT_STORAGE_ROOT: /data/derivative-content
@@ -230,6 +234,7 @@ services:
       - /mnt/parker-data/parker/external-transcription-attempts:/data/external-transcription-attempts
       - /mnt/parker-data/parker/cases:/data/cases
       - /mnt/parker-data/parker/case-assignments:/data/case-assignments
+      - /mnt/parker-data/parker/hermes-processing:/data/hermes-processing
       - /mnt/parker-data/parker/case-governance-audit:/data/case-governance-audit
       - /mnt/parker-data/parker/derivative-generations:/data/derivative-generations
       - /mnt/parker-data/parker/derivative-content:/data/derivative-content
