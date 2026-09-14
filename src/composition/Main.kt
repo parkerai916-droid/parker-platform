@@ -257,6 +257,7 @@ fun main(args: Array<String>) = runBlocking {
             submitSourceWithBatchAsAgent = runtime::submitSourceAsAgent,
             listReadyIngestionBatchesAsAgent = runtime::listReadyBulkIngestionBatchesAsAgent,
             submitProcessingResultAsAgent = runtime::submitProcessingResultAsAgent,
+            submitOcrRepresentationAsAgent = runtime::submitOcrRepresentationAsAgent,
             submitPendingReviewSourceAsAgent = runtime::submitPendingReviewSourceAsAgent,
             listProcessingResultsForBatchAsAgent = runtime::listProcessingResultsForBatchAsAgent,
             submitGovernedIngestionAsAgent = runtime::submitGovernedIngestionAsAgent,

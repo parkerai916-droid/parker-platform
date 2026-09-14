@@ -110,6 +110,7 @@ internal class AgentGatewayEvidenceProjection(
      * [governedAcquisitionWorkflow]'s own identical "always supplied in production" convention.
      */
     private val processingResultRegistry: parker.core.interfaces.HermesProcessingResultRegistry? = null,
+    private val derivativeGenerationCoordinator: DerivativeGenerationCoordinator? = null,
     /**
      * Hermes Exception Decision Backend, Task 4. `null` only for compositions that never wire
      * Owner pre-ingestion decisions at all -- [submitGovernedIngestion] then behaves exactly as
@@ -277,6 +278,98 @@ internal class AgentGatewayEvidenceProjection(
             is parker.core.interfaces.HermesProcessingResultRecordOutcome.Recorded -> AgentGatewayProcessingResultSubmissionResult.Recorded(outcome.result)
             is parker.core.interfaces.HermesProcessingResultRecordOutcome.AlreadyRecorded -> AgentGatewayProcessingResultSubmissionResult.AlreadyRecorded(outcome.result)
             is parker.core.interfaces.HermesProcessingResultRecordOutcome.Conflict -> AgentGatewayProcessingResultSubmissionResult.Conflict(outcome.existing)
+        }
+    }
+
+    /** Source-bound Hermes OCR representation intake. The original source must already be
+     * admitted under the exact batch and hash; derivative admission then reuses the existing
+     * Tier-B content-first coordinator and stores. */
+    suspend fun submitOcrRepresentation(batchId: String, representation: parker.core.interfaces.HermesOcrRepresentation): AgentGatewayOcrRepresentationSubmissionResult {
+        val decision = permissionEngine.evaluate(buildRequest(
+            resourceId = AGENT_GATEWAY_OCR_REPRESENTATION_RESOURCE_ID,
+            actionName = AGENT_GATEWAY_OCR_REPRESENTATION_SUBMIT_ACTION_NAME,
+            requestIdPrefix = "agent-gateway-ocr-representation-submit",
+            contextId = "$batchId-${representation.sourceSha256}",
+        ))
+        if (!decision.isApproved()) return AgentGatewayOcrRepresentationSubmissionResult.Denied(decision.decision)
+        if (!isBatchAuthorised(batchId)) return AgentGatewayOcrRepresentationSubmissionResult.UnknownBatch
+        if (bulkIngestionBindingCoordinator?.containsEvidence(batchId, representation.evidenceArtifactId) != true) {
+            return AgentGatewayOcrRepresentationSubmissionResult.UnknownSource
+        }
+        val manifest = when (val outcome = evidenceCustodian.retrieveManifest(hermesPrincipalId, representation.evidenceArtifactId)) {
+            is EvidenceManifestRetrievalResult.Found -> outcome.manifest
+            else -> return AgentGatewayOcrRepresentationSubmissionResult.UnknownSource
+        }
+        if (manifest.sha256 != representation.sourceSha256 ||
+            manifest.receivedMediaType != representation.originalMediaType ||
+            (manifest.originalFileName != null && manifest.originalFileName != representation.originalFilename)
+        ) return AgentGatewayOcrRepresentationSubmissionResult.SourceMismatch
+
+        val stored = processingResultRegistry?.find(batchId, representation.sourceSha256)
+            ?: return AgentGatewayOcrRepresentationSubmissionResult.ProcessingResultRequired
+        if (stored.status != representation.status || representation.status == parker.core.interfaces.HermesProcessingStatus.FAILED) {
+            return AgentGatewayOcrRepresentationSubmissionResult.InvalidStatus
+        }
+        val textBytes = representation.recognisedText.toByteArray(Charsets.UTF_8)
+        val textDigest = parker.core.interfaces.CanonicalPagePixelDigests.sha256(textBytes)
+        if (textDigest != representation.derivativeContentSha256) return AgentGatewayOcrRepresentationSubmissionResult.ContentHashMismatch
+        val coordinator = derivativeGenerationCoordinator ?: return AgentGatewayOcrRepresentationSubmissionResult.Unavailable
+        val processing = parker.core.interfaces.OcrProcessingProvenance(
+            sourceEvidenceArtifactId = representation.evidenceArtifactId,
+            sourceManifestSha256 = parker.core.interfaces.OcrSha256Digest(representation.sourceSha256),
+            sourceMediaType = representation.originalMediaType,
+            sourceByteLength = manifest.byteLength,
+            requestedPageScope = null,
+            submittedPageScope = null,
+            representationMediaType = "text/plain",
+            representationByteLength = textBytes.size.toLong(),
+            representationSha256 = parker.core.interfaces.OcrSha256Digest(representation.derivativeContentSha256),
+            byteExactCopy = false,
+            processingProfileIdentity = "hermes-docling-preingestion-v1",
+            createdAt = clock(),
+            materialTransformation = parker.core.interfaces.OcrMaterialTransformation(
+                mechanismIdentity = "docling",
+                mechanismVersion = representation.mechanismVersion,
+                sourcePageScope = parker.core.interfaces.OcrPageScope(listOf(1)),
+            ),
+        )
+        val result = parker.core.interfaces.OcrRecognitionResult(
+            recognisedText = representation.recognisedText,
+            fidelity = parker.core.interfaces.TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            identity = parker.core.interfaces.OcrRecognitionIdentity(
+                mechanismIdentity = "docling",
+                configurationProfile = "hermes-pre-ingestion",
+                mechanismVersion = representation.mechanismVersion,
+                modelIdentity = representation.modelIdentity,
+                modelVersion = representation.modelVersion,
+            ),
+            confidence = representation.confidence,
+            recognisedAt = clock(),
+            warnings = representation.warnings,
+            processingProvenance = processing,
+        )
+        val outcomeKind = if (representation.status == parker.core.interfaces.HermesProcessingStatus.PASS)
+            parker.core.interfaces.OcrDerivativeOutcomeKind.RECOGNISED
+        else parker.core.interfaces.OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED
+        val outcome = coordinator.ingestOcr(
+            representation.evidenceArtifactId,
+            result,
+            outcomeKind,
+            representation.issues.firstOrNull()?.explanation,
+            hermesPrincipalId,
+            "hermes-ocr-${batchId}-${representation.sourceSha256}",
+            if (representation.status == parker.core.interfaces.HermesProcessingStatus.PASS)
+                parker.core.interfaces.DerivativeOperationalOutcome.USABLE
+            else parker.core.interfaces.DerivativeOperationalOutcome.NOT_USABLE,
+            true,
+        )
+        return when (outcome) {
+            is OcrDerivativeGenerationCoordinationOutcome.Admitted -> AgentGatewayOcrRepresentationSubmissionResult.Admitted(outcome.record)
+            is OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed -> AgentGatewayOcrRepresentationSubmissionResult.Admitted(outcome.record)
+            is OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable -> AgentGatewayOcrRepresentationSubmissionResult.InvalidRepresentation(outcome.reason)
+            is OcrDerivativeGenerationCoordinationOutcome.PreparationFailed -> AgentGatewayOcrRepresentationSubmissionResult.PersistenceFailed(outcome.reason)
+            is OcrDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed -> AgentGatewayOcrRepresentationSubmissionResult.PersistenceFailed(outcome.reason)
+            is OcrDerivativeGenerationCoordinationOutcome.PublicationFailed -> AgentGatewayOcrRepresentationSubmissionResult.PersistenceFailed(outcome.reason)
         }
     }
 
@@ -591,6 +684,8 @@ internal class AgentGatewayEvidenceProjection(
         const val AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
         val AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID = ResourceId("agent-gateway-processing-result-submit")
         val AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID = ResourceId("agent-gateway-processing-result-list")
+        const val AGENT_GATEWAY_OCR_REPRESENTATION_SUBMIT_ACTION_NAME = "agent-gateway.ocr-representation.submit"
+        val AGENT_GATEWAY_OCR_REPRESENTATION_RESOURCE_ID = ResourceId("agent-gateway-ocr-representation-submit")
     }
 }
 
@@ -617,6 +712,21 @@ sealed class AgentGatewayProcessingResultListResult {
     data class Found(val results: List<parker.core.interfaces.HermesProcessingResult>) : AgentGatewayProcessingResultListResult()
     data object UnknownBatch : AgentGatewayProcessingResultListResult()
     data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewayProcessingResultListResult()
+}
+
+sealed class AgentGatewayOcrRepresentationSubmissionResult {
+    data class Admitted(val record: parker.core.interfaces.DerivativeGenerationRecord) : AgentGatewayOcrRepresentationSubmissionResult()
+    data object AlreadyAdmitted : AgentGatewayOcrRepresentationSubmissionResult()
+    data object UnknownBatch : AgentGatewayOcrRepresentationSubmissionResult()
+    data object UnknownSource : AgentGatewayOcrRepresentationSubmissionResult()
+    data object SourceMismatch : AgentGatewayOcrRepresentationSubmissionResult()
+    data object ProcessingResultRequired : AgentGatewayOcrRepresentationSubmissionResult()
+    data object InvalidStatus : AgentGatewayOcrRepresentationSubmissionResult()
+    data object ContentHashMismatch : AgentGatewayOcrRepresentationSubmissionResult()
+    data class InvalidRepresentation(val reason: String) : AgentGatewayOcrRepresentationSubmissionResult()
+    data class PersistenceFailed(val reason: String) : AgentGatewayOcrRepresentationSubmissionResult()
+    data object Unavailable : AgentGatewayOcrRepresentationSubmissionResult()
+    data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewayOcrRepresentationSubmissionResult()
 }
 
 /**

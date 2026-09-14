@@ -198,7 +198,7 @@ class ParkerRuntimeAuthorizationPurposeCompositionTest {
         // the processing-result-submission verb's own Purpose-scoped APPROVED rule (its DENIED
         // guard again carries no purpose) and the processing-result-listing verb's own single
         // Purpose-scoped APPROVED rule (a read verb, so no guard exists to carry one either).
-        assertEquals(12, rules.count { it.authorizationPurpose != null })
+        assertEquals(13, rules.count { it.authorizationPurpose != null })
 
         val candidateEvaluationRules = rules.filter { it.authorizationPurpose == candidateEvaluationPurpose }
         assertEquals(2, candidateEvaluationRules.size)

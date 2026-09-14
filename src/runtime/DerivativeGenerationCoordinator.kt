@@ -400,6 +400,8 @@ class DerivativeGenerationCoordinator(
         degradationReason: String?,
         requestingPrincipalId: PrincipalId,
         correlationValue: String,
+        operationalOutcome: DerivativeOperationalOutcome = DerivativeOperationalOutcome.USABLE,
+        persistProcessingProvenance: Boolean = false,
     ): OcrDerivativeGenerationCoordinationOutcome {
         require(correlationValue.isNotBlank()) { "correlationValue must not be blank" }
 
@@ -437,6 +439,9 @@ class DerivativeGenerationCoordinator(
             producerIdentity = producerIdentity,
             transformationHistory = transformationHistory,
             completenessState = completenessState,
+            processingProvenance = result.processingProvenance.takeIf { persistProcessingProvenance },
+            providerProvenance = result.providerProvenance.takeIf { persistProcessingProvenance },
+            recognisedAt = result.recognisedAt.takeIf { persistProcessingProvenance },
         )
 
         val id = idFactory()
@@ -455,9 +460,9 @@ class DerivativeGenerationCoordinator(
             generatedAt = result.recognisedAt,
             contentIdentity = DerivativeContentIdentity.NoCanonicalSerialization,
             completenessState = completenessState,
-            operationalOutcome = DerivativeOperationalOutcome.USABLE,
+            operationalOutcome = operationalOutcome,
             warnings = recordWarnings,
-            confidence = null,
+            confidence = result.confidence,
         )
         publishContentFirst(id, evidenceArtifactId, TierADerivativePayload.Ocr(extracted))?.let {
             return OcrDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)

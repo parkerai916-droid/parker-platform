@@ -76,6 +76,11 @@ internal class BulkIngestionBindingCoordinator(
 
     suspend fun isAuthorised(batchId: String): Boolean = mutex.withLock { read(batchId) != null }
 
+    /** Exact read-only membership check used by source-bound derivative intake. */
+    suspend fun containsEvidence(batchId: String, evidenceArtifactId: EvidenceArtifactId): Boolean = mutex.withLock {
+        evidenceArtifactId in (read(batchId)?.evidence ?: emptySet())
+    }
+
     /**
      * Hermes Exception Decision Backend, Task 4. Read-only case display name for one exact batch,
      * for Owner review usability only -- mirrors [listReady]'s own identical

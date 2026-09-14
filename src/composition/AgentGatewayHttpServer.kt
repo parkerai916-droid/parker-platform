@@ -102,6 +102,8 @@ class AgentGatewayHttpServer(
     /** Hermes Processing Result Intake, Task 2. See [handleSubmitProcessingResult]. */
     private val submitProcessingResultAsAgent: suspend (String, parker.core.interfaces.HermesProcessingResult) -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult =
         { _, _ -> parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    private val submitOcrRepresentationAsAgent: suspend (String, parker.core.interfaces.HermesOcrRepresentation) -> parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult =
+        { _, _ -> parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
     /** Pre-ingestion REVIEW_REQUIRED source custody; never creates an EvidenceArtifactId. */
     private val submitPendingReviewSourceAsAgent: suspend (String, String, ByteArray, String?, String?) -> PendingReviewSourceStoreResult =
         { _, _, _, _, _ -> throw IllegalStateException("pending-review source custody unavailable") },
@@ -300,6 +302,10 @@ class AgentGatewayHttpServer(
                     }
                     return
                 }
+                if (segments.size == 3 && segments[1] == "ocr-representations" && exchange.requestMethod == "POST") {
+                    handleSubmitOcrRepresentation(exchange, correlationId, principalId, segments[0], segments[2])
+                    return
+                }
                 if (segments.size == 3 && segments[1] == "sources" && exchange.requestMethod == "POST") {
                     handleSubmitGovernedIngestion(exchange, correlationId, principalId, segments[0], segments[2])
                     return
@@ -394,6 +400,42 @@ class AgentGatewayHttpServer(
                 is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied -> {
                     recordAudit(correlationId, principalId, PROCESSING_RESULT_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
                     writeJson(exchange, 403, jsonObject("error" to "denied"))
+                }
+            }
+        }
+
+        private fun handleSubmitOcrRepresentation(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, batchId: String, sourceSha256: String) {
+            if (!SAFE_ROUTE_ID.matches(batchId) || !SHA256_PATTERN.matches(sourceSha256)) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                recordAudit(correlationId, principalId, OCR_REPRESENTATION_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid OCR representation identity")); return
+            }
+            val representation = try {
+                parseHermesOcrRepresentationRequest(readBounded(exchange.requestBody, MAX_OCR_REPRESENTATION_REQUEST_BODY_BYTES), sourceSha256)
+            } catch (_: RequestBodyTooLargeException) {
+                recordAudit(correlationId, principalId, OCR_REPRESENTATION_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 413, jsonObject("error" to "OCR representation too large")); return
+            } catch (e: Exception) {
+                recordAudit(correlationId, principalId, OCR_REPRESENTATION_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "malformed OCR representation", "detail" to (e.message ?: "invalid request"))); return
+            }
+            when (val result = runBlocking { submitOcrRepresentationAsAgent(batchId, representation) }) {
+                is parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult.Admitted -> {
+                    recordAudit(correlationId, principalId, OCR_REPRESENTATION_SUBMIT_ACTION_NAME, result.record.derivativeGenerationId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 201, jsonObject("status" to "ADMITTED", "derivativeGenerationId" to result.record.derivativeGenerationId.value, "evidenceArtifactId" to result.record.rootSourceEvidenceArtifactId.value))
+                }
+                parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult.AlreadyAdmitted -> {
+                    recordAudit(correlationId, principalId, OCR_REPRESENTATION_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.ALREADY_REGISTERED)
+                    writeJson(exchange, 200, jsonObject("status" to "ALREADY_ADMITTED"))
+                }
+                parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult.UnknownBatch,
+                parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult.UnknownSource -> {
+                    recordAudit(correlationId, principalId, OCR_REPRESENTATION_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.NOT_FOUND)
+                    writeJson(exchange, 404, jsonObject("error" to "unknown batch or source"))
+                }
+                else -> {
+                    recordAudit(correlationId, principalId, OCR_REPRESENTATION_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                    writeJson(exchange, 409, jsonObject("status" to result.javaClass.simpleName.removeSuffix("$")))
                 }
             }
         }
@@ -1129,6 +1171,7 @@ class AgentGatewayHttpServer(
         const val BIND_ACTION_NAME = "agent-gateway.ingestion.bind"
         const val PROCESSING_RESULT_SUBMIT_ACTION_NAME = "agent-gateway.processing-result.submit"
         const val PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
+        const val OCR_REPRESENTATION_SUBMIT_ACTION_NAME = "agent-gateway.ocr-representation.submit"
         const val PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME = "agent-gateway.pending-review-source.submit"
         /**
          * Hermes Governed Ingestion, Task 3. An audit-log label only -- distinct from
@@ -1149,6 +1192,7 @@ class AgentGatewayHttpServer(
          * effectively unbounded.
          */
         const val MAX_PROCESSING_RESULT_REQUEST_BODY_BYTES: Long = 8L * 1024L * 1024L
+        const val MAX_OCR_REPRESENTATION_REQUEST_BODY_BYTES: Long = 24L * 1024L * 1024L
         const val MAX_ANALYSIS_REQUEST_BODY_BYTES: Long = 64L * 1024L
 
         /**
@@ -1330,6 +1374,11 @@ private val HERMES_PROCESSING_ISSUE_FIELDS =
 private val HERMES_PROCESSING_ISSUE_LOCATION_FIELDS =
     setOf("pageNumber", "startOffsetInclusive", "endOffsetExclusive", "regionDescription")
 private val HERMES_PROCESSING_FAILURE_FIELDS = setOf("kind", "detail")
+private val HERMES_OCR_REPRESENTATION_FIELDS = setOf(
+    "sourceSha256", "evidenceArtifactId", "originalFilename", "originalMediaType", "processingMethod", "status",
+    "recognisedText", "derivativeContentSha256", "confidence", "completeness", "warnings", "issues",
+    "mechanismVersion", "modelIdentity", "modelVersion",
+)
 
 private val ANALYSIS_REQUEST_FIELDS = setOf("question", "analysisType", "scope")
 private val ANALYSIS_SCOPE_FIELDS = setOf("evidenceArtifactIds", "derivativeGenerationIds")
@@ -1434,6 +1483,36 @@ private fun parseHermesProcessingIssue(raw: Any?): parker.core.interfaces.Hermes
     } catch (e: IllegalArgumentException) {
         throw JsonParseException(e.message ?: "invalid processing issue")
     }
+}
+
+private fun parseHermesOcrRepresentationRequest(bodyBytes: ByteArray, routeSourceSha256: String): parker.core.interfaces.HermesOcrRepresentation {
+    val obj = requireJsonObject(AgentGatewayJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue())
+    requireKeysSubsetOf(obj.keys, HERMES_OCR_REPRESENTATION_FIELDS, "OCR representation")
+    val sourceSha256 = obj["sourceSha256"] as? String ?: throw JsonParseException("expected sourceSha256")
+    if (sourceSha256 != routeSourceSha256) throw JsonParseException("sourceSha256 does not match route")
+    val evidence = try { EvidenceArtifactId(obj["evidenceArtifactId"] as? String ?: throw JsonParseException("expected evidenceArtifactId")) }
+    catch (e: IllegalArgumentException) { throw JsonParseException(e.message ?: "invalid evidenceArtifactId") }
+    val warnings = (obj["warnings"] as? List<*> ?: emptyList<Any?>()).map { it as? String ?: throw JsonParseException("warnings must be strings") }
+    val issues = (obj["issues"] as? List<*> ?: emptyList<Any?>()).map(::parseHermesProcessingIssue)
+    return try {
+        parker.core.interfaces.HermesOcrRepresentation(
+            evidenceArtifactId = evidence,
+            sourceSha256 = sourceSha256,
+            originalFilename = obj["originalFilename"] as? String ?: throw JsonParseException("expected originalFilename"),
+            originalMediaType = obj["originalMediaType"] as? String ?: throw JsonParseException("expected originalMediaType"),
+            processingMethod = parseEnum(obj["processingMethod"], "processingMethod"),
+            status = parseEnum(obj["status"], "status"),
+            recognisedText = obj["recognisedText"] as? String ?: throw JsonParseException("expected recognisedText"),
+            derivativeContentSha256 = obj["derivativeContentSha256"] as? String ?: throw JsonParseException("expected derivativeContentSha256"),
+            confidence = parseOptionalConfidence(obj["confidence"], "confidence"),
+            completeness = parseEnum(obj["completeness"], "completeness"),
+            warnings = warnings,
+            issues = issues,
+            mechanismVersion = obj["mechanismVersion"] as? String ?: throw JsonParseException("expected mechanismVersion"),
+            modelIdentity = obj["modelIdentity"] as? String ?: throw JsonParseException("expected modelIdentity"),
+            modelVersion = obj["modelVersion"] as? String ?: throw JsonParseException("expected modelVersion"),
+        )
+    } catch (e: IllegalArgumentException) { throw JsonParseException(e.message ?: "invalid OCR representation") }
 }
 
 private fun parseOptionalConfidence(raw: Any?, field: String): Double? = when (raw) {

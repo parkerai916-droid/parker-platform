@@ -605,11 +605,11 @@ class ParkerRuntimeAgentGatewayR0VocabularyCompositionTest {
         // Revision history: BI-4 adds a third WRITE rule for the fixed batch-binding operation.
         // reachability of the governed acquisition workflow at all. Hermes Processing Result
         // Intake, Task 2, adds a fourth WRITE rule for the processing-result-submission verb.
-        assertEquals(4, writeRules.size)
+        assertEquals(5, writeRules.size)
         assertEquals(
             setOf(
                 "agent-gateway.evidence.submit", "agent-gateway.evidence.acquire",
-                "agent-gateway.ingestion.bind", "agent-gateway.processing-result.submit",
+                "agent-gateway.ingestion.bind", "agent-gateway.processing-result.submit", "agent-gateway.ocr-representation.submit",
             ),
             writeRules.map { it.proposedAction }.toSet(),
         )

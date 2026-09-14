@@ -76,6 +76,26 @@ class ProcessingDecisionTest(unittest.TestCase):
         self.assertEqual(result["reviewConfidenceThreshold"], 0.80)
         self.assertNotIn("failure", result)
 
+    def test_ocr_recognised_text_is_preserved_in_representation(self):
+        outcome = {
+            "status": "recognised",
+            "recognisedText": "Jane Doe\nProduct Manager\nAcme Corporation",
+            "confidence": 0.99,
+            "warnings": [],
+            "mechanismVersion": "docling-test",
+            "modelIdentity": "rapidocr-test",
+            "modelVersion": "sha256:" + "a" * 64,
+        }
+        with patch.object(hermes, "run_docling", return_value=outcome):
+            result, representation = hermes.make_result_and_representation(
+                "bulk-test", "a" * 64, Path("images.jpg"), b"jpeg", 1, "images.jpg"
+            )
+        self.assertEqual(result["status"], "PASS")
+        self.assertIsNotNone(representation)
+        self.assertIn("Jane Doe", representation["recognisedText"])
+        self.assertEqual(representation["originalFilename"], "images.jpg")
+        self.assertEqual(representation["derivativeContentSha256"], hermes.sha256_bytes(representation["recognisedText"].encode()))
+
     def test_review_serialization_preserves_fractional_confidence_and_omits_absent_optionals(self):
         outcome = {"status": "recognised", "confidence": 0.8, "warnings": []}
         with patch.object(hermes, "run_docling", return_value=outcome):
@@ -99,6 +119,7 @@ class FakeParker:
         self.results = []
         self.sources = []
         self.pending = []
+        self.representations = []
 
     def submit_result(self, batch_id, result):
         self.results.append((batch_id, result))
@@ -106,7 +127,11 @@ class FakeParker:
 
     def submit_source(self, batch_id, source_hash, data, filename, media):
         self.sources.append((batch_id, source_hash, data, filename, media))
-        return 201, {"status": "INGESTED"}
+        return 201, {"status": "INGESTED", "evidenceArtifactId": "evidence-test"}
+
+    def submit_ocr_representation(self, batch_id, source_hash, representation):
+        self.representations.append((batch_id, source_hash, representation))
+        return 201, {"status": "ADMITTED", "derivativeGenerationId": "generation-test"}
 
     def submit_pending_review_source(self, batch_id, source_hash, data, filename, media):
         self.pending.append((batch_id, source_hash, data, filename, media))
@@ -149,6 +174,27 @@ class SubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(len(fake.pending), 1)
         self.assertEqual(fake.pending[0][2], b"pending bytes")
         self.assertEqual(fake.sources, [])
+
+    def test_pass_image_submits_source_then_ocr_representation(self):
+        fake = FakeParker()
+        outcome = {
+            "status": "recognised",
+            "recognisedText": "Jane Doe\nProduct Manager\nAcme Corporation",
+            "confidence": 0.99,
+            "warnings": [],
+            "mechanismVersion": "docling-test",
+            "modelIdentity": "rapidocr-test",
+            "modelVersion": "sha256:" + "a" * 64,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "upload.jpg"
+            path.write_bytes(b"jpeg bytes")
+            with patch.object(hermes, "run_docling", return_value=outcome):
+                item = hermes.process_one(fake, "bulk-test", path, 1, "images.jpg")
+        self.assertEqual(item.governed_ingestion, "COMPLETE_INGESTION")
+        self.assertEqual(fake.sources[0][3], "images.jpg")
+        self.assertEqual(fake.representations[0][2]["evidenceArtifactId"], "evidence-test")
+        self.assertEqual(fake.representations[0][2]["recognisedText"], outcome["recognisedText"])
 
 
 if __name__ == "__main__":

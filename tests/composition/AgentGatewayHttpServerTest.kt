@@ -444,6 +444,7 @@ class AgentGatewayHttpServerTest {
                 "retrieveEvidenceAsAnalysisAgent", "retrieveEvidenceManifestAsAnalysisAgent",
                 "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent",
                 "submitProcessingResultAsAgent", "submitPendingReviewSourceAsAgent", "listProcessingResultsForBatchAsAgent", "submitGovernedIngestionAsAgent",
+                "submitOcrRepresentationAsAgent",
                 "submitAnalysisRequestAsAgent",
             ),
             functionTypedFields.map { it.name }.toSet(),

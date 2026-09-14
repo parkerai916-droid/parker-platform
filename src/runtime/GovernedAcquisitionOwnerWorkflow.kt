@@ -32,6 +32,7 @@ internal class GovernedAcquisitionOwnerWorkflow(
      * authorised," preserving every existing caller's behavior unchanged.
      */
     private val externalEgressAuthorised: suspend (EvidenceArtifactId) -> Boolean = { false },
+    private val derivativeDiscoveryProjection: DerivativeGenerationDiscoveryProjection? = null,
 ) {
     private val authoritativeSourceResolver = AuthoritativeAcquisitionSourceResolver(evidenceCustodian)
     private val pdfCharacteristicsInspector = PdfSourceCharacteristicsInspector()
@@ -45,8 +46,11 @@ internal class GovernedAcquisitionOwnerWorkflow(
         if (manifest.evidenceArtifactId != evidenceArtifactId) return unavailable(evidenceArtifactId, "SOURCE_IDENTITY_MISMATCH")
         val source = projectTechnicalFacts(manifest)
             ?: return unavailable(evidenceArtifactId, "SOURCE_MEDIA_TYPE_UNKNOWN")
+        val capabilities = registry.capabilities() + if (hasUsableHermesRepresentation(evidenceArtifactId)) {
+            listOf(ProductionAcquisitionCapabilityCatalogue.hermesOcrRepresentationCapability())
+        } else emptyList()
         return GovernedAcquisitionOwnerEvaluation.Evaluated(
-            source, router.route(source, registry.capabilities(), egressAuthorisation(evidenceArtifactId)),
+            source, router.route(source, capabilities, egressAuthorisation(evidenceArtifactId)),
         )
     }
 
@@ -64,6 +68,31 @@ internal class GovernedAcquisitionOwnerWorkflow(
             ?: return GovernedAcquisitionOwnerExecution.StaleOrUnavailable(current)
         if (selected.decision.capability.capabilityId != expectedCapabilityId) {
             return GovernedAcquisitionOwnerExecution.StaleOrUnavailable(current)
+        }
+        if (expectedCapabilityId == ProductionAcquisitionCapabilityCatalogue.HERMES_OCR_REPRESENTATION_CAPABILITY_ID) {
+            val candidate = usableHermesRepresentation(evidenceArtifactId)
+                ?: return GovernedAcquisitionOwnerExecution.StaleOrUnavailable(current)
+            val provenance = AcquisitionRoutingProvenance(
+                evaluated.source.evidenceArtifactId,
+                evaluated.source.sha256,
+                selected.decision.capability.capabilityId,
+                selected.decision.capability.mechanism,
+                selected.decision.capability.providerConfiguration?.configurationIdentity,
+                selected.decision.selectedRepresentation,
+                selected.decision.capability.egress == AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+                selected.decision.selectionReasons,
+            )
+            return GovernedAcquisitionOwnerExecution.Executed(
+                evaluated.source,
+                selected.decision,
+                GovernedAcquisitionExecutionResult.Admitted(
+                    routingProvenance = provenance,
+                    derivativeGenerationId = candidate.derivativeGenerationId,
+                    fidelity = TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+                    completeness = candidate.completenessState,
+                    processingProvenance = null,
+                ),
+            )
         }
         return GovernedAcquisitionOwnerExecution.Executed(
             evaluated.source,
@@ -99,6 +128,25 @@ internal class GovernedAcquisitionOwnerWorkflow(
             mixedTextAndImage = establishedPdf?.mixedTextAndImage ?: if (nativeStructured || image) AcquisitionCharacteristicState.ABSENT else AcquisitionCharacteristicState.UNKNOWN,
         )
     }
+
+    private suspend fun hasUsableHermesRepresentation(evidenceArtifactId: EvidenceArtifactId): Boolean =
+        usableHermesRepresentation(evidenceArtifactId) != null
+
+    private suspend fun usableHermesRepresentation(evidenceArtifactId: EvidenceArtifactId): DerivativeCandidateSummary? =
+        derivativeDiscoveryProjection?.discover(evidenceArtifactId)
+            ?.filter {
+                it.rootSourceEvidenceArtifactId == evidenceArtifactId &&
+                    it.derivativeKind == "OCR recognised text" &&
+                    it.operationalOutcome == DerivativeOperationalOutcome.USABLE &&
+                    it.contentAvailable &&
+                    it.completenessState in setOf(
+                        DerivativeCompletenessState.ACCOUNTED_FOR,
+                        DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
+                    ) &&
+                    it.producerIdentity.pluginIdentity == "docling" &&
+                    it.producerIdentity.configurationIdentity == "hermes-pre-ingestion"
+            }
+            ?.singleOrNull()
 
     private fun unavailable(id: EvidenceArtifactId, reason: String) =
         GovernedAcquisitionOwnerEvaluation.SourceUnavailable(id, reason)

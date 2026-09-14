@@ -869,6 +869,7 @@ class ParkerRuntime(
                 // new ResourceType.
                 Triple(AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Processing Result Submission"),
                 Triple(AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway Processing Result Listing"),
+                Triple(AGENT_GATEWAY_OCR_REPRESENTATION_RESOURCE_ID, ResourceType.DOCUMENT, "Agent Gateway OCR Representation Submission"),
             ).forEach { (resourceId, resourceType, displayName) ->
                 resourceRegistry.register(
                     Resource(
@@ -1092,6 +1093,7 @@ class ParkerRuntime(
             // uses -- no new PermissionAction or ResourceType is introduced.
             vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))))
             vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.READ, ResourceType.DOCUMENT))))
+            vocabulary.register(ActionVocabularyEntry(AGENT_GATEWAY_OCR_REPRESENTATION_SUBMIT_ACTION_NAME, setOf(ActionResourceMapping(PermissionAction.WRITE, ResourceType.DOCUMENT))))
             // Hermes Exception Decision Backend, Task 4: one new write verb (recording an Owner
             // decision) and one new read verb (the Owner review queue), reusing the identical
             // existing (WRITE, DOCUMENT)/(READ, DOCUMENT) pairs every verb above already uses -- no
@@ -1484,6 +1486,21 @@ class ParkerRuntime(
                     outcome = PermissionDecisionOutcome.DENIED,
                     level = PermissionLevel.AUTOMATIC,
                     proposedAction = AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.DENIED,
+                    level = PermissionLevel.AUTOMATIC,
+                    proposedAction = AGENT_GATEWAY_OCR_REPRESENTATION_SUBMIT_ACTION_NAME,
+                ),
+                PermissionPolicyRule(
+                    action = PermissionAction.WRITE,
+                    resourceType = ResourceType.DOCUMENT,
+                    outcome = PermissionDecisionOutcome.APPROVED,
+                    level = PermissionLevel.AUTOMATIC,
+                    authorizationPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
+                    proposedAction = AGENT_GATEWAY_OCR_REPRESENTATION_SUBMIT_ACTION_NAME,
                 ),
                 PermissionPolicyRule(
                     action = PermissionAction.WRITE,
@@ -2440,6 +2457,7 @@ class ParkerRuntime(
             router = acquisitionRouter,
             executionCoordinator = governedAcquisitionExecutionCoordinator,
             externalEgressAuthorised = externalEgressAuthorised,
+            derivativeDiscoveryProjection = derivativeGenerationDiscoveryProjection,
         )
         // Parker Agent Gateway, AG-1G (R2 Governed-Acquisition Request, Section 9, Section 20).
         // The one candidate Section 9 itself named as permitted "if AG-1G's own investigation
@@ -2463,6 +2481,7 @@ class ParkerRuntime(
             router = acquisitionRouter,
             executionCoordinator = governedAcquisitionExecutionCoordinator,
             externalEgressAuthorised = externalEgressAuthorised,
+            derivativeDiscoveryProjection = derivativeGenerationDiscoveryProjection,
         )
         if (caseClassificationConfigured) {
             val caseStorage = stage("Case storage construction") {
@@ -2540,6 +2559,7 @@ class ParkerRuntime(
             governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
             bulkIngestionBindingCoordinator = bulkIngestionBindingCoordinator,
             processingResultRegistry = requireNotNull(hermesProcessingResultRegistry),
+            derivativeGenerationCoordinator = tierBDerivativeGenerationCoordinator,
             humanDecisionRegistry = hermesProcessingDecisionRegistry,
             preIngestionCorrectionRegistry = hermesPreIngestionCorrectionRegistry,
         )
@@ -3237,6 +3257,14 @@ class ParkerRuntime(
     ): parker.core.runtime.AgentGatewayProcessingResultSubmissionResult {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return agentGatewayEvidenceProjection.submitProcessingResult(batchId, result)
+    }
+
+    internal suspend fun submitOcrRepresentationAsAgent(
+        batchId: String,
+        representation: parker.core.interfaces.HermesOcrRepresentation,
+    ): parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return agentGatewayEvidenceProjection.submitOcrRepresentation(batchId, representation)
     }
 
     /** Stores only a REVIEW_REQUIRED source under pre-ingestion custody; no evidence identity is minted. */
@@ -4397,6 +4425,8 @@ class ParkerRuntime(
         const val AGENT_GATEWAY_PROCESSING_RESULT_SUBMIT_ACTION_NAME = "agent-gateway.processing-result.submit"
         val AGENT_GATEWAY_PROCESSING_RESULT_LIST_RESOURCE_ID = ResourceId("agent-gateway-processing-result-list")
         const val AGENT_GATEWAY_PROCESSING_RESULT_LIST_ACTION_NAME = "agent-gateway.processing-result.list"
+        val AGENT_GATEWAY_OCR_REPRESENTATION_RESOURCE_ID = ResourceId("agent-gateway-ocr-representation-submit")
+        const val AGENT_GATEWAY_OCR_REPRESENTATION_SUBMIT_ACTION_NAME = "agent-gateway.ocr-representation.submit"
 
         // Controlled Agent Run Submission (docs/implementation/
         // CONTROLLED_AGENT_RUN_SUBMISSION_SCOPE_LOCK.md Sections 3-4, 9): the verb phrase and

@@ -445,7 +445,7 @@ class AgentGatewayEvidenceProjectionTest {
             setOf(
                 "retrieveEvidence", "retrieveEvidenceAs", "retrieveEvidenceManifest", "retrieveEvidenceManifestAs", "submitSource", "requestAcquisition",
                 "bindIngestionEvidence", "submitProcessingResult", "listProcessingResultsForBatch",
-                "submitGovernedIngestion",
+                "submitGovernedIngestion", "submitOcrRepresentation",
             ),
             publicFunctionNames,
         )
