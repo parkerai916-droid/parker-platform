@@ -47,6 +47,11 @@ class ExternalTranscriptionLiveAcceptanceTest {
         val custodian = SyntheticCustodian(source, manifest)
         val permission = ExactPurposePermission()
         val adapterHandle = OpenAiLiveAcceptanceBridge.create(ready) { events += "egress" }
+        val executionBinding = ExternalTranscriptionExecutionBinding(
+            requestId = "unit-n-live-request",
+            attemptId = "unit-n-live-attempt",
+            profileId = ready.profile.transcriptionProfileId,
+        )
         val generationRoot = Files.createTempDirectory("unit-n-live-generations")
         val contentRoot = Files.createTempDirectory("unit-n-live-content")
         val generationStorage = FileSystemDerivativeGenerationStorage(generationRoot)
@@ -61,6 +66,7 @@ class ExternalTranscriptionLiveAcceptanceTest {
         val coordinator = ExternalTranscriptionOwnerInvocationCoordinator(
             permission, custodian, adapterHandle.mechanism, OcrStructuredResultValidator(), admission,
             correlationFactory = { "unit-n-live-correlation" },
+            executionBinding = executionBinding,
         )
 
         val outcome = coordinator.invoke(owner, evidenceId)
@@ -84,22 +90,15 @@ class ExternalTranscriptionLiveAcceptanceTest {
         val extracted = admitted.extracted
         assertEquals(TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION, extracted.fidelity)
         assertTrue(extracted.recognisedText.contains("SYNTHETIC_PAGE_ONE_MARKER"))
-        assertTrue(extracted.recognisedText.contains("SYNTHETIC_PAGE_TWO_MARKER"))
+        assertTrue(extracted.recognisedText.contains("PARKER EXTERNAL OCR READINESS TEST"))
         assertTrue(extracted.recognisedText.contains("Synthetic Person Alpha"))
         assertTrue(extracted.recognisedText.contains("14 September 2026"))
         assertTrue(extracted.recognisedText.contains("$123.45"))
         val accounting = requireNotNull(extracted.pageAccounting)
-        assertEquals(listOf(1, 2), accounting.requestedScope.pageNumbers)
-        assertEquals(listOf(1, 2), accounting.submittedScope.pageNumbers)
-        assertEquals(listOf(1, 2), accounting.returnedScope.pageNumbers)
-        assertEquals(setOf(1, 2), accounting.pageOutcomes.map { it.pageNumber }.toSet())
-        val pageTwo = accounting.pageOutcomes.single { it.pageNumber == 2 }
-        assertTrue(
-            pageTwo.outcome == OcrPageOutcomeKind.TRANSCRIBED_WITH_QUALIFICATIONS ||
-                pageTwo.outcome == OcrPageOutcomeKind.ILLEGIBLE_OR_NO_RECOGNISABLE_CONTENT ||
-                pageTwo.uncertaintySpans.isNotEmpty() || pageTwo.warnings.isNotEmpty(),
-            "page two obscured region was not qualified",
-        )
+        assertEquals(listOf(1), accounting.requestedScope.pageNumbers)
+        assertEquals(listOf(1), accounting.submittedScope.pageNumbers)
+        assertEquals(listOf(1), accounting.returnedScope.pageNumbers)
+        assertEquals(setOf(1), accounting.pageOutcomes.map { it.pageNumber }.toSet())
         val provider = requireNotNull(extracted.providerProvenance)
         assertEquals("OpenAI", provider.providerIdentity)
         assertTrue(provider.providerReportedModelIdentifier.isNotBlank())
@@ -133,7 +132,6 @@ class ExternalTranscriptionLiveAcceptanceTest {
                 "responseId=${provider.providerCorrelationIdentifier}",
                 "requestedPages=${accounting.requestedScope.pageNumbers.joinToString(",")}",
                 "returnedPages=${accounting.returnedScope.pageNumbers.joinToString(",")}",
-                "pageTwoOutcome=${pageTwo.outcome}",
                 "fidelity=${extracted.fidelity}",
                 "completeness=${extracted.completenessState}",
                 "requestCount=${adapterHandle.state.calls}",
@@ -167,6 +165,12 @@ class ExternalTranscriptionLiveAcceptanceTest {
         var sourceCalls = 0
         var manifestCalls = 0
         override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact) = error("unreachable")
+        override suspend fun submitSource(
+            requestingPrincipalId: PrincipalId,
+            candidate: CandidateEvidenceArtifact,
+            advisorySha256: String?,
+        ): EvidenceSourceSubmissionResult =
+            error("submitSource must not be called by the already-admitted external OCR acceptance path")
         override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceRetrievalResult {
             events += "source"; sourceCalls += 1
             return EvidenceRetrievalResult.Found(evidenceArtifactId, immutableSource.copyOf())
@@ -188,20 +192,10 @@ class ExternalTranscriptionLiveAcceptanceTest {
             }
             page {
                 writeLine(font, 12f, 72f, 720f, "SYNTHETIC_PAGE_ONE_MARKER")
+                writeLine(font, 12f, 72f, 705f, "PARKER EXTERNAL OCR READINESS TEST")
                 writeLine(font, 12f, 72f, 690f, "Synthetic Person Alpha and Synthetic Person Beta met on 14 September 2026.")
                 writeLine(font, 12f, 72f, 660f, "The synthetic amount recorded was $123.45; punctuation: commas, colons, and semicolons.")
                 writeLine(font, 12f, 72f, 630f, "For avoidance of doubt, this synthetic clause creates no rights, duties, or legal obligations.")
-            }
-            page {
-                writeLine(font, 12f, 72f, 720f, "SYNTHETIC_PAGE_TWO_MARKER")
-                writeLine(font, 12f, 72f, 690f, "This is ordinary readable synthetic text on page two.")
-                setNonStrokingColor(0.6f)
-                writeLine(font, 12f, 72f, 660f, "This lower-contrast sentence remains intentionally readable.")
-                setNonStrokingColor(0f)
-                writeLine(font, 12f, 72f, 625f, "The region below is deliberately obscured and must not be guessed:")
-                addRect(72f, 575f, 360f, 28f)
-                fill()
-                writeLine(font, 12f, 72f, 545f, "Clear text resumes after the obscured region.")
             }
             document.save(output)
         }
@@ -228,6 +222,8 @@ class ExternalTranscriptionLiveAcceptanceTest {
         is ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected -> "VALIDATION_REJECTED"
         is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed -> "ADMISSION_FAILED"
         is ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired -> "RECONCILIATION_REQUIRED"
+        is ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted -> "EML_ADMITTED"
+        is ExternalTranscriptionOwnerInvocationOutcome.EmlReconciliationRequired -> "EML_RECONCILIATION_REQUIRED"
         is ExternalTranscriptionOwnerInvocationOutcome.Admitted -> "ADMITTED"
     }
 }

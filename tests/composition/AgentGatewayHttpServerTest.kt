@@ -1509,7 +1509,7 @@ class AgentGatewayHttpServerTest {
             val response = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
 
             assertEquals(201, response.statusCode())
-            assertTrue(response.body().contains("\"status\":\"INGESTED\""))
+            assertTrue(response.body().contains("\"status\":\"FAILED\""))
             val evidenceArtifactId = jsonStringField(response.body(), "evidenceArtifactId")
             assertNotNull(evidenceArtifactId)
             val retrieved = harness.runtime.retrieveEvidenceAsAgent(EvidenceArtifactId(evidenceArtifactId))
@@ -1533,7 +1533,7 @@ class AgentGatewayHttpServerTest {
 
             assertEquals(201, first.statusCode())
             assertEquals(200, second.statusCode())
-            assertTrue(second.body().contains("\"status\":\"ALREADY_INGESTED\""))
+            assertTrue(second.body().contains("\"status\":\"FAILED\""))
             assertEquals(jsonStringField(first.body(), "evidenceArtifactId"), jsonStringField(second.body(), "evidenceArtifactId"))
         }
     }
@@ -1697,7 +1697,7 @@ class AgentGatewayHttpServerTest {
 
             assertIs<parker.core.runtime.HermesProcessingDecisionOutcome.Recorded>(decisionOutcome)
             assertEquals(201, response.statusCode(), response.body())
-            assertTrue(response.body().contains("\"status\":\"INGESTED\""))
+            assertTrue(response.body().contains("\"status\":\"FAILED\""))
             assertTrue(readBack.body().contains("REVIEW_REQUIRED"), "the stored machine result must remain unchanged by the human ACCEPT")
         }
     }

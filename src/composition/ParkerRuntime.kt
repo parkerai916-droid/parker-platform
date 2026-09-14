@@ -392,6 +392,7 @@ class ParkerRuntime(
     // never a caller-supplied identity. Only this class's own retrieveEvidenceAsAgent/
     // retrieveEvidenceManifestAsAgent methods below ever read it.
     private lateinit var agentGatewayEvidenceProjection: parker.core.runtime.AgentGatewayEvidenceProjection
+    private lateinit var postAdmissionProcessingCoordinator: parker.core.runtime.PostAdmissionProcessingCoordinator
     private lateinit var parkerAnalysisRequestCoordinator: parker.core.runtime.ParkerAnalysisRequestCoordinator
     private lateinit var ownerAnalysisInvocationCoordinator: parker.core.runtime.OwnerAnalysisInvocationCoordinator
 
@@ -2551,6 +2552,28 @@ class ParkerRuntime(
             clock = clock,
             preIngestionCorrectionRegistry = requireNotNull(hermesPreIngestionCorrectionRegistry),
         )
+        postAdmissionProcessingCoordinator = parker.core.runtime.PostAdmissionProcessingCoordinator(
+            invokeTierA = { evidenceArtifactId ->
+                tierAOwnerInvocationCoordinator.invoke(
+                    PrincipalId(config.ownerPrincipalId), evidenceArtifactId, UUID.randomUUID().toString(),
+                )
+            },
+            executeGovernedAcquisition = { evidenceArtifactId ->
+                agentGatewayEvidenceProjection.requestAcquisition(evidenceArtifactId)
+            },
+            findExistingAuthoritativeDerivative = { evidenceArtifactId ->
+                derivativeGenerationDiscoveryProjection.discover(evidenceArtifactId)
+                    .firstOrNull { candidate ->
+                        candidate.contentAvailable &&
+                            candidate.operationalOutcome == parker.core.interfaces.DerivativeOperationalOutcome.USABLE &&
+                            candidate.completenessState in setOf(
+                                parker.core.interfaces.DerivativeCompletenessState.ACCOUNTED_FOR,
+                                parker.core.interfaces.DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
+                            ) &&
+                            (candidate.derivativeKind != "OCR recognised text" || candidate.authority == parker.core.interfaces.OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE)
+                    }?.derivativeGenerationId
+            },
+        )
         agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
             hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
             agentGatewayPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
@@ -2562,6 +2585,7 @@ class ParkerRuntime(
             derivativeGenerationCoordinator = tierBDerivativeGenerationCoordinator,
             humanDecisionRegistry = hermesProcessingDecisionRegistry,
             preIngestionCorrectionRegistry = hermesPreIngestionCorrectionRegistry,
+            postAdmissionProcessing = { evidenceArtifactId -> postAdmissionProcessingCoordinator.process(evidenceArtifactId) },
         )
         parkerAnalysisRequestCoordinator = parker.core.runtime.ParkerAnalysisRequestCoordinator(
             projection = agentGatewayEvidenceProjection,

@@ -146,7 +146,7 @@ class SubmissionBoundaryTest(unittest.TestCase):
             path.write_bytes(b"exact bytes\n")
             item = hermes.process_one(fake, "bulk-test", path, 1)
         self.assertEqual(item.status, "PASS")
-        self.assertEqual(item.governed_ingestion, "INGESTED")
+        self.assertEqual(item.governed_ingestion, "REGISTERED")
         self.assertEqual(fake.sources[0][2], b"exact bytes\n")
         self.assertEqual(fake.sources[0][1], hermes.sha256_bytes(b"exact bytes\n"))
 
@@ -191,7 +191,7 @@ class SubmissionBoundaryTest(unittest.TestCase):
             path.write_bytes(b"jpeg bytes")
             with patch.object(hermes, "run_docling", return_value=outcome):
                 item = hermes.process_one(fake, "bulk-test", path, 1, "images.jpg")
-        self.assertEqual(item.governed_ingestion, "COMPLETE_INGESTION")
+        self.assertEqual(item.governed_ingestion, "REGISTERED")
         self.assertEqual(fake.sources[0][3], "images.jpg")
         self.assertEqual(fake.representations[0][2]["evidenceArtifactId"], "evidence-test")
         self.assertEqual(fake.representations[0][2]["recognisedText"], outcome["recognisedText"])

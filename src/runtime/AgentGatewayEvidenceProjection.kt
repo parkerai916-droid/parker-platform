@@ -123,6 +123,7 @@ internal class AgentGatewayEvidenceProjection(
     private val humanDecisionRegistry: parker.core.interfaces.HermesProcessingDecisionRegistry? = null,
     /** Production-only bridge proving a CORRECT decision has a separately governed representation. */
     private val preIngestionCorrectionRegistry: parker.core.interfaces.HermesPreIngestionCorrectionRegistry? = null,
+    private val postAdmissionProcessing: (suspend (EvidenceArtifactId) -> PostAdmissionProcessingOutcome)? = null,
 ) {
 
     suspend fun retrieveEvidence(evidenceArtifactId: EvidenceArtifactId): AgentGatewayEvidenceRetrievalResult {
@@ -500,10 +501,20 @@ internal class AgentGatewayEvidenceProjection(
             is AgentGatewayBulkBindingResult.Rejected -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
             is AgentGatewayBulkBindingResult.Failed -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
         }
-        return if (alreadyIngested) {
+        val admitted = if (alreadyIngested) {
             AgentGatewayGovernedIngestionResult.AlreadyIngested(projection, correction?.representationId)
         } else {
             AgentGatewayGovernedIngestionResult.Ingested(projection, correction?.representationId)
+        }
+        val processor = postAdmissionProcessing ?: return admitted
+        return when (val outcome = processor(projection.evidenceArtifactId)) {
+            is PostAdmissionProcessingOutcome.AnalysisReady -> AgentGatewayGovernedIngestionResult.AnalysisReady(
+                projection, outcome.derivativeGenerationId, outcome.capabilityId, correction?.representationId,
+            )
+            is PostAdmissionProcessingOutcome.RequiresOcr -> AgentGatewayGovernedIngestionResult.RequiresOcr(projection, outcome.reason, correction?.representationId)
+            is PostAdmissionProcessingOutcome.CapabilityUnavailable -> AgentGatewayGovernedIngestionResult.CapabilityUnavailable(projection, outcome.reason, correction?.representationId)
+            is PostAdmissionProcessingOutcome.ReviewRequired -> AgentGatewayGovernedIngestionResult.ReviewRequired(projection, outcome.reason, correction?.representationId)
+            is PostAdmissionProcessingOutcome.Failed -> AgentGatewayGovernedIngestionResult.PostAdmissionFailed(projection, outcome.stage, outcome.reason, alreadyIngested, correction?.representationId)
         }
     }
 
@@ -739,6 +750,39 @@ sealed class AgentGatewayOcrRepresentationSubmissionResult {
  * [parker.core.interfaces.EvidenceArtifactId]; nothing here mints or asserts one independently.
  */
 sealed class AgentGatewayGovernedIngestionResult {
+
+    data class AnalysisReady(
+        val projection: AgentGatewayEvidenceManifestProjection,
+        val derivativeGenerationId: parker.core.interfaces.DerivativeGenerationId,
+        val capabilityId: String,
+        val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+    ) : AgentGatewayGovernedIngestionResult()
+
+    data class RequiresOcr(
+        val projection: AgentGatewayEvidenceManifestProjection,
+        val reason: String,
+        val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+    ) : AgentGatewayGovernedIngestionResult()
+
+    data class CapabilityUnavailable(
+        val projection: AgentGatewayEvidenceManifestProjection,
+        val reason: String,
+        val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+    ) : AgentGatewayGovernedIngestionResult()
+
+    data class ReviewRequired(
+        val projection: AgentGatewayEvidenceManifestProjection,
+        val reason: String,
+        val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+    ) : AgentGatewayGovernedIngestionResult()
+
+    data class PostAdmissionFailed(
+        val projection: AgentGatewayEvidenceManifestProjection,
+        val stage: String,
+        val reason: String,
+        val alreadyIngested: Boolean,
+        val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+    ) : AgentGatewayGovernedIngestionResult()
 
     /** No prior evidence existed for this hash; governed submission and case binding both newly completed. */
     data class Ingested(

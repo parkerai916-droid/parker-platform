@@ -64,7 +64,7 @@ class OpenAiLiveAcceptanceBridgeTest {
 providerIdentity=OpenAI
 apiProductPath=/v1/responses
 store=false
-modelSelectionRule=gpt-4.1-mini
+modelSelectionRule=gpt-5.6-sol
 modelSnapshotPolicy=RECORD_PRESENT_OR_NOT_EXPOSED
 maximumPdfBytes=67108864
 maximumImageBytes=16777216

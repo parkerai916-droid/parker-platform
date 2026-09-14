@@ -491,6 +491,29 @@ class AgentGatewayHttpServer(
             val candidate = CandidateEvidenceArtifact(content, receivedMediaType, originalFileName)
 
             when (val outcome = runBlocking { submitGovernedIngestionAsAgent(batchId, expectedSha256, candidate) }) {
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.AnalysisReady -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 201, governedIngestionJson("ANALYSIS_READY", outcome.projection, outcome.correctionRepresentationId, outcome.derivativeGenerationId.value, outcome.capabilityId))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.RequiresOcr -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 202, governedIngestionJson("REQUIRES_OCR", outcome.projection, outcome.correctionRepresentationId, detail = outcome.reason))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.CapabilityUnavailable -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 202, governedIngestionJson("CAPABILITY_UNAVAILABLE", outcome.projection, outcome.correctionRepresentationId, detail = outcome.reason))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.ReviewRequired -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 202, governedIngestionJson("REVIEW_REQUIRED", outcome.projection, outcome.correctionRepresentationId, detail = outcome.reason))
+                }
+                is parker.core.runtime.AgentGatewayGovernedIngestionResult.PostAdmissionFailed -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.DENIED)
+                    // Source custody and case binding succeeded. The processing failure is
+                    // therefore returned as a truthful terminal state in the same successful
+                    // admission response, rather than pretending admission itself failed.
+                    writeJson(exchange, if (outcome.alreadyIngested) 200 else 201, governedIngestionJson("FAILED", outcome.projection, outcome.correctionRepresentationId, detail = "${outcome.stage}: ${outcome.reason}"))
+                }
                 is parker.core.runtime.AgentGatewayGovernedIngestionResult.Ingested -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
                     writeJson(exchange, 201, governedIngestionJson("INGESTED", outcome.projection, outcome.correctionRepresentationId))
@@ -589,6 +612,9 @@ class AgentGatewayHttpServer(
         status: String,
         projection: parker.core.runtime.AgentGatewayEvidenceManifestProjection,
         correctionRepresentationId: parker.core.interfaces.HermesPreIngestionCorrectionId? = null,
+        derivativeGenerationId: String? = null,
+        capabilityId: String? = null,
+        detail: String? = null,
     ) = jsonObject(
         "status" to status,
         "evidenceArtifactId" to projection.evidenceArtifactId.value,
@@ -597,6 +623,9 @@ class AgentGatewayHttpServer(
         "receivedMediaType" to projection.receivedMediaType,
         "originalFileName" to projection.originalFileName,
         "correctionRepresentationId" to correctionRepresentationId?.value,
+        "derivativeGenerationId" to derivativeGenerationId,
+        "capabilityId" to capabilityId,
+        "detail" to detail,
     )
 
     private fun analysisPackageJson(packageValue: parker.core.runtime.AnalysisRetrievalPackage) = jsonObject(

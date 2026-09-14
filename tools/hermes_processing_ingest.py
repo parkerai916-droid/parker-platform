@@ -274,19 +274,21 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
                 return ProcessedFile(display_name, digest, result["status"], result["methods"], submission, "BLOCKED", f"pending review custody failed: HTTP_{custody_code} {custody_payload}", True)
         return ProcessedFile(display_name, digest, result["status"], result["methods"], submission, "BLOCKED", result.get("failure", {}).get("detail") if result.get("failure") else (result.get("issues") or [{}])[0].get("explanation"))
     code, payload = client.submit_source(batch_id, digest, data, display_name, media_type_for(path))
-    if code in (201, 200) and isinstance(payload, dict) and payload.get("status") in ("INGESTED", "ALREADY_INGESTED"):
-        if representation is None:
-            return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, payload["status"])
-        if not isinstance(representation.get("recognisedText"), str) or not representation["recognisedText"].strip():
-            return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, "BLOCKED", "OCR representation was not produced")
-        evidence_id = payload.get("evidenceArtifactId")
-        if not isinstance(evidence_id, str) or not evidence_id:
-            return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, "BLOCKED", "Parker did not return the admitted evidence identity")
-        representation["evidenceArtifactId"] = evidence_id
-        representation_code, representation_payload = client.submit_ocr_representation(batch_id, digest, representation)
-        if representation_code in (200, 201) and isinstance(representation_payload, dict) and representation_payload.get("status") in ("ADMITTED", "ALREADY_ADMITTED"):
-            return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, "COMPLETE_INGESTION")
-        return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, "BLOCKED", f"OCR representation admission failed: HTTP_{representation_code} {representation_payload}")
+    authoritative_statuses = {"ANALYSIS_READY", "REQUIRES_OCR", "CAPABILITY_UNAVAILABLE", "REVIEW_REQUIRED", "FAILED", "INGESTED", "ALREADY_INGESTED"}
+    if code in (201, 202, 200) and isinstance(payload, dict) and payload.get("status") in authoritative_statuses:
+        # Parker's post-admission result is authoritative for completion. Hermes' local
+        # Docling result may still be retained as explicitly preliminary diagnostic material,
+        # but it can never turn a source-only admission into COMPLETE_INGESTION.
+        if representation is not None and isinstance(representation.get("recognisedText"), str) and representation["recognisedText"].strip():
+            evidence_id = payload.get("evidenceArtifactId")
+            if isinstance(evidence_id, str) and evidence_id:
+                representation["evidenceArtifactId"] = evidence_id
+                client.submit_ocr_representation(batch_id, digest, representation)
+        status = payload["status"]
+        if status in ("INGESTED", "ALREADY_INGESTED"):
+            status = "REGISTERED"
+        detail = payload.get("detail")
+        return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, status, str(detail) if detail else None)
     return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, f"HTTP_{code}", str(payload))
 
 
@@ -333,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
                 digest = sha256_bytes(path.read_bytes())
                 results.append(ProcessedFile(path.name, digest, "FAILED", [], "NOT_SUBMITTED", "BLOCKED", str(error)))
         counts = {status: sum(item.status == status for item in results) for status in ("PASS", "REVIEW_REQUIRED", "FAILED")}
-        summary = {"total": len(results), **counts, "ingested": sum(item.governed_ingestion in ("INGESTED", "ALREADY_INGESTED", "COMPLETE_INGESTION") for item in results), "blocked": sum(item.governed_ingestion == "BLOCKED" for item in results), "submission_errors": sum(item.result_submission not in ("RECORDED", "ALREADY_RECORDED") for item in results), "files": [item.json() for item in results]}
+        summary = {"total": len(results), **counts, "ingested": sum(item.governed_ingestion == "ANALYSIS_READY" for item in results), "blocked": sum(item.governed_ingestion in ("BLOCKED", "REQUIRES_OCR", "CAPABILITY_UNAVAILABLE", "REVIEW_REQUIRED") for item in results), "submission_errors": sum(item.result_submission not in ("RECORDED", "ALREADY_RECORDED") for item in results), "files": [item.json() for item in results]}
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
     finally:

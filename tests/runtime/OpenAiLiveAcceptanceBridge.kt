@@ -33,7 +33,7 @@ object OpenAiLiveAcceptanceBridge {
         } else {
             when (val readiness = readinessEvaluator.evaluate(true, profilePath.toString())) {
                 is OpenAiExternalTranscriptionReadiness.Ready ->
-                    if (readiness.profile.modelSelectionRule != "gpt-4.1-mini") add("PROFILE_MODEL_CHANGED")
+                    if (readiness.profile.modelSelectionRule != "gpt-5.6-sol") add("PROFILE_MODEL_CHANGED")
                 else -> add("PROFILE_NOT_READY_${readiness::class.simpleName ?: "UNKNOWN"}")
             }
         }
