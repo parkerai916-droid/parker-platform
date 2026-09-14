@@ -2978,9 +2978,19 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <p id="status"></p>
 <div class="library-controls">
   <label>Case <select id="caseFilter"><option value="all">All cases</option><option value="unassigned">Unassigned</option></select></label>
+  <button id="createCaseButton" type="button">Create Case</button>
   <label>Search <input id="evidenceSearch" type="search" placeholder="Filename or Evidence ID"></label>
   <label>Sort <select id="evidenceSort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="filename">Filename A–Z</option><option value="status">Status</option></select></label>
   <label>Filter <select id="evidenceFilter"><option value="all">All</option><option value="needs-processing">Needs processing</option><option value="processed">Processed</option><option value="human-reviewed">Human reviewed</option><option value="corrected">Corrected</option></select></label>
+</div>
+<div id="createCasePanel" class="content-panel" hidden>
+  <h3>Create Case</h3>
+  <p class="note">Enter a case name. Parker will generate the canonical case ID.</p>
+  <label for="createCaseName">Case name</label>
+  <input id="createCaseName" type="text" maxlength="200" autocomplete="off" placeholder="e.g. PARKER SYSTEM ACCEPTANCE">
+  <button id="submitCreateCaseButton" type="button">Create</button>
+  <button id="cancelCreateCaseButton" type="button">Cancel</button>
+  <span id="createCaseStatus" class="note" role="status"></span>
 </div>
 <table>
   <thead><tr><th>Document</th><th>Uploaded / Imported</th><th>Status</th><th>Pages</th><th>Case</th><th>Size</th><th>Analyse</th><th>Actions</th></tr></thead>
@@ -3023,7 +3033,7 @@ let analysisSpeechChunks = [];
 let analysisSpeechTimer = null;
 const ANALYSIS_MAX_RECORDING_MS = 300000;
 
-async function loadCases() {
+async function loadCases(preferredCaseId = null) {
   try {
     const resp = await fetch('/owner/cases', { method: 'GET', headers: authHeaders() });
     if (resp.status === 401) { casesList = []; render(); return; }
@@ -3032,8 +3042,66 @@ async function loadCases() {
     const select = document.getElementById('bulkCaseSelector');
     if (select) { select.innerHTML = '<option value="">Select a case</option>'; casesList.forEach(c => { const o = document.createElement('option'); o.value = c.caseId; o.textContent = c.caseName; select.appendChild(o); }); }
     render();
+    if (preferredCaseId && casesList.some(c => c.caseId === preferredCaseId)) {
+      const filter = document.getElementById('caseFilter');
+      if (filter) filter.value = preferredCaseId;
+      const bulk = document.getElementById('bulkCaseSelector');
+      if (bulk) bulk.value = preferredCaseId;
+      selectedBulkCase = casesList.find(c => c.caseId === preferredCaseId) || null;
+      const bulkName = document.getElementById('bulkCaseName');
+      if (bulkName) bulkName.textContent = selectedBulkCase ? selectedBulkCase.caseName : '—';
+      const bulkConfirm = document.getElementById('bulkConfirmButton');
+      if (bulkConfirm) bulkConfirm.disabled = !selectedBulkCase;
+      render();
+    }
   } catch (e) { /* Case list request failed safely; the prior list (if any) is kept. */ }
 }
+
+function toggleCreateCasePanel(open) {
+  const panel = document.getElementById('createCasePanel');
+  if (!panel) return;
+  panel.hidden = !open;
+  if (open) document.getElementById('createCaseName').focus();
+}
+
+document.getElementById('createCaseButton').onclick = () => {
+  const panel = document.getElementById('createCasePanel');
+  toggleCreateCasePanel(!!panel && panel.hidden);
+};
+document.getElementById('cancelCreateCaseButton').onclick = () => {
+  document.getElementById('createCaseName').value = '';
+  document.getElementById('createCaseStatus').textContent = '';
+  toggleCreateCasePanel(false);
+};
+document.getElementById('submitCreateCaseButton').onclick = async () => {
+  const input = document.getElementById('createCaseName');
+  const status = document.getElementById('createCaseStatus');
+  const button = document.getElementById('submitCreateCaseButton');
+  const caseName = input.value.trim();
+  status.textContent = '';
+  if (!caseName) { status.textContent = 'Enter a case name.'; input.focus(); return; }
+  button.disabled = true;
+  try {
+    const response = await fetch('/owner/cases', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ caseName: caseName }),
+    });
+    const result = await response.json();
+    if (result.status === 'CREATED' && result.case && result.case.caseId) {
+      input.value = '';
+      status.textContent = 'Created case: ' + result.case.caseName;
+      toggleCreateCasePanel(false);
+      await loadCases(result.case.caseId);
+    } else {
+      status.textContent = (result.reason || result.status || 'Case creation failed safely.');
+    }
+  } catch (e) {
+    status.textContent = 'Case creation request failed safely.';
+  } finally {
+    button.disabled = false;
+  }
+};
 
 document.getElementById('bulkCaseSelector').onchange = e => {
   selectedBulkCase = casesList.find(c => c.caseId === e.target.value) || null;

@@ -3143,6 +3143,12 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("id=\"caseFilter\""))
             assertTrue(body.contains("<option value=\"all\">All cases</option>"))
             assertTrue(body.contains("<option value=\"unassigned\">Unassigned</option>"))
+            assertTrue(body.contains("id=\"createCaseButton\""))
+            assertTrue(body.contains("Create Case"))
+            assertTrue(body.contains("id=\"createCasePanel\""))
+            assertTrue(body.contains("id=\"submitCreateCaseButton\""))
+            assertTrue(body.contains("loadCases(result.case.caseId)"))
+            assertTrue(body.contains("Parker will generate the canonical case ID."))
         } finally {
             harness.shutdown()
         }
