@@ -126,6 +126,11 @@ class OwnerEvidenceUiController(
                         tierAFormat = outcome.format,
                         message = null,
                     )
+                    is TierAProcessingOutcome.DurableOcrAdmitted -> row.copy(
+                        status = OwnerEvidenceFileStatus.TIER_B_DURABLE_COMPLETE,
+                        ocrDerivativeGenerationId = outcome.derivativeGenerationId,
+                        message = null,
+                    )
                     TierAProcessingOutcome.RequiresTierB -> row.copy(
                         status = OwnerEvidenceFileStatus.REQUIRES_OCR,
                         message = null,

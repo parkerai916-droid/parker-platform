@@ -855,6 +855,11 @@ class OwnerEvidenceHttpServer(
                     "content" to outcome.content?.let { contentJson(it) },
                     "derivativeGenerationId" to outcome.derivativeGenerationId?.value,
                 )
+                is TierAProcessingOutcome.DurableOcrAdmitted -> jsonObject(
+                    "status" to "TIER_B_DURABLE_COMPLETE",
+                    "content" to ocrContentJson(outcome.content),
+                    "derivativeGenerationId" to outcome.derivativeGenerationId.value,
+                )
                 TierAProcessingOutcome.RequiresTierB -> jsonObject("status" to "REQUIRES_OCR")
                 is TierAProcessingOutcome.Unsupported -> jsonObject("status" to "FAILED", "message" to "Unsupported: ${outcome.reason}")
                 is TierAProcessingOutcome.IntegrityFailure -> jsonObject(
@@ -3377,9 +3382,14 @@ function render() {
     const actions = document.createElement('td');
     actions.className = 'row-actions';
     if (row.evidenceArtifactId && !row.externalResultRow) {
+      const process = document.createElement('button');
+      process.textContent = 'Process document';
+      process.title = 'Run Parker document processing. Eligible image-only PDFs continue through durable local OCR.';
+      process.onclick = () => processRow(index);
+      actions.appendChild(process);
       const acquire = document.createElement('button');
-      acquire.textContent = 'Process document';
-      acquire.title = 'Show Parker’s governed acquisition selection; this does not process the document.';
+      acquire.textContent = 'View acquisition decision';
+      acquire.title = 'Show Parker’s governed acquisition selection; this does not execute acquisition.';
       acquire.onclick = () => loadAcquisitionDecision(index);
       actions.appendChild(acquire);
     }
@@ -3408,7 +3418,7 @@ function render() {
       const ready = enhancedReadiness.status === 'READY';
       external.disabled = !(ready && authorized) || row.externalProcessing;
       external.title = !ready ? enhancedReadiness.message
-        : !authorized ? 'Click "Process document" and authorize enhanced transcription for this document first.'
+        : !authorized ? 'Click "View acquisition decision" and authorize enhanced transcription for this document first.'
         : 'Explicitly submit this evidence for enhanced transcription';
       external.onclick = () => transcribeExternalRow(index);
       actions.appendChild(external);
@@ -4976,6 +4986,10 @@ async function processRow(index) {
   row.tierAFormat = result.format;
   row.message = result.message;
   row.derivativeGenerationId = result.derivativeGenerationId || null;
+  if (result.status === 'TIER_B_DURABLE_COMPLETE') {
+    row.ocrDerivativeGenerationId = result.derivativeGenerationId || null;
+    row.ocrContent = result.content || null;
+  }
   render();
 }
 

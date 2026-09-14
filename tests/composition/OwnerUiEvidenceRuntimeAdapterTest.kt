@@ -485,7 +485,8 @@ class OwnerUiEvidenceRuntimeAdapterTest {
     @Test
     fun `processTierA routes each governed format correctly through the real production graph`() = runTest {
         val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
-        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, "").toString()), RecordingParkerLogger())
+        val recognisedJson = """{"status":"recognised","recognisedText":"AUTOMATIC PDF OCR TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString()), RecordingParkerLogger())
         runtime.start()
         val adapter = adapterFor(runtime)
 
@@ -512,7 +513,7 @@ class OwnerUiEvidenceRuntimeAdapterTest {
         assertIs<OwnerTierAContent.Pdf>(pdfAdmitted.content)
 
         val scanned = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("03-scanned.pdf").toAbsolutePath().toString(), "application/pdf"))
-        assertEquals(TierAProcessingOutcome.RequiresTierB, adapter.processTierA(scanned.evidenceArtifactId))
+        assertIs<TierAProcessingOutcome.RequiresTierB>(adapter.processTierA(scanned.evidenceArtifactId))
 
         val png = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("07-text-image.png").toAbsolutePath().toString(), "image/png"))
         assertEquals(TierAProcessingOutcome.RequiresTierB, adapter.processTierA(png.evidenceArtifactId))
@@ -585,12 +586,12 @@ class OwnerUiEvidenceRuntimeAdapterTest {
     @Test
     fun `processTierB returns Completed with the genuine result count for a real, successful OCR recognition`() = runTest {
         val scriptDir = Files.createTempDirectory("evidence-ui-adapter-scripts")
-        val recognisedJson = """{"status":"recognised","recognisedText":"ADAPTER TEST TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0"}"""
+        val recognisedJson = """{"status":"recognised","recognisedText":"ADAPTER TEST TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
         val runtime = ParkerRuntime(config(doclingBridgeScriptPath = writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString()), RecordingParkerLogger())
         runtime.start()
         val adapter = adapterFor(runtime)
         val scanned = assertIs<EvidenceImportOutcome.Imported>(adapter.importFile(fixtureRoot.resolve("03-scanned.pdf").toAbsolutePath().toString(), "application/pdf"))
-        assertEquals(TierAProcessingOutcome.RequiresTierB, adapter.processTierA(scanned.evidenceArtifactId))
+        assertIs<TierAProcessingOutcome.RequiresTierB>(adapter.processTierA(scanned.evidenceArtifactId))
 
         val outcome = adapter.processTierB(scanned.evidenceArtifactId)
 

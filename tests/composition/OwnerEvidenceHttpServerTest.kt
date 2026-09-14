@@ -800,7 +800,7 @@ class OwnerEvidenceHttpServerTest {
     // never be read as, real production behaviour -- see the separate
     // `a real production scanned PDF does not select Local OCR` test below for that.
     @Test
-    fun `with local OCR explicitly opted back in for this legacy test context, governed acquisition still ends in Tier B durable OCR state and retrieves through ocr-content`() = runTest {
+    fun `with local OCR explicitly opted back in, governed acquisition still refuses local authority`() = runTest {
         val recognisedJson = """{"status":"recognised","recognisedText":"GOVERNED ACQUISITION OCR TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString(), productionLocalOcrEligible = true)
@@ -817,33 +817,8 @@ class OwnerEvidenceHttpServerTest {
             val decision = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquisition"))
                 .header("Cookie", cookie).GET().build())
             assertEquals(200, decision.statusCode())
-            assertEquals("SELECTED", extractField(decision.body(), "status"), decision.body())
-            assertTrue(decision.body().contains("Local OCR"), decision.body())
-            val capabilityId = requireNotNull(extractField(decision.body(), "capabilityId"))
-            assertEquals("parker-docling-local-ocr-v1", capabilityId)
-
-            val execute = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/acquire"))
-                .header("Cookie", cookie).header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString("{\"expectedCapabilityId\":\"$capabilityId\"}")).build())
-            assertEquals(200, execute.statusCode(), execute.body())
-            assertEquals("COMPLETED", extractField(execute.body(), "status"))
-            assertTrue(execute.body().contains("\"mechanism\":\"Local OCR\""), execute.body())
-            val exactGenerationId = requireNotNull(extractField(execute.body(), "derivativeGenerationId"))
-
-            // Exact-target retrieval through the existing, unaltered Tier B durable OCR route --
-            // never the Tier A route, and never a substituted/newest generation.
-            val retrieve = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/ocr-content/$exactGenerationId"))
-                .header("Cookie", cookie).GET().build())
-            assertEquals(200, retrieve.statusCode())
-            assertEquals("RETRIEVED", extractField(retrieve.body(), "status"), retrieve.body())
-            assertEquals("GOVERNED ACQUISITION OCR TEXT", extractJsonStringField(retrieve.body(), "recognisedText"))
-
-            // The Tier A route explicitly and safely refuses this exact same generation id (the
-            // REAL-DOCUMENT-2C-confirmed defensive invariant); the client fix means this route is
-            // simply never called for a Local OCR result any more.
-            val tierARejection = send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/content/$exactGenerationId"))
-                .header("Cookie", cookie).GET().build())
-            assertEquals(500, tierARejection.statusCode())
+            assertEquals("NO_ELIGIBLE_CAPABILITY", extractField(decision.body(), "status"), decision.body())
+            assertFalse(decision.body().contains("parker-docling-local-ocr-v1"), decision.body())
         } finally { harness.shutdown() }
     }
 
@@ -1196,13 +1171,10 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `a scanned PDF requires explicit OCR and is never processed automatically`() = runTest {
+    fun `processing a scanned PDF does not silently promote local OCR`() = runTest {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
-        val marker = scriptDir.resolve("invoked.marker")
-        val scriptPath = Files.createTempFile(scriptDir, "fake-docling-bridge-", ".sh")
-        Files.writeString(scriptPath, "#!/bin/sh\ntouch '${marker.toAbsolutePath()}'\nexit 0\n")
-        scriptPath.toFile().setExecutable(true)
-        val harness = startHarness(scriptPath.toString())
+        val recognisedJson = """{"status":"recognised","recognisedText":"AUTOMATIC PDF OCR TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"fake-1.0.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
+        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
         try {
             val uploadResponse = send(
                 uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))),
@@ -1215,8 +1187,8 @@ class OwnerEvidenceHttpServerTest {
                 .build()
             val processResponse = send(processRequest)
 
-            assertEquals("REQUIRES_OCR", extractField(processResponse.body(), "status"))
-            assertTrue(Files.notExists(marker), "Tier A processing must never automatically invoke the OCR bridge")
+            assertEquals("REQUIRES_OCR", extractField(processResponse.body(), "status"), processResponse.body())
+            assertFalse(processResponse.body().contains("AUTOMATIC PDF OCR TEXT"))
         } finally {
             harness.shutdown()
         }
@@ -1240,7 +1212,6 @@ class OwnerEvidenceHttpServerTest {
                     .build(),
             )
 
-            assertEquals("REQUIRES_OCR", extractField(post("/owner/evidence/$id/process").body(), "status"))
             val ocrResponse = post("/owner/evidence/$id/ocr")
 
             assertEquals(200, ocrResponse.statusCode(), ocrResponse.body())
@@ -1302,13 +1273,10 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `RequiresTierB never carries Tier A extracted content -- the owner must still explicitly Run OCR`() = runTest {
+    fun `failed automatic PDF OCR never carries fabricated extracted content`() = runTest {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
-        val marker = scriptDir.resolve("invoked.marker")
-        val scriptPath = Files.createTempFile(scriptDir, "fake-docling-bridge-", ".sh")
-        Files.writeString(scriptPath, "#!/bin/sh\ntouch '${marker.toAbsolutePath()}'\nexit 0\n")
-        scriptPath.toFile().setExecutable(true)
-        val harness = startHarness(scriptPath.toString())
+        val noContentJson = """{"status":"no_recognisable_content","reason":"no readable OCR content"}"""
+        val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, noContentJson).toString())
         try {
             val uploadResponse = send(
                 uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))),
@@ -1323,10 +1291,9 @@ class OwnerEvidenceHttpServerTest {
             )
             val body = processResponse.body()
 
-            assertEquals("REQUIRES_OCR", extractField(body, "status"))
-            assertTrue("documentText" !in body, "a RequiresTierB result must never carry Tier A extracted content -- OCR has not run yet")
-            assertTrue("\"content\"" !in body, "RequiresTierB must carry no content field at all")
-            assertTrue(Files.notExists(marker), "viewing/requesting Tier A status must never automatically invoke OCR")
+            assertEquals("REQUIRES_OCR", extractField(body, "status"), body)
+            assertTrue("documentText" !in body, "a failed OCR result must never carry Tier A extracted content")
+            assertTrue("\"content\"" !in body, "a failed OCR result must carry no content field")
         } finally {
             harness.shutdown()
         }
@@ -1741,7 +1708,9 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("function isInternalUploadName"))
             assertTrue(body.contains("return name && !isInternalUploadName(name) ? name : 'Unnamed evidence'"))
             assertTrue(body.contains("'Evidence: ' + shortEvidenceId"))
-            assertTrue(body.contains("acquire.textContent = 'Process document'"))
+            assertTrue(body.contains("process.textContent = 'Process document'"))
+            assertTrue(body.contains("process.onclick = () => processRow(index)"))
+            assertTrue(body.contains("acquire.textContent = 'View acquisition decision'"))
             assertTrue(body.contains("acquire.onclick = () => loadAcquisitionDecision(index)"))
             assertTrue(body.contains("details.textContent"))
             assertTrue(body.contains("Content SHA-256"))
@@ -1945,7 +1914,7 @@ class OwnerEvidenceHttpServerTest {
     // substring rather than parsed out of the page with a regex, since the page's source is fully
     // under this repository's own control and a literal check is far less fragile than trying to
     // structurally re-parse JavaScript out of an HTML/JS test fixture.
-    private val processRenderCondition = "acquire.textContent = 'Process document';"
+    private val processRenderCondition = "process.textContent = 'Process document';"
     private val ocrRenderCondition = "if (row.status === 'REQUIRES_OCR') {"
     private val durableOcrRenderCondition = "if (row.status === 'REQUIRES_OCR' || row.status === 'COMPLETE') {"
     private val tierAAnalysisEligibility = "row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId"
@@ -2192,7 +2161,7 @@ class OwnerEvidenceHttpServerTest {
     // ================= Document Ingestion — Tier B Durable OCR Derivative Content =================
 
     @Test
-    fun `the explicit durable ocr endpoint mints a durable generation, and the durable ocr-content endpoint retrieves it back, matching exactly`() = runTest {
+    fun `the explicit local durable ocr endpoint is blocked on the authoritative owner surface`() = runTest {
         val recognisedJson = """{"status":"recognised","recognisedText":"HTTP DURABLE OCR TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
@@ -2201,19 +2170,11 @@ class OwnerEvidenceHttpServerTest {
                 uploadRequest(harness, listOf(UploadPart("files", "scanned.pdf", "application/pdf", Files.readAllBytes(fixtureRoot.resolve("03-scanned.pdf"))))),
             )
             val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
-            assertEquals("REQUIRES_OCR", extractField(post(harness, "/owner/evidence/$id/process").body(), "status"))
-
             val durableResponse = post(harness, "/owner/evidence/$id/ocr-durable")
             assertEquals(200, durableResponse.statusCode())
-            assertEquals("TIER_B_DURABLE_COMPLETE", extractField(durableResponse.body(), "status"), durableResponse.body())
-            val derivativeGenerationId = requireNotNull(extractField(durableResponse.body(), "derivativeGenerationId"))
-            assertEquals("HTTP DURABLE OCR TEXT", extractJsonStringField(durableResponse.body(), "recognisedText"))
-
-            val retrieveResponse = get(harness, "/owner/evidence/$id/ocr-content/$derivativeGenerationId")
-            assertEquals(200, retrieveResponse.statusCode())
-            assertEquals("RETRIEVED", extractField(retrieveResponse.body(), "status"))
-            assertEquals("HTTP DURABLE OCR TEXT", extractJsonStringField(retrieveResponse.body(), "recognisedText"))
-            assertEquals("rapidocr-onnxruntime:PP-OCRv6_rec_small", extractField(retrieveResponse.body(), "modelIdentity"))
+            assertEquals("FAILED", extractField(durableResponse.body(), "status"), durableResponse.body())
+            assertTrue(durableResponse.body().contains("external OCR provider"), durableResponse.body())
+            assertFalse(durableResponse.body().contains("HTTP DURABLE OCR TEXT"))
         } finally {
             harness.shutdown()
         }
@@ -2601,7 +2562,7 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `a pre-existing generation admitted through the real durable OCR pipeline is discoverable using only durable state already present -- no authorization-store interaction of any kind`() = runTest {
+    fun `the authoritative owner surface does not admit local OCR as a pre-existing governed generation`() = runTest {
         val recognisedJson = """{"status":"recognised","recognisedText":"PRE-EXISTING DISCOVERY TEXT","fidelity":"UNVERIFIED_LITERAL_TRANSCRIPTION","mechanismVersion":"docling-2.5.0","modelIdentity":"rapidocr-onnxruntime:PP-OCRv6_rec_small","modelVersion":"sha256:${"a".repeat(64)}"}"""
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val harness = startHarness(writeFakeBridgeScript(scriptDir, 0, recognisedJson).toString())
@@ -2616,22 +2577,16 @@ class OwnerEvidenceHttpServerTest {
                     .build(),
             )
             val id = requireNotNull(extractField(uploadResponse.body(), "evidenceArtifactId"))
-            send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/process")).header("Cookie", cookie).POST(HttpRequest.BodyPublishers.noBody()).build())
             val durableResponse = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/ocr-durable")).header("Cookie", cookie).POST(HttpRequest.BodyPublishers.noBody()).build())
-            val derivativeGenerationId = requireNotNull(extractField(durableResponse.body(), "derivativeGenerationId"))
+            assertEquals("FAILED", extractField(durableResponse.body(), "status"), durableResponse.body())
+            assertTrue(durableResponse.body().contains("external OCR provider"), durableResponse.body())
 
             // The real capability under test: discovery finds this admitted generation using only
             // the derivative-generation domain's own durable state -- never touching, reading, or
             // requiring anything from ExternalTranscriptionOwnerAuthorization.
             val discovery = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/ocr-derivative-generations")).header("Cookie", cookie).GET().build())
             assertEquals(200, discovery.statusCode())
-            assertEquals(listOf(derivativeGenerationId), extractAllFields(discovery.body(), "derivativeGenerationId"))
-
-            // The discovered identity remains retrievable, unmodified, through the existing governed
-            // content retrieval path -- discovery duplicates no content of its own.
-            val content = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/$id/ocr-content/$derivativeGenerationId")).header("Cookie", cookie).GET().build())
-            assertEquals("RETRIEVED", extractField(content.body(), "status"))
-            assertEquals("PRE-EXISTING DISCOVERY TEXT", extractJsonStringField(content.body(), "recognisedText"))
+            assertFalse(discovery.body().contains("PRE-EXISTING DISCOVERY TEXT"))
         } finally {
             harness.shutdown()
         }

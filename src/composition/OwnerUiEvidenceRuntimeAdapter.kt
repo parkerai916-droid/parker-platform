@@ -542,7 +542,13 @@ class OwnerUiEvidenceRuntimeAdapter(
 
     override suspend fun processTierA(evidenceArtifactId: EvidenceArtifactId): TierAProcessingOutcome =
         when (val outcome = invokeTierAIngestionAsOwner(evidenceArtifactId)) {
-            is TierAOwnerInvocationOutcome.Routed -> mapRoutingResult(outcome.result)
+            is TierAOwnerInvocationOutcome.Routed -> when (val result = outcome.result) {
+                is TierADocumentRoutingResult.RequiresTierB ->
+                    if (result.mediaFacts.receivedMediaType?.substringBefore(';')?.trim()?.equals("application/pdf", ignoreCase = true) == true ||
+                        result.mediaFacts.mechanicallyDetectedMediaType?.substringBefore(';')?.trim()?.equals("application/pdf", ignoreCase = true) == true
+                    ) processPdfRequiresTierB(evidenceArtifactId) else TierAProcessingOutcome.RequiresTierB
+                else -> mapRoutingResult(result)
+            }
             is TierAOwnerInvocationOutcome.ManifestRetrievalRejected ->
                 TierAProcessingOutcome.Failed("MANIFEST", "The evidence manifest could not be retrieved.")
             is TierAOwnerInvocationOutcome.ManifestNotFound ->
@@ -556,6 +562,13 @@ class OwnerUiEvidenceRuntimeAdapter(
             is TierAOwnerInvocationOutcome.DigestMismatch ->
                 TierAProcessingOutcome.IntegrityFailure("stored content does not match the evidence manifest")
         }
+
+    /** The normal Process-document action owns the PDF RequiresTierB transition. */
+    private suspend fun processPdfRequiresTierB(evidenceArtifactId: EvidenceArtifactId): TierAProcessingOutcome =
+        // OCR-required evidence must cross the authoritative external OCR boundary. The local
+        // Docling/RapidOCR path remains available only to explicitly diagnostic tooling and must
+        // never be silently promoted by the ordinary Process-document action.
+        TierAProcessingOutcome.RequiresTierB
 
     private fun mapRoutingResult(result: TierADocumentRoutingResult): TierAProcessingOutcome = when (result) {
         is TierADocumentRoutingResult.Admitted ->
@@ -768,38 +781,13 @@ class OwnerUiEvidenceRuntimeAdapter(
     }
 
     override suspend fun processTierBDurable(evidenceArtifactId: EvidenceArtifactId): TierBDurableProcessingOutcome =
-        when (val outcome = invokeTierBOcrDurableGenerationAsOwner(evidenceArtifactId)) {
-            is TierBOcrOwnerInvocationOutcome.Admitted ->
-                TierBDurableProcessingOutcome.Admitted(toOwnerOcrContent(outcome.extracted), outcome.record.derivativeGenerationId)
-            is TierBOcrOwnerInvocationOutcome.NotAuthorised -> TierBDurableProcessingOutcome.NotAuthorised(outcome.reason)
-            is TierBOcrOwnerInvocationOutcome.MandatoryProvenanceUnavailable ->
-                TierBDurableProcessingOutcome.MandatoryProvenanceUnavailable(outcome.reason)
-            is TierBOcrOwnerInvocationOutcome.OcrNotAdmissible -> TierBDurableProcessingOutcome.OcrNotAdmissible(outcome.reason)
-            is TierBOcrOwnerInvocationOutcome.ManifestNotFound ->
-                TierBDurableProcessingOutcome.Failed("MANIFEST", "No evidence manifest was found for this artefact.")
-            is TierBOcrOwnerInvocationOutcome.SourceRetrievalRejected ->
-                TierBDurableProcessingOutcome.Failed("SOURCE", "The evidence source could not be retrieved.")
-            is TierBOcrOwnerInvocationOutcome.SourceNotFound ->
-                TierBDurableProcessingOutcome.Failed("SOURCE", "The evidence source was not found.")
-            is TierBOcrOwnerInvocationOutcome.ByteLengthMismatch ->
-                TierBDurableProcessingOutcome.IntegrityFailure("stored byte length does not match the evidence manifest")
-            is TierBOcrOwnerInvocationOutcome.DigestMismatch ->
-                TierBDurableProcessingOutcome.IntegrityFailure("stored content does not match the evidence manifest")
-            is TierBOcrOwnerInvocationOutcome.NotOcrEligible ->
-                TierBDurableProcessingOutcome.Failed("MEDIA_TYPE", "This evidence artefact is not OCR-eligible.")
-            is TierBOcrOwnerInvocationOutcome.PreparationFailed ->
-                TierBDurableProcessingOutcome.Failed("PREPARATION", "Durable OCR content or record preparation failed.")
-            is TierBOcrOwnerInvocationOutcome.AuthorisationAuditFailed ->
-                TierBDurableProcessingOutcome.Failed("AUDIT", "The durable generation's authorisation audit entry could not be recorded.")
-            is TierBOcrOwnerInvocationOutcome.PublicationFailed ->
-                TierBDurableProcessingOutcome.Failed("PUBLICATION", "The durable generation record could not be published.")
-            is TierBOcrOwnerInvocationOutcome.AdmittedAuditFailed ->
-                // Genuinely admitted (record and content both durably published) but the final
-                // ADMITTED audit entry is missing -- reconciliation-required, never presented as
-                // an unqualified success (Tier B scope lock §19/§21).
-                TierBDurableProcessingOutcome.Failed("RECONCILIATION_REQUIRED", "Admitted, but the audit trail's own final entry is missing.")
-        }
-
+        // The owner UI is an authoritative evidence surface. Local Docling/RapidOCR may still
+        // be invoked by explicitly diagnostic tooling, but this surface must never admit its
+        // output as a governed OCR derivative.
+        TierBDurableProcessingOutcome.Failed(
+            "CAPABILITY_UNAVAILABLE",
+            "Authoritative OCR requires an authorised external OCR provider; local OCR is preliminary only.",
+        )
     override suspend fun retrieveTierBOcrContent(
         evidenceArtifactId: EvidenceArtifactId,
         derivativeGenerationId: DerivativeGenerationId,

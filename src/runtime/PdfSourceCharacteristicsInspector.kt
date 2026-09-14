@@ -9,11 +9,12 @@ import parker.core.interfaces.AcquisitionCharacteristicState
 import parker.core.interfaces.AcquisitionPageCount
 
 /**
- * Read-only inspection of bounded PDF structural facts. This does not decode, return, or persist
- * document text and cannot create an acquisition derivative.
+ * Read-only inspection of bounded PDF source facts. It uses bounded content extraction to decide
+ * whether usable native text exists, but does not return or persist document text and cannot create
+ * an acquisition derivative.
  */
 internal class PdfSourceCharacteristicsInspector {
-    fun inspect(authoritativeSource: AuthoritativeAcquisitionInput): PdfSourceCharacteristicsInspection {
+    suspend fun inspect(authoritativeSource: AuthoritativeAcquisitionInput): PdfSourceCharacteristicsInspection {
         if (authoritativeSource.mediaType?.lowercase() != PDF_MEDIA_TYPE) {
             return PdfSourceCharacteristicsInspection.Unsupported
         }
@@ -25,12 +26,22 @@ internal class PdfSourceCharacteristicsInspector {
                 val textBearingPages = document.pages.count { page ->
                     PDFStreamParser(page).parse().filterIsInstance<Operator>().any { it.name in TEXT_SHOWING_OPERATORS }
                 }
+                // PDFBox operators are supporting structural evidence only. A PDF can contain
+                // empty/invisible Tj/TJ operators while exposing no usable searchable text. The
+                // Tier A Tika extractor is the authoritative content-level criterion and uses the
+                // same bounded PDF parser profile as ordinary PDF ingestion.
+                val nativeTextPresent = when (val extracted = TikaEvidenceExtractor().extract(authoritativeSource.bytes())) {
+                    is parker.core.interfaces.ExtractionOutcome.Extracted -> extracted.result.extractedText.isNotBlank()
+                    is parker.core.interfaces.ExtractionOutcome.RequiresOcr -> false
+                    is parker.core.interfaces.ExtractionOutcome.Malformed -> return PdfSourceCharacteristicsInspection.Indeterminate("PDF_TEXT_EXTRACTION_FAILED")
+                    is parker.core.interfaces.ExtractionOutcome.Unsupported -> return PdfSourceCharacteristicsInspection.Indeterminate("PDF_TEXT_EXTRACTION_UNSUPPORTED")
+                }
                 val imageOnlyPages = pageCount - textBearingPages
                 PdfSourceCharacteristicsInspection.Established(
                     pageCount = AcquisitionPageCount.Known(pageCount),
-                    nativeSearchableText = state(textBearingPages > 0),
-                    imageOnlyOrScanned = state(textBearingPages == 0),
-                    mixedTextAndImage = state(textBearingPages > 0 && imageOnlyPages > 0),
+                    nativeSearchableText = state(nativeTextPresent),
+                    imageOnlyOrScanned = state(!nativeTextPresent),
+                    mixedTextAndImage = state(nativeTextPresent && imageOnlyPages > 0),
                     mechanismIdentity = MECHANISM_IDENTITY,
                     sourceSha256 = authoritativeSource.sha256,
                 )

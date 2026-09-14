@@ -394,7 +394,9 @@ sealed interface EvidenceImportOutcome {
 }
 
 /**
- * The truthful result of one [OwnerEvidenceOperations.processTierA] call.
+ * The truthful result of one [OwnerEvidenceOperations.processTierA] call. Eligible PDF
+ * RequiresTierB results are completed through the existing durable Tier B coordinator here;
+ * non-PDF Tier B formats remain explicit/manual compatibility paths.
  * [format] is always one of Document Ingestion's own four governed format
  * labels ("CSV"/"EML"/"DOCX"/"PDF") for [Admitted] -- never a fabricated or
  * inferred fifth value. [content] is the safe owner-facing projection of
@@ -411,6 +413,10 @@ sealed interface TierAProcessingOutcome {
         val format: String,
         val content: OwnerTierAContent? = null,
         val derivativeGenerationId: DerivativeGenerationId? = null,
+    ) : TierAProcessingOutcome
+    data class DurableOcrAdmitted(
+        val content: OwnerTierBOcrContent,
+        val derivativeGenerationId: DerivativeGenerationId,
     ) : TierAProcessingOutcome
     data object RequiresTierB : TierAProcessingOutcome
     data class Unsupported(val reason: String) : TierAProcessingOutcome

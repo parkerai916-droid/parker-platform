@@ -13,6 +13,7 @@ data class DerivativeCandidateSummary(
     val warnings: List<String>,
     val transformationHistory: List<DerivativeTransformation>,
     val contentAvailable: Boolean,
+    val authority: OcrAuthorityClassification = OcrAuthorityClassification.LOCAL_PRELIMINARY,
 )
 
 class DerivativeGenerationDiscoveryProjection(
@@ -23,10 +24,15 @@ class DerivativeGenerationDiscoveryProjection(
         generations.findGenerationsForEvidence(evidenceArtifactId)
             .filter { it.rootSourceEvidenceArtifactId == evidenceArtifactId }
             .map { record ->
-                val available = try { contents.retrieve(record.derivativeGenerationId) != null }
-                catch (_: DerivativeContentStorageException) { false }
+                val content = try { contents.retrieve(record.derivativeGenerationId) }
+                catch (_: DerivativeContentStorageException) { null }
+                val available = content != null
+                val ocr = (content?.payload as? TierADerivativePayload.Ocr)?.value
+                val authority = ocr?.authority ?: if (ocr?.providerProvenance != null) {
+                    OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE
+                } else OcrAuthorityClassification.LOCAL_PRELIMINARY
                 DerivativeCandidateSummary(record.derivativeGenerationId, record.rootSourceEvidenceArtifactId,
                     record.derivativeKind, record.producerIdentity, record.generatedAt, record.operationalOutcome,
-                    record.completenessState, record.warnings, record.transformationHistory, available)
+                    record.completenessState, record.warnings, record.transformationHistory, available, authority)
             }
 }

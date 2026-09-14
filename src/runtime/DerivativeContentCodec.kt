@@ -66,6 +66,7 @@ internal object DerivativeContentCodec {
     const val DOCX_REPRESENTATION_VERSION = 1
     const val PDF_REPRESENTATION_VERSION = 1
     const val OCR_REPRESENTATION_VERSION = 3
+    const val OCR_AUTHORITY_REPRESENTATION_VERSION = 4
     const val OCR_V2_REPRESENTATION_VERSION = 2
     const val OCR_LEGACY_REPRESENTATION_VERSION = 1
     const val REGION_TRANSCRIPTION_REPRESENTATION_VERSION = 2
@@ -113,8 +114,12 @@ internal object DerivativeContentCodec {
                             payload.value.providerProvenance != null && payload.value.recognisedAt != null
                         val v3 = v2 && payload.value.providerProvenance?.transcriptionConfiguration is
                             OcrTranscriptionConfiguration.DigestedConfiguration
-                        output.writeInt(when { v3 -> OCR_REPRESENTATION_VERSION; v2 -> OCR_V2_REPRESENTATION_VERSION; else -> OCR_LEGACY_REPRESENTATION_VERSION })
-                        when { v3 -> output.writeOcrV3(payload.value); v2 -> output.writeOcrV2(payload.value); else -> output.writeOcr(payload.value) }
+                        val authorityVersion = payload.value.authority != null
+                        output.writeInt(if (authorityVersion) OCR_AUTHORITY_REPRESENTATION_VERSION else
+                            when { v3 -> OCR_REPRESENTATION_VERSION; v2 -> OCR_V2_REPRESENTATION_VERSION; else -> OCR_LEGACY_REPRESENTATION_VERSION })
+                        if (authorityVersion) {
+                            output.writeOcrV4(payload.value, when { v3 -> OCR_REPRESENTATION_VERSION; v2 -> OCR_V2_REPRESENTATION_VERSION; else -> OCR_LEGACY_REPRESENTATION_VERSION })
+                        } else when { v3 -> output.writeOcrV3(payload.value); v2 -> output.writeOcrV2(payload.value); else -> output.writeOcr(payload.value) }
                     }
                     is TierADerivativePayload.RegionTranscription -> {
                         output.writeByte(FORMAT_REGION_TRANSCRIPTION.toInt())
@@ -171,6 +176,7 @@ internal object DerivativeContentCodec {
                         OCR_LEGACY_REPRESENTATION_VERSION -> input.readOcr()
                         OCR_V2_REPRESENTATION_VERSION -> input.readOcrV2()
                         OCR_REPRESENTATION_VERSION -> input.readOcrV3()
+                        OCR_AUTHORITY_REPRESENTATION_VERSION -> input.readOcrV4()
                         else -> throw UnsupportedRepresentationVersionException(representationVersion)
                     }
                     TierADerivativePayload.Ocr(ocr)
@@ -405,6 +411,28 @@ internal object DerivativeContentCodec {
             OcrSha256Digest(readString(MAX_SHORT_STRING_BYTES)),
         )
         return v2.copy(providerProvenance = provider.copy(transcriptionConfiguration = configuration))
+    }
+
+    private fun DataOutputStream.writeOcrV4(r: OcrDerivativeExtractedResult, baseVersion: Int) {
+        writeInt(baseVersion)
+        when (baseVersion) {
+            OCR_LEGACY_REPRESENTATION_VERSION -> writeOcr(r)
+            OCR_V2_REPRESENTATION_VERSION -> writeOcrV2(r)
+            OCR_REPRESENTATION_VERSION -> writeOcrV3(r)
+            else -> error("unsupported OCR base representation version $baseVersion")
+        }
+        writeString(requireNotNull(r.authority).name, MAX_SHORT_STRING_BYTES)
+    }
+
+    private fun DataInputStream.readOcrV4(): OcrDerivativeExtractedResult {
+        val baseVersion = readInt()
+        val base = when (baseVersion) {
+            OCR_LEGACY_REPRESENTATION_VERSION -> readOcr()
+            OCR_V2_REPRESENTATION_VERSION -> readOcrV2()
+            OCR_REPRESENTATION_VERSION -> readOcrV3()
+            else -> throw UnsupportedRepresentationVersionException(baseVersion)
+        }
+        return base.copy(authority = enumValueOf<OcrAuthorityClassification>(readString(MAX_SHORT_STRING_BYTES)))
     }
 
     private fun DataOutputStream.writeScope(scope: OcrPageScope) { writeCollectionSize(scope.pageNumbers.size); scope.pageNumbers.forEach(::writeInt) }

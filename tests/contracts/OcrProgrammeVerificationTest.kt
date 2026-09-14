@@ -199,6 +199,7 @@ class OcrProgrammeVerificationTest {
             "src/runtime/OcrExecutionSequencer.kt",
             "src/runtime/OcrProcessingRepresentationFactory.kt",
             "src/runtime/OcrStructuredResultValidator.kt",
+            "src/interfaces/OcrAuthorityPolicy.kt",
         )
         val actualFiles = listOf(java.io.File("src/interfaces"), java.io.File("src/runtime"))
             .flatMap { dir -> dir.walkTopDown().filter { it.isFile && it.extension == "kt" && it.name.startsWith("Ocr") } }

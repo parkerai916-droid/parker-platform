@@ -6,7 +6,7 @@ import parker.core.interfaces.*
 object ProductionAcquisitionCapabilityCatalogue {
     const val NATIVE_CAPABILITY_ID = "parker-tier-a-native-v1"
     const val LOCAL_OCR_CAPABILITY_ID = "parker-docling-local-ocr-v1"
-    const val HERMES_OCR_REPRESENTATION_CAPABILITY_ID = "parker-hermes-ocr-representation-v1"
+    const val PERSISTED_EXTERNAL_OCR_REPRESENTATION_CAPABILITY_ID = "parker-persisted-external-ocr-representation-v1"
     const val FIDELITY_FIRST_EXTERNAL_CAPABILITY_ID = "openai-gpt-5.6-sol-fidelity-first-v1"
     const val EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID = "openai-gpt-5.6-sol-eml-derived-text-v1"
     const val ORDINARY_REGION_V5_CAPABILITY_ID = ORDINARY_REGION_CAPABILITY_ID
@@ -67,10 +67,10 @@ object ProductionAcquisitionCapabilityCatalogue {
         AcquisitionEgress.LOCAL_ONLY, null, availability, AcquisitionOperationalLimits(),
     )
 
-    /** A previously admitted Hermes OCR derivative; execution selects persisted content and does not invoke OCR. */
-    fun hermesOcrRepresentationCapability() = EvidenceAcquisitionCapability(
-        HERMES_OCR_REPRESENTATION_CAPABILITY_ID, EvidenceAcquisitionMechanism.LOCAL_OCR,
-        setOf("image/jpeg", "image/png", "image/webp"),
+    /** Retrieval of an already-admitted authoritative external OCR derivative. */
+    fun persistedExternalOcrRepresentationCapability() = EvidenceAcquisitionCapability(
+        PERSISTED_EXTERNAL_OCR_REPRESENTATION_CAPABILITY_ID, EvidenceAcquisitionMechanism.LOCAL_OCR,
+        setOf("application/pdf", "image/jpeg", "image/png", "image/webp"),
         setOf(AcquisitionSourceForm.IMAGE_ONLY_OR_SCANNED, AcquisitionSourceForm.MIXED_TEXT_AND_IMAGE),
         AcquisitionFidelityCapabilities(true, false, true, false, false, false,
             pageAssociation = true, regionAssociation = false, uncertaintyReporting = true, structuredOutput = false),

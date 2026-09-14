@@ -54,6 +54,13 @@ class PdfSourceCharacteristicsInspectorTest {
         assertEquals(ProductionAcquisitionCapabilityCatalogue.LOCAL_OCR_CAPABILITY_ID, routed.decision.capability.capabilityId)
     }
 
+    @Test fun `text-showing operator without usable extracted text is still image-only`() = runTest {
+        val bytes = pdfWithWhitespaceTextOperatorAndImage()
+        val inspected = assertIs<PdfSourceCharacteristicsInspection.Established>(inspect(bytes))
+        assertEquals(AcquisitionCharacteristicState.ABSENT, inspected.nativeSearchableText)
+        assertEquals(AcquisitionCharacteristicState.PRESENT, inspected.imageOnlyOrScanned)
+    }
+
     @Test fun `mixed text and image-only pages are classified deterministically`() = runTest {
         val bytes = pdf(textPages = 1, imagePages = 1)
         val first = assertIs<PdfSourceCharacteristicsInspection.Established>(inspect(bytes))
@@ -152,6 +159,24 @@ class PdfSourceCharacteristicsInspectorTest {
                 PDPageContentStream(document, page).use { it.drawImage(image, 72f, 700f, 1f, 1f) }
             }
             if (encrypted) document.protect(StandardProtectionPolicy("owner-password", "user-password", AccessPermission()))
+            document.save(output)
+        }
+        return output.toByteArray()
+    }
+
+    private fun pdfWithWhitespaceTextOperatorAndImage(): ByteArray {
+        val output = ByteArrayOutputStream()
+        PDDocument().use { document ->
+            val page = PDPage(); document.addPage(page)
+            val image = LosslessFactory.createFromImage(document, BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB))
+            PDPageContentStream(document, page).use { stream ->
+                stream.beginText()
+                stream.setFont(PDType1Font(Standard14Fonts.FontName.HELVETICA), 12f)
+                stream.newLineAtOffset(72f, 700f)
+                stream.showText(" ")
+                stream.endText()
+                stream.drawImage(image, 72f, 700f, 1f, 1f)
+            }
             document.save(output)
         }
         return output.toByteArray()

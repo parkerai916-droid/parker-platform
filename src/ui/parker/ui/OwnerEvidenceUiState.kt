@@ -6,8 +6,10 @@ import parker.core.interfaces.EvidenceArtifactId
  * Owner Evidence Upload & Processing (first version). Per-file lifecycle --
  * every state below is reachable only in this order (never skipped, never
  * reversed): SELECTED -> UPLOADING -> (IMPORT_FAILED | IMPORTED) ->
- * READY_TO_PROCESS -> PROCESSING -> (FAILED | TIER_A_COMPLETE | REQUIRES_OCR)
- * -> [only from REQUIRES_OCR] OCR_PROCESSING -> (FAILED | COMPLETE).
+ * READY_TO_PROCESS -> PROCESSING -> (FAILED | TIER_A_COMPLETE | TIER_B_DURABLE_COMPLETE |
+ * REQUIRES_OCR) -> [only from REQUIRES_OCR] OCR_PROCESSING -> (FAILED | COMPLETE).
+ * Eligible PDFs take the durable Tier B branch directly; other Tier B formats retain the
+ * explicit/manual compatibility transition.
  * "UPLOADING" names the transient custody-import step even though this
  * unit's own transport is a direct, in-process local-file read (§C of the
  * human review report) -- kept as the requested vocabulary rather than
@@ -21,6 +23,7 @@ enum class OwnerEvidenceFileStatus {
     READY_TO_PROCESS,
     PROCESSING,
     TIER_A_COMPLETE,
+    TIER_B_DURABLE_COMPLETE,
     REQUIRES_OCR,
     OCR_PROCESSING,
     COMPLETE,
@@ -43,6 +46,7 @@ data class OwnerEvidenceFileRow(
     val status: OwnerEvidenceFileStatus,
     val evidenceArtifactId: EvidenceArtifactId? = null,
     val tierAFormat: String? = null,
+    val ocrDerivativeGenerationId: parker.core.interfaces.DerivativeGenerationId? = null,
     val message: String? = null,
 )
 

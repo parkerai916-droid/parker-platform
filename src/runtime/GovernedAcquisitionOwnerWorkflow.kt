@@ -46,9 +46,30 @@ internal class GovernedAcquisitionOwnerWorkflow(
         if (manifest.evidenceArtifactId != evidenceArtifactId) return unavailable(evidenceArtifactId, "SOURCE_IDENTITY_MISMATCH")
         val source = projectTechnicalFacts(manifest)
             ?: return unavailable(evidenceArtifactId, "SOURCE_MEDIA_TYPE_UNKNOWN")
-        val capabilities = registry.capabilities() + if (hasUsableHermesRepresentation(evidenceArtifactId)) {
-            listOf(ProductionAcquisitionCapabilityCatalogue.hermesOcrRepresentationCapability())
-        } else emptyList()
+        val persistedExternalOcr = usablePersistedExternalOcrRepresentation(evidenceArtifactId)
+        // A persisted PDF representation is a retrieval capability, not an execution request.
+        // When it exists for a scanned PDF, suppress the otherwise equivalent execution
+        // capability for this decision so an enabled local OCR executor cannot outrank or make
+        // the already-admitted derivative ambiguous.
+        val persistedExternalIsRetrievable = persistedExternalOcr != null && (
+            source.mediaType.startsWith("image/") ||
+                (source.mediaType == "application/pdf" &&
+                    source.characteristics.imageOnlyOrScanned == AcquisitionCharacteristicState.PRESENT)
+            )
+        val executionCapabilities = registry.capabilities().filterNot {
+            // Local OCR is diagnostic/preliminary only. It is never an authoritative governed
+            // representation and never a fallback when external OCR is unavailable.
+            (!OcrAuthorityPolicy.LOCAL_OCR_AUTHORITATIVE &&
+                it.mechanism == EvidenceAcquisitionMechanism.LOCAL_OCR &&
+                it.availability is AcquisitionAvailability.Available) ||
+                (persistedExternalIsRetrievable &&
+                    (it.mechanism == EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION ||
+                        it.mechanism == EvidenceAcquisitionMechanism.EXTERNAL_VISION_TRANSCRIPTION))
+        }
+        val capabilities = executionCapabilities +
+            (if (persistedExternalOcr != null) {
+                listOf(ProductionAcquisitionCapabilityCatalogue.persistedExternalOcrRepresentationCapability())
+            } else emptyList())
         return GovernedAcquisitionOwnerEvaluation.Evaluated(
             source, router.route(source, capabilities, egressAuthorisation(evidenceArtifactId)),
         )
@@ -69,8 +90,9 @@ internal class GovernedAcquisitionOwnerWorkflow(
         if (selected.decision.capability.capabilityId != expectedCapabilityId) {
             return GovernedAcquisitionOwnerExecution.StaleOrUnavailable(current)
         }
-        if (expectedCapabilityId == ProductionAcquisitionCapabilityCatalogue.HERMES_OCR_REPRESENTATION_CAPABILITY_ID) {
-            val candidate = usableHermesRepresentation(evidenceArtifactId)
+        if (expectedCapabilityId == ProductionAcquisitionCapabilityCatalogue.PERSISTED_EXTERNAL_OCR_REPRESENTATION_CAPABILITY_ID
+        ) {
+            val candidate = usablePersistedExternalOcrRepresentation(evidenceArtifactId)
                 ?: return GovernedAcquisitionOwnerExecution.StaleOrUnavailable(current)
             val provenance = AcquisitionRoutingProvenance(
                 evaluated.source.evidenceArtifactId,
@@ -129,22 +151,19 @@ internal class GovernedAcquisitionOwnerWorkflow(
         )
     }
 
-    private suspend fun hasUsableHermesRepresentation(evidenceArtifactId: EvidenceArtifactId): Boolean =
-        usableHermesRepresentation(evidenceArtifactId) != null
-
-    private suspend fun usableHermesRepresentation(evidenceArtifactId: EvidenceArtifactId): DerivativeCandidateSummary? =
+    private suspend fun usablePersistedExternalOcrRepresentation(evidenceArtifactId: EvidenceArtifactId): DerivativeCandidateSummary? =
         derivativeDiscoveryProjection?.discover(evidenceArtifactId)
             ?.filter {
                 it.rootSourceEvidenceArtifactId == evidenceArtifactId &&
-                    it.derivativeKind == "OCR recognised text" &&
+                    it.derivativeKind == "External transcription recognised text" &&
                     it.operationalOutcome == DerivativeOperationalOutcome.USABLE &&
                     it.contentAvailable &&
+                    it.authority == OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE &&
+                    DerivativeTransformation.OCR in it.transformationHistory &&
                     it.completenessState in setOf(
                         DerivativeCompletenessState.ACCOUNTED_FOR,
                         DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
-                    ) &&
-                    it.producerIdentity.pluginIdentity == "docling" &&
-                    it.producerIdentity.configurationIdentity == "hermes-pre-ingestion"
+                    )
             }
             ?.singleOrNull()
 

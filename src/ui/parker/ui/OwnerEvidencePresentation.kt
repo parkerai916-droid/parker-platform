@@ -26,6 +26,7 @@ fun evidenceStatusLabel(status: OwnerEvidenceFileStatus): String = when (status)
     OwnerEvidenceFileStatus.READY_TO_PROCESS -> "Ready to process"
     OwnerEvidenceFileStatus.PROCESSING -> "Processing…"
     OwnerEvidenceFileStatus.TIER_A_COMPLETE -> "Complete"
+    OwnerEvidenceFileStatus.TIER_B_DURABLE_COMPLETE -> "Complete"
     OwnerEvidenceFileStatus.REQUIRES_OCR -> "Requires OCR"
     OwnerEvidenceFileStatus.OCR_PROCESSING -> "Running OCR…"
     OwnerEvidenceFileStatus.COMPLETE -> "Complete"

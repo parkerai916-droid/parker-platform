@@ -3,6 +3,8 @@ package parker.core.runtime
 import parker.core.interfaces.OcrStructuredValidationOutcome
 import parker.core.interfaces.OcrRecognitionOutcome
 import parker.core.interfaces.OcrModelSnapshot
+import parker.core.interfaces.OcrAuthorityClassification
+import parker.core.interfaces.OcrAuthorityPolicy
 
 import java.security.MessageDigest
 import java.time.Instant
@@ -442,6 +444,7 @@ class DerivativeGenerationCoordinator(
             processingProvenance = result.processingProvenance.takeIf { persistProcessingProvenance },
             providerProvenance = result.providerProvenance.takeIf { persistProcessingProvenance },
             recognisedAt = result.recognisedAt.takeIf { persistProcessingProvenance },
+            authority = OcrAuthorityPolicy.classify(result),
         )
 
         val id = idFactory()
@@ -540,6 +543,7 @@ class DerivativeGenerationCoordinator(
         val extracted = OcrDerivativeExtractedResult(
             result.recognisedText, result.fidelity, outcomeKind, degradationReason, result.warnings, result.segments,
             producer, transformations, validation.completenessState, accounting, processing, provider, result.recognisedAt,
+            OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE,
         )
         val id = idFactory()
         val recordWarnings = if (degradationReason == null) result.warnings else result.warnings + degradationReason

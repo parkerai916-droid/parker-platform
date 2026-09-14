@@ -46,6 +46,8 @@ data class OcrDerivativeExtractedResult(
     val providerProvenance: OcrProviderProvenance? = null,
     /** Absent only for historical/local version-1 payloads that never recorded this v2 fact. */
     val recognisedAt: java.time.Instant? = null,
+    /** Null is retained only for legacy payloads written before the authority policy existed. */
+    val authority: OcrAuthorityClassification? = null,
 ) {
     init {
         require(recognisedText.isNotBlank()) { "OcrDerivativeExtractedResult.recognisedText must not be blank" }

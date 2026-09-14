@@ -11,6 +11,29 @@ class GovernedAcquisitionIntegrationTest {
     private val bytes = "%PDF-synthetic".toByteArray()
     private val sha = digest(bytes)
 
+    @Test fun `architecture guard LOCAL OCR MUST NOT BECOME AUTHORITATIVE`() {
+        assertFalse(
+            OcrAuthorityPolicy.LOCAL_OCR_AUTHORITATIVE,
+            "LOCAL OCR MUST NOT BECOME AUTHORITATIVE",
+        )
+        assertTrue(OcrAuthorityPolicy.LOCAL_OCR_PERMITTED_FOR_DIAGNOSTICS)
+        assertEquals("EXTERNAL", OcrAuthorityPolicy.AUTHORITATIVE_PROVIDER_CLASS)
+    }
+
+    @Test fun `local and external OCR authority classifications remain distinct`() {
+        val local = OcrRecognitionResult(
+            "local", TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            OcrRecognitionIdentity("docling", "docling-bridge-v1", "1", "model", "sha256:" + "a".repeat(64)),
+            recognisedAt = java.time.Instant.EPOCH,
+        )
+        val external = local.copy(providerProvenance = OcrProviderProvenance(
+            "external-provider", "adapter", "1", "profile", "model",
+            OcrModelSnapshot.NotExposed, "correlation",
+        ))
+        assertEquals(OcrAuthorityClassification.LOCAL_PRELIMINARY, OcrAuthorityPolicy.classify(local))
+        assertEquals(OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE, OcrAuthorityPolicy.classify(external))
+    }
+
     @Test fun `A born digital routes and executes only exact native capability`() = runTest {
         val counters = Counters()
         val result = coordinator(listOf(nativeExec(counters), localExec(counters), externalExec(counters)))
@@ -196,6 +219,27 @@ class GovernedAcquisitionIntegrationTest {
             .execute(owner, source(), NOT_AUTHORISED)
         assertIs<GovernedAcquisitionExecutionResult.Failed>(result)
         assertEquals(listOf(0, 0, 0), listOf(counters.native, counters.local, counters.external))
+    }
+
+    @Test fun `local OCR is not present as a persisted authoritative production capability`() {
+        val catalogue = ProductionAcquisitionCapabilityCatalogue.create()
+        assertTrue(catalogue.capabilities().none { it.capabilityId.contains("persisted-local-ocr") })
+        assertFalse(OcrAuthorityPolicy.LOCAL_OCR_AUTHORITATIVE,
+            "LOCAL OCR MUST NOT BECOME AUTHORITATIVE")
+    }
+
+    @Test fun `without an external derivative disabled PDF OCR remains ineligible`() {
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(
+            source(), listOf(ProductionAcquisitionCapabilityCatalogue.localOcrCapability(
+                AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
+            )), NOT_AUTHORISED,
+        )
+        assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
+    }
+
+    @Test fun `Hermes local OCR representation remains outside the authoritative capability catalogue`() {
+        val catalogue = ProductionAcquisitionCapabilityCatalogue.create()
+        assertTrue(catalogue.capabilities().none { it.capabilityId.contains("hermes-ocr-representation") })
     }
 
     // REAL-DOCUMENT-2F -- Wire Accepted External Transcription into Governed Acquisition. The
