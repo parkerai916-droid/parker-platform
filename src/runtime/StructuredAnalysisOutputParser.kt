@@ -59,7 +59,9 @@ class StructuredAnalysisOutputParser(
 
     private fun reference(value: JValue, packageValue: AnalysisRetrievalPackage): AnalysisEvidenceReference {
         val obj = value.obj()
-        requireKeys(obj, setOf("evidenceArtifactId", "derivativeGenerationId", "precision", "authority", "correctionId", "correctionScope", "pageNumber", "regionId"))
+        val baseKeys = setOf("evidenceArtifactId", "derivativeGenerationId", "precision", "authority", "correctionId", "correctionScope", "pageNumber", "regionId")
+        val anchorKeys = setOf("sectionHeading", "startOffset", "endOffset", "quotedText")
+        if (obj.values.keys != baseKeys && obj.values.keys != baseKeys + anchorKeys) throw StructuredAnalysisOutputException("analysis reference has unexpected or missing fields")
         val evidenceId = EvidenceArtifactId(obj.string("evidenceArtifactId"))
         val item = packageValue.evidence.singleOrNull { it.evidenceArtifactId == evidenceId }
             ?: throw InvalidAnalysisReferenceException("analysis reference names evidence outside the governed package")
@@ -76,6 +78,11 @@ class StructuredAnalysisOutputParser(
             try { HermesPreIngestionCorrectionId(it) } catch (_: Exception) { throw InvalidAnalysisReferenceException("invalid correction reference") }
         }
         val scope = obj.stringOrNull("correctionScope")
+        val section = obj.stringOrNull("sectionHeading")
+        val start = obj.intOrNull("startOffset")
+        val end = obj.intOrNull("endOffset")
+        val quote = obj.stringOrNull("quotedText")
+        if ((start == null) != (end == null) || (quote != null && (start == null || end == null))) invalid("citation anchor offsets and quotation must be supplied together")
         if (authority == AnalysisReferenceAuthority.OWNER_AUTHORIZED_CORRECTION) {
             val lineage = item.manifest.correctionLineage
                 ?: throw InvalidAnalysisReferenceException("owner correction is not present in the governed package")
@@ -89,7 +96,24 @@ class StructuredAnalysisOutputParser(
             AnalysisReferencePrecision.REGION -> if (page == null || page !in pages || region == null || supportedRegionPages(item)[region] != page) invalid("region precision exceeds governed region provenance")
         }
         if (precision == AnalysisReferencePrecision.REGION && region !in regions) invalid("unknown governed region")
-        return AnalysisEvidenceReference(evidenceId, generation, item.manifest.sha256, item.manifest.originalFileName, precision, page, region, authority, correctionId, scope)
+        if (quote != null) {
+            val text = when (val payload = content.payload) {
+                is TierADerivativePayload.Pdf -> payload.value.documentText
+                is TierADerivativePayload.Ocr -> payload.value.recognisedText
+                else -> null
+            }
+            if (text == null || start!! < 0 || end!! > text.length || text.substring(start, end) != quote) invalid("quotation is not bound to the governed representation")
+            if (precision == AnalysisReferencePrecision.PAGE) {
+                val pageSegments = when (val payload = content.payload) {
+                    is TierADerivativePayload.Pdf -> payload.value.pageTextSegments
+                    else -> emptyList()
+                }
+                if (pageSegments.none { it.pageNumber == page && start >= it.startOffset && end <= it.endOffset }) {
+                    invalid("page citation quotation is not wholly bound to the cited page")
+                }
+            }
+        }
+        return AnalysisEvidenceReference(evidenceId, generation, item.manifest.sha256, item.manifest.originalFileName, precision, page, region, authority, correctionId, scope, section, start, end, quote)
     }
 
     private fun supportedPages(item: AnalysisRetrievedEvidence): Set<Int> = when (val payload = item.governedContent?.payload) {

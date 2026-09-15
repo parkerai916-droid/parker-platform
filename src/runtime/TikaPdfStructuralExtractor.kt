@@ -1,5 +1,8 @@
 package parker.core.runtime
 
+import java.security.MessageDigest
+import org.apache.pdfbox.Loader
+import org.apache.pdfbox.text.PDFTextStripper
 import parker.core.interfaces.*
 
 class TikaPdfStructuralExtractor(
@@ -26,21 +29,25 @@ class TikaPdfStructuralExtractor(
                 }
                 if (result.documentMetadata.size > MAX_METADATA_COUNT || result.documentMetadata.any { (key, value) ->
                         key.length > MAX_METADATA_CHARACTERS || value.length > MAX_METADATA_CHARACTERS
-                    }) {
+                }) {
                     return PdfStructuralExtractionOutcome.Malformed("PDF parser metadata exceeds the bounded Tier A adapter limit")
                 }
+                val sourceDigest = sha256(sourceBytes)
+                val pageSegments = pageSegments(sourceBytes, pageCount, sourceDigest, result.extractedText)
+                val pageAware = pageSegments != null && pageSegments.size == pageCount
                 PdfStructuralExtractionOutcome.Extracted(PdfStructuralResult(
                     documentText = result.extractedText,
                     pageCount = pageCount,
-                    pageTextAssociationAvailable = false,
+                    pageTextAssociationAvailable = pageAware,
                     metadata = result.documentMetadata.entries.sortedBy { it.key }.map {
                         PdfMetadataValue(it.key, it.value, "TIKA_PARSER_EXPOSED")
                     },
                     embeddedResources = result.embeddedResources,
-                    producerIdentity = PRODUCER_IDENTITY,
+                    producerIdentity = if (pageAware) PAGE_AWARE_PRODUCER_IDENTITY else PRODUCER_IDENTITY,
                     transformationHistory = TRANSFORMATIONS,
                     completenessState = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
-                    warnings = LIMITATION_WARNINGS,
+                    warnings = if (pageAware) PAGE_AWARE_WARNINGS else LIMITATION_WARNINGS,
+                    pageTextSegments = pageSegments ?: emptyList(),
                 ))
             }
         }
@@ -57,6 +64,8 @@ class TikaPdfStructuralExtractor(
         const val ADAPTER_VERSION = "1"
         const val CONFIGURATION_IDENTITY = "pdfparser-searchable-text-whole-document-bounded-no-ocr-v1"
         val PRODUCER_IDENTITY = DerivativeProducerIdentity(PRODUCT_IDENTITY, PRODUCT_VERSION, CONFIGURATION_IDENTITY, ADAPTER_IDENTITY, ADAPTER_VERSION)
+        const val PAGE_AWARE_CONFIGURATION_IDENTITY = "pdfparser-searchable-text-page-aware-bounded-no-ocr-v1"
+        val PAGE_AWARE_PRODUCER_IDENTITY = PRODUCER_IDENTITY.copy(configurationIdentity = PAGE_AWARE_CONFIGURATION_IDENTITY)
         val TRANSFORMATIONS = listOf(DerivativeTransformation.CHARACTER_DECODING, DerivativeTransformation.STRUCTURAL_PARSING, DerivativeTransformation.METADATA_INTERPRETATION)
         val LIMITATION_WARNINGS = listOf(
             "The existing Tika PDF path exposes whole-document text but not page-associated text or coordinates",
@@ -64,5 +73,25 @@ class TikaPdfStructuralExtractor(
             "Metadata values are Tika-exposed representations and are not claimed as original lexical PDF object values",
             "Parker bounds source and SAX text/metadata output, but Tika/PDFBox may allocate bounded-source parser structures internally before Parker observes them",
         )
+        val PAGE_AWARE_WARNINGS = LIMITATION_WARNINGS.filterNot { it.startsWith("The existing Tika PDF path") } +
+            "Page text is associated with source PDF pages; coordinates and visual layout are not claimed"
+
+        private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+        private fun pageSegments(bytes: ByteArray, expectedPageCount: Int?, sourceDigest: String, documentText: String): List<PageTextSegment>? = try {
+            Loader.loadPDF(bytes).use { document ->
+                if (expectedPageCount != null && document.numberOfPages != expectedPageCount) return null
+                val extracted = mutableListOf<PageTextSegment>(); var sourceOffset = 0
+                for (page in 1..document.numberOfPages) {
+                    val text = PDFTextStripper().apply { startPage = page; endPage = page }.getText(document)
+                    val offset = documentText.indexOf(text, sourceOffset)
+                    if (offset < 0) return null
+                    val end = offset + text.length
+                    extracted += PageTextSegment(page, text, offset, end, extractionMethod = "PDFBox page text", sourceSha256 = sourceDigest)
+                    sourceOffset = end
+                }
+                extracted
+            }
+        } catch (_: Exception) { null }
     }
 }

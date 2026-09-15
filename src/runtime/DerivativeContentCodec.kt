@@ -64,7 +64,7 @@ internal object DerivativeContentCodec {
     const val CSV_REPRESENTATION_VERSION = 1
     const val EML_REPRESENTATION_VERSION = 1
     const val DOCX_REPRESENTATION_VERSION = 1
-    const val PDF_REPRESENTATION_VERSION = 1
+    const val PDF_REPRESENTATION_VERSION = 2
     const val OCR_REPRESENTATION_VERSION = 3
     const val OCR_AUTHORITY_REPRESENTATION_VERSION = 4
     const val OCR_V2_REPRESENTATION_VERSION = 2
@@ -168,8 +168,8 @@ internal object DerivativeContentCodec {
                     TierADerivativePayload.Docx(input.readDocx())
                 }
                 FORMAT_PDF -> {
-                    if (representationVersion != PDF_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
-                    TierADerivativePayload.Pdf(input.readPdf())
+                    if (representationVersion !in 1..PDF_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
+                    TierADerivativePayload.Pdf(input.readPdf(representationVersion))
                 }
                 FORMAT_OCR -> {
                     val ocr = when (representationVersion) {
@@ -251,9 +251,18 @@ internal object DerivativeContentCodec {
         writeTransformations(r.transformationHistory)
         writeString(r.completenessState.name, MAX_SHORT_STRING_BYTES)
         writeStrings(r.warnings)
+        require(r.pageTextSegments.size <= MAX_COLLECTION_SIZE)
+        writeCollectionSize(r.pageTextSegments.size)
+        r.pageTextSegments.forEach { segment ->
+            writeInt(segment.pageNumber); writeString(segment.text, MAX_LARGE_TEXT_BYTES); writeInt(segment.startOffset); writeInt(segment.endOffset)
+            writeNullableString(segment.sectionHeading); writeBoolean(segment.region != null)
+            segment.region?.let { writeDouble(it.left); writeDouble(it.top); writeDouble(it.right); writeDouble(it.bottom) }
+            writeString(segment.extractionMethod, MAX_SHORT_STRING_BYTES); writeBoolean(segment.confidence != null); segment.confidence?.let(::writeDouble)
+            writeString(segment.sourceSha256, MAX_SHORT_STRING_BYTES); writeNullableString(segment.derivativeGenerationId?.value)
+        }
     }
 
-    private fun DataInputStream.readPdf(): PdfStructuralResult {
+    private fun DataInputStream.readPdf(version: Int): PdfStructuralResult {
         val documentText = readString(MAX_LARGE_TEXT_BYTES)
         val pageCount = if (readBoolean()) readInt() else null
         val pageTextAssociationAvailable = readBoolean()
@@ -263,7 +272,14 @@ internal object DerivativeContentCodec {
         val transformations = readTransformations()
         val completeness = enumValueOf<DerivativeCompletenessState>(readString(MAX_SHORT_STRING_BYTES))
         val warnings = readStrings()
-        return PdfStructuralResult(documentText, pageCount, pageTextAssociationAvailable, metadata, embeddedResources, producer, transformations, completeness, warnings)
+        val segments = if (version >= 2) List(readCollectionSize()) {
+            val page = readInt(); val text = readString(MAX_LARGE_TEXT_BYTES); val start = readInt(); val end = readInt()
+            val heading = readNullableString(); val region = if (readBoolean()) PageTextRegion(readDouble(), readDouble(), readDouble(), readDouble()) else null
+            val method = readString(MAX_SHORT_STRING_BYTES); val confidence = if (readBoolean()) readDouble() else null
+            val source = readString(MAX_SHORT_STRING_BYTES); val generation = readNullableString()?.let(::DerivativeGenerationId)
+            PageTextSegment(page, text, start, end, heading, region, method, confidence, source, generation)
+        } else emptyList()
+        return PdfStructuralResult(documentText, pageCount, pageTextAssociationAvailable, metadata, embeddedResources, producer, transformations, completeness, warnings, segments)
     }
 
     // ---- OCR (Tier B durable, TIER_B_OCR_DURABLE_REPRESENTATION_BOUNDS_DECISION.md) -----------

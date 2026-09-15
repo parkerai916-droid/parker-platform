@@ -13,6 +13,7 @@ import parker.core.interfaces.SavedAnalysisEvidenceReference
 import parker.core.interfaces.SavedAnalysisId
 import parker.core.interfaces.SavedAnalysisRecord
 import parker.core.interfaces.AnalysisAcquisitionAssurance
+import parker.core.interfaces.EvidenceCitationAnchor
 import parker.core.interfaces.AnalysisAcquisitionMechanism
 import parker.core.interfaces.AnalysisHumanReviewState
 import parker.core.interfaces.DerivativeCompletenessState
@@ -32,7 +33,7 @@ internal class UnsupportedSavedAnalysisRepresentationVersionException(val versio
 
 internal object SavedAnalysisRecordCodec {
     private const val MAGIC = 0x50444153 // "PDAS" -- Parker Document Analysis, Saved
-    private const val VERSION = 2
+    private const val VERSION = 3
     private const val MAX_COLLECTION_SIZE = 10_000
     private const val MAX_STRING_BYTES = 8 * 1024 * 1024
 
@@ -51,6 +52,13 @@ internal object SavedAnalysisRecordCodec {
                 output.writeString(reference.derivativeGenerationId.value)
                 output.writeString(reference.derivativeKind)
                 output.writeAssurance(reference.assurance)
+                output.writeCollectionSize(reference.citationAnchors.size)
+                reference.citationAnchors.forEach { anchor ->
+                    output.writeString(anchor.evidenceArtifactId.value); output.writeString(anchor.derivativeGenerationId.value); output.writeString(anchor.sourceSha256)
+                    output.writeBoolean(anchor.pageNumber != null); anchor.pageNumber?.let(output::writeInt); output.writeNullableString(anchor.sectionHeading)
+                    output.writeInt(anchor.startOffset); output.writeInt(anchor.endOffset); output.writeString(anchor.quotedText); output.writeString(anchor.extractionMethod); output.writeString(anchor.authority)
+                    output.writeBoolean(anchor.confidence != null); anchor.confidence?.let(output::writeDouble)
+                }
             }
             output.writeNullableString(record.mechanismIdentity)
             output.writeNullableString(record.mechanismVersion)
@@ -73,6 +81,13 @@ internal object SavedAnalysisRecordCodec {
                 derivativeGenerationId = DerivativeGenerationId(input.readString()),
                 derivativeKind = input.readString(),
                 assurance = if (version >= 2) input.readAssurance() else null,
+                citationAnchors = if (version >= 3) List(input.readCollectionSize()) {
+                    EvidenceCitationAnchor(
+                        EvidenceArtifactId(input.readString()), DerivativeGenerationId(input.readString()), input.readString(),
+                        if (input.readBoolean()) input.readInt() else null, input.readNullableString(), input.readInt(), input.readInt(),
+                        input.readString(), input.readString(), input.readString(), if (input.readBoolean()) input.readDouble() else null,
+                    )
+                } else emptyList(),
             )
         }
         val mechanismIdentity = input.readNullableString()

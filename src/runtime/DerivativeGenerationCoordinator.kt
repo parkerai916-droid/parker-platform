@@ -365,13 +365,17 @@ class DerivativeGenerationCoordinator(
         }
         if (sha256(source.content) != source.expectedSha256) return PdfDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 changed during PDF extraction")
         val id = idFactory()
+        val boundExtracted = extracted.copy(pageTextSegments = extracted.pageTextSegments.map { segment ->
+            require(segment.sourceSha256 == source.expectedSha256) { "PDF page segment source digest does not match the governed source" }
+            segment.copy(derivativeGenerationId = id)
+        })
         val record = DerivativeGenerationRecord(
             id, source.evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(source.evidenceArtifactId)),
-            "Searchable PDF literal text", extracted.producerIdentity, extracted.transformationHistory, now(),
-            DerivativeContentIdentity.NoCanonicalSerialization, extracted.completenessState,
-            DerivativeOperationalOutcome.USABLE, extracted.warnings,
+            "Searchable PDF literal text", boundExtracted.producerIdentity, boundExtracted.transformationHistory, now(),
+            DerivativeContentIdentity.NoCanonicalSerialization, boundExtracted.completenessState,
+            DerivativeOperationalOutcome.USABLE, boundExtracted.warnings,
         )
-        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Pdf(extracted))?.let {
+        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Pdf(boundExtracted))?.let {
             return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
         }
         try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) { return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
@@ -379,8 +383,8 @@ class DerivativeGenerationCoordinator(
         catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
         try { storage.publishPrepared(id) } catch (e: DerivativeGenerationStorageException) { return PdfDerivativeGenerationCoordinationOutcome.PublicationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
         try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
-        catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
-        return PdfDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+        catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, boundExtracted, e.message ?: e::class.simpleName.orEmpty()) }
+        return PdfDerivativeGenerationCoordinationOutcome.Admitted(record, boundExtracted)
     }
 
     /**

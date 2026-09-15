@@ -8,6 +8,7 @@ import parker.core.interfaces.AnalysisEvidenceItem
 import parker.core.interfaces.AnalysisAcquisitionAssurance
 import parker.core.interfaces.AnalysisAcquisitionMechanism
 import parker.core.interfaces.AnalysisHumanReviewState
+import parker.core.interfaces.EvidenceCitationAnchor
 import parker.core.interfaces.CsvStructuralResult
 import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.DocxStructuralResult
@@ -225,6 +226,18 @@ class DocumentAnalysisCoordinator(
                         completenessState = record.completenessState,
                         warnings = record.warnings,
                         assurance = assurance,
+                        citationAnchors = assurance.sourceSha256?.let { source ->
+                            var offset = 0
+                            tierB.extracted.segments.mapNotNull { segment ->
+                                val start = tierB.extracted.recognisedText.indexOf(segment.text, offset)
+                                if (start < 0) return@mapNotNull null
+                                offset = start + segment.text.length
+                                segment.pageNumber?.let { page -> EvidenceCitationAnchor(
+                                    selection.evidenceArtifactId, selection.derivativeGenerationId,
+                                    source, page, null, start, offset, segment.text, "OCR segment", "GOVERNED_DERIVATIVE", null,
+                                ) }
+                            }
+                        }.orEmpty(),
                     ),
                 )
             }
@@ -282,6 +295,19 @@ class DocumentAnalysisCoordinator(
                     is TierADerivativePayload.Ocr -> error("unreachable -- handled above")
                     is TierADerivativePayload.RegionTranscription -> error("unreachable -- handled above")
                 }
+                val anchors = when (payload) {
+                    is TierADerivativePayload.Pdf -> {
+                        val segments = payload.value.pageTextSegments
+                        if (segments.isNotEmpty()) segments.mapNotNull { segment ->
+                            if (segment.text.isBlank()) null else EvidenceCitationAnchor(
+                                selection.evidenceArtifactId, selection.derivativeGenerationId, segment.sourceSha256,
+                                segment.pageNumber, segment.sectionHeading, segment.startOffset, segment.endOffset,
+                                segment.text, segment.extractionMethod, "GOVERNED_DERIVATIVE", segment.confidence,
+                            )
+                        } else emptyList()
+                    }
+                    else -> emptyList()
+                }
                 Resolved(
                     AnalysisEvidenceItem(
                         evidenceArtifactId = selection.evidenceArtifactId,
@@ -293,6 +319,7 @@ class DocumentAnalysisCoordinator(
                         completenessState = record.completenessState,
                         warnings = record.warnings,
                         assurance = assurance,
+                        citationAnchors = anchors,
                     ),
                 )
             }

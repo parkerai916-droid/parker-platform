@@ -23,6 +23,19 @@ import java.time.Instant
  * default or partially-decoded value.
  */
 class DerivativeContentCodecTest {
+    @Test
+    fun `page-aware PDF mappings survive restart codec round trip`() {
+        val source = "a".repeat(64)
+        val pdf = TierADerivativePayloadFixtures.pdf("one\ntwo").copy(
+            pageTextAssociationAvailable = true,
+            pageTextSegments = listOf(
+                PageTextSegment(1, "one", 0, 3, extractionMethod = "fixture", sourceSha256 = source, derivativeGenerationId = DerivativeGenerationId("gen-page")),
+                PageTextSegment(2, "two", 4, 7, extractionMethod = "fixture", sourceSha256 = source, derivativeGenerationId = DerivativeGenerationId("gen-page")),
+            ),
+        )
+        val entry = DerivativeContentEntry(DerivativeGenerationId("gen-page"), EvidenceArtifactId("source-page"), TierADerivativePayload.Pdf(pdf))
+        assertEquals(entry, DerivativeContentCodec.decode(DerivativeContentCodec.encode(entry)))
+    }
 
     @Test
     fun `PDF payload round trips every governed field exactly`() {

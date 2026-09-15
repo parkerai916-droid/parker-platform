@@ -25,6 +25,7 @@ class TikaPdfStructuralExtractorTest {
         assertTrue("PAGE-2-ONLY: KŌWHAI-SECOND-PAGE-882" in result.documentText)
         assertEquals(2, result.pageCount)
         assertFalse(result.pageTextAssociationAvailable)
+        assertTrue(result.pageTextSegments.isEmpty())
         assertTrue(result.embeddedResources.isEmpty())
         assertEquals(ApacheTikaIdentity, result.producerIdentity)
         assertFalse(DerivativeTransformation.OCR in result.transformationHistory)
@@ -59,6 +60,18 @@ class TikaPdfStructuralExtractorTest {
         assertTrue("X" in result.documentText)
     }
 
+    @Test fun `page-aware extraction preserves three page anchors and does not merge cross-page quotation`() = runTest {
+        val bytes = searchablePdf(listOf("PARKER PAGE ONE TEST", "PARKER PAGE TWO TEST", "PARKER PAGE THREE TEST"))
+        val result = extracted(bytes)
+        assertEquals(listOf(1, 2, 3), result.pageTextSegments.map { it.pageNumber })
+        assertTrue(result.pageTextSegments[1].text.contains("PARKER PAGE TWO TEST"))
+        assertEquals("PARKER PAGE TWO TEST", result.documentText.substring(
+            result.pageTextSegments[1].startOffset + result.pageTextSegments[1].text.indexOf("PARKER PAGE TWO TEST"),
+            result.pageTextSegments[1].startOffset + result.pageTextSegments[1].text.indexOf("PARKER PAGE TWO TEST") + "PARKER PAGE TWO TEST".length,
+        ))
+        assertTrue(result.pageTextSegments.all { it.endOffset <= result.documentText.length })
+    }
+
     @Test fun `password protected PDF cannot become false successful Tier A extraction`() = runTest {
         val document = PDDocument(); document.addPage(PDPage())
         document.protect(StandardProtectionPolicy("owner-secret", "user-secret", AccessPermission()).apply { encryptionKeyLength = 128 })
@@ -67,12 +80,18 @@ class TikaPdfStructuralExtractorTest {
     }
 
     private fun searchablePdf(text: String): ByteArray {
+        return searchablePdf(listOf(text))
+    }
+
+    private fun searchablePdf(texts: List<String>): ByteArray {
         val output = java.io.ByteArrayOutputStream()
         PDDocument().use { document ->
-            val page = PDPage(); document.addPage(page)
-            PDPageContentStream(document, page).use { stream ->
-                stream.beginText(); stream.setFont(PDType1Font(Standard14Fonts.FontName.HELVETICA), 12f)
-                stream.newLineAtOffset(72f, 720f); stream.showText(text); stream.endText()
+            texts.forEach { text ->
+                val page = PDPage(); document.addPage(page)
+                PDPageContentStream(document, page).use { stream ->
+                    stream.beginText(); stream.setFont(PDType1Font(Standard14Fonts.FontName.HELVETICA), 12f)
+                    stream.newLineAtOffset(72f, 720f); stream.showText(text); stream.endText()
+                }
             }
             document.save(output)
         }

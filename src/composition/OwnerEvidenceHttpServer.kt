@@ -1705,6 +1705,7 @@ class OwnerEvidenceHttpServer(
                     "derivativeGenerationId" to it.derivativeGenerationId.value,
                     "derivativeKind" to it.derivativeKind,
                     "assurance" to it.assurance?.let(::analysisAssuranceJson),
+                    "citationAnchors" to jsonArray(it.citationAnchors.map(::citationAnchorJson)),
                 )
             },
         ),
@@ -1743,6 +1744,19 @@ class OwnerEvidenceHttpServer(
         "authority" to reference.authority.name,
         "correctionId" to reference.correctionId?.value,
         "correctionScope" to reference.correctionScope,
+        "sectionHeading" to reference.sectionHeading,
+        "startOffset" to reference.startOffset,
+        "endOffset" to reference.endOffset,
+        "quotedText" to reference.quotedText,
+    )
+
+    private fun citationAnchorJson(anchor: parker.core.interfaces.EvidenceCitationAnchor): JsonObject = jsonObject(
+        "pageNumber" to anchor.pageNumber,
+        "sectionHeading" to anchor.sectionHeading,
+        "startOffset" to anchor.startOffset,
+        "endOffset" to anchor.endOffset,
+        "quotedText" to anchor.quotedText,
+        "extractionMethod" to anchor.extractionMethod,
     )
 
     private fun analysisOutcomeJson(outcome: OwnerDocumentAnalysisOutcome, pendingAnalysisId: PendingAnalysisId?): JsonObject = when (outcome) {
@@ -1758,6 +1772,7 @@ class OwnerEvidenceHttpServer(
                             "derivativeGenerationId" to it.derivativeGenerationId.value,
                             "derivativeKind" to it.derivativeKind,
                             "assurance" to it.assurance?.let(::analysisAssuranceJson),
+                            "citationAnchors" to jsonArray(it.citationAnchors.map(::citationAnchorJson)),
                         )
                     },
                 ),
@@ -3220,6 +3235,7 @@ function analysisReferenceLabel(reference) {
   let label = reference.originalFilename || 'Governed evidence';
   if (reference.precision === 'PAGE') label += ' — page ' + reference.pageNumber;
   if (reference.precision === 'REGION') label += ' — page ' + reference.pageNumber + ', region ' + reference.regionId;
+  if (reference.sectionHeading) label += ' — ' + reference.sectionHeading;
   return label;
 }
 
@@ -3227,6 +3243,7 @@ function renderAnalysisReferences(container, references) {
   (references || []).forEach(reference => {
     const row = document.createElement('div'); row.className = 'analysis-reference';
     const label = document.createElement('span'); label.className = 'analysis-reference-label'; label.textContent = analysisReferenceLabel(reference); row.appendChild(label);
+    if (reference.quotedText) { const quote = document.createElement('div'); quote.className = 'analysis-reference-quote'; quote.textContent = '“' + reference.quotedText + '”'; row.appendChild(quote); }
     const precision = document.createElement('span'); precision.className = 'analysis-reference-details'; precision.textContent = reference.precision + (reference.authority === 'OWNER_AUTHORIZED_CORRECTION' ? ' · Owner-authorized correction' : ' · Machine-derived'); row.appendChild(precision);
     const open = document.createElement('button'); open.type = 'button'; open.textContent = 'Open source'; open.onclick = () => openAnalysisSource(reference); row.appendChild(open);
     const technical = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Provenance'; technical.appendChild(summary); appendField(technical, 'EvidenceArtifactId', reference.evidenceArtifactId); appendField(technical, 'DerivativeGenerationId', reference.derivativeGenerationId); appendField(technical, 'Source SHA-256', reference.sourceSha256); if (reference.correctionId) appendField(technical, 'Correction', reference.correctionId + ' (' + reference.correctionScope + ')'); row.appendChild(technical);
@@ -5377,7 +5394,10 @@ function renderAnalysisResult(container, result) {
 }
 
 function analysisEvidenceReferenceText(ref) {
-  let text = ref.evidenceArtifactId + ' / ' + ref.derivativeGenerationId + ' (' + ref.derivativeKind + ')';
+  const anchor = (ref.citationAnchors || [])[0];
+  let text = anchor ? ((ref.originalFilename || 'Evidence') + (anchor.pageNumber ? ', p. ' + anchor.pageNumber : '')) : (ref.evidenceArtifactId + ' / ' + ref.derivativeGenerationId + ' (' + ref.derivativeKind + ')');
+  if (anchor && anchor.sectionHeading) text += ' — ' + anchor.sectionHeading;
+  if (anchor && anchor.quotedText) text += ' — “' + anchor.quotedText + '”';
   const a = ref.assurance;
   if (!a) return text + ' — historical assurance unavailable';
   text += ' — ' + a.mechanism + ', completeness=' + a.completeness;

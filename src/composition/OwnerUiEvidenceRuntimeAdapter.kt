@@ -960,7 +960,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                 OwnerDocumentAnalysisPresentation(
                     analysisText = outcome.result.analysisText,
                     evidenceReferences = outcome.result.evidenceItems.map {
-                        OwnerDocumentEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind, it.assurance)
+                        OwnerDocumentEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind, it.assurance, it.citationAnchors)
                     },
                     mechanismIdentity = outcome.result.mechanismIdentity,
                     mechanismVersion = outcome.result.mechanismVersion,
@@ -1012,7 +1012,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                     instruction = outcome.record.instruction,
                     analysisText = outcome.record.analysisText,
                     evidenceReferences = outcome.record.evidenceReferences.map {
-                        OwnerDocumentEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind, it.assurance)
+                        OwnerDocumentEvidenceReference(it.evidenceArtifactId, it.derivativeGenerationId, it.derivativeKind, it.assurance, it.citationAnchors)
                     },
                     mechanismIdentity = outcome.record.mechanismIdentity,
                     mechanismVersion = outcome.record.mechanismVersion,

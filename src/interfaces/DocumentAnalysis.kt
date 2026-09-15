@@ -104,6 +104,28 @@ data class AnalysisAcquisitionAssurance(
     }
 }
 
+/** Stable source location carried with retrieved analysis text. */
+data class EvidenceCitationAnchor(
+    val evidenceArtifactId: EvidenceArtifactId,
+    val derivativeGenerationId: DerivativeGenerationId,
+    val sourceSha256: String,
+    val pageNumber: Int?,
+    val sectionHeading: String?,
+    val startOffset: Int,
+    val endOffset: Int,
+    val quotedText: String,
+    val extractionMethod: String,
+    val authority: String,
+    val confidence: Double? = null,
+) {
+    init {
+        require(sourceSha256.matches(Regex("[0-9a-f]{64}")))
+        require(pageNumber == null || pageNumber > 0)
+        require(startOffset >= 0 && endOffset > startOffset)
+        require(quotedText.isNotBlank()); require(confidence == null || confidence in 0.0..1.0)
+    }
+}
+
 /**
  * One successfully retrieved item of the bounded evidence package actually
  * submitted for analysis. [derivativeKind]/[contentIdentity]/[producerIdentity]/
@@ -127,6 +149,7 @@ data class AnalysisEvidenceItem(
     val completenessState: DerivativeCompletenessState,
     val warnings: List<String>,
     val assurance: AnalysisAcquisitionAssurance = AnalysisAcquisitionAssurance.historical(completenessState),
+    val citationAnchors: List<EvidenceCitationAnchor> = emptyList(),
 )
 
 /**

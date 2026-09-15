@@ -804,6 +804,7 @@ data class OwnerDocumentEvidenceReference(
     val derivativeGenerationId: DerivativeGenerationId,
     val derivativeKind: String,
     val assurance: AnalysisAcquisitionAssurance? = null,
+    val citationAnchors: List<parker.core.interfaces.EvidenceCitationAnchor> = emptyList(),
 )
 
 /**

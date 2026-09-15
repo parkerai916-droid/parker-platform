@@ -16,10 +16,17 @@ data class AnalysisEvidenceReference(
     val authority: AnalysisReferenceAuthority = AnalysisReferenceAuthority.MACHINE_DERIVED,
     val correctionId: HermesPreIngestionCorrectionId? = null,
     val correctionScope: String? = null,
+    val sectionHeading: String? = null,
+    val startOffset: Int? = null,
+    val endOffset: Int? = null,
+    val quotedText: String? = null,
 ) {
     init {
         require(sourceSha256.matches(Regex("^[0-9a-f]{64}$")))
         require(precision == AnalysisReferencePrecision.DOCUMENT || pageNumber != null)
+        require((startOffset == null) == (endOffset == null))
+        require(startOffset == null || (startOffset >= 0 && endOffset!! > startOffset))
+        require(quotedText == null || quotedText.isNotBlank())
         require(precision != AnalysisReferencePrecision.REGION || !regionId.isNullOrBlank())
         require(precision == AnalysisReferencePrecision.DOCUMENT || pageNumber!! >= 1)
         require((authority == AnalysisReferenceAuthority.OWNER_AUTHORIZED_CORRECTION) == (correctionId != null))

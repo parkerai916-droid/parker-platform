@@ -248,7 +248,7 @@ private fun jsonQuote(value: String): String = buildString {
 private object StructuredAnalysisPrompt {
     fun task(question: String, analysisType: AnalysisType): String = """
         Return ONLY one valid JSON object with exactly these fields: answer (string), findings (array of {text:string, supportReferences:array}), contraryEvidence (array of {text:string, references:array}), uncertainties (array of {text:string, references:array}), evidenceGaps (array of {text:string, relatedEvidenceArtifactIds:array}), conclusion (string).
-        Every reference object must contain exactly: evidenceArtifactId, derivativeGenerationId, precision (DOCUMENT, PAGE, or REGION), authority (MACHINE_DERIVED or OWNER_AUTHORIZED_CORRECTION), correctionId (string or null), correctionScope (string or null), pageNumber (integer or null), regionId (string or null). Use only IDs and locations present in the governed package. Do not invent references or facts; use evidenceGaps for unsupported claims. Analysis type: ${analysisType.name}. Question: $question
+        Every reference object must contain exactly: evidenceArtifactId, derivativeGenerationId, precision (DOCUMENT, PAGE, or REGION), authority (MACHINE_DERIVED or OWNER_AUTHORIZED_CORRECTION), correctionId (string or null), correctionScope (string or null), pageNumber (integer or null), regionId (string or null). It may also contain sectionHeading, startOffset, endOffset, and quotedText; when supplied, the quotation and offsets must be copied exactly from the governed page segment. Use PAGE only where pageSegments supplies that page; never infer page numbers. Use only IDs and locations present in the governed package. Do not invent references or facts; use evidenceGaps for unsupported claims. Analysis type: ${analysisType.name}. Question: $question
     """.trimIndent()
     fun forHermes(question: String, analysisType: AnalysisType, packageJson: String): String = "Analyse the following governed Parker evidence package and return the strict structured JSON envelope requested.\n\n${task(question, analysisType)}\n\nGoverned package:\n$packageJson"
 }
@@ -303,6 +303,16 @@ private object GovernedAnalysisPackagePrompt {
             item.governedContent?.let { content ->
                 append(",\"governedContent\":{\"derivativeGenerationId\":").quoted(content.derivativeGenerationId.value)
                 append(",\"derivativeKind\":").quoted(content.record.derivativeKind)
+                append(",\"pageSegments\":[")
+                when (val payload = content.payload) {
+                    is parker.core.interfaces.TierADerivativePayload.Pdf -> payload.value.pageTextSegments.forEachIndexed { index, segment ->
+                        if (index > 0) append(',')
+                        append("{\"pageNumber\":${segment.pageNumber},\"startOffset\":${segment.startOffset},\"endOffset\":${segment.endOffset},\"text\":")
+                        quoted(segment.text); append('}')
+                    }
+                    else -> Unit
+                }
+                append(']')
                 append(",\"content\":").quoted(readableContent(content.payload))
                 append('}')
             }

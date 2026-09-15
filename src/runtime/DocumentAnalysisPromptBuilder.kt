@@ -96,7 +96,9 @@ class DefaultDocumentAnalysisPromptBuilder : DocumentAnalysisPromptBuilder {
                 "\"reviewedPages\":[${item.assurance.reviewedPages.sorted().joinToString(",")}]," +
                 "\"containsUncertaintyOrIllegibility\":${item.assurance.containsUncertaintyOrIllegibility}" +
                 "}," +
-                "\"content\":\"${jsonEscape(item.extractedText)}\"" +
+                "\"citationAnchors\":[${item.citationAnchors.joinToString(",") { anchor ->
+                    "{\"pageNumber\":${anchor.pageNumber ?: "null"},\"sectionHeading\":${jsonNullable(anchor.sectionHeading)},\"startOffset\":${anchor.startOffset},\"endOffset\":${anchor.endOffset},\"quotedText\":\"${jsonEscape(anchor.quotedText)}\",\"extractionMethod\":\"${jsonEscape(anchor.extractionMethod)}\"}"
+                }}],\"content\":\"${jsonEscape(item.extractedText)}\"" +
                 "}"
         }.joinToString(",")
 
