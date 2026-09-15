@@ -587,6 +587,7 @@ class AgentGatewayHttpServer(
         "reviewConfidenceThreshold" to result.reviewConfidenceThreshold,
         "processingCompleteness" to result.processingCompleteness?.name,
         "processingWarnings" to JsonArray(result.processingWarnings),
+        "structuredRepresentation" to result.structuredRepresentation?.let(::hermesStructuredRepresentationJson),
         "issues" to JsonArray(result.issues.map { issue ->
             jsonObject(
                 "kind" to issue.kind.name,
@@ -606,6 +607,28 @@ class AgentGatewayHttpServer(
         }),
         "failure" to result.failure?.let { failure -> jsonObject("kind" to failure.kind.name, "detail" to failure.detail) },
     )
+
+    private fun hermesStructuredRepresentationJson(value: parker.core.interfaces.HermesStructuredRepresentation) = when (value) {
+        is parker.core.interfaces.HermesStructuredRepresentation.Text -> jsonObject("text" to value.text)
+        is parker.core.interfaces.HermesStructuredRepresentation.Spreadsheet -> jsonObject(
+            "workbook" to value.workbook,
+            "sheets" to JsonArray(value.sheets.map { sheet -> jsonObject(
+                "name" to sheet.name,
+                "cells" to JsonArray(sheet.cells.map { cell -> jsonObject(
+                    "cell" to cell.coordinate,
+                    "value" to cell.value,
+                    "formula" to cell.formula,
+                    "displayedValue" to cell.displayedValue,
+                ) }),
+            ) }),
+        )
+        is parker.core.interfaces.HermesStructuredRepresentation.Email -> jsonObject(
+            "from" to value.from, "to" to value.to, "cc" to value.cc, "bcc" to value.bcc,
+            "subject" to value.subject, "date" to value.date, "body" to value.body,
+            "messageFormat" to value.messageFormat,
+            "attachments" to JsonArray(value.attachments.map { jsonObject("filename" to it.filename, "contentType" to it.contentType) }),
+        )
+    }
 
     /** Hermes Governed Ingestion, Task 3. Mirrors [EvidenceHandler]'s own `submissionJson` shape exactly -- the same flat, opaque-identifier-only manifest fields, plus the governed-ingestion-specific status token. */
     private fun governedIngestionJson(
@@ -1269,6 +1292,7 @@ class AgentGatewayHttpServer(
 // reused unchanged (same module, same package) rather than declared a second time.
 
 private const val MAX_HERMES_JSON_NESTING_DEPTH = 10
+private object AgentGatewayJsonNull
 
 /**
  * The smallest generic JSON value reader Task 2's own request shape needs -- objects, arrays,
@@ -1297,8 +1321,15 @@ private class AgentGatewayJsonReader(private val text: String) {
             '{' -> parseObject()
             '[' -> parseArray()
             '"' -> parseString()
+            'n' -> parseNull()
             else -> if (c == '-' || c.isDigit()) parseNumber() else throw JsonParseException("unexpected token at position $pos")
         }
+    }
+
+    private fun parseNull(): Any {
+        if (!text.startsWith("null", pos)) throw JsonParseException("invalid null at position $pos")
+        pos += 4
+        return AgentGatewayJsonNull
     }
 
     private fun enterNestedStructure() {
@@ -1422,7 +1453,7 @@ private class AgentGatewayJsonReader(private val text: String) {
 }
 
 private val HERMES_PROCESSING_RESULT_REQUEST_FIELDS =
-    setOf("sourceSha256", "status", "methods", "proposedEvidenceArtifactId", "issues", "failure", "reviewConfidenceThreshold", "processingCompleteness", "processingWarnings")
+    setOf("sourceSha256", "status", "methods", "proposedEvidenceArtifactId", "issues", "failure", "reviewConfidenceThreshold", "processingCompleteness", "processingWarnings", "structuredRepresentation")
 private val HERMES_PROCESSING_ISSUE_FIELDS =
     setOf("kind", "explanation", "location", "hermesInterpretation", "transcriptionFidelity", "observedConfidence")
 private val HERMES_PROCESSING_ISSUE_LOCATION_FIELDS =
@@ -1504,6 +1535,8 @@ private fun parseHermesProcessingResultRequest(bodyBytes: ByteArray, batchId: St
     val processingWarnings = (obj["processingWarnings"] as? List<*> ?: emptyList<Any?>()).map {
         it as? String ?: throw JsonParseException("expected processing warnings as strings")
     }
+    val structured = obj["structuredRepresentation"]?.takeUnless { it === AgentGatewayJsonNull }
+        ?.let { parseHermesStructuredRepresentation(it) }
 
     return try {
         parker.core.interfaces.HermesProcessingResult(
@@ -1516,10 +1549,42 @@ private fun parseHermesProcessingResultRequest(bodyBytes: ByteArray, batchId: St
             failure = failure,
             reviewConfidenceThreshold = reviewConfidenceThreshold,
             processingCompleteness = processingCompleteness,
-            processingWarnings = processingWarnings,
+        processingWarnings = processingWarnings, structuredRepresentation = structured,
         )
     } catch (e: IllegalArgumentException) {
         throw JsonParseException(e.message ?: "invalid processing result")
+    }
+}
+
+private fun parseHermesStructuredRepresentation(raw: Any?): parker.core.interfaces.HermesStructuredRepresentation {
+    val obj = requireJsonObject(raw)
+    fun string(name: String) = obj[name] as? String
+    return when {
+        obj.containsKey("text") -> {
+            requireKeysSubsetOf(obj.keys, setOf("text"), "structured text")
+            parker.core.interfaces.HermesStructuredRepresentation.Text(string("text") ?: throw JsonParseException("structured text must be a string"))
+        }
+        obj.containsKey("sheets") -> {
+            requireKeysSubsetOf(obj.keys, setOf("workbook", "sheets"), "structured spreadsheet")
+            val sheets = (obj["sheets"] as? List<*> ?: throw JsonParseException("structured sheets must be an array")).map { sheetRaw ->
+                val sheet = requireJsonObject(sheetRaw)
+                requireKeysSubsetOf(sheet.keys, setOf("name", "cells"), "structured sheet")
+                val cells = (sheet["cells"] as? List<*> ?: throw JsonParseException("structured cells must be an array")).map { cellRaw ->
+                    val cell = requireJsonObject(cellRaw)
+                    requireKeysSubsetOf(cell.keys, setOf("cell", "value", "formula", "displayedValue"), "structured cell")
+                    parker.core.interfaces.HermesStructuredRepresentation.Spreadsheet.Cell(
+                        cell["cell"] as? String ?: throw JsonParseException("structured cell coordinate is required"), cell["value"] as? String,
+                        cell["formula"] as? String, cell["displayedValue"] as? String)
+                }; parker.core.interfaces.HermesStructuredRepresentation.Spreadsheet.Sheet(sheet["name"] as? String ?: throw JsonParseException("structured sheet name is required"), cells)
+            }; parker.core.interfaces.HermesStructuredRepresentation.Spreadsheet(string("workbook"), sheets)
+        }
+        obj.containsKey("body") || obj.containsKey("subject") -> {
+            requireKeysSubsetOf(obj.keys, setOf("from", "to", "cc", "bcc", "subject", "date", "body", "messageFormat", "attachments"), "structured email")
+            parker.core.interfaces.HermesStructuredRepresentation.Email(
+            string("from"), string("to"), string("cc"), string("bcc"), string("subject"), string("date"), string("body") ?: throw JsonParseException("structured email body is required"), string("messageFormat"),
+            (obj["attachments"] as? List<*> ?: emptyList<Any?>()).map { a -> val x=requireJsonObject(a); requireKeysSubsetOf(x.keys, setOf("filename", "contentType"), "structured attachment"); parker.core.interfaces.HermesStructuredRepresentation.Email.Attachment(x["filename"] as? String, x["contentType"] as? String) })
+        }
+        else -> throw JsonParseException("unsupported structured representation family")
     }
 }
 

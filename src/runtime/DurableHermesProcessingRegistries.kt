@@ -29,6 +29,7 @@ import parker.core.interfaces.HermesProcessingMethod
 import parker.core.interfaces.HermesProcessingResult
 import parker.core.interfaces.HermesProcessingResultRecordOutcome
 import parker.core.interfaces.HermesProcessingResultRegistry
+import parker.core.interfaces.HermesStructuredRepresentation
 import parker.core.interfaces.HermesProcessingStatus
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.TranscriptionFidelity
@@ -171,7 +172,7 @@ private fun digest(value: String): String = MessageDigest.getInstance("SHA-256")
 
 private object HermesBinaryCodec {
     private const val MAGIC = 0x48524D53
-    private const val VERSION = 2
+    private const val VERSION = 3
     private const val LEGACY_VERSION = 1
     fun writeResult(output: DataOutputStream, r: HermesProcessingResult) = with(output) {
         writeInt(MAGIC); writeInt(VERSION); writeUTF(r.sourceSha256); writeUTF(r.batchId); writeUTF(r.status.name)
@@ -182,20 +183,33 @@ private object HermesBinaryCodec {
         writeNullable(r.reviewConfidenceThreshold) { writeDouble(it) }
         writeNullable(r.processingCompleteness) { writeUTF(it.name) }
         writeInt(r.processingWarnings.size); r.processingWarnings.forEach(::writeUTF)
+        writeNullable(r.structuredRepresentation) { writeStructured(it) }
     }
     fun readResult(input: DataInputStream): HermesProcessingResult = with(input) {
         require(readInt() == MAGIC) { "unsupported result header" }
         val version = readInt()
-        require(version == LEGACY_VERSION || version == VERSION) { "unsupported result header" }
+        require(version == LEGACY_VERSION || version == 2 || version == VERSION) { "unsupported result header" }
         val source = readUTF(); val batch = readUTF(); val status = HermesProcessingStatus.valueOf(readUTF())
         val methods = (0 until readCount("methods", 32)).map { HermesProcessingMethod.valueOf(readUTF()) }.toSet()
         val artifact = readNullable { EvidenceArtifactId(readUTF()) }
         val issues = (0 until readCount("issues", 1_000)).map { readIssue(version) }
         val failure = readNullable { readFailure() }
-        val threshold = if (version >= VERSION) readNullable { readDouble() } else null
-        val completeness = if (version >= VERSION) readNullable { HermesProcessingCompleteness.valueOf(readUTF()) } else null
-        val warnings = if (version >= VERSION) (0 until readCount("processing warnings", 1_000)).map { readUTF() } else emptyList()
-        return HermesProcessingResult(source, batch, status, methods, artifact, issues, failure, threshold, completeness, warnings)
+        val threshold = if (version >= 2) readNullable { readDouble() } else null
+        val completeness = if (version >= 2) readNullable { HermesProcessingCompleteness.valueOf(readUTF()) } else null
+        val warnings = if (version >= 2) (0 until readCount("processing warnings", 1_000)).map { readUTF() } else emptyList()
+        val structured = if (version >= VERSION) readNullable { readStructured() } else null
+        return HermesProcessingResult(source, batch, status, methods, artifact, issues, failure, threshold, completeness, warnings, structured)
+    }
+    private fun DataOutputStream.writeStructured(value: HermesStructuredRepresentation) = when (value) {
+        is HermesStructuredRepresentation.Text -> { writeUTF("TEXT"); writeUTF(value.text) }
+        is HermesStructuredRepresentation.Spreadsheet -> { writeUTF("SPREADSHEET"); writeNullable(value.workbook) { writeUTF(it) }; writeInt(value.sheets.size); value.sheets.forEach { sheet -> writeUTF(sheet.name); writeInt(sheet.cells.size); sheet.cells.forEach { cell -> writeUTF(cell.coordinate); writeNullable(cell.value) { writeUTF(it) }; writeNullable(cell.formula) { writeUTF(it) }; writeNullable(cell.displayedValue) { writeUTF(it) } } } }
+        is HermesStructuredRepresentation.Email -> { writeUTF("EMAIL"); writeNullable(value.from) { writeUTF(it) }; writeNullable(value.to) { writeUTF(it) }; writeNullable(value.cc) { writeUTF(it) }; writeNullable(value.bcc) { writeUTF(it) }; writeNullable(value.subject) { writeUTF(it) }; writeNullable(value.date) { writeUTF(it) }; writeUTF(value.body); writeNullable(value.messageFormat) { writeUTF(it) }; writeInt(value.attachments.size); value.attachments.forEach { writeNullable(it.filename) { writeUTF(it) }; writeNullable(it.contentType) { writeUTF(it) } } }
+    }
+    private fun DataInputStream.readStructured(): HermesStructuredRepresentation = when (readUTF()) {
+        "TEXT" -> HermesStructuredRepresentation.Text(readUTF())
+        "SPREADSHEET" -> HermesStructuredRepresentation.Spreadsheet(readNullable { readUTF() }, (0 until readCount("sheets", 1_000)).map { HermesStructuredRepresentation.Spreadsheet.Sheet(readUTF(), (0 until readCount("cells", 100_000)).map { HermesStructuredRepresentation.Spreadsheet.Cell(readUTF(), readNullable { readUTF() }, readNullable { readUTF() }, readNullable { readUTF() }) }) })
+        "EMAIL" -> HermesStructuredRepresentation.Email(readNullable { readUTF() }, readNullable { readUTF() }, readNullable { readUTF() }, readNullable { readUTF() }, readNullable { readUTF() }, readNullable { readUTF() }, readUTF(), readNullable { readUTF() }, (0 until readCount("attachments", 10_000)).map { HermesStructuredRepresentation.Email.Attachment(readNullable { readUTF() }, readNullable { readUTF() }) })
+        else -> error("unsupported structured representation family")
     }
     fun writeDecision(output: DataOutputStream, d: HermesProcessingHumanDecision) = with(output) {
         writeInt(MAGIC); writeInt(VERSION); writeUTF(d.batchId); writeUTF(d.sourceSha256); writeUTF(d.decision.name)
@@ -205,7 +219,7 @@ private object HermesBinaryCodec {
     fun readDecision(input: DataInputStream): HermesProcessingHumanDecision = with(input) {
         require(readInt() == MAGIC) { "unsupported decision header" }
         val version = readInt()
-        require(version == LEGACY_VERSION || version == VERSION) { "unsupported decision header" }
+        require(version == LEGACY_VERSION || version == 2 || version == VERSION) { "unsupported decision header" }
         val batch = readUTF(); val sha = readUTF(); val type = HermesProcessingHumanDecisionType.valueOf(readUTF())
         val principal = PrincipalId(readUTF()); val at = Instant.parse(readUTF()); val reason = readNullable { readUTF() }
         val correction = readNullable { HermesProcessingCorrection(readInt(), readUTF(), readUTF()) }
@@ -219,7 +233,7 @@ private object HermesBinaryCodec {
     private fun DataInputStream.readIssue(version: Int): HermesProcessingIssue = HermesProcessingIssue(
         HermesProcessingIssueKind.valueOf(readUTF()), readUTF(), readNullable { readLocation() }, readNullable { readUTF() },
         readNullable { TranscriptionFidelity.valueOf(readUTF()) },
-        if (version >= VERSION) readNullable { readDouble() } else null,
+        if (version >= 2) readNullable { readDouble() } else null,
     )
     private fun DataOutputStream.writeLocation(l: HermesProcessingIssueLocation) { when (l) { is HermesProcessingIssueLocation.DocumentPage -> { writeUTF("DocumentPage"); writeInt(l.pageNumber); writeNullable(l.startOffsetInclusive) { writeInt(it) }; writeNullable(l.endOffsetExclusive) { writeInt(it) }; writeNullable(l.regionDescription) { writeUTF(it) } } } }
     private fun DataInputStream.readLocation(): HermesProcessingIssueLocation { require(readUTF() == "DocumentPage") { "unsupported issue location" }; return HermesProcessingIssueLocation.DocumentPage(readInt(), readNullable { readInt() }, readNullable { readInt() }, readNullable { readUTF() }) }

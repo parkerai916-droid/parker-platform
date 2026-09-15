@@ -235,7 +235,7 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
         structure, error = xlsx_structure(data)
         if error:
             return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_SPREADSHEET_EXTRACTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": error}}, None)
-        return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_SPREADSHEET_EXTRACTION"], "issues": [], "structuredRepresentation": structure, "representationCapability": definition.parker_native_route}, None)
+        return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_SPREADSHEET_EXTRACTION"], "issues": [], "structuredRepresentation": structure}, None)
     if media == "message/rfc822":
         structure, error = email_structure(data)
         if error:

@@ -1108,6 +1108,33 @@ class AgentGatewayHttpServerTest {
     }
 
     @Test
+    fun `valid XLSX and RTF structured representations are typed and preserved by processing-result intake`() = withFakeHarness { fake ->
+        fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(
+            parker.core.interfaces.HermesProcessingResult("a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS,
+                setOf(parker.core.interfaces.HermesProcessingMethod.STRUCTURED_DOCUMENT_EXTRACTION)),
+        )
+        val xlsx = postProcessingResult(fake.baseUri(), "bulk-abc", """{"sourceSha256":"${"a".repeat(64)}","status":"PASS","methods":["STRUCTURED_DOCUMENT_EXTRACTION"],"structuredRepresentation":{"workbook":"OOXML","sheets":[{"name":"Payments","cells":[{"cell":"B4","value":"2250.00","formula":null,"displayedValue":"2250.00"},{"cell":"C4","value":"B4*2","formula":"B4*2","displayedValue":"4500.00"}]}]}}""")
+        assertEquals(201, xlsx.statusCode())
+        assertIs<parker.core.interfaces.HermesStructuredRepresentation.Spreadsheet>(fake.submitProcessingResultCalls.single().second.structuredRepresentation).also {
+            assertEquals("Payments", it.sheets.single().name)
+            assertEquals("B4*2", it.sheets.single().cells[1].formula)
+        }
+        fake.submitProcessingResultCalls.clear()
+        val rtf = postProcessingResult(fake.baseUri(), "bulk-abc", """{"sourceSha256":"${"b".repeat(64)}","status":"PASS","methods":["STRUCTURED_DOCUMENT_EXTRACTION"],"structuredRepresentation":{"text":"PARKER RTF TEST VALUE 44"}}""")
+        assertEquals(201, rtf.statusCode())
+        assertEquals("PARKER RTF TEST VALUE 44", assertIs<parker.core.interfaces.HermesStructuredRepresentation.Text>(fake.submitProcessingResultCalls.single().second.structuredRepresentation).text)
+    }
+
+    @Test
+    fun `malformed and unknown structured representation families fail closed`() = withFakeHarness { fake ->
+        val malformed = postProcessingResult(fake.baseUri(), "bulk-abc", """{"sourceSha256":"${"a".repeat(64)}","status":"PASS","methods":["STRUCTURED_DOCUMENT_EXTRACTION"],"structuredRepresentation":{"text":42}}""")
+        val unsupported = postProcessingResult(fake.baseUri(), "bulk-abc", """{"sourceSha256":"${"b".repeat(64)}","status":"PASS","methods":["STRUCTURED_DOCUMENT_EXTRACTION"],"structuredRepresentation":{"coordinates":[]}}""")
+        assertEquals(400, malformed.statusCode())
+        assertEquals(400, unsupported.statusCode())
+        assertEquals(0, fake.submitProcessingResultCalls.size)
+    }
+
+    @Test
     fun `a REVIEW_REQUIRED result with an issue and a page location is parsed and recorded successfully`() = withFakeHarness { fake ->
         val result = parker.core.interfaces.HermesProcessingResult(
             "a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.REVIEW_REQUIRED,

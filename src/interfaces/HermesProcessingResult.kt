@@ -239,6 +239,7 @@ data class HermesProcessingResult(
     val reviewConfidenceThreshold: Double? = null,
     val processingCompleteness: HermesProcessingCompleteness? = null,
     val processingWarnings: List<String> = emptyList(),
+    val structuredRepresentation: HermesStructuredRepresentation? = null,
 ) {
     init {
         require(sourceSha256.matches(HERMES_SHA256_PATTERN)) {
@@ -266,6 +267,20 @@ data class HermesProcessingResult(
                 require(failure != null) { "FAILED requires a failure reason" }
             }
         }
+    }
+}
+
+/** Bounded, pre-ingestion structure reported by Hermes; Parker remains authoritative for durable extraction. */
+sealed interface HermesStructuredRepresentation {
+    data class Text(val text: String) : HermesStructuredRepresentation { init { require(text.isNotBlank() && text.length <= 20 * 1024 * 1024) } }
+    data class Spreadsheet(val workbook: String?, val sheets: List<Sheet>) : HermesStructuredRepresentation {
+        data class Sheet(val name: String, val cells: List<Cell>)
+        data class Cell(val coordinate: String, val value: String?, val formula: String?, val displayedValue: String?)
+        init { require(sheets.isNotEmpty()); require(sheets.all { it.name.isNotBlank() && it.cells.size <= 100_000 }) }
+    }
+    data class Email(val from: String?, val to: String?, val cc: String?, val bcc: String?, val subject: String?, val date: String?, val body: String, val messageFormat: String?, val attachments: List<Attachment>) : HermesStructuredRepresentation {
+        data class Attachment(val filename: String?, val contentType: String?)
+        init { require(body.length <= 20 * 1024 * 1024); require(attachments.size <= 10_000) }
     }
 }
 

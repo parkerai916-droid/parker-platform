@@ -16,6 +16,7 @@ import parker.core.interfaces.HermesProcessingMethod
 import parker.core.interfaces.HermesProcessingResult
 import parker.core.interfaces.HermesProcessingResultRecordOutcome
 import parker.core.interfaces.HermesProcessingStatus
+import parker.core.interfaces.HermesStructuredRepresentation
 import parker.core.interfaces.PrincipalId
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -69,6 +70,24 @@ class DurableHermesProcessingRegistriesTest {
         val conflict = result(HermesProcessingStatus.FAILED)
         assertIs<HermesProcessingResultRecordOutcome.Conflict>(recreated.record(conflict))
         assertEquals(stored, recreated.find("batch-durable", sha))
+    }
+
+    @Test
+    fun `structured representation survives registry reconstruction with provenance fields intact`() = runTest {
+        val root = Files.createTempDirectory("hermes-structured-result-")
+        val stored = result(HermesProcessingStatus.PASS).copy(
+            issues = emptyList(),
+            structuredRepresentation = HermesStructuredRepresentation.Spreadsheet(
+                "Payments.xlsx",
+                listOf(HermesStructuredRepresentation.Spreadsheet.Sheet("Payments", listOf(
+                    HermesStructuredRepresentation.Spreadsheet.Cell("B4", "2250.00", null, "2250.00"),
+                    HermesStructuredRepresentation.Spreadsheet.Cell("C4", "B4*2", "B4*2", "4500.00"),
+                )))
+            ),
+        )
+        FileSystemHermesProcessingResultRegistry(root).record(stored)
+        val restored = FileSystemHermesProcessingResultRegistry(root).find("batch-durable", sha)!!
+        assertEquals(stored.structuredRepresentation, restored.structuredRepresentation)
     }
 
     @Test
