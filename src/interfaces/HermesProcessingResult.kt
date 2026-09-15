@@ -89,6 +89,7 @@ enum class HermesProcessingMethod {
     VISION,
     TRANSCRIPTION,
     STRUCTURED_DOCUMENT_EXTRACTION,
+    STRUCTURED_SPREADSHEET_EXTRACTION,
 }
 
 /** Completeness reported by the processing provider, distinct from the PASS/REVIEW_REQUIRED gate. */
