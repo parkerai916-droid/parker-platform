@@ -3856,6 +3856,12 @@ function appendAnalysisExtractionWarnings(container, warnings, evidenceCount) {
   if (!distinctWarnings.length) return;
   const note = document.createElement('p');
   note.className = 'note';
+  const pageAware = distinctWarnings.some(warning => warning.indexOf('Page text is associated with source PDF pages') === 0);
+  if (pageAware) {
+    note.textContent = evidenceCount === 1 ? 'Page references are available for this document.' : 'Page references are available for these documents where the representation preserves page association.';
+    container.appendChild(note);
+    return;
+  }
   const documentLabel = evidenceCount === 1 ? 'selected PDF' : 'selected PDFs';
   note.textContent = 'Document extraction note: Text was extracted successfully from the ' + documentLabel + '. Page-level positions, columns, tables, and original layout may not be preserved exactly. Use the original PDF when precise visual placement matters.';
   container.appendChild(note);
