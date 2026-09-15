@@ -22,10 +22,10 @@ class DerivativeGenerationDiscoveryProjectionTest {
         DerivativeCompletenessState.ACCOUNTED_FOR, DerivativeOperationalOutcome.USABLE,
     )
 
-    private fun candidate(record: DerivativeGenerationRecord, available: Boolean = true, completeness: DerivativeCompletenessState = record.completenessState) =
+    private fun candidate(record: DerivativeGenerationRecord, available: Boolean = true, completeness: DerivativeCompletenessState = record.completenessState, equivalenceKey: String? = null) =
         DerivativeCandidateSummary(record.derivativeGenerationId, record.rootSourceEvidenceArtifactId, record.derivativeKind,
             record.producerIdentity, record.generatedAt, record.operationalOutcome, completeness, record.warnings,
-            record.transformationHistory, available)
+            record.transformationHistory, available, equivalenceKey = equivalenceKey)
 
     private fun resolver() = PreferredDerivativeResolver(
         DerivativeGenerationDiscoveryProjection(DerivativeGenerationDiscovery { emptyList() },
@@ -67,6 +67,36 @@ class DerivativeGenerationDiscoveryProjectionTest {
         val result = resolver().resolve(evidenceA, listOf(candidate(complete), candidate(partial, completeness = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS)))
         assertIs<PreferredDerivativeResolution.Preferred>(result)
         assertEquals(complete.derivativeGenerationId, result.derivative.derivativeGenerationId)
+    }
+
+    @Test
+    fun `resolver collapses equivalent retries and chooses earliest generation independent of order`() {
+        val first = record("generation-first", evidenceA, "XLSX structured representation")
+            .copy(generatedAt = Instant.parse("2026-01-01T00:00:00Z"))
+        val second = record("generation-second", evidenceA, "XLSX structured representation")
+            .copy(generatedAt = Instant.parse("2026-01-02T00:00:00Z"))
+        val result = resolver().resolve(evidenceA, listOf(candidate(second, equivalenceKey = "same"), candidate(first, equivalenceKey = "same")))
+        assertIs<PreferredDerivativeResolution.Preferred>(result)
+        assertEquals(first.derivativeGenerationId, result.derivative.derivativeGenerationId)
+    }
+
+    @Test
+    fun `same flattened text with a different structural equivalence key remains ambiguous`() {
+        val first = record("generation-structure-a", evidenceA, "XLSX structured representation")
+        val second = record("generation-structure-b", evidenceA, "XLSX structured representation")
+        assertIs<PreferredDerivativeResolution.Ambiguous>(resolver().resolve(evidenceA, listOf(
+            candidate(first, equivalenceKey = "sheet-Payments-cell-B4"),
+            candidate(second, equivalenceKey = "sheet-Payments-cell-C4"),
+        )))
+    }
+
+    @Test
+    fun `authority difference remains non-equivalent even when text matches`() {
+        val local = record("generation-local", evidenceA, "OCR recognised text")
+        val external = record("generation-external", evidenceA, "OCR recognised text")
+        val localCandidate = candidate(local, equivalenceKey = "local-text")
+        val externalCandidate = candidate(external, equivalenceKey = "external-text").copy(authority = OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE)
+        assertIs<PreferredDerivativeResolution.Ambiguous>(resolver().resolve(evidenceA, listOf(localCandidate, externalCandidate)))
     }
 
     @Test
@@ -119,6 +149,38 @@ class DerivativeGenerationDiscoveryProjectionTest {
         assertFalse(result.first { it.derivativeGenerationId == pdf.derivativeGenerationId }.contentAvailable)
         assertTrue(result.first { it.derivativeGenerationId == ocr.derivativeGenerationId }.contentAvailable)
         assertTrue(result.none { it.rootSourceEvidenceArtifactId == evidenceB })
+    }
+
+    @Test
+    fun `projection gives equivalent durable payloads the same key across generation ids`() = runTest {
+        val first = record("generation-equivalent-first", evidenceA, "OCR recognised text")
+        val second = record("generation-equivalent-second", evidenceA, "OCR recognised text")
+            .copy(generatedAt = Instant.parse("2026-01-02T00:00:00Z"))
+        val payload = TierADerivativePayload.Ocr(
+            OcrDerivativeExtractedResult(
+                recognisedText = "same text",
+                fidelity = TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+                outcomeKind = OcrDerivativeOutcomeKind.RECOGNISED,
+                degradationReason = null,
+                warnings = emptyList(), segments = emptyList(),
+                producerIdentity = DerivativeProducerIdentity("test", "1", "config"),
+                transformationHistory = listOf(DerivativeTransformation.OCR),
+                completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
+            ),
+        )
+        val projection = DerivativeGenerationDiscoveryProjection(
+            DerivativeGenerationDiscovery { listOf(first, second) },
+            object : DerivativeContentStorage {
+                override suspend fun prepare(entry: DerivativeContentEntry) = Unit
+                override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) = Unit
+                override suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId) =
+                    DerivativeContentEntry(derivativeGenerationId, evidenceA, payload)
+            },
+        )
+        val result = projection.discover(evidenceA)
+        assertEquals(2, result.size)
+        assertTrue(result.all { it.equivalenceKey != null })
+        assertEquals(result[0].equivalenceKey, result[1].equivalenceKey)
     }
 
     @Test

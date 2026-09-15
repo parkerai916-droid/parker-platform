@@ -49,7 +49,14 @@ class PreferredDerivativeResolver(
             evidenceArtifactId, "No available, usable, general document-level governed derivative exists.",
         )
 
-        val representationKinds = eligible.groupBy { it.derivativeKind }
+        // Collapse only candidates whose complete equivalence key was established from the
+        // durable payload. Missing keys remain one-candidate classes, preserving fail-closed
+        // ambiguity for legacy or incomplete provenance.
+        val logicalCandidates = eligible
+            .groupBy { it.equivalenceKey ?: "generation:${it.derivativeGenerationId.value}" }
+            .values
+            .map { equivalent -> equivalent.minWith(compareBy({ it.generatedAt }, { it.derivativeGenerationId.value })) }
+        val representationKinds = logicalCandidates.groupBy { it.derivativeKind }
         if (representationKinds.size > 1) {
             return PreferredDerivativeResolution.Ambiguous(
                 evidenceArtifactId, eligible,
