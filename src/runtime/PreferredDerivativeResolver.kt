@@ -4,6 +4,7 @@ import parker.core.interfaces.DerivativeCompletenessState
 import parker.core.interfaces.DerivativeOperationalOutcome
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.DerivativeGenerationId
+import parker.core.interfaces.StructuredDocumentKind
 
 sealed interface PreferredDerivativeResolution {
     val evidenceArtifactId: EvidenceArtifactId
@@ -83,8 +84,8 @@ class PreferredDerivativeResolver(
         // Region transcriptions and verification receipts are intentionally excluded as overlays or
         // specialized representations, not discarded from discovery.
         val GENERAL_DOCUMENT_KINDS = setOf(
-            "PDF structure", "Searchable PDF literal text", "DOCX structure", "CSV structure", "EML MIME structure", "OCR recognised text",
-        )
+            "PDF structure", "Searchable PDF literal text", "CSV structure", "EML MIME structure", "OCR recognised text",
+        ) + StructuredDocumentKind.entries.mapTo(linkedSetOf()) { "${it.name} structured representation" } + setOf("DOCX OOXML structure")
         val COMPARABLE_COMPLETENESS = setOf(
             DerivativeCompletenessState.ACCOUNTED_FOR,
             DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,

@@ -53,6 +53,14 @@ class DerivativeGenerationDiscoveryProjectionTest {
     }
 
     @Test
+    fun `resolver accepts governed structured representations for practical formats`() {
+        for (kind in listOf("DOC structured representation", "DOCX structured representation", "XLS structured representation", "XLSX structured representation", "MSG structured representation", "RTF structured representation", "TXT structured representation")) {
+            val generation = record("generation-${kind.hashCode()}", evidenceA, kind)
+            assertIs<PreferredDerivativeResolution.Preferred>(resolver().resolve(evidenceA, listOf(candidate(generation))))
+        }
+    }
+
+    @Test
     fun `resolver prefers complete over qualified candidate of the same kind`() {
         val complete = record("generation-complete", evidenceA, "OCR recognised text")
         val partial = record("generation-partial", evidenceA, "OCR recognised text")
