@@ -3830,6 +3830,30 @@ function appendWarnings(container, warnings) {
   container.appendChild(p);
 }
 
+// Analysis extraction warnings are deliberately presented in two layers. The operator-facing
+// note is concise and emitted once, while every distinct backend warning remains available in its
+// original text behind a collapsed technical-details disclosure. This is presentation only:
+// warning generation, persistence, provenance, and evidence references are unchanged.
+function appendAnalysisExtractionWarnings(container, warnings, evidenceCount) {
+  const distinctWarnings = [...new Set((warnings || []).filter(w => typeof w === 'string' && w.length))];
+  if (!distinctWarnings.length) return;
+  const note = document.createElement('p');
+  note.className = 'note';
+  const documentLabel = evidenceCount === 1 ? 'selected PDF' : 'selected PDFs';
+  note.textContent = 'Document extraction note: Text was extracted successfully from the ' + documentLabel + '. Page-level positions, columns, tables, and original layout may not be preserved exactly. Use the original PDF when precise visual placement matters.';
+  container.appendChild(note);
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = 'Technical extraction details';
+  details.appendChild(summary);
+  distinctWarnings.forEach(warning => {
+    const technical = document.createElement('p');
+    technical.textContent = warning;
+    details.appendChild(technical);
+  });
+  container.appendChild(details);
+}
+
 function appendProducer(container, producer) {
   if (!producer) return;
   let text = producer.pluginIdentity + ' ' + producer.pluginVersion;
@@ -5328,7 +5352,7 @@ function renderAnalysisResult(container, result) {
   if (result.result.mechanismIdentity) {
     appendField(panel, 'Model', result.result.mechanismIdentity + ' ' + (result.result.mechanismVersion || ''));
   }
-  appendWarnings(panel, result.result.warnings);
+  appendAnalysisExtractionWarnings(panel, result.result.warnings, new Set(result.result.evidenceReferences.map(ref => ref.evidenceArtifactId)).size);
   const label = document.createElement('div');
   label.textContent = 'Evidence references supplied:';
   panel.appendChild(label);
@@ -5471,6 +5495,7 @@ async function viewSavedAnalysis(savedAnalysisId) {
       appendField(panel, 'Model', result.result.mechanismIdentity + ' ' + (result.result.mechanismVersion || ''));
     }
     appendExtractedText(panel, 'Analysis:', result.result.analysisText);
+    appendAnalysisExtractionWarnings(panel, result.result.warnings || [], new Set(result.result.evidenceReferences.map(ref => ref.evidenceArtifactId)).size);
     const label = document.createElement('div');
     label.textContent = 'Evidence references supplied:';
     panel.appendChild(label);

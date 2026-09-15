@@ -4334,6 +4334,48 @@ class OwnerEvidenceHttpServerTest {
         }
     }
 
+    @Test
+    fun `analysis extraction warnings are summarized once with distinct technical details and saved rendering preserved`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val helperStart = body.indexOf("function appendAnalysisExtractionWarnings")
+            assertTrue(helperStart >= 0)
+            val helper = body.substring(helperStart, body.indexOf("\nfunction ", helperStart + 1))
+            val live = renderAnalysisResultFunctionBody(harness)
+            val savedStart = body.indexOf("async function viewSavedAnalysis")
+            assertTrue(savedStart >= 0)
+            val saved = body.substring(savedStart)
+
+            // A/B/C: exact duplicate warnings are collapsed, while every distinct original warning
+            // remains as its own textContent-only technical paragraph behind a closed details block.
+            assertTrue(helper.contains("const distinctWarnings = [...new Set("))
+            assertTrue(helper.contains("summary.textContent = 'Technical extraction details';"))
+            assertTrue(helper.contains("technical.textContent = warning;"))
+            assertTrue(helper.contains("details.appendChild(technical);"))
+            assertTrue(helper.contains("container.appendChild(details);"))
+
+            // E/F: singular and plural operator wording are selected from the evidence-reference
+            // count, with the required human-readable message kept in one place.
+            assertTrue(helper.contains("evidenceCount === 1 ? 'selected PDF' : 'selected PDFs'"))
+            assertTrue(helper.contains("Document extraction note: Text was extracted successfully from the ' + documentLabel"))
+
+            // D/G: analysis text and exact evidence references remain rendered by their existing
+            // paths; only warning presentation is routed through the new helper.
+            assertTrue(live.contains("appendExtractedText(panel, 'Analysis:', result.result.analysisText);"))
+            assertTrue(live.contains("result.result.evidenceReferences.forEach(ref => {"))
+            assertTrue(live.contains("appendAnalysisExtractionWarnings(panel, result.result.warnings, new Set(result.result.evidenceReferences.map(ref => ref.evidenceArtifactId)).size);"))
+
+            // H: saved analysis retrieval remains textContent-only and keeps all evidence references;
+            // the optional warning field is presentation-compatible without changing saved storage.
+            assertTrue(saved.contains("appendAnalysisExtractionWarnings(panel, result.result.warnings || [], new Set(result.result.evidenceReferences.map(ref => ref.evidenceArtifactId)).size);"))
+            assertTrue(saved.contains("result.result.evidenceReferences.forEach(ref => {"))
+            assertTrue(saved.contains("appendExtractedText(panel, 'Analysis:', result.result.analysisText);"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
     // ANALYSIS-INGESTION-3B — Malformed Analyse Request Investigation and Narrow Fix. Root cause:
     // SimpleJsonReader (parseAnalyseRequestBody's own hand-rolled JSON reader) recognised only
     // objects, arrays, and strings -- never the JSON boolean literals `true`/`false` -- despite its
