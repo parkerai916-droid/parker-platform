@@ -617,6 +617,10 @@ class AgentGatewayHttpServer(
         detail: String? = null,
     ) = jsonObject(
         "status" to status,
+        "processingState" to when (status) {
+            "INGESTED", "ALREADY_INGESTED" -> "REGISTERED"
+            else -> status
+        },
         "evidenceArtifactId" to projection.evidenceArtifactId.value,
         "sha256" to projection.sha256,
         "byteLength" to projection.byteLength,

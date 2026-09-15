@@ -284,7 +284,10 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
             if isinstance(evidence_id, str) and evidence_id:
                 representation["evidenceArtifactId"] = evidence_id
                 client.submit_ocr_representation(batch_id, digest, representation)
-        status = payload["status"]
+        # Parker's persisted evidence processing projection is the shared state source for
+        # Dual and Owner presentations. The legacy status remains a transport fallback only for
+        # older Parker gateways; current gateways return processingState explicitly.
+        status = payload.get("processingState", payload["status"])
         if status in ("INGESTED", "ALREADY_INGESTED"):
             status = "REGISTERED"
         detail = payload.get("detail")

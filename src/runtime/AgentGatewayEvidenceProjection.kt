@@ -123,6 +123,7 @@ internal class AgentGatewayEvidenceProjection(
     private val humanDecisionRegistry: parker.core.interfaces.HermesProcessingDecisionRegistry? = null,
     /** Production-only bridge proving a CORRECT decision has a separately governed representation. */
     private val preIngestionCorrectionRegistry: parker.core.interfaces.HermesPreIngestionCorrectionRegistry? = null,
+    private val processingStateStore: EvidenceProcessingStateStore? = null,
     private val postAdmissionProcessing: (suspend (EvidenceArtifactId) -> PostAdmissionProcessingOutcome)? = null,
 ) {
 
@@ -501,20 +502,39 @@ internal class AgentGatewayEvidenceProjection(
             is AgentGatewayBulkBindingResult.Rejected -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
             is AgentGatewayBulkBindingResult.Failed -> return AgentGatewayGovernedIngestionResult.CaseBindingRejected(binding.reason)
         }
+        processingStateStore?.record(
+            EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.PROCESSING, "Post-admission processing started", updatedAt = clock()),
+        )
         val admitted = if (alreadyIngested) {
             AgentGatewayGovernedIngestionResult.AlreadyIngested(projection, correction?.representationId)
         } else {
             AgentGatewayGovernedIngestionResult.Ingested(projection, correction?.representationId)
         }
-        val processor = postAdmissionProcessing ?: return admitted
+        val processor = postAdmissionProcessing ?: run {
+            processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.REGISTERED, "Source admitted; processing not configured", updatedAt = clock()))
+            return admitted
+        }
         return when (val outcome = processor(projection.evidenceArtifactId)) {
-            is PostAdmissionProcessingOutcome.AnalysisReady -> AgentGatewayGovernedIngestionResult.AnalysisReady(
-                projection, outcome.derivativeGenerationId, outcome.capabilityId, correction?.representationId,
-            )
-            is PostAdmissionProcessingOutcome.RequiresOcr -> AgentGatewayGovernedIngestionResult.RequiresOcr(projection, outcome.reason, correction?.representationId)
-            is PostAdmissionProcessingOutcome.CapabilityUnavailable -> AgentGatewayGovernedIngestionResult.CapabilityUnavailable(projection, outcome.reason, correction?.representationId)
-            is PostAdmissionProcessingOutcome.ReviewRequired -> AgentGatewayGovernedIngestionResult.ReviewRequired(projection, outcome.reason, correction?.representationId)
-            is PostAdmissionProcessingOutcome.Failed -> AgentGatewayGovernedIngestionResult.PostAdmissionFailed(projection, outcome.stage, outcome.reason, alreadyIngested, correction?.representationId)
+            is PostAdmissionProcessingOutcome.AnalysisReady -> {
+                processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.ANALYSIS_READY, null, outcome.derivativeGenerationId, clock()))
+                AgentGatewayGovernedIngestionResult.AnalysisReady(projection, outcome.derivativeGenerationId, outcome.capabilityId, correction?.representationId)
+            }
+            is PostAdmissionProcessingOutcome.RequiresOcr -> {
+                processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.REQUIRES_OCR, outcome.reason, updatedAt = clock()))
+                AgentGatewayGovernedIngestionResult.RequiresOcr(projection, outcome.reason, correction?.representationId)
+            }
+            is PostAdmissionProcessingOutcome.CapabilityUnavailable -> {
+                processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.CAPABILITY_UNAVAILABLE, outcome.reason, updatedAt = clock()))
+                AgentGatewayGovernedIngestionResult.CapabilityUnavailable(projection, outcome.reason, correction?.representationId)
+            }
+            is PostAdmissionProcessingOutcome.ReviewRequired -> {
+                processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.REVIEW_REQUIRED, outcome.reason, updatedAt = clock()))
+                AgentGatewayGovernedIngestionResult.ReviewRequired(projection, outcome.reason, correction?.representationId)
+            }
+            is PostAdmissionProcessingOutcome.Failed -> {
+                processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.FAILED, "${outcome.stage}: ${outcome.reason}", updatedAt = clock()))
+                AgentGatewayGovernedIngestionResult.PostAdmissionFailed(projection, outcome.stage, outcome.reason, alreadyIngested, correction?.representationId)
+            }
         }
     }
 

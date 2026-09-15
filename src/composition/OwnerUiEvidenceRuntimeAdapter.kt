@@ -203,6 +203,7 @@ private fun mechanismLabel(mechanism: EvidenceAcquisitionMechanism) = when (mech
 class OwnerUiEvidenceRuntimeAdapter(
     private val ownerPrincipalId: PrincipalId,
     private val listRegisteredEvidenceAsOwner: suspend () -> List<OwnerRegisteredEvidence> = { emptyList() },
+    private val processingStateAsOwner: suspend (EvidenceArtifactId) -> String? = { null },
     private val listDerivativeGenerationsAsOwner: suspend (EvidenceArtifactId) -> List<parker.core.runtime.DerivativeCandidateSummary> = { emptyList() },
     private val resolvePreferredDerivativeAsOwner: suspend (EvidenceArtifactId) -> parker.core.runtime.PreferredDerivativeResolution = {
         parker.core.runtime.PreferredDerivativeResolution.NoUsableDerivative(it, "Preferred derivative resolution is not configured")
@@ -278,13 +279,16 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val assignEvidenceToCaseAsOwner: (suspend (EvidenceArtifactId, parker.core.interfaces.CaseId?) -> parker.core.runtime.CaseAssignmentOutcome)? = null,
 ) : OwnerEvidenceOperations {
 
+    override suspend fun processingState(evidenceArtifactId: EvidenceArtifactId): String? =
+        processingStateAsOwner(evidenceArtifactId)
+
     override suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> {
         val evidence = listRegisteredEvidenceAsOwner()
         val currentAssignment = currentCaseAssignmentAsOwner
         if (currentAssignment == null) {
             return evidence.map {
                 OwnerRegisteredEvidenceView(it.evidenceArtifactId.value, it.sha256, it.byteLength,
-                    it.mediaType, it.originalFileName, it.registeredAt.toString())
+                    it.mediaType, it.originalFileName, it.registeredAt.toString(), processingState = it.processingState.name)
             }
         }
         // CASE-1: one map of every defined case, built once per listing call, so each row's join is
@@ -298,6 +302,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                 item.mediaType, item.originalFileName, item.registeredAt.toString(),
                 caseId = caseId?.value,
                 caseName = caseId?.let { caseNamesById[it.value] },
+                processingState = item.processingState.name,
             )
         }
     }

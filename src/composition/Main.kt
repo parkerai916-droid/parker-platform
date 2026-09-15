@@ -78,6 +78,7 @@ internal fun buildOwnerHttpAdapter(runtime: ParkerRuntime, config: ParkerRuntime
     OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
         listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
+        processingStateAsOwner = runtime::processingStateAsOwner,
         listDerivativeGenerationsAsOwner = runtime::listDerivativeGenerationsAsOwner,
         resolvePreferredDerivativeAsOwner = runtime::resolvePreferredDerivativeAsOwner,
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,

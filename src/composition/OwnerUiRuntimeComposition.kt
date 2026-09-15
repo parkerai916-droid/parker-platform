@@ -75,6 +75,7 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
     val evidenceOperations = OwnerUiEvidenceRuntimeAdapter(
         ownerPrincipalId = PrincipalId(config.ownerPrincipalId),
         listRegisteredEvidenceAsOwner = runtime::listRegisteredEvidenceAsOwner,
+        processingStateAsOwner = runtime::processingStateAsOwner,
         importEvidenceFileAsOwner = runtime::importEvidenceFileAsOwner,
         importUploadedEvidenceFileAsOwner = runtime::importUploadedEvidenceFileAsOwner,
         invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,

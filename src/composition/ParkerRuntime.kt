@@ -382,6 +382,7 @@ class ParkerRuntime(
     // (Boundary Clarification Section 5).
     private lateinit var evidenceCustodian: EvidenceCustodian
     private lateinit var ownerEvidenceListing: parker.core.runtime.FileSystemOwnerEvidenceListing
+    private lateinit var evidenceProcessingStateStore: parker.core.runtime.EvidenceProcessingStateStore
     private lateinit var evidenceRegistrationCoordinator: EvidenceRegistrationCoordinator
     private lateinit var ownerEvidenceDeletionAuthority: OwnerEvidenceDeletionAuthority
 
@@ -1680,10 +1681,14 @@ class ParkerRuntime(
             evidenceSourceIdentityIndex,
         )
         evidenceCustodian = defaultEvidenceCustodian
+        evidenceProcessingStateStore = parker.core.runtime.FileSystemEvidenceProcessingStateStore(
+            Path.of(config.evidenceStorageRootPath).resolve("processing-state"),
+        )
         ownerEvidenceListing = parker.core.runtime.FileSystemOwnerEvidenceListing(
             Path.of(config.evidenceSourceManifestStorageRootPath),
             PrincipalId(config.ownerPrincipalId),
             defaultEvidenceCustodian,
+            evidenceProcessingStateStore,
         )
         evidenceRegistrationCoordinator = EvidenceRegistrationCoordinator(defaultEvidenceCustodian, memoryCore, permissionEngine)
         // Parker Agent Gateway, AG-1D/AG-1G (Section 20): agentGatewayEvidenceProjection's own
@@ -2597,6 +2602,7 @@ class ParkerRuntime(
             derivativeGenerationCoordinator = tierBDerivativeGenerationCoordinator,
             humanDecisionRegistry = hermesProcessingDecisionRegistry,
             preIngestionCorrectionRegistry = hermesPreIngestionCorrectionRegistry,
+            processingStateStore = evidenceProcessingStateStore,
             postAdmissionProcessing = { evidenceArtifactId -> postAdmissionProcessingCoordinator.process(evidenceArtifactId) },
         )
         parkerAnalysisRequestCoordinator = parker.core.runtime.ParkerAnalysisRequestCoordinator(
@@ -3447,7 +3453,38 @@ class ParkerRuntime(
     /** Fresh durable owner evidence listing; validates every manifest against governed custody bytes. */
     suspend fun listRegisteredEvidenceAsOwner(): List<parker.core.runtime.OwnerRegisteredEvidence> {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
-        return ownerEvidenceListing.listRegistered()
+        return ownerEvidenceListing.listRegistered().map { evidence ->
+            if (evidence.processingState != parker.core.runtime.EvidenceProcessingState.REGISTERED) return@map evidence
+            // Reconcile legacy evidence that predates the projection. This is read-side only:
+            // it promotes to ANALYSIS_READY only when the existing durable derivative and the
+            // current governed resolver both prove the same evidence is usable.
+            val preferred = preferredDerivativeResolver.resolve(evidence.evidenceArtifactId)
+            val selected = preferred as? parker.core.runtime.PreferredDerivativeResolution.Preferred
+            if (selected != null) {
+                when (val evaluation = evaluateGovernedAcquisitionAsOwner(evidence.evidenceArtifactId)) {
+                    is parker.core.runtime.GovernedAcquisitionOwnerEvaluation.Evaluated ->
+                        if (evaluation.routing is parker.core.interfaces.EvidenceAcquisitionRoutingOutcome.Selected) {
+                            evidenceProcessingStateStore.record(
+                                parker.core.runtime.EvidenceProcessingStateRecord(
+                                    evidence.evidenceArtifactId,
+                                    parker.core.runtime.EvidenceProcessingState.ANALYSIS_READY,
+                                    derivativeGenerationId = selected.derivative.derivativeGenerationId,
+                                    updatedAt = clock(),
+                                ),
+                            )
+                            evidence.copy(
+                                processingState = parker.core.runtime.EvidenceProcessingState.ANALYSIS_READY,
+                            )
+                        } else evidence
+                    else -> evidence
+                }
+            } else evidence
+        }
+    }
+
+    suspend fun processingStateAsOwner(evidenceArtifactId: EvidenceArtifactId): String? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return listRegisteredEvidenceAsOwner().firstOrNull { it.evidenceArtifactId == evidenceArtifactId }?.processingState?.name
     }
 
     suspend fun listDerivativeGenerationsAsOwner(evidenceArtifactId: EvidenceArtifactId): List<parker.core.runtime.DerivativeCandidateSummary> {

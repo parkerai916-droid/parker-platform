@@ -85,12 +85,17 @@ class OwnerEvidenceUiController(
             } catch (failure: Exception) {
                 EvidenceImportOutcome.Failed("Import failed unexpectedly")
             }
+            val importedState = (outcome as? EvidenceImportOutcome.Imported)?.let {
+                runCatching { operations.processingState(it.evidenceArtifactId) }.getOrNull()
+            }
             updateRow(rowId) { row ->
                 when (outcome) {
-                    is EvidenceImportOutcome.Imported -> row.copy(
-                        status = OwnerEvidenceFileStatus.READY_TO_PROCESS,
-                        evidenceArtifactId = outcome.evidenceArtifactId,
-                    )
+                    is EvidenceImportOutcome.Imported -> {
+                        row.copy(
+                            status = ownerStatus(importedState) ?: OwnerEvidenceFileStatus.READY_TO_PROCESS,
+                            evidenceArtifactId = outcome.evidenceArtifactId,
+                        )
+                    }
                     is EvidenceImportOutcome.Rejected -> row.copy(
                         status = OwnerEvidenceFileStatus.IMPORT_FAILED,
                         message = outcome.reason,
@@ -102,6 +107,17 @@ class OwnerEvidenceUiController(
                 }
             }
         }
+    }
+
+    private fun ownerStatus(value: String?): OwnerEvidenceFileStatus? = when (value) {
+        "REGISTERED" -> OwnerEvidenceFileStatus.REGISTERED
+        "PROCESSING" -> OwnerEvidenceFileStatus.PROCESSING
+        "REQUIRES_OCR" -> OwnerEvidenceFileStatus.REQUIRES_OCR
+        "CAPABILITY_UNAVAILABLE" -> OwnerEvidenceFileStatus.CAPABILITY_UNAVAILABLE
+        "REVIEW_REQUIRED" -> OwnerEvidenceFileStatus.REVIEW_REQUIRED
+        "FAILED" -> OwnerEvidenceFileStatus.FAILED
+        "ANALYSIS_READY" -> OwnerEvidenceFileStatus.ANALYSIS_READY
+        else -> null
     }
 
     /** Explicit owner action -- never invoked automatically after import. */

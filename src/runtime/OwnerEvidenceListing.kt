@@ -16,6 +16,7 @@ data class OwnerRegisteredEvidence(
     val mediaType: String?,
     val originalFileName: String?,
     val registeredAt: Instant = Instant.EPOCH,
+    val processingState: EvidenceProcessingState = EvidenceProcessingState.REGISTERED,
 )
 
 /**
@@ -29,6 +30,7 @@ class FileSystemOwnerEvidenceListing(
     storageRoot: Path,
     private val ownerPrincipalId: PrincipalId,
     private val evidenceCustodian: EvidenceCustodian,
+    private val processingStateStore: EvidenceProcessingStateStore? = null,
 ) {
     private val root = storageRoot.toAbsolutePath().normalize()
     private val manifests = FileSystemEvidenceSourceManifestStorage(root)
@@ -58,7 +60,8 @@ class FileSystemOwnerEvidenceListing(
             require(sha256(found.content) == manifest.sha256) { "durable evidence digest mismatch" }
             val registeredAt = Files.getLastModifiedTime(root.resolve("${id.value}$SUFFIX")).toInstant()
             OwnerRegisteredEvidence(id, manifest.sha256, manifest.byteLength,
-                manifest.receivedMediaType, manifest.originalFileName, registeredAt)
+                manifest.receivedMediaType, manifest.originalFileName, registeredAt,
+                processingStateStore?.find(id)?.state ?: EvidenceProcessingState.REGISTERED)
         }
     }
 

@@ -26,6 +26,9 @@ interface OwnerEvidenceOperations {
     /** Fresh durable custody-backed listing. Never uploads, executes, authorizes, or invokes a provider. */
     suspend fun listRegisteredEvidence(): List<OwnerRegisteredEvidenceView> = emptyList()
 
+    /** Read-only authoritative processing projection; null means an old test double has no projection. */
+    suspend fun processingState(evidenceArtifactId: EvidenceArtifactId): String? = null
+
     suspend fun listDerivativeGenerations(evidenceArtifactId: EvidenceArtifactId): List<OwnerDerivativeGenerationSummary> = emptyList()
 
     suspend fun resolvePreferredDerivative(evidenceArtifactId: EvidenceArtifactId): OwnerPreferredDerivativeResolution =
@@ -303,6 +306,7 @@ data class OwnerRegisteredEvidenceView(
     // OwnerEvidenceOperations.assignEvidenceToCase.
     val caseId: String? = null,
     val caseName: String? = null,
+    val processingState: String = "REGISTERED",
 )
 
 data class OwnerDerivativeGenerationSummary(

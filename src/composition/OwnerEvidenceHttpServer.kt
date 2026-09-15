@@ -775,6 +775,7 @@ class OwnerEvidenceHttpServer(
                     "mediaType" to item.mediaType,
                     "originalFileName" to item.originalFileName,
                     "registeredAt" to item.registeredAt,
+                    "processingState" to item.processingState,
                     "caseId" to item.caseId,
                     "caseName" to item.caseName,
                 )
@@ -3398,14 +3399,15 @@ function humanStatus(row) {
   const review = row.humanFidelityStatus || row.humanFidelityReview;
   if (review && review.effectiveReviewState === 'HUMAN_REVIEWED_WITH_DISCREPANCY') return 'Human reviewed — discrepancies found';
   if (review && review.effectiveReviewState === 'HUMAN_REVIEWED_PASS') return 'Human reviewed';
-  return ({UPLOADING:'Uploading', IMPORTED:'Registered', READY_TO_PROCESS:'Ready to process', PROCESSING:'Processing',
+  return ({UPLOADING:'Uploading', IMPORTED:'Registered', REGISTERED:'Registered', READY_TO_PROCESS:'Ready to process', PROCESSING:'Processing',
     TIER_A_COMPLETE:'Processed', TIER_B_DURABLE_COMPLETE:'Processed', COMPLETE:'Processed', REQUIRES_OCR:'Enhanced transcription available',
+    CAPABILITY_UNAVAILABLE:'Capability unavailable', REVIEW_REQUIRED:'Review required', ANALYSIS_READY:'Analysis ready',
     OCR_PROCESSING:'Processing', IMPORT_FAILED:'Failed closed', FAILED:'Failed closed'})[row.status] || (row.status || 'Unknown');
 }
 
-function isProcessed(row) { return ['TIER_A_COMPLETE','TIER_B_DURABLE_COMPLETE','COMPLETE'].includes(row.status); }
+function isProcessed(row) { return ['TIER_A_COMPLETE','TIER_B_DURABLE_COMPLETE','COMPLETE','ANALYSIS_READY'].includes(row.status); }
 function filterMatches(row, filter) {
-  if (filter === 'needs-processing') return ['IMPORTED','READY_TO_PROCESS','REQUIRES_OCR'].includes(row.status);
+  if (filter === 'needs-processing') return ['IMPORTED','REGISTERED','READY_TO_PROCESS','PROCESSING','REQUIRES_OCR','CAPABILITY_UNAVAILABLE','REVIEW_REQUIRED'].includes(row.status);
   if (filter === 'processed') return isProcessed(row);
   if (filter === 'human-reviewed') return !!(row.humanFidelityStatus || row.humanFidelityReview);
   if (filter === 'corrected') return !!(row.correctedRepresentation || row.correctedRepresentationAvailable);
@@ -4616,7 +4618,7 @@ async function loadExistingEvidence(successMessage) {
       const merged = Object.assign({
         originalFileName: item.originalFileName,
         byteLength: item.byteLength,
-        status: 'READY_TO_PROCESS',
+        status: item.processingState || 'REGISTERED',
         evidenceArtifactId: item.evidenceArtifactId,
         message: 'Durably registered evidence',
         sha256: item.sha256,
