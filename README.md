@@ -83,7 +83,7 @@ Parker is governed by published architectural principles.
 
 Parker's constitutional foundation is complete and frozen. The project has moved well beyond isolated runtime components and now includes a production-composed pipeline covering intake, context assembly, reasoning, reply delivery, Goal handoff, Plan Candidate generation, Planner Runtime invocation, controlled Agent Run submission and synchronous execution, governed Evidence Custody, durable owner Memory and Knowledge retrieval, case-aware evidence handling, and an operational Parker↔Hermes bulk-ingestion handoff.
 
-The current development focus is no longer whether Parker can accept documents at all. Governed source submission, case binding, authorised bulk-ingestion batches, Hermes-side batch discovery, browser-based folder submission, and evidence-to-case assignment are now implemented. The remaining ingestion programme is focused on source fidelity, processing quality, uncertainty handling, human review, and consolidation of the Parker and Hermes operator surfaces.
+The current production path is operational end to end: governed source submission, Case binding, Parker↔Hermes handoff, durable evidence processing state, native searchable-PDF processing, governed derivative selection, single- and multi-document analysis, and evidence-grounded owner review are all verified. Parker's current focus is case-scale reasoning, human review, canonical-answer governance, and broader real-world robustness rather than basic ingestion plumbing.
 
 This represents a meaningful architectural transition, not merely an additive one. Parker now has a production composition root: a single, real assembly point where the runtime components built and verified across previous units are wired together into the platform's canonical runtime, rather than remaining a set of independently verified, isolated pieces. The conversation, reasoning, reply, planning, and execution pipeline described below exists today as a production-composed system — constructed once, in one place, and exercised by real production code — not merely as a design proven correct only inside isolated tests.
 
@@ -96,6 +96,52 @@ The Evidence Custodian programme has also reached production integration: govern
 Parker's memory is now durable and governed end-to-end. An explicit owner instruction to remember something is admitted into canonical Memory Core and Knowledge Item storage, survives a full runtime restart, and is retrieved into the real Reasoning Context through a governed path — literal structural matching first, falling back only when necessary to a bounded, fail-closed relevance mechanism that never gains authority over Parker's own canonical records. This has been demonstrated end-to-end, not merely in isolated tests, through Parker's own production owner-facing UI — see "Milestone: Durable Owner Memory and Governed Relevance Retrieval" below.
 
 Parker also now has a real, production-composed owner-facing user interface — a desktop application wired directly into the same production runtime the CLI and every other entry point use, with a supported launcher script for headless/X11-forwarded server operation.
+
+### Current production baseline
+
+Production is currently verified at commit `52b5cd588f0961c4cdba7aa58533ee855437d12f`. This baseline verifies governed evidence ingestion, Case binding, Parker↔Hermes handoff, persisted processing state, native searchable-PDF processing, governed derivative selection, single- and multi-document analysis, evidence-grounded answers, human-readable evidence references, and restart durability.
+
+The same acceptance verified page-aware searchable-PDF provenance, exact quotation and page citation where mapping exists, cross-page citation safety, legacy no-fabricated-page safety, and no unnecessary OCR or external transcription for native searchable PDFs.
+
+The current governed document path is:
+
+```text
+SOURCE MATERIAL
+      ↓
+HERMES PROCESSING / PREFLIGHT
+      ↓
+PARKER GOVERNED INGESTION
+      ↓
+EVIDENCE CUSTODY + CASE BINDING
+      ↓
+DURABLE GOVERNED REPRESENTATION
+      ↓
+PERSISTED PROCESSING STATE
+      ↓
+GOVERNED RETRIEVAL
+      ↓
+REASONING / ANALYSIS
+      ↓
+GROUNDED FINDING
+      ↓
+SOURCE + PAGE + QUOTATION + PROVENANCE
+      ↓
+OWNER REVIEW
+```
+
+Page citations are exposed only when the governed representation preserves verified page association. Legacy or whole-document derivatives remain retrievable and cite the document and quotation without inventing a page.
+
+#### Stage 18 controlled acceptance
+
+Production verification used a native searchable three-page PDF:
+
+```text
+Page 1: PARKER PAGE ONE TEST
+Page 2: PARKER PAGE TWO TEST
+Page 3: PARKER PAGE THREE TEST
+```
+
+The page-2 query identified page 2 and returned the exact quotation `PARKER PAGE TWO TEST`. The citation was bound to the correct evidence and derivative, with stable offsets `25..46`, no invented section or coordinates, cross-page safety, restart durability, and no OCR or external transcription.
 
 The current implementation has been developed through governance-first units under the Parker Engineering Standard (**PES-001**).
 
@@ -117,6 +163,10 @@ Native Verification
 Commit
         ↓
 Push
+        ↓
+Controlled Production Promotion
+        ↓
+Live Acceptance
 ```
 
 Architecture is reviewed and locked before code is written, and native verification is completed before a unit is accepted into the canonical repository. No unit skips a stage.
@@ -218,8 +268,34 @@ Document ingestion and Parker↔Hermes handoff:
 * Parker-side assignment of submitted evidence to the pre-authorised Case
 * explicit separation between source submission, case authority, downstream processing, and reasoning
 * no automatic provider processing merely because a file was submitted
+* persisted evidence-processing state: `REGISTERED`, `PROCESSING`, `REQUIRES_OCR`, `CAPABILITY_UNAVAILABLE`, `REVIEW_REQUIRED`, `FAILED`, and `ANALYSIS_READY`
+* conservative legacy reconciliation: source admission alone never implies `ANALYSIS_READY`
+* native searchable-PDF processing without unnecessary OCR
+* single-document and multi-document analysis using the governed selected derivative
+* page-aware searchable-PDF segments and citation anchors with source/derivative binding
+* human-readable source, page, and quotation references with technical provenance available on demand
 * human-review workflow under active development for uncertain or low-confidence processing outcomes
 * combined Parker + Hermes owner/operator interface under active development
+
+### OCR authority policy
+
+When authoritative OCR is required, Parker's locked policy permits only the authorised external path to satisfy that requirement. External OCR is classified as authoritative only when its request, response, provider/model provenance, source binding, and derivative persistence are governed.
+
+Local Docling/RapidOCR output is `LOCAL_PRELIMINARY` only. It may support diagnostics, triage, pre-screening, comparison, and tooling, but it must never silently satisfy an authoritative OCR requirement. Native searchable PDFs use their verified native text layer and do not invoke external OCR unnecessarily.
+
+### Page-aware provenance
+
+Verified native searchable-PDF representations may preserve page number, page text, stable offsets, extraction method, source digest, derivative-generation binding, and optional section or region information when the extractor actually establishes it. Citation anchors carry the evidence ID, derivative ID, verified page when available, offsets, exact supporting quotation, extraction method, and authority/completeness information.
+
+Parker does not invent page numbers, coordinates, headings, or layout fidelity. Cross-page quotations are represented by separate page anchors or explicitly described as spanning pages; they are never collapsed into one fabricated page citation. Sentence numbers are a display convenience only, not canonical citation anchors.
+
+### Analysis capability
+
+Production analysis supports single-document and multi-document requests, distinct governed derivative selection, evidence-grounded outputs, and human-readable evidence references. Provider-generated analysis remains proposed analytical material for owner review. It is not automatically canonical Parker truth.
+
+### Human-readable extraction warnings
+
+Extraction warnings are presented first as a concise operator-facing note. Repeated identical warnings are shown once, while distinct technical warnings remain available under collapsed **Technical extraction details**. Evidence references, evidence and derivative identities, extraction method, completeness, and review state remain visible; technical provenance is not discarded or rewritten.
 
 ## Implementation Maturity
 
@@ -234,17 +310,31 @@ Document ingestion and Parker↔Hermes handoff:
 | Reply Delivery                                                        | Complete                                                                                            |
 | Goal Routing                                                          | Complete                                                                                            |
 | Planner Integration                                                   | Complete                                                                                            |
-| Agent Execution                                                       | Controlled Submission Complete                                                                      |
+| Agent Execution                                                       | Controlled execution operational                                                                    |
 | Evidence Custodian                                                    | Complete (Phases 1–10; full native verification passed)                                             |
-| Owner-Facing UI                                                       | Operational (existing Parker owner surfaces; consolidated Parker + Hermes UI in active development) |
+| Owner-Facing UI                                                       | Operational                                                                                         |
 | Case Management                                                       | Operational                                                                                         |
 | Parker-Authorised Bulk Ingestion                                      | Operational                                                                                         |
 | Parker↔Hermes Batch Handoff                                           | Operational                                                                                         |
 | Hermes Browser Ingestion                                              | Operational                                                                                         |
-| Document Processing / Source Fidelity                                 | Active development                                                                                  |
+| Persisted Evidence Processing State                                   | Operational                                                                                         |
+| Native Searchable-PDF Processing                                      | Operational                                                                                         |
+| External Authoritative OCR Path                                       | Operational / governed                                                                              |
+| Single-Document Analysis                                               | Production verified                                                                                  |
+| Multi-Document Analysis                                                | Production verified                                                                                  |
+| Page-Aware Searchable-PDF Provenance                                   | Production verified                                                                                  |
+| Exact Page/Quotation Citation                                          | Production verified for page-aware native PDFs                                                      |
+| Document Processing / Source Fidelity                                  | Operational with provider-dependent limits                                                          |
 | Human Review Workflow                                                 | Active development                                                                                  |
+| OCR Region/Coordinate Fidelity                                        | Provider-dependent / active development                                                             |
+| Case-Scale Retrieval Optimisation                                      | Active development                                                                                  |
+| Canonical Answer Promotion Workflow                                    | Active development                                                                                  |
+| General Planned Goal → Real Tool Execution                             | Incomplete                                                                                           |
 | Workflow Engine                                                       | Planned                                                                                             |
+| Plugin Ecosystem                                                      | Planned                                                                                             |
 | Android Product                                                       | Planned                                                                                             |
+| Multi-Device Deployment                                               | Planned                                                                                             |
+| Public SDK                                                            | Planned                                                                                             |
 
 ---
 
@@ -514,7 +604,7 @@ The ingestion path is therefore not a shortcut around Parker's constitutional ar
 
 ### Processing and Human Review Direction
 
-The target processing contract for material moving through Hermes is:
+The production processing contract for material moving through Hermes is:
 
 ```text
 SOURCE MATERIAL
@@ -544,19 +634,31 @@ FAILED → Owner / reprocess          │
                                   Owner
 ```
 
-The human-review capability is still under active development. Its purpose is to ensure that uncertain OCR, transcription, extraction, layout interpretation, page/region geometry, or other questionable processing does not silently become trusted Parker content.
+The governed processing states are:
+
+```text
+REGISTERED → PROCESSING → ANALYSIS_READY
+                  ├──────→ REQUIRES_OCR
+                  ├──────→ CAPABILITY_UNAVAILABLE
+                  ├──────→ REVIEW_REQUIRED
+                  └──────→ FAILED
+```
+
+Source admission alone does not mean `ANALYSIS_READY`. That state requires a usable governed representation selected by governed acquisition. Legacy evidence is reconciled conservatively and is never upgraded by guessing missing provenance. Human review remains under active development so uncertain OCR, transcription, extraction, layout interpretation, page/region geometry, or other questionable processing cannot silently become trusted Parker content.
 
 ### Source Fidelity
 
-The present ingestion programme is particularly focused on source fidelity.
+The production path now verifies source fidelity for the representations that can establish it.
 
 Parker's objective is not simply to extract text. A processed result must remain traceable to the source material from which it was derived, including page, region, processing method, provenance, and material uncertainty where applicable.
 
-For evidence-oriented use, a plausible extracted sentence is not sufficient if Parker cannot establish where it came from.
+For evidence-oriented use, a plausible extracted sentence is not sufficient if Parker cannot establish where it came from. Page-aware native PDFs can carry exact quotations, verified page numbers, stable offsets, source digests, and derivative identity. Whole-document or legacy derivatives remain document-level only.
 
 The operating principle is therefore:
 
 > **Derived interpretation may assist understanding, but it must not erase the source.**
+
+Parker should prefer an explicit limitation over an invented fact, page, quotation, authority, or capability.
 
 ### Combined Parker + Hermes Interface
 
@@ -611,16 +713,31 @@ Structural matching always runs first and is never bypassed. Bounded Relevance C
 
 ## Current Verified Baseline
 
-* **Architecture milestone:** Architecture v1.0 — Constitutional Foundation
-* **Implementation status:** Controlled Agent Run Submission complete; Evidence Custodian programme complete; durable owner memory and governed relevance retrieval complete; owner-facing Parker UI operational; Parker-authorised bulk ingestion operational; Parker↔Hermes batch handoff operational; Hermes browser ingestion operational
-* **Recent repository ingestion milestone:** `88bbae4` — `feat(ingest): add parker hermes bulk handoff`
-* **Recent repository operator fix:** `bd71e8b` — `fix(hermes): support python 3.13 multipart parsing`
-* **Current development focus:** document fidelity, document-processing review semantics, source/page/region traceability, human review, and the combined Parker + Hermes UI
-* **Verification note:** the historical full-suite counts below remain valid for the milestones at which they were recorded; this README does not claim a new repository-wide regression count unless a current native full-suite run has actually established one
+Production commit:
+`52b5cd588f0961c4cdba7aa58533ee855437d12f`
+
+Stage 18 regression baseline:
+
+```text
+Gradle:
+4,155 tests passed
+21 skipped
+
+Python tooling:
+143 tests passed
+24 skipped
+
+git diff --check:
+PASS
+```
+
+That baseline has production-verified governed ingestion, Case binding, Parker↔Hermes handoff, persisted evidence-processing state, native searchable-PDF processing, single- and multi-document analysis, governed derivative selection, evidence-grounded answers, human-readable evidence references, and page-aware searchable-PDF provenance. Future commits must rerun verification; these counts are not automatically implied for later revisions.
 
 ---
 
 # What Is Not Yet Complete
+
+Core governed document ingestion and evidence-grounded analysis are operational. Parker is now entering the case-scale reasoning and human-review phase.
 
 Parker is not yet a finished consumer assistant.
 
@@ -871,7 +988,27 @@ QMD cannot create, modify, delete, promote, or redefine Parker memory, and it ne
 
 ## Project Goals
 
-Parker aims to become a complete personal intelligence platform capable of:
+Remaining work includes:
+
+* case-scale reasoning;
+* human review;
+* canonical-answer promotion and governance;
+* large-case retrieval precision;
+* evidence conflict detection;
+* richer uncertain-processing review;
+* authoritative OCR region and geometry where provider data supports it;
+* larger messy real-world case testing;
+* workflow orchestration;
+* broader agent capability;
+* general planned Goal → real Tool execution;
+* security hardening;
+* release packaging;
+* plugin ecosystem;
+* Android;
+* multi-device operation; and
+* public SDK work.
+
+Parker still aims to become a complete personal intelligence platform capable of:
 
 * personal assistance;
 * home automation;
@@ -991,24 +1128,30 @@ The constitutional foundation is defined by:
 
 * **Architecture:** Constitutional Foundation complete and frozen
 * **Runtime Foundation:** Complete
-* **Current platform state:** Controlled Agent Run Submission complete; Evidence Custodian programme complete; durable owner memory and governed relevance retrieval complete; owner-facing Parker UI operational; Case-aware Parker↔Hermes bulk ingestion operational
-* **Recent ingestion milestone:** `88bbae4` — `feat(ingest): add parker hermes bulk handoff`
-* **Recent Hermes compatibility fix:** `bd71e8b` — `fix(hermes): support python 3.13 multipart parsing`
-* **Current focus:** source-faithful document handling, review semantics, human review, and consolidation of Parker + Hermes into a combined owner/operator UI
-* **Separately open:** production Tool execution from planned Goals, broader Task lifecycle handling, workflow orchestration, plugins, Android, and multi-device production support
+* **Current platform state:** Controlled Agent Run Submission complete; Evidence Custodian programme complete; durable owner memory and governed relevance retrieval complete; owner-facing Parker UI operational; Case-aware Parker↔Hermes bulk ingestion operational; persisted evidence processing, native searchable-PDF analysis, single- and multi-document analysis, and page-aware provenance production verified
+* **Production baseline:** `52b5cd588f0961c4cdba7aa58533ee855437d12f`
+* **Current focus:** case-scale reasoning, retrieval precision, human review, canonical-answer governance, uncertain-processing review, and larger real-world case testing
+* **Separately open:** workflow orchestration, broader agent capability, planned Goal → real Tool execution, plugins, Android, multi-device production support, security hardening, release packaging, and public SDK work
 
 ---
 
 ## Build Status
 
-Latest full native regression baseline, at commit `7a1678c`:
+Latest verified implementation baseline, at production commit `52b5cd588f0961c4cdba7aa58533ee855437d12f`:
 
 ```text
 Native Gradle verification: BUILD SUCCESSFUL
-2,290 tests, 0 failures, 0 errors, 7 skipped
+4,155 tests passed
+21 skipped
+
+Python tooling:
+143 tests passed
+24 skipped
+
+git diff --check: PASS
 ```
 
-The commits on `main` after `7a1678c` are a bounded, owner-UI-launcher-only correction (`scripts/run-owner-ui.sh`, a shell script) and did not require, and were not verified by, a full suite re-run.
+These counts describe that verified implementation baseline. Future commits must rerun the relevant verification and do not automatically inherit these counts.
 
 The complete test suite must pass before an implementation unit is accepted, committed, and pushed.
 
@@ -1109,11 +1252,20 @@ tools/
 | Parker-Authorised Bulk Ingestion | Operational                                                      |
 | Parker↔Hermes Batch Handoff      | Operational                                                      |
 | Hermes Browser Ingestion         | Operational                                                      |
-| Source-Fidelity Processing       | Active development                                               |
+| Persisted Evidence Processing State | Operational                                                    |
+| Native Searchable-PDF Processing | Operational                                                      |
+| External Authoritative OCR Path  | Operational / governed                                           |
+| Single-Document Analysis         | Production verified                                              |
+| Multi-Document Analysis          | Production verified                                              |
+| Page-Aware Searchable-PDF Provenance | Production verified                                          |
+| Exact Page/Quotation Citation    | Production verified for page-aware native PDFs                  |
+| Source-Fidelity Processing       | Operational with provider-dependent limits                      |
 | Human Review Workflow            | Active development                                               |
+| OCR Region/Coordinate Fidelity   | Provider-dependent / active development                          |
+| Case-Scale Retrieval Optimisation | Active development                                              |
+| Canonical Answer Promotion Workflow | Active development                                            |
 | Combined Parker + Hermes UI      | Active development                                               |
-| Recent Ingestion Milestone       | `88bbae4` — `feat(ingest): add parker hermes bulk handoff`       |
-| Recent Hermes Fix                | `bd71e8b` — `fix(hermes): support python 3.13 multipart parsing` |
+| Production Baseline              | `52b5cd588f0961c4cdba7aa58533ee855437d12f`                      |
 | Branch                           | `main`                                                           |
 
 ---
@@ -1136,13 +1288,16 @@ Parker is being developed in deliberate stages:
 12. Case management and Parker-authorised bulk ingestion ✅
 13. Parker↔Hermes governed batch handoff ✅
 14. Hermes browser ingestion ✅
-15. Source-faithful document processing ← current
-16. Human review workflow ← current
-17. Combined Parker + Hermes UI ← current
-18. Workflow Engine
-19. Plugins and richer tools
-20. Android product integration
-21. Multi-device production platform
+15. Persisted processing state and governed analysis ✅
+16. Page-aware searchable-PDF provenance ✅
+17. Human review workflow ← current
+18. Case-scale reasoning and retrieval precision ← current
+19. Canonical answer promotion and governance ← current
+20. Combined Parker + Hermes UI ← current
+21. Workflow Engine
+22. Plugins and richer tools
+23. Android product integration
+24. Multi-device production platform
 
 The controlled transition from an authorised Task Proposal into Agent Run submission and synchronous execution is now implemented:
 
