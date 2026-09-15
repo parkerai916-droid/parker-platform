@@ -2947,7 +2947,7 @@ class OwnerEvidenceHttpServerTest {
             val reviewStillEligible = runtimeB.runtime.submitGovernedIngestionAsAgent(
                 batchId, reviewSha, CandidateEvidenceArtifact(reviewBytes, "text/plain", "review.txt"),
             )
-            assertTrue(reviewStillEligible is parker.core.runtime.AgentGatewayGovernedIngestionResult.PostAdmissionFailed)
+            assertTrue(reviewStillEligible is parker.core.runtime.AgentGatewayGovernedIngestionResult.AnalysisReady)
             val failedStillBlocked = runtimeB.runtime.submitGovernedIngestionAsAgent(
                 batchId, failedSha, CandidateEvidenceArtifact(failedBytes, "text/plain", "failed.txt"),
             )

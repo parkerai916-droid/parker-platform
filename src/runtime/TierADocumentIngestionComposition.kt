@@ -15,7 +15,7 @@ object TierADocumentIngestionComposition {
             CoordinatorTierAFormatRoutes(DerivativeGenerationCoordinator(
                 csvExtractor = ApacheCommonsCsvExtractor(), storage = storage, audit = audit,
                 emlExtractor = ApacheJamesMime4jExtractor(), docxExtractor = ApachePoiXwpfExtractor(),
-                pdfExtractor = TikaPdfStructuralExtractor(), contentStorage = contentStorage,
+                pdfExtractor = TikaPdfStructuralExtractor(), structuredExtractor = ApacheStructuredDocumentExtractor(), contentStorage = contentStorage,
             )),
         )
 }

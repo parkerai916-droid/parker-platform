@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Deterministic Parker bulk-ingestion operator.
+"""DEPRECATED compatibility ledger; not the authoritative ingestion path.
+
+Use ``tools/hermes_processing_ingest.py`` (or the Hermes UI) instead.  This
+module is retained only so old ledgers can be inspected safely; it must not be
+used to claim format support or production processing.
 
 This tool is deliberately an untrusted client: it scans bytes, submits them to
 the Agent Gateway, and records opaque Parker responses. It never reads or
@@ -20,11 +24,10 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from tools.hermes_format_catalogue import media_type_for_extension
 
-SUPPORTED = {
-    "application/pdf", "image/jpeg", "image/png", "image/webp", "text/csv",
-    "message/rfc822",
-}
+# Deliberately empty: this superseded path cannot validate or process sources.
+SUPPORTED = frozenset()
 RETRYABLE_HTTP = {408, 425, 429, 500, 502, 503, 504}
 STATES = ("DISCOVERED", "UNSUPPORTED", "READY_TO_SUBMIT", "SUBMITTING",
           "REGISTERED", "ALREADY_REGISTERED", "ACQUISITION_REQUESTED",
@@ -32,8 +35,7 @@ STATES = ("DISCOVERED", "UNSUPPORTED", "READY_TO_SUBMIT", "SUBMITTING",
 
 
 def media_type(path: Path) -> str:
-    value, _ = mimetypes.guess_type(path.name, strict=False)
-    return (value or "application/octet-stream").lower()
+    return media_type_for_extension(path.suffix) or "application/octet-stream"
 
 
 class Ledger:

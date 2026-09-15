@@ -1,6 +1,6 @@
 package parker.core.interfaces
 
-enum class TierADocumentFormat { CSV, EML, DOCX, PDF }
+enum class TierADocumentFormat { TXT, CSV, EML, DOC, DOCX, XLS, XLSX, MSG, RTF, PDF }
 
 data class TierADocumentSourceContext(
     val evidenceArtifactId: EvidenceArtifactId,
@@ -29,6 +29,7 @@ sealed class TierADerivativePayload {
     data class Eml(val value: EmlStructuralResult, val childSourceCandidateCount: Int) : TierADerivativePayload()
     data class Docx(val value: DocxStructuralResult) : TierADerivativePayload()
     data class Pdf(val value: PdfStructuralResult) : TierADerivativePayload()
+    data class Structured(val value: StructuredDocumentRepresentation) : TierADerivativePayload()
 
     /**
      * Tier B durable OCR content -- reuses this same sealed payload type

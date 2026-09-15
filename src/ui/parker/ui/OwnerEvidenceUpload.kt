@@ -494,6 +494,22 @@ sealed interface OwnerTierAContent {
         val warnings: List<String>,
     ) : OwnerTierAContent
 
+    data class Structured(
+        val kind: String,
+        val text: String,
+        val lines: List<String>,
+        val spreadsheetSheets: List<OwnerStructuredSheetSummary>,
+        val sender: String?,
+        val recipients: List<String>,
+        val cc: List<String>,
+        val subject: String?,
+        val timestamp: String?,
+        val attachments: List<String>,
+        val producer: OwnerDerivativeProducerSummary,
+        val completenessState: String,
+        val warnings: List<String>,
+    ) : OwnerTierAContent
+
     /**
      * Read-only presentation of an already-admitted ordinary-region transcription.
      * The fields are copied from the canonical generation record and durable payload;
@@ -542,6 +558,9 @@ sealed interface OwnerTierAContent {
         const val CSV_PREVIEW_ROW_LIMIT: Int = 500
     }
 }
+
+data class OwnerStructuredSheetSummary(val name: String, val cells: List<OwnerStructuredCellSummary>)
+data class OwnerStructuredCellSummary(val coordinate: String, val value: String?, val displayedValue: String?, val formula: String?)
 
 /** Producer/model identity fields only -- no configuration values, paths, or secrets. */
 data class OwnerDerivativeProducerSummary(

@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,21 +20,26 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
 from xml.etree import ElementTree
 
+try:
+    from hermes_format_catalogue import definition_for_extension, media_type_for_extension
+except ModuleNotFoundError:  # direct spec loading from the repository tests
+    import importlib.util
+    _catalogue_spec = importlib.util.spec_from_file_location("hermes_format_catalogue", Path(__file__).with_name("hermes_format_catalogue.py"))
+    if _catalogue_spec is None or _catalogue_spec.loader is None:
+        raise
+    _catalogue_module = importlib.util.module_from_spec(_catalogue_spec)
+    sys.modules["hermes_format_catalogue"] = _catalogue_module
+    _catalogue_spec.loader.exec_module(_catalogue_module)
+    definition_for_extension = _catalogue_module.definition_for_extension
+    media_type_for_extension = _catalogue_module.media_type_for_extension
+
 
 BRIDGE = Path(__file__).with_name("docling-ocr-bridge.py")
-SUPPORTED_MEDIA = {
-    ".txt": "text/plain",
-    ".csv": "text/csv",
-    ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-}
 REVIEW_CONFIDENCE_THRESHOLD = 0.80
 
 
@@ -60,7 +66,7 @@ class ProcessedFile:
 
 
 def media_type_for(path: Path) -> str | None:
-    return SUPPORTED_MEDIA.get(path.suffix.lower())
+    return media_type_for_extension(path.suffix)
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -91,6 +97,88 @@ def docx_text(data: bytes) -> tuple[str, str | None]:
             texts.append(node.text)
     text = " ".join(texts).strip()
     return (text, None) if text else ("", "DOCX contains no readable text")
+
+
+def xlsx_structure(data: bytes) -> tuple[dict | None, str | None]:
+    """Read OOXML workbook identity and cell coordinates without flattening it."""
+    try:
+        with zipfile.ZipFile(__import__("io").BytesIO(data)) as archive:
+            workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+            rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            shared = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+                for item in root:
+                    shared.append("".join(node.text or "" for node in item.iter() if node.tag.rsplit("}", 1)[-1] == "t"))
+            relationships = {node.attrib.get("Id"): node.attrib.get("Target") for node in rels}
+            sheets = []
+            ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main", "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+            for sheet in workbook.findall("m:sheets/m:sheet", ns):
+                target = relationships.get(sheet.attrib.get("{" + ns["r"] + "}id"))
+                if not target:
+                    return None, "XLSX sheet relationship is missing"
+                target = target.lstrip("/") if target.startswith("/") else "xl/" + target
+                root = ElementTree.fromstring(archive.read(target))
+                cells = []
+                for cell in root.findall(".//m:c", ns):
+                    value = cell.find("m:v", ns)
+                    formula = cell.find("m:f", ns)
+                    raw = value.text if value is not None else None
+                    if raw is not None and cell.attrib.get("t") == "s":
+                        raw = shared[int(raw)]
+                    cells.append({"cell": cell.attrib.get("r"), "value": raw, "formula": formula.text if formula is not None else None, "displayedValue": raw})
+                sheets.append({"name": sheet.attrib.get("name"), "cells": cells})
+            return {"workbook": "OOXML", "sheets": sheets}, None
+    except (KeyError, OSError, ValueError, IndexError, ElementTree.ParseError, zipfile.BadZipFile) as error:
+        return None, f"XLSX package is corrupt: {error}"
+
+
+def email_structure(data: bytes) -> tuple[dict | None, str | None]:
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(data)
+    except Exception as error:
+        return None, f"EML message is malformed: {error}"
+    if not message.get("From") and not message.get("To") and not message.get("Subject"):
+        return None, "EML has no recognisable message headers"
+    body = message.get_body(preferencelist=("plain", "html"))
+    attachments = [{"filename": part.get_filename(), "contentType": part.get_content_type()} for part in message.iter_attachments()]
+    return {"from": message.get("From"), "to": message.get("To"), "cc": message.get("Cc"), "bcc": message.get("Bcc"), "subject": message.get("Subject"), "date": message.get("Date"), "body": body.get_content() if body else "", "messageFormat": body.get_content_type() if body else None, "attachments": attachments}, None
+
+
+def rtf_text(data: bytes) -> tuple[str, str | None]:
+    try:
+        source = data.decode("ascii", errors="strict")
+    except UnicodeDecodeError as error:
+        return "", f"RTF is not valid ASCII control text: {error}"
+    if not source.startswith("{\\rtf"):
+        return "", "RTF header is missing"
+    text = re.sub(r"\\'[0-9a-fA-F]{2}", "", source)
+    text = re.sub(r"\\[a-zA-Z]+-?\d*\s?", "", text)
+    text = text.replace("{", "").replace("}", "").replace("\\", "").strip()
+    return (text, None) if text else ("", "RTF contains no readable text")
+
+
+def tiff_frame_count(data: bytes) -> tuple[int | None, str | None]:
+    if len(data) < 8 or data[:2] not in (b"II", b"MM"):
+        return None, "TIFF header is missing"
+    endian = "little" if data[:2] == b"II" else "big"
+    if int.from_bytes(data[2:4], endian) != 42:
+        return None, "TIFF magic is invalid"
+    offset = int.from_bytes(data[4:8], endian)
+    count = 0
+    seen = set()
+    try:
+        while offset and offset not in seen:
+            seen.add(offset)
+            if offset + 2 > len(data): return None, "TIFF directory is truncated"
+            entries = int.from_bytes(data[offset:offset + 2], endian)
+            next_offset = offset + 2 + entries * 12
+            if next_offset + 4 > len(data): return None, "TIFF directory is truncated"
+            count += 1
+            offset = int.from_bytes(data[next_offset:next_offset + 4], endian)
+        return (count, None) if count else (None, "TIFF contains no frames")
+    except (OverflowError, ValueError):
+        return None, "TIFF directory is invalid"
 
 
 def run_docling(path: Path, media_type: str, timeout: float) -> dict:
@@ -131,6 +219,7 @@ def run_docling(path: Path, media_type: str, timeout: float) -> dict:
 
 def make_result_and_representation(batch_id: str, source_hash: str, path: Path, data: bytes, timeout: float, original_filename: str | None = None) -> tuple[dict, dict | None]:
     media = media_type_for(path)
+    definition = definition_for_extension(path.suffix)
     if media is None:
         return ({
             "sourceSha256": source_hash, "status": "FAILED", "methods": ["DIRECT_TEXT_EXTRACTION"],
@@ -142,6 +231,35 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
         if error:
             return ({"sourceSha256": source_hash, "status": "FAILED", "methods": [method], "issues": [], "failure": {"kind": "NO_READABLE_CONTENT", "detail": error}}, None)
         return ({"sourceSha256": source_hash, "status": "PASS", "methods": [method], "issues": []}, None)
+    if media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        structure, error = xlsx_structure(data)
+        if error:
+            return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_SPREADSHEET_EXTRACTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": error}}, None)
+        return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_SPREADSHEET_EXTRACTION"], "issues": [], "structuredRepresentation": structure, "representationCapability": definition.parker_native_route}, None)
+    if media == "message/rfc822":
+        structure, error = email_structure(data)
+        if error:
+            return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_EMAIL_EXTRACTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": error}}, None)
+        return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_EMAIL_EXTRACTION"], "issues": [], "structuredRepresentation": structure}, None)
+    if media in ("application/rtf", "text/rtf"):
+        text, error = rtf_text(data)
+        if error:
+            return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": error}}, None)
+        return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "structuredRepresentation": {"text": text}}, None)
+    if media == "image/tiff":
+        frames, error = tiff_frame_count(data)
+        if error:
+            return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["TIFF_FRAME_INSPECTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": error}}, None)
+        # Local OCR is diagnostic only.  Do not submit its text as an authoritative
+        # representation; Parker must take the governed external OCR route.
+        return ({"sourceSha256": source_hash, "status": "REQUIRES_OCR", "methods": ["TIFF_FRAME_INSPECTION"], "issues": [{"kind": "AUTHORITATIVE_OCR_REQUIRED", "explanation": "TIFF contains %d frame(s); local OCR is preliminary only" % frames}], "frameCount": frames}, None)
+    if media in ("application/msword", "application/vnd.ms-excel", "application/vnd.ms-outlook", "application/x-ole-storage"):
+        if len(data) < 8 or data[:8] != bytes.fromhex("D0CF11E0A1B11AE1"):
+            return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": f"{path.suffix.lower()} is not a valid OLE compound document"}}, None)
+        # Parker performs the governed Apache POI HWPF/HSSF/HSMF extraction
+        # after source admission. Hermes has validated the container signature;
+        # it never invents a text derivative or submits one as authoritative.
+        return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "processingCompleteness": "COMPLETE"}, None)
     if media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         text, error = docx_text(data)
         if error:

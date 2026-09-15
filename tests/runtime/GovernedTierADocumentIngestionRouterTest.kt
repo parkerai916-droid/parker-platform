@@ -61,10 +61,11 @@ class GovernedTierADocumentIngestionRouterTest {
         assertEquals(TierADocumentFormat.EML, emlResult.format); assertTrue(emlResult.mediaFacts.disagreement)
     }
 
-    @Test fun `ambiguous CSV declared plain text is unsupported and causes no side effects`() = runTest {
+    @Test fun `plain text media is routed as governed TXT even when filename is csv`() = runTest {
         val storage = RecordingStorage(); val audit = RecordingAudit(); val bytes = "a,b\r\n1,2\r\n".toByteArray()
         val result = router(storage, audit).ingest(context("looks.csv", bytes, "text/plain", sha256(bytes)))
-        assertIs<TierADocumentRoutingResult.Unsupported>(result); assertEquals(0, storage.prepareCalls); assertTrue(audit.records.isEmpty())
+        val admitted = assertIs<TierADocumentRoutingResult.Admitted>(result); assertEquals(TierADocumentFormat.TXT, admitted.format)
+        assertEquals(1, storage.prepareCalls); assertTrue(audit.records.isNotEmpty())
     }
 
     @Test fun `unknown binary is unsupported while PNG distinctly requires Tier B`() = runTest {
@@ -84,7 +85,7 @@ class GovernedTierADocumentIngestionRouterTest {
         val zip = zipOut.toByteArray()
         assertIs<TierADocumentRoutingResult.Unsupported>(router.ingest(context("fake.docx", zip, "application/octet-stream", sha256(zip))))
         val text = "Subject: only one header\r\n\r\nnot an email route".toByteArray()
-        assertIs<TierADocumentRoutingResult.Unsupported>(router.ingest(context("fake.eml", text, "text/plain", sha256(text))))
+        assertIs<TierADocumentRoutingResult.Admitted>(router.ingest(context("fake.eml", text, "text/plain", sha256(text))))
         val png = Files.readAllBytes(FIXTURE_ROOT.resolve("07-text-image.png"))
         assertIs<TierADocumentRoutingResult.RequiresTierB>(router.ingest(context("misleading.pdf", png, "application/octet-stream", sha256(png))))
     }
@@ -160,6 +161,7 @@ class GovernedTierADocumentIngestionRouterTest {
     }
     private class SpyRoutes : TierAFormatRoutes {
         val calls = mutableListOf<String>()
+        override suspend fun ingestStructured(source: StructuredIngestionSource, principal: PrincipalId, correlation: String): StructuredDerivativeGenerationCoordinationOutcome { calls += "structured"; return StructuredDerivativeGenerationCoordinationOutcome.ExtractionFailed("spy") }
         override suspend fun ingestCsv(source: CsvIngestionSource, principal: PrincipalId, correlation: String): DerivativeGenerationCoordinationOutcome { calls += "csv"; return DerivativeGenerationCoordinationOutcome.ExtractionFailed("spy") }
         override suspend fun ingestEml(source: EmlIngestionSource, principal: PrincipalId, correlation: String): EmlDerivativeGenerationCoordinationOutcome { calls += "eml"; return EmlDerivativeGenerationCoordinationOutcome.ExtractionFailed("spy") }
         override suspend fun ingestDocx(source: DocxIngestionSource, principal: PrincipalId, correlation: String): DocxDerivativeGenerationCoordinationOutcome { calls += "docx"; return DocxDerivativeGenerationCoordinationOutcome.ExtractionFailed("spy") }

@@ -6,12 +6,12 @@ import parker.core.interfaces.*
 /**
  * STEP 2 -- OpenAI-first production selection correction
  * (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §7.2). Proves Native Tier A is
- * production-ineligible for CSV/EML/DOCX, that no other capability silently fills the gap yet,
+ * production-ineligible for CSV/EML, that no other capability silently fills the gap yet,
  * and that PDF/image behaviour is unchanged.
  */
 class NativeTierAProductionIneligibilityTest {
     private val nativeStructuredMediaTypes = listOf(
-        "text/csv", "message/rfc822", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/csv", "message/rfc822",
     )
 
     private fun nativeStructuredSource(mediaType: String) = AcquisitionSource(
@@ -41,7 +41,7 @@ class NativeTierAProductionIneligibilityTest {
         ), HumanAuthorisedCustody.CONFIRMED,
     )
 
-    @Test fun `native capability reports NOT_ACCEPTED fidelity suitability for CSV, EML, and DOCX`() {
+    @Test fun `native capability reports NOT_ACCEPTED fidelity suitability for CSV and EML`() {
         val native = ProductionAcquisitionCapabilityCatalogue.nativeCapability()
         nativeStructuredMediaTypes.forEach { mediaType ->
             assertEquals(
@@ -52,7 +52,7 @@ class NativeTierAProductionIneligibilityTest {
         assertEquals(AcquisitionFidelitySuitability.ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
     }
 
-    @Test fun `eligibility evaluation returns FIDELITY_NOT_ACCEPTED for native on CSV, EML, and DOCX`() {
+    @Test fun `eligibility evaluation returns FIDELITY_NOT_ACCEPTED for native on CSV and EML`() {
         val native = ProductionAcquisitionCapabilityCatalogue.nativeCapability()
         nativeStructuredMediaTypes.forEach { mediaType ->
             val outcome = EvidenceAcquisitionEligibilityEvaluator.evaluate(
@@ -63,7 +63,7 @@ class NativeTierAProductionIneligibilityTest {
         }
     }
 
-    @Test fun `router does not select native for CSV, EML, or DOCX even though nativeSearchableText is PRESENT`() {
+    @Test fun `router does not select native for CSV or EML even though nativeSearchableText is PRESENT`() {
         nativeStructuredMediaTypes.forEach { mediaType ->
             val outcome = DeterministicEvidenceAcquisitionRouter().route(
                 nativeStructuredSource(mediaType),
@@ -80,7 +80,7 @@ class NativeTierAProductionIneligibilityTest {
         }
     }
 
-    @Test fun `CSV, EML, and DOCX fail closed with no eligible capability under current production registration`() {
+    @Test fun `CSV and EML fail closed with no eligible capability under current production registration`() {
         nativeStructuredMediaTypes.forEach { mediaType ->
             val outcome = DeterministicEvidenceAcquisitionRouter().route(
                 nativeStructuredSource(mediaType),
@@ -93,7 +93,7 @@ class NativeTierAProductionIneligibilityTest {
         }
     }
 
-    @Test fun `no silent fallback to native, local OCR, or any unrelated capability for CSV, EML, or DOCX`() {
+    @Test fun `no silent fallback to native, local OCR, or any unrelated capability for CSV or EML`() {
         nativeStructuredMediaTypes.forEach { mediaType ->
             val outcome = DeterministicEvidenceAcquisitionRouter().route(
                 nativeStructuredSource(mediaType),

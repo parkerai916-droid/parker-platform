@@ -1,4 +1,15 @@
-# Parker / Hermes Bulk Ingestion R0
+# Parker / Hermes Bulk Ingestion R0 — Superseded
+
+**Status: DEPRECATED. This is retained only for historical ledger compatibility.**
+
+The authoritative operator path is `tools/hermes_processing_ingest.py`, exposed
+through the Hermes ingestion UI. Do not use `tools/parker_bulk_ingest.py` or
+this document as a supported-format or production-ingestion contract. Parker
+case authority, governed admission, processing state, and derivative selection
+are exercised through the Hermes processing-result contract.
+
+The remainder of this document records the historical R0 design and is not an
+operator launch instruction.
 
 `tools/parker_bulk_ingest.py` is the subordinate deterministic operator. It
 recursively scans one canonical source root, excludes symbolic links, orders

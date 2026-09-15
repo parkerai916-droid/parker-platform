@@ -91,6 +91,12 @@ class HermesBulkUiSecurityTest(unittest.TestCase):
     def test_no_cgi_import_remains(self):
         self.assertNotIn("import cgi", self.source)
 
+    def test_ui_uses_shared_catalogue_and_advertises_all_catalogued_extensions(self):
+        self.assertIn("supported_extensions", self.source)
+        self.assertIn("__SUPPORTED_EXTENSIONS__", self.source)
+        for extension in (".doc", ".xls", ".xlsx", ".eml", ".msg", ".rtf", ".tif", ".tiff"):
+            self.assertIn(extension, UI.supported_extensions())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import io
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 from pathlib import Path
 
@@ -112,6 +114,68 @@ class ProcessingDecisionTest(unittest.TestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertEqual(result["failure"]["kind"], "UNSUPPORTED_FILE_FORMAT")
         self.assertIn('"failure":{"kind":"UNSUPPORTED_FILE_FORMAT"', payload)
+
+    def test_catalogue_routes_required_extensions_without_duplicate_lists(self):
+        expected = {".txt", ".csv", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".eml", ".msg", ".rtf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+        self.assertTrue(all(hermes.definition_for_extension(extension) is not None for extension in expected))
+        self.assertEqual(hermes.media_type_for(Path("mail.eml")), "message/rfc822")
+        self.assertEqual(hermes.media_type_for(Path("scan.tiff")), "image/tiff")
+
+    def test_eml_metadata_survives_authoritative_processing_result(self):
+        source = (b"From: sender@example.test\nTo: recipient@example.test\n"
+                  b"Subject: Training Agreement\nDate: Tue, 1 Jan 2030 10:00:00 +0000\n"
+                  b"MIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n\nBody\n")
+        result = hermes.make_result("bulk-test", "a" * 64, Path("message.eml"), source, 1)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["structuredRepresentation"]["from"], "sender@example.test")
+        self.assertEqual(result["structuredRepresentation"]["to"], "recipient@example.test")
+        self.assertEqual(result["structuredRepresentation"]["subject"], "Training Agreement")
+
+    def test_xlsx_preserves_sheet_and_cell_coordinate(self):
+        ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        relns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        workbook = f'<workbook xmlns="{ns}" xmlns:r="{relns}"><sheets><sheet name="Payments" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        rels = '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>'
+        sheet = f'<worksheet xmlns="{ns}"><sheetData><row r="4"><c r="B4"><v>1250.00</v></c></row></sheetData></worksheet>'
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("xl/workbook.xml", workbook)
+            archive.writestr("xl/_rels/workbook.xml.rels", rels)
+            archive.writestr("xl/worksheets/sheet1.xml", sheet)
+        result = hermes.make_result("bulk-test", "a" * 64, Path("payments.xlsx"), buffer.getvalue(), 1)
+        self.assertEqual(result["status"], "PASS")
+        cell = result["structuredRepresentation"]["sheets"][0]["cells"][0]
+        self.assertEqual(result["structuredRepresentation"]["sheets"][0]["name"], "Payments")
+        self.assertEqual((cell["cell"], cell["value"]), ("B4", "1250.00"))
+
+    def test_rtf_extracts_text_and_corrupt_rtf_fails_closed(self):
+        result = hermes.make_result("bulk-test", "a" * 64, Path("note.rtf"), b"{\\rtf1\\ansi Training Agreement}", 1)
+        self.assertEqual(result["status"], "PASS")
+        self.assertIn("Training Agreement", result["structuredRepresentation"]["text"])
+        bad = hermes.make_result("bulk-test", "a" * 64, Path("note.rtf"), b"not rtf", 1)
+        self.assertEqual(bad["status"], "FAILED")
+
+    def test_tiff_frames_are_counted_but_local_ocr_is_not_authoritative(self):
+        # Little-endian TIFF with two empty IFDs linked together.
+        data = bytearray(b"II" + (42).to_bytes(2, "little") + (8).to_bytes(4, "little"))
+        data += (0).to_bytes(2, "little") + (26).to_bytes(4, "little")
+        data += b"\x00" * (26 - len(data))
+        data += (0).to_bytes(2, "little") + (0).to_bytes(4, "little")
+        result = hermes.make_result("bulk-test", "a" * 64, Path("scan.tiff"), bytes(data), 1)
+        self.assertEqual(result["status"], "REQUIRES_OCR")
+        self.assertEqual(result["frameCount"], 2)
+        self.assertIsNone(hermes.make_result_and_representation("bulk-test", "a" * 64, Path("scan.tiff"), bytes(data), 1)[1])
+
+    def test_legacy_binary_core_formats_fail_closed_when_parser_unavailable(self):
+        for extension in (".doc", ".xls", ".msg"):
+            result = hermes.make_result("bulk-test", "a" * 64, Path("source" + extension), b"not a parser fixture", 1)
+            self.assertEqual(result["status"], "FAILED")
+            self.assertEqual(result["failure"]["kind"], "CORRUPT_SOURCE")
+
+    def test_legacy_ole_container_is_admitted_to_parker_governed_parser(self):
+        for extension in (".doc", ".xls", ".msg"):
+            result = hermes.make_result("bulk-test", "a" * 64, Path("source" + extension), bytes.fromhex("D0CF11E0A1B11AE1") + b"container", 1)
+            self.assertEqual(result["status"], "PASS")
 
 
 class FakeParker:

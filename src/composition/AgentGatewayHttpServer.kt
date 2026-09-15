@@ -493,7 +493,7 @@ class AgentGatewayHttpServer(
             when (val outcome = runBlocking { submitGovernedIngestionAsAgent(batchId, expectedSha256, candidate) }) {
                 is parker.core.runtime.AgentGatewayGovernedIngestionResult.AnalysisReady -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
-                    writeJson(exchange, 201, governedIngestionJson("ANALYSIS_READY", outcome.projection, outcome.correctionRepresentationId, outcome.derivativeGenerationId.value, outcome.capabilityId))
+                    writeJson(exchange, if (outcome.alreadyIngested) 200 else 201, governedIngestionJson("ANALYSIS_READY", outcome.projection, outcome.correctionRepresentationId, outcome.derivativeGenerationId.value, outcome.capabilityId))
                 }
                 is parker.core.runtime.AgentGatewayGovernedIngestionResult.RequiresOcr -> {
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, outcome.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
@@ -756,6 +756,27 @@ class AgentGatewayHttpServer(
             "delimiter" to payload.value.delimiter.toString(),
             "quoteCharacter" to payload.value.quoteCharacter.toString(),
             "lineEnding" to payload.value.lineEnding,
+            "warnings" to JsonArray(payload.value.warnings),
+        )
+        is parker.core.interfaces.TierADerivativePayload.Structured -> jsonObject(
+            "kind" to payload.value.kind.name,
+            "sourceSha256" to payload.value.sourceSha256,
+            "originalMediaType" to payload.value.originalMediaType,
+            "encoding" to payload.value.encoding,
+            "text" to payload.value.text,
+            "lines" to JsonArray(payload.value.lines.map { jsonObject("lineNumber" to it.lineNumber, "text" to it.text, "startOffset" to it.startOffset, "endOffset" to it.endOffset) }),
+            "sheets" to JsonArray(payload.value.spreadsheetSheets.map { sheet -> jsonObject("name" to sheet.name, "cells" to JsonArray(sheet.cells.map { cell -> jsonObject("sheetName" to cell.sheetName, "coordinate" to cell.coordinate, "rawValue" to cell.rawValue, "displayedValue" to cell.displayedValue, "formula" to cell.formula, "mergedRange" to cell.mergedRange) })) }),
+            "sender" to payload.value.sender,
+            "recipients" to JsonArray(payload.value.recipients),
+            "cc" to JsonArray(payload.value.cc),
+            "bcc" to JsonArray(payload.value.bcc),
+            "subject" to payload.value.subject,
+            "timestamp" to payload.value.timestamp,
+            "bodyFormat" to payload.value.bodyFormat,
+            "attachments" to JsonArray(payload.value.attachments.map { jsonObject("filename" to it.filename, "mediaType" to it.mediaType, "sha256" to it.sha256, "childRelationship" to it.childRelationship) }),
+            "parserIdentity" to payload.value.parserIdentity,
+            "parserVersion" to payload.value.parserVersion,
+            "completenessState" to payload.value.completenessState.name,
             "warnings" to JsonArray(payload.value.warnings),
         )
         is parker.core.interfaces.TierADerivativePayload.Eml -> jsonObject(

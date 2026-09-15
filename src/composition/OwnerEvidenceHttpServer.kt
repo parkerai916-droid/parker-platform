@@ -2031,6 +2031,21 @@ class OwnerEvidenceHttpServer(
             "completenessState" to content.completenessState,
             "warnings" to jsonArray(content.warnings),
         )
+        is OwnerTierAContent.Structured -> jsonObject(
+            "kind" to content.kind,
+            "text" to content.text,
+            "lines" to jsonArray(content.lines),
+            "sheets" to jsonArray(content.spreadsheetSheets.map { sheet -> jsonObject("name" to sheet.name, "cells" to jsonArray(sheet.cells.map { cell -> jsonObject("coordinate" to cell.coordinate, "value" to cell.value, "displayedValue" to cell.displayedValue, "formula" to cell.formula) })) }),
+            "sender" to content.sender,
+            "recipients" to jsonArray(content.recipients),
+            "cc" to jsonArray(content.cc),
+            "subject" to content.subject,
+            "timestamp" to content.timestamp,
+            "attachments" to jsonArray(content.attachments),
+            "producer" to producerJson(content.producer),
+            "completenessState" to content.completenessState,
+            "warnings" to jsonArray(content.warnings),
+        )
         is OwnerTierAContent.RegionTranscription -> jsonObject(
             "kind" to "REGION_TRANSCRIPTION",
             "derivativeGenerationId" to content.derivativeGenerationId,

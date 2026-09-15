@@ -23,6 +23,7 @@ class GovernedTierADocumentIngestionRouter internal constructor(
             TierADocumentFormat.CSV -> mapCsv(coordinator.ingestCsv(CsvIngestionSource(source.evidenceArtifactId, source.content, source.expectedSha256), source.requestingPrincipalId, source.correlationValue), facts)
             TierADocumentFormat.EML -> mapEml(coordinator.ingestEml(EmlIngestionSource(source.evidenceArtifactId, source.content, source.expectedSha256), source.requestingPrincipalId, source.correlationValue), facts)
             TierADocumentFormat.DOCX -> mapDocx(coordinator.ingestDocx(DocxIngestionSource(source.evidenceArtifactId, source.content, source.expectedSha256), source.requestingPrincipalId, source.correlationValue), facts)
+            TierADocumentFormat.TXT, TierADocumentFormat.DOC, TierADocumentFormat.XLS, TierADocumentFormat.XLSX, TierADocumentFormat.MSG, TierADocumentFormat.RTF -> mapStructured(selected, coordinator.ingestStructured(StructuredIngestionSource(source.evidenceArtifactId, source.content, source.expectedSha256, detected ?: received!!, source.originalFileName), source.requestingPrincipalId, source.correlationValue), facts)
             TierADocumentFormat.PDF -> mapPdf(coordinator.ingestPdf(PdfIngestionSource(source.evidenceArtifactId, source.content, source.expectedSha256), source.requestingPrincipalId, source.correlationValue), facts)
         }
     }
@@ -31,6 +32,12 @@ class GovernedTierADocumentIngestionRouter internal constructor(
         CSV -> TierADocumentFormat.CSV
         EML -> TierADocumentFormat.EML
         DOCX -> TierADocumentFormat.DOCX
+        TXT -> TierADocumentFormat.TXT
+        DOC -> TierADocumentFormat.DOC
+        XLS -> TierADocumentFormat.XLS
+        XLSX -> TierADocumentFormat.XLSX
+        MSG, MSG_OLE -> TierADocumentFormat.MSG
+        RTF, RTF_TEXT -> TierADocumentFormat.RTF
         PDF -> TierADocumentFormat.PDF
         else -> null
     }
@@ -57,6 +64,16 @@ class GovernedTierADocumentIngestionRouter internal constructor(
         if ("mime-version" in emlHeaders && emlHeaders.any { it in MESSAGE_IDENTITY_HEADERS } &&
             ("\r\n\r\n" in prefix || "\n\n" in prefix)) return EML
         return null
+    }
+
+    private fun mapStructured(format: TierADocumentFormat, outcome: StructuredDerivativeGenerationCoordinationOutcome, f: TierAMediaFacts) = when (outcome) {
+        is StructuredDerivativeGenerationCoordinationOutcome.Admitted -> TierADocumentRoutingResult.Admitted(format, outcome.record, TierADerivativePayload.Structured(outcome.representation), f)
+        is StructuredDerivativeGenerationCoordinationOutcome.ExtractionFailed -> TierADocumentRoutingResult.ExtractionFailed(format, outcome.reason, f)
+        is StructuredDerivativeGenerationCoordinationOutcome.CapabilityUnavailable -> TierADocumentRoutingResult.Unsupported(outcome.reason, f)
+        is StructuredDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed -> TierADocumentRoutingResult.SourceIntegrityFailed(outcome.reason, f)
+        is StructuredDerivativeGenerationCoordinationOutcome.PreparationFailed -> failed(format, "PREPARE", outcome.derivativeGenerationId, outcome.reason, f)
+        is StructuredDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed -> failed(format, "ADMISSION_AUTHORISED", outcome.derivativeGenerationId, outcome.reason, f)
+        is StructuredDerivativeGenerationCoordinationOutcome.PublicationFailed -> failed(format, "PUBLISH", outcome.derivativeGenerationId, outcome.reason, f)
     }
 
     private fun mapCsv(o: DerivativeGenerationCoordinationOutcome, f: TierAMediaFacts) = when (o) {
@@ -99,7 +116,9 @@ class GovernedTierADocumentIngestionRouter internal constructor(
     private fun failed(format: TierADocumentFormat, stage: String, id: DerivativeGenerationId, reason: String, facts: TierAMediaFacts) = TierADocumentRoutingResult.AdmissionFailed(format, stage, id, reason, facts)
 
     companion object {
-        const val CSV = "text/csv"; const val EML = "message/rfc822"; const val PDF = "application/pdf"; const val PNG = "image/png"
+        const val TXT = "text/plain"; const val CSV = "text/csv"; const val EML = "message/rfc822"; const val PDF = "application/pdf"; const val PNG = "image/png"
+        const val DOC = "application/msword"; const val XLS = "application/vnd.ms-excel"; const val XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        const val MSG = "application/vnd.ms-outlook"; const val MSG_OLE = "application/x-ole-storage"; const val RTF = "application/rtf"; const val RTF_TEXT = "text/rtf"
         const val DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         const val MAX_DETECTION_ZIP_ENTRIES = 100
         const val MAX_HEADER_DETECTION_BYTES = 64 * 1024
@@ -109,6 +128,7 @@ class GovernedTierADocumentIngestionRouter internal constructor(
 }
 
 internal interface TierAFormatRoutes {
+    suspend fun ingestStructured(source: StructuredIngestionSource, principal: PrincipalId, correlation: String): StructuredDerivativeGenerationCoordinationOutcome
     suspend fun ingestCsv(source: CsvIngestionSource, principal: PrincipalId, correlation: String): DerivativeGenerationCoordinationOutcome
     suspend fun ingestEml(source: EmlIngestionSource, principal: PrincipalId, correlation: String): EmlDerivativeGenerationCoordinationOutcome
     suspend fun ingestDocx(source: DocxIngestionSource, principal: PrincipalId, correlation: String): DocxDerivativeGenerationCoordinationOutcome
@@ -116,6 +136,7 @@ internal interface TierAFormatRoutes {
 }
 
 internal class CoordinatorTierAFormatRoutes(private val coordinator: DerivativeGenerationCoordinator) : TierAFormatRoutes {
+    override suspend fun ingestStructured(source: StructuredIngestionSource, principal: PrincipalId, correlation: String) = coordinator.ingestStructured(source, principal, correlation)
     override suspend fun ingestCsv(source: CsvIngestionSource, principal: PrincipalId, correlation: String) = coordinator.ingestCsv(source, principal, correlation)
     override suspend fun ingestEml(source: EmlIngestionSource, principal: PrincipalId, correlation: String) = coordinator.ingestEml(source, principal, correlation)
     override suspend fun ingestDocx(source: DocxIngestionSource, principal: PrincipalId, correlation: String) = coordinator.ingestDocx(source, principal, correlation)

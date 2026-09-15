@@ -65,7 +65,7 @@ class OperatorWrapperTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("authentication failed", result.stderr)
 
-    def test_ingestion_requires_explicit_parker_batch_and_passes_case_as_metadata(self):
+    def test_ingestion_uses_authoritative_hermes_processor_and_rejects_legacy_case_argument(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "incoming"
             source.mkdir()
@@ -75,17 +75,15 @@ class OperatorWrapperTest(unittest.TestCase):
             result = self.run_script("parker-ingest-folder", str(source), "--case-id", "case-1",
                                      bin_dir=directory, env=env)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("--batch is required", result.stderr)
+            self.assertIn("superseded parker_bulk_ingest path", result.stderr)
             self.assertNotIn("test-token", result.stdout + result.stderr)
 
             result = self.run_script("parker-ingest-folder", str(source), "--batch", "bulk-1234",
-                                     "--case-id", "case-1", bin_dir=directory, env=env, cwd=directory)
+                                     bin_dir=directory, env=env, cwd=directory)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("bulk-1234", result.stdout)
-            self.assertIn("case-1", result.stdout)
-            self.assertIn("/agent/evidence/{evidenceArtifactId}/assign", result.stdout)
-            self.assertIn(str(ROOT / "tools/parker_bulk_ingest.py"), result.stdout)
-            self.assertNotIn("--acquire", result.stdout)
+            self.assertIn(str(ROOT / "tools/hermes_processing_ingest.py"), result.stdout)
+            self.assertIn("--gateway-url", result.stdout)
 
     def test_parker_fails_on_running_commit_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -517,7 +517,7 @@ internal class AgentGatewayEvidenceProjection(
         return when (val outcome = processor(projection.evidenceArtifactId)) {
             is PostAdmissionProcessingOutcome.AnalysisReady -> {
                 processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.ANALYSIS_READY, null, outcome.derivativeGenerationId, clock()))
-                AgentGatewayGovernedIngestionResult.AnalysisReady(projection, outcome.derivativeGenerationId, outcome.capabilityId, correction?.representationId)
+                AgentGatewayGovernedIngestionResult.AnalysisReady(projection, outcome.derivativeGenerationId, outcome.capabilityId, correction?.representationId, alreadyIngested)
             }
             is PostAdmissionProcessingOutcome.RequiresOcr -> {
                 processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.REQUIRES_OCR, outcome.reason, updatedAt = clock()))
@@ -776,6 +776,7 @@ sealed class AgentGatewayGovernedIngestionResult {
         val derivativeGenerationId: parker.core.interfaces.DerivativeGenerationId,
         val capabilityId: String,
         val correctionRepresentationId: HermesPreIngestionCorrectionId? = null,
+        val alreadyIngested: Boolean = false,
     ) : AgentGatewayGovernedIngestionResult()
 
     data class RequiresOcr(

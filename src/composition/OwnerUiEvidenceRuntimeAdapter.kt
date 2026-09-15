@@ -46,6 +46,8 @@ import parker.ui.OwnerSaveAnalysisOutcome
 import parker.ui.OwnerSavedAnalysisPresentation
 import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
+import parker.ui.OwnerStructuredSheetSummary
+import parker.ui.OwnerStructuredCellSummary
 import parker.ui.OwnerHumanFidelityStatus
 import parker.ui.OwnerHumanCorrectedRepresentation
 import parker.ui.OwnerTierBOcrContent
@@ -591,9 +593,15 @@ class OwnerUiEvidenceRuntimeAdapter(
     }
 
     private fun formatLabel(format: TierADocumentFormat): String = when (format) {
+        TierADocumentFormat.TXT -> "TXT"
         TierADocumentFormat.CSV -> "CSV"
         TierADocumentFormat.EML -> "EML"
+        TierADocumentFormat.DOC -> "DOC"
         TierADocumentFormat.DOCX -> "DOCX"
+        TierADocumentFormat.XLS -> "XLS"
+        TierADocumentFormat.XLSX -> "XLSX"
+        TierADocumentFormat.MSG -> "MSG"
+        TierADocumentFormat.RTF -> "RTF"
         TierADocumentFormat.PDF -> "PDF"
     }
 
@@ -667,6 +675,15 @@ class OwnerUiEvidenceRuntimeAdapter(
                 producer = r.producerIdentity.toSummary(),
                 completenessState = r.completenessState.name,
                 warnings = r.warnings,
+            )
+        }
+        is TierADerivativePayload.Structured -> payload.value.let { r ->
+            OwnerTierAContent.Structured(
+                kind = r.kind.name, text = r.text, lines = r.lines.map { it.text },
+                spreadsheetSheets = r.spreadsheetSheets.map { sheet -> OwnerStructuredSheetSummary(sheet.name, sheet.cells.map { OwnerStructuredCellSummary(it.coordinate, it.rawValue, it.displayedValue, it.formula) }) },
+                sender = r.sender, recipients = r.recipients, cc = r.cc, subject = r.subject, timestamp = r.timestamp,
+                attachments = r.attachments.mapNotNull { it.filename }, producer = r.parserIdentity.let { identity -> OwnerDerivativeProducerSummary(identity, r.parserVersion, "structured-representation-v1", null, null, null, null) },
+                completenessState = r.completenessState.name, warnings = r.warnings,
             )
         }
         is TierADerivativePayload.Ocr -> error(

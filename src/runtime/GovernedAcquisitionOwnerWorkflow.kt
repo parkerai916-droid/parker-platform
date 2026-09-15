@@ -126,7 +126,12 @@ internal class GovernedAcquisitionOwnerWorkflow(
     private suspend fun projectTechnicalFacts(manifest: EvidenceSourceManifest): AcquisitionSource? {
         val media = manifest.receivedMediaType?.lowercase() ?: return null
         val nativeStructured = media == "text/csv" || media == "message/rfc822" ||
-            media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+            media == "text/plain" || media == "application/msword" ||
+            media == "application/vnd.ms-excel" ||
+            media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+            media == "application/vnd.ms-outlook" || media == "application/x-ole-storage" ||
+            media == "application/rtf" || media == "text/rtf"
         val image = media.startsWith("image/")
         val pdfInspection = if (media == "application/pdf") {
             when (val resolved = authoritativeSourceResolver.resolve(ownerPrincipalId, manifest.evidenceArtifactId)) {
@@ -144,7 +149,7 @@ internal class GovernedAcquisitionOwnerWorkflow(
             // reports as Indeterminate rather than Selected -- CSV would never actually reach the
             // external mechanism despite being an otherwise-eligible, accepted media type.
             pageCount = establishedPdf?.pageCount
-                ?: if (image || media == "text/csv") AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
+                ?: if (image || nativeStructured) AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
             nativeSearchableText = establishedPdf?.nativeSearchableText ?: when { nativeStructured -> AcquisitionCharacteristicState.PRESENT; image -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
             imageOnlyOrScanned = establishedPdf?.imageOnlyOrScanned ?: when { image -> AcquisitionCharacteristicState.PRESENT; nativeStructured -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
             mixedTextAndImage = establishedPdf?.mixedTextAndImage ?: if (nativeStructured || image) AcquisitionCharacteristicState.ABSENT else AcquisitionCharacteristicState.UNKNOWN,

@@ -326,6 +326,13 @@ private object GovernedAnalysisPackagePrompt {
         is parker.core.interfaces.TierADerivativePayload.Docx -> payload.value.paragraphs.joinToString("\n") { it.text }
         is parker.core.interfaces.TierADerivativePayload.Csv -> payload.value.rows.joinToString("\n") { it.joinToString(",") }
         is parker.core.interfaces.TierADerivativePayload.Eml -> payload.value.bodyAlternatives.joinToString("\n") { it.decodedText }
+        is parker.core.interfaces.TierADerivativePayload.Structured -> buildString {
+            append(payload.value.text)
+            payload.value.spreadsheetSheets.forEach { sheet ->
+                append("\nSheet: ").append(sheet.name)
+                sheet.cells.forEach { cell -> append("\n").append(cell.coordinate).append(" = ").append(cell.displayedValue ?: cell.rawValue.orEmpty()) }
+            }
+        }
         is parker.core.interfaces.TierADerivativePayload.RegionTranscription -> payload.value.transcriptionBlocks.joinToString("\n")
     }
     private fun StringBuilder.quoted(value: String) { append('"'); value.forEach { c -> when (c) { '"' -> append("\\\""); '\\' -> append("\\\\"); '\n' -> append("\\n"); '\r' -> append("\\r"); '\t' -> append("\\t"); else -> if (c.code < 0x20) append("\\u%04x".format(c.code)) else append(c) } }; append('"') }

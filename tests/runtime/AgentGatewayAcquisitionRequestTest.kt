@@ -12,6 +12,7 @@ import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.EvidenceAcceptanceResult
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceAcquisitionCapability
+import parker.core.interfaces.EvidenceAcquisitionMechanism
 import parker.core.interfaces.AcquisitionAvailability
 import parker.core.interfaces.AcquisitionAvailabilityReason
 import parker.core.interfaces.ExecutionRequest
@@ -312,11 +313,7 @@ class AgentGatewayAcquisitionRequestTest {
     }
 
     @Test
-    fun `Failed -- a real CSV fixture fails closed now that Native Tier A is production-ineligible for CSV`() = runTest {
-        // Per the OpenAI-first production selection correction (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md
-        // §7.2), Native Tier A is no longer production-eligible for CSV, and no external
-        // capability yet supports CSV either. This must fail closed, never silently fall back
-        // to native.
+    fun `Failed -- a real CSV fixture fails closed while native remains production-ineligible`() = runTest {
         val env = buildEnvironment(registry = registryWithout(null))
         env.registerHermes(PrincipalStatus.ACTIVE)
         val bytes = Files.readAllBytes(java.nio.file.Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/06-structured.csv"))
@@ -327,6 +324,42 @@ class AgentGatewayAcquisitionRequestTest {
         val failed = assertIs<AgentGatewayAcquisitionResult.Failed>(result)
         assertEquals(id, failed.evidenceArtifactId)
         assertTrue(failed.reason.contains("NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY"))
+    }
+
+    @Test
+    fun `DOC fixture completes governed native admission and acquisition`() = runTest {
+        val env = buildEnvironment(registry = registryWithout(null))
+        env.registerHermes(PrincipalStatus.ACTIVE)
+        val bytes = Files.readAllBytes(java.nio.file.Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/08-legacy-parker.doc"))
+        val id = env.accept(bytes, "application/msword", "08-legacy-parker.doc")
+
+        val result = assertIs<AgentGatewayAcquisitionResult.Completed>(env.projection.requestAcquisition(id))
+        assertEquals(id, result.evidenceArtifactId)
+        assertEquals(EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION, result.mechanism)
+    }
+
+    @Test
+    fun `MSG fixture completes governed native admission and acquisition`() = runTest {
+        val env = buildEnvironment(registry = registryWithout(null))
+        env.registerHermes(PrincipalStatus.ACTIVE)
+        val bytes = Files.readAllBytes(java.nio.file.Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/09-legacy-parker.msg"))
+        val id = env.accept(bytes, "application/vnd.ms-outlook", "09-legacy-parker.msg")
+
+        val result = assertIs<AgentGatewayAcquisitionResult.Completed>(env.projection.requestAcquisition(id))
+        assertEquals(id, result.evidenceArtifactId)
+        assertEquals(EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION, result.mechanism)
+    }
+
+    @Test
+    fun `DOCX fixture completes governed native admission and acquisition`() = runTest {
+        val env = buildEnvironment(registry = registryWithout(null))
+        env.registerHermes(PrincipalStatus.ACTIVE)
+        val bytes = Files.readAllBytes(java.nio.file.Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/10-stage19d.docx"))
+        val id = env.accept(bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "10-stage19d.docx")
+
+        val result = assertIs<AgentGatewayAcquisitionResult.Completed>(env.projection.requestAcquisition(id))
+        assertEquals(id, result.evidenceArtifactId)
+        assertEquals(EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION, result.mechanism)
     }
 
     // ================= AG-1G FINAL SECURITY REVIEW -- end-to-end principal attribution =================

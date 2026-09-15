@@ -64,6 +64,7 @@ internal object DerivativeContentCodec {
     const val CSV_REPRESENTATION_VERSION = 1
     const val EML_REPRESENTATION_VERSION = 1
     const val DOCX_REPRESENTATION_VERSION = 1
+    const val STRUCTURED_REPRESENTATION_VERSION = 1
     const val PDF_REPRESENTATION_VERSION = 2
     const val OCR_REPRESENTATION_VERSION = 3
     const val OCR_AUTHORITY_REPRESENTATION_VERSION = 4
@@ -79,6 +80,7 @@ internal object DerivativeContentCodec {
     private const val FORMAT_PDF: Byte = 4
     private const val FORMAT_OCR: Byte = 5
     private const val FORMAT_REGION_TRANSCRIPTION: Byte = 6
+    private const val FORMAT_STRUCTURED: Byte = 7
 
     private const val MAX_SHORT_STRING_BYTES = 1024 * 1024 // 1 MiB -- identifiers/names
     private const val MAX_LARGE_TEXT_BYTES = 32 * 1024 * 1024 // 32 MiB -- documentText/body/paragraph blobs
@@ -108,6 +110,7 @@ internal object DerivativeContentCodec {
                     is TierADerivativePayload.Eml -> { output.writeByte(FORMAT_EML.toInt()); output.writeInt(EML_REPRESENTATION_VERSION); output.writeEml(payload.value, payload.childSourceCandidateCount) }
                     is TierADerivativePayload.Docx -> { output.writeByte(FORMAT_DOCX.toInt()); output.writeInt(DOCX_REPRESENTATION_VERSION); output.writeDocx(payload.value) }
                     is TierADerivativePayload.Pdf -> { output.writeByte(FORMAT_PDF.toInt()); output.writeInt(PDF_REPRESENTATION_VERSION); output.writePdf(payload.value) }
+                    is TierADerivativePayload.Structured -> { output.writeByte(FORMAT_STRUCTURED.toInt()); output.writeInt(STRUCTURED_REPRESENTATION_VERSION); output.writeStructured(payload.value) }
                     is TierADerivativePayload.Ocr -> {
                         output.writeByte(FORMAT_OCR.toInt())
                         val v2 = payload.value.pageAccounting != null && payload.value.processingProvenance != null &&
@@ -171,6 +174,10 @@ internal object DerivativeContentCodec {
                     if (representationVersion !in 1..PDF_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
                     TierADerivativePayload.Pdf(input.readPdf(representationVersion))
                 }
+                FORMAT_STRUCTURED -> {
+                    if (representationVersion != STRUCTURED_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
+                    TierADerivativePayload.Structured(input.readStructured())
+                }
                 FORMAT_OCR -> {
                     val ocr = when (representationVersion) {
                         OCR_LEGACY_REPRESENTATION_VERSION -> input.readOcr()
@@ -191,6 +198,40 @@ internal object DerivativeContentCodec {
             if (input.available() != 0) throw MalformedRepresentationException("trailing bytes after derivative payload")
             DerivativeContentEntry(id, root, payload)
         }
+    }
+
+    private fun DataOutputStream.writeStructured(r: StructuredDocumentRepresentation) {
+        writeString(r.kind.name, MAX_SHORT_STRING_BYTES); writeString(r.sourceSha256, MAX_SHORT_STRING_BYTES)
+        writeString(r.originalMediaType, MAX_SHORT_STRING_BYTES); writeNullableString(r.encoding); writeString(r.text, MAX_LARGE_TEXT_BYTES)
+        writeCollectionSize(r.lines.size); r.lines.forEach { writeInt(it.lineNumber); writeString(it.text, MAX_LARGE_TEXT_BYTES); writeInt(it.startOffset); writeInt(it.endOffset) }
+        writeCollectionSize(r.wordBlocks.size); r.wordBlocks.forEach { writeInt(it.order); writeString(it.text, MAX_LARGE_TEXT_BYTES); writeString(it.kind, MAX_SHORT_STRING_BYTES) }
+        writeCollectionSize(r.spreadsheetSheets.size); r.spreadsheetSheets.forEach { sheet ->
+            writeString(sheet.name, MAX_SHORT_STRING_BYTES); writeCollectionSize(sheet.cells.size); sheet.cells.forEach { cell ->
+                writeString(cell.sheetName, MAX_SHORT_STRING_BYTES); writeString(cell.coordinate, MAX_SHORT_STRING_BYTES)
+                writeNullableString(cell.rawValue); writeNullableString(cell.displayedValue); writeNullableString(cell.formula); writeNullableString(cell.mergedRange)
+            }
+        }
+        listOf(r.sender, r.subject, r.timestamp, r.bodyFormat).forEach { writeNullableString(it) }
+        writeStrings(r.recipients); writeStrings(r.cc); writeStrings(r.bcc)
+        writeCollectionSize(r.attachments.size); r.attachments.forEach { writeNullableString(it.filename); writeNullableString(it.mediaType); writeNullableString(it.sha256); writeString(it.childRelationship, MAX_SHORT_STRING_BYTES) }
+        writeString(r.parserIdentity, MAX_SHORT_STRING_BYTES); writeString(r.parserVersion, MAX_SHORT_STRING_BYTES)
+        writeTransformations(r.transformations); writeString(r.completenessState.name, MAX_SHORT_STRING_BYTES); writeStrings(r.warnings)
+    }
+
+    private fun DataInputStream.readStructured(): StructuredDocumentRepresentation {
+        val kind = enumValueOf<StructuredDocumentKind>(readString(MAX_SHORT_STRING_BYTES)); val source = readString(MAX_SHORT_STRING_BYTES)
+        val media = readString(MAX_SHORT_STRING_BYTES); val encoding = readNullableString(); val text = readString(MAX_LARGE_TEXT_BYTES)
+        val lines = List(readCollectionSize()) { StructuredTextLine(readInt(), readString(MAX_LARGE_TEXT_BYTES), readInt(), readInt()) }
+        val blocks = List(readCollectionSize()) { StructuredWordBlock(readInt(), readString(MAX_LARGE_TEXT_BYTES), readString(MAX_SHORT_STRING_BYTES)) }
+        val sheets = List(readCollectionSize()) { val name = readString(MAX_SHORT_STRING_BYTES); val cells = List(readCollectionSize()) {
+            StructuredSpreadsheetCell(readString(MAX_SHORT_STRING_BYTES), readString(MAX_SHORT_STRING_BYTES), readNullableString(), readNullableString(), readNullableString(), readNullableString())
+        }; StructuredSpreadsheetSheet(name, cells) }
+        val sender = readNullableString(); val subject = readNullableString(); val timestamp = readNullableString(); val bodyFormat = readNullableString()
+        val recipients = readStrings(); val cc = readStrings(); val bcc = readStrings()
+        val attachments = List(readCollectionSize()) { StructuredEmailAttachment(readNullableString(), readNullableString(), readNullableString(), readString(MAX_SHORT_STRING_BYTES)) }
+        val parser = readString(MAX_SHORT_STRING_BYTES); val version = readString(MAX_SHORT_STRING_BYTES)
+        val transformations = readTransformations(); val completeness = enumValueOf<DerivativeCompletenessState>(readString(MAX_SHORT_STRING_BYTES)); val warnings = readStrings()
+        return StructuredDocumentRepresentation(kind, source, media, encoding, text, lines, blocks, sheets, sender, recipients, cc, bcc, subject, timestamp, bodyFormat, attachments, parser, version, transformations, completeness, warnings)
     }
 
     // ---- Ordinary external region-v5 transcription ------------------------------------------

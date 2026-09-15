@@ -40,7 +40,10 @@ object ProductionAcquisitionCapabilityCatalogue {
     fun nativeCapability() = EvidenceAcquisitionCapability(
         NATIVE_CAPABILITY_ID, EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION,
         setOf("text/csv", "message/rfc822", "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/plain", "application/msword", "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-outlook", "application/x-ole-storage", "application/rtf", "text/rtf"),
         setOf(AcquisitionSourceForm.NATIVE_SEARCHABLE),
         AcquisitionFidelityCapabilities(false, true, false, false, false, false,
             pageAssociation = true, regionAssociation = false, uncertaintyReporting = false, structuredOutput = true),
@@ -48,12 +51,20 @@ object ProductionAcquisitionCapabilityCatalogue {
         AcquisitionEgress.LOCAL_ONLY, null, AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
         mapOf(
             "application/pdf" to AcquisitionFidelitySuitability.ACCEPTED,
-            // Structured non-PDF native formats remain outside the current production selection
-            // policy. Searchable PDFs are different: Tier A's durable native representation is
-            // the authoritative local representation and must be selectable without OCR.
+            // CSV and EML retain their established external-verification selection policy.
             "text/csv" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
             "message/rfc822" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
+            // DOCX has a governed Apache POI/XWPF representation and is accepted as native
+            // structured evidence; no OCR or external verification is required.
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" to AcquisitionFidelitySuitability.ACCEPTED,
+            "text/plain" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/msword" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/vnd.ms-excel" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/vnd.ms-outlook" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/x-ole-storage" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/rtf" to AcquisitionFidelitySuitability.ACCEPTED,
+            "text/rtf" to AcquisitionFidelitySuitability.ACCEPTED,
         ),
     )
 

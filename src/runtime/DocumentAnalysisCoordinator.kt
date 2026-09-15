@@ -30,6 +30,7 @@ import parker.core.interfaces.EvidenceSourceManifestStorage
 import parker.core.interfaces.HumanVerificationStorage
 import parker.core.interfaces.HumanVerificationOutcome
 import parker.core.interfaces.OcrModelSnapshot
+import parker.core.interfaces.StructuredDocumentRepresentation
 
 /**
  * ANALYSIS-INGESTION-2: the one exact-target-bound capability [DocumentAnalysisCoordinator] needs
@@ -275,6 +276,7 @@ class DocumentAnalysisCoordinator(
                     is TierADerivativePayload.Csv -> CSV_DERIVATIVE_KIND
                     is TierADerivativePayload.Eml -> EML_DERIVATIVE_KIND
                     is TierADerivativePayload.Docx -> DOCX_DERIVATIVE_KIND
+                    is TierADerivativePayload.Structured -> if (record.derivativeKind.endsWith(" structured representation")) record.derivativeKind else return Failed(DocumentAnalysisOutcome.UnsupportedDerivativeKind(selection.derivativeGenerationId, record.derivativeKind))
                     is TierADerivativePayload.Ocr ->
                         // Tier A's own retrieval performs no kind discrimination and would
                         // otherwise silently decode a genuine Tier B OCR generation reached this
@@ -292,6 +294,7 @@ class DocumentAnalysisCoordinator(
                     is TierADerivativePayload.Csv -> extractCsvText(payload.value)
                     is TierADerivativePayload.Eml -> extractEmlText(payload.value)
                     is TierADerivativePayload.Docx -> extractDocxText(payload.value)
+                    is TierADerivativePayload.Structured -> extractStructuredText(payload.value)
                     is TierADerivativePayload.Ocr -> error("unreachable -- handled above")
                     is TierADerivativePayload.RegionTranscription -> error("unreachable -- handled above")
                 }
@@ -305,6 +308,9 @@ class DocumentAnalysisCoordinator(
                                 segment.text, segment.extractionMethod, "GOVERNED_DERIVATIVE", segment.confidence,
                             )
                         } else emptyList()
+                    }
+                    is TierADerivativePayload.Structured -> payload.value.lines.mapNotNull { line ->
+                        if (line.text.isBlank()) null else EvidenceCitationAnchor(selection.evidenceArtifactId, selection.derivativeGenerationId, payload.value.sourceSha256, null, null, line.startOffset, line.endOffset, line.text, "STRUCTURED_TEXT", "GOVERNED_DERIVATIVE", null)
                     }
                     else -> emptyList()
                 }
@@ -452,6 +458,15 @@ class DocumentAnalysisCoordinator(
         }
         r.footers.forEach { hf -> hf.paragraphs.sortedBy { it.order }.forEach { builder.append(it.text).append('\n') } }
         return builder.toString()
+    }
+
+    private fun extractStructuredText(r: StructuredDocumentRepresentation): String = buildString {
+        append(r.text)
+        r.spreadsheetSheets.forEach { sheet ->
+            if (isNotEmpty()) append('\n')
+            append("Sheet: ").append(sheet.name).append('\n')
+            sheet.cells.forEach { cell -> append(cell.coordinate).append(" = ").append(cell.displayedValue ?: cell.rawValue.orEmpty()).append('\n') }
+        }
     }
 
     companion object {

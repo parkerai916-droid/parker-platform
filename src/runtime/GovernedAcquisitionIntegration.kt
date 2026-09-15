@@ -274,6 +274,7 @@ private fun TierADerivativePayload.completenessState(): DerivativeCompletenessSt
     is TierADerivativePayload.Csv -> value.completenessState
     is TierADerivativePayload.Eml -> value.completenessState
     is TierADerivativePayload.Docx -> value.completenessState
+    is TierADerivativePayload.Structured -> value.completenessState
     is TierADerivativePayload.Pdf -> value.completenessState
     is TierADerivativePayload.Ocr -> value.completenessState
     is TierADerivativePayload.RegionTranscription -> DerivativeCompletenessState.ACCOUNTED_FOR

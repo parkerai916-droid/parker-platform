@@ -48,6 +48,9 @@ import parker.core.interfaces.PdfStructuralExtractionOutcome
 import parker.core.interfaces.PdfStructuralExtractor
 import parker.core.interfaces.PdfStructuralResult
 import parker.core.interfaces.TierADerivativePayload
+import parker.core.interfaces.StructuredDocumentExtractor
+import parker.core.interfaces.StructuredDocumentExtractionOutcome
+import parker.core.interfaces.StructuredDocumentRepresentation
 
 data class CsvIngestionSource(
     val evidenceArtifactId: EvidenceArtifactId,
@@ -73,6 +76,20 @@ data class DocxIngestionSource(val evidenceArtifactId: EvidenceArtifactId, val c
 
 data class PdfIngestionSource(val evidenceArtifactId: EvidenceArtifactId, val content: ByteArray, val expectedSha256: String) {
     init { require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) }
+}
+
+data class StructuredIngestionSource(val evidenceArtifactId: EvidenceArtifactId, val content: ByteArray, val expectedSha256: String, val mediaType: String, val fileName: String?) {
+    init { require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) }
+}
+
+sealed class StructuredDerivativeGenerationCoordinationOutcome {
+    data class Admitted(val record: DerivativeGenerationRecord, val representation: StructuredDocumentRepresentation) : StructuredDerivativeGenerationCoordinationOutcome()
+    data class ExtractionFailed(val reason: String) : StructuredDerivativeGenerationCoordinationOutcome()
+    data class CapabilityUnavailable(val reason: String) : StructuredDerivativeGenerationCoordinationOutcome()
+    data class SourceIntegrityFailed(val reason: String) : StructuredDerivativeGenerationCoordinationOutcome()
+    data class PreparationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : StructuredDerivativeGenerationCoordinationOutcome()
+    data class AuthorisationAuditFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : StructuredDerivativeGenerationCoordinationOutcome()
+    data class PublicationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : StructuredDerivativeGenerationCoordinationOutcome()
 }
 
 sealed class PdfDerivativeGenerationCoordinationOutcome {
@@ -175,6 +192,7 @@ class DerivativeGenerationCoordinator(
     private val emlExtractor: EmlStructuralExtractor? = null,
     private val docxExtractor: DocxStructuralExtractor? = null,
     private val pdfExtractor: PdfStructuralExtractor? = null,
+    private val structuredExtractor: StructuredDocumentExtractor? = null,
     // Document Ingestion — Derivative Content Persistence and Retrieval
     // (DOCUMENT_INGESTION_DERIVATIVE_CONTENT_PERSISTENCE_RETRIEVAL_SCOPE_LOCK.md §9): content is
     // published to durable storage BEFORE the DerivativeGenerationRecord is ever prepared, so a
@@ -184,6 +202,29 @@ class DerivativeGenerationCoordinator(
     // supplies a real instance (TierADocumentIngestionComposition.create).
     private val contentStorage: DerivativeContentStorage? = null,
 ) : ValidatedExternalTranscriptionAdmission, EmlValidatedExternalVerificationAdmission {
+
+    suspend fun ingestStructured(source: StructuredIngestionSource, requestingPrincipalId: PrincipalId, correlationValue: String): StructuredDerivativeGenerationCoordinationOutcome {
+        require(correlationValue.isNotBlank())
+        val extractor = requireNotNull(structuredExtractor) { "structured extractor is not configured" }
+        if (sha256(source.content) != source.expectedSha256) return StructuredDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 does not match the governed source context")
+        val representation = when (val outcome = extractor.extract(source.content.copyOf(), source.expectedSha256, source.mediaType, source.fileName)) {
+            is StructuredDocumentExtractionOutcome.CapabilityUnavailable -> return StructuredDerivativeGenerationCoordinationOutcome.CapabilityUnavailable(outcome.reason)
+            is StructuredDocumentExtractionOutcome.Malformed -> return StructuredDerivativeGenerationCoordinationOutcome.ExtractionFailed(outcome.reason)
+            is StructuredDocumentExtractionOutcome.Extracted -> outcome.result
+        }
+        if (sha256(source.content) != source.expectedSha256) return StructuredDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 changed during structured extraction")
+        val id = idFactory()
+        val record = DerivativeGenerationRecord(id, source.evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(source.evidenceArtifactId)),
+            "${representation.kind.name} structured representation", DerivativeProducerIdentity(representation.parserIdentity, representation.parserVersion, "structured-representation-v1"),
+            representation.transformations, now(), DerivativeContentIdentity.NoCanonicalSerialization, representation.completenessState, DerivativeOperationalOutcome.USABLE, representation.warnings)
+        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Structured(representation))?.let { return StructuredDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it) }
+        try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) { return StructuredDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED)) }
+        catch (e: DocumentIngestionAuditException) { return StructuredDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        try { storage.publishPrepared(id) } catch (e: DerivativeGenerationStorageException) { return StructuredDerivativeGenerationCoordinationOutcome.PublicationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+        return try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)); StructuredDerivativeGenerationCoordinationOutcome.Admitted(record, representation) }
+        catch (e: DocumentIngestionAuditException) { StructuredDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
+    }
     /**
      * Publishes [payload]'s own durable content representation for [id],
      * strictly before [id]'s [DerivativeGenerationRecord] is ever prepared

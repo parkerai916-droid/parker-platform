@@ -22,6 +22,18 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
+    from hermes_format_catalogue import BY_MIME, supported_extensions
+except ModuleNotFoundError:  # direct spec loading from the repository tests
+    _catalogue_spec = importlib.util.spec_from_file_location("hermes_format_catalogue", Path(__file__).with_name("hermes_format_catalogue.py"))
+    if _catalogue_spec is None or _catalogue_spec.loader is None:
+        raise
+    _catalogue_module = importlib.util.module_from_spec(_catalogue_spec)
+    sys.modules["hermes_format_catalogue"] = _catalogue_module
+    _catalogue_spec.loader.exec_module(_catalogue_module)
+    BY_MIME = _catalogue_module.BY_MIME
+    supported_extensions = _catalogue_module.supported_extensions
+
+try:
     from hermes_processing_ingest import ParkerClient, media_type_for, process_one
 except ModuleNotFoundError:  # also supports direct spec-based test loading
     _processor_spec = importlib.util.spec_from_file_location("hermes_processing_ingest", Path(__file__).with_name("hermes_processing_ingest.py"))
@@ -34,7 +46,7 @@ except ModuleNotFoundError:  # also supports direct spec-based test loading
     media_type_for = _processor_module.media_type_for
     process_one = _processor_module.process_one
 
-SUPPORTED = {"application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain", "text/csv", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+SUPPORTED = {media for media, definition in BY_MIME.items() if definition.hermes_inspect and definition.text_extraction not in ("no", "container only") and definition.parker_native_route in ("native", "Tier B/external OCR")}
 MAX_FILE = 64 * 1024 * 1024
 MULTIPART_ALLOWANCE = 1024 * 1024
 
@@ -93,7 +105,7 @@ def parker_request(path: str, token: str, method: str = "GET", body: bytes | Non
 
 PAGE = r'''<!doctype html><meta charset="utf-8"><title>Hermes Bulk Ingestion</title>
 <style>body{font:16px system-ui;max-width:850px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}button,select{padding:.45rem}#drop{border:2px dashed #888;padding:2rem;text-align:center;margin:1rem 0}.drag{border-color:#6f6}pre{white-space:pre-wrap}.note{color:#fd8}</style>
-<h1>Hermes · Bulk Ingestion</h1><p class="note">Choose an existing Parker-authorised READY batch. Hermes cannot select its case.</p>
+<h1>Hermes · Bulk Ingestion</h1><p class="note">Choose an existing Parker-authorised READY batch. Hermes cannot select its case.</p><p>Supported formats: __SUPPORTED_EXTENSIONS__</p>
 <label>Case/batch <select id="batch"><option>Loading…</option></select></label> <button id="refresh">Refresh READY batches</button>
 <p id="selected">No folder selected.</p><input id="folder" type="file" webkitdirectory directory multiple hidden><button id="choose">Choose Folder</button>
 <div id="drop">Drag a folder here</div><button id="start" disabled>Start Ingestion</button><pre id="progress"></pre><pre id="summary"></pre>
@@ -125,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/":
-            data = PAGE.replace("__HERMES_UI_NONCE__", self.server.ui_nonce).encode(); self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+            data = PAGE.replace("__HERMES_UI_NONCE__", self.server.ui_nonce).replace("__SUPPORTED_EXTENSIONS__", ", ".join(supported_extensions())).encode(); self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
         if self.path == "/api/ready-batches":
             if self.headers.get("X-Hermes-Ui-Nonce") != self.server.ui_nonce: self.send_json(403, {"error":"invalid local UI session"}); return
             code, payload = parker_request("/agent/ingestion-batches", self.token)

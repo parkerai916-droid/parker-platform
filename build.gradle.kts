@@ -48,6 +48,9 @@ dependencies {
     implementation("org.apache.james:apache-mime4j-core:0.8.14")
     implementation("org.apache.james:apache-mime4j-dom:0.8.14")
     implementation("org.apache.poi:poi-ooxml:5.5.1")
+    // Legacy Office binary records (.doc/.msg) use Apache POI's scratchpad
+    // modules; no converter or second parser stack is introduced.
+    implementation("org.apache.poi:poi-scratchpad:5.5.1")
 
     testImplementation(kotlin("test-junit5"))
     testImplementation(kotlin("reflect"))
