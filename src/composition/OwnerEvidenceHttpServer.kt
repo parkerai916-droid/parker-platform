@@ -3555,13 +3555,14 @@ function render() {
     tr.appendChild(caseTd);
     appendTextCell(tr, formatBytes(row.byteLength));
 
-    // Minimum Production Document Pipeline -- a row is selectable for analysis once it carries a
-    // durable derivative generation identity (Tier A or Tier B durable OCR, live-processed this
-    // session or discovered from a prior one -- see analysisEligibleDiscoveredGeneration) the
-    // owner can already retrieve content for -- never for a row that has not reached that state yet.
+    // Unified processing state -- ANALYSIS_READY rows are selectable only after the existing
+    // read-only governed acquisition and preferred-derivative authorities confirm one bound,
+    // retrievable representation. Native searchable representations therefore do not require
+    // OCR/enhanced-transcription fields. The older branches remain for compatibility.
     const analyseTd = document.createElement('td');
     const eligibleDiscovered = analysisEligibleDiscoveredGeneration(row);
-    if ((row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId && !row.providerRegionTranscription) ||
+    if ((row.status === 'ANALYSIS_READY' && row.analysisSelectable && row.analysisDerivativeGenerationId) ||
+        (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId && !row.providerRegionTranscription) ||
         (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId) ||
         eligibleDiscovered) {
       const cb = document.createElement('input');
@@ -4634,12 +4635,41 @@ async function loadExistingEvidence(successMessage) {
     });
     status.textContent = successMessage || '';
     render();
+    // Read-only unified-state eligibility. This performs no processing, OCR, provider call, or
+    // persistence; it only joins the persisted ANALYSIS_READY state to the governed selected
+    // representation that the analysis boundary will use.
+    rows.forEach(row => { if (row.evidenceArtifactId) ensureAnalysisEligibilityLoaded(row); });
     // ANALYSIS-INGESTION-2B: silently reconstruct durable analysis eligibility for every row right
     // after the evidence list itself loads -- never waiting for the owner to expand "Enhanced
     // transcriptions" or view a specific generation first. Read-only; already-loaded rows (merged
     // above from the prior in-memory state) are skipped, never re-fetched.
     rows.forEach(row => { if (row.evidenceArtifactId) ensureOcrDerivativeGenerationsLoaded(row); });
   } catch (e) { status.textContent = 'Existing evidence list request failed safely.'; }
+}
+
+async function ensureAnalysisEligibilityLoaded(row) {
+  if (row.status !== 'ANALYSIS_READY' || !row.evidenceArtifactId) return;
+  row.analysisSelectable = false;
+  row.analysisDerivativeGenerationId = null;
+  try {
+    const [acquisitionResponse, preferredResponse] = await Promise.all([
+      fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, { method: 'GET', headers: authHeaders() }),
+      fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/preferred-derivative`, { method: 'GET', headers: authHeaders() }),
+    ]);
+    const acquisition = await acquisitionResponse.json();
+    const preferred = await preferredResponse.json();
+    const derivative = preferred.derivative;
+    if (acquisitionResponse.ok && acquisition.status === 'SELECTED' &&
+        preferredResponse.ok && preferred.status === 'PREFERRED' && derivative &&
+        derivative.rootSourceEvidenceArtifactId === row.evidenceArtifactId && derivative.contentAvailable) {
+      row.analysisSelectable = true;
+      row.analysisDerivativeGenerationId = derivative.derivativeGenerationId;
+    }
+  } catch (e) {
+    row.analysisSelectable = false;
+    row.analysisDerivativeGenerationId = null;
+  }
+  render();
 }
 
 document.getElementById('refreshEvidenceButton').onclick = () => loadExistingEvidence();
@@ -5196,7 +5226,9 @@ function collectAnalysisSelections() {
   const selections = [];
   rows.forEach(row => {
     if (!row.selectedForAnalysis) return;
-    if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
+    if (row.status === 'ANALYSIS_READY' && row.analysisSelectable && row.analysisDerivativeGenerationId) {
+      selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.analysisDerivativeGenerationId });
+    } else if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
       selections.push({ evidenceArtifactId: row.evidenceArtifactId, derivativeGenerationId: row.derivativeGenerationId });
     } else if (row.status === 'TIER_B_DURABLE_COMPLETE' && row.ocrDerivativeGenerationId) {
       selections.push({

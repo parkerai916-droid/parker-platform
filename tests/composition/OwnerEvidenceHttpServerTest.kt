@@ -3342,6 +3342,43 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
+    fun `unified ANALYSIS_READY native representations are selectable and submit their governed generation`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val renderStart = body.indexOf("function render() {")
+            val renderBody = body.substring(renderStart, body.indexOf("\nfunction ", renderStart + 1))
+            val selectionStart = body.indexOf("function collectAnalysisSelections")
+            val selectionBody = body.substring(selectionStart, body.indexOf("\nfunction ", selectionStart + 1))
+            val eligibilityStart = body.indexOf("async function ensureAnalysisEligibilityLoaded")
+            val eligibilityBody = body.substring(eligibilityStart, body.indexOf("\nfunction ", eligibilityStart + 1))
+
+            // ANALYSIS_READY is the only unified-state positive state. All pre-ready and failed
+            // states fail closed because none can satisfy this exact render predicate.
+            assertTrue(renderBody.contains("row.status === 'ANALYSIS_READY' && row.analysisSelectable && row.analysisDerivativeGenerationId"))
+            assertFalse(renderBody.contains("row.status === 'REQUIRES_OCR' && row.analysisSelectable"))
+            assertFalse(renderBody.contains("row.status === 'REGISTERED' && row.analysisSelectable"))
+            assertFalse(renderBody.contains("row.status === 'FAILED' && row.analysisSelectable"))
+
+            // Native searchable content uses the normal preferred derivative; no OCR derivative
+            // count, enhanced-transcription result, or OCR-specific field gates this branch.
+            assertTrue(eligibilityBody.contains("acquisition.status === 'SELECTED'"))
+            assertTrue(eligibilityBody.contains("preferred.status === 'PREFERRED'"))
+            assertTrue(eligibilityBody.contains("derivative.contentAvailable"))
+            assertTrue(eligibilityBody.contains("derivative.rootSourceEvidenceArtifactId === row.evidenceArtifactId"))
+            assertTrue(eligibilityBody.contains("row.analysisDerivativeGenerationId = derivative.derivativeGenerationId"))
+            assertTrue(body.contains("rows.forEach(row => { if (row.evidenceArtifactId) ensureAnalysisEligibilityLoaded(row); });"))
+
+            // Refresh re-runs the same read-only eligibility join, and selection submission uses
+            // the exact governed generation returned by that join.
+            assertTrue(selectionBody.contains("row.status === 'ANALYSIS_READY' && row.analysisSelectable && row.analysisDerivativeGenerationId"))
+            assertTrue(selectionBody.contains("derivativeGenerationId: row.analysisDerivativeGenerationId"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
     fun `the unverified-external-transcription acknowledgement control still applies to a discovered generation confirmed to be external transcription`() {
         val harness = startHarness("")
         try {
