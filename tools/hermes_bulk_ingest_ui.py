@@ -73,7 +73,7 @@ def parse_multipart_upload(content_type: str, body: bytes):
     for part in message.iter_parts():
         if part.get_param("name", header="content-disposition") == "file":
             file_parts.append(part)
-    if len(file_parts) != 1 or file_parts[0].is_multipart():
+    if len(file_parts) != 1:
         raise MultipartUploadError("file is missing or ambiguous")
     part = file_parts[0]
     if part.defects:
@@ -84,7 +84,20 @@ def parse_multipart_upload(content_type: str, body: bytes):
     filename = os.path.basename(raw_filename.replace("\\", "/"))
     if not filename or filename in (".", ".."):
         raise MultipartUploadError("file is missing")
-    data = part.get_payload(decode=True)
+    # The email parser represents an uploaded message/rfc822 part as a nested
+    # MIME message (and therefore reports is_multipart()).  That is the file
+    # payload, not an ambiguous multipart upload.  Serialize only that nested
+    # message; all other multipart file parts still use the normal decoded
+    # payload path and remain non-nested by construction.
+    if part.get_content_type().lower() == "message/rfc822" and part.is_multipart():
+        nested = part.get_payload()
+        if not isinstance(nested, list) or len(nested) != 1 or not hasattr(nested[0], "as_bytes"):
+            raise MultipartUploadError("malformed multipart file part")
+        data = nested[0].as_bytes(policy=policy.default)
+    else:
+        if part.is_multipart():
+            raise MultipartUploadError("malformed multipart file part")
+        data = part.get_payload(decode=True)
     if data is None:
         raise MultipartUploadError("malformed multipart file part")
     return part.get_content_type().lower(), filename, data

@@ -22,6 +22,17 @@ def multipart(media="application/pdf", filename="report.pdf", payload=b"pdf"):
     return "multipart/form-data; boundary=" + boundary.decode(), body
 
 
+def nested_message_multipart(payload):
+    boundary = b"----hermes-eml-boundary"
+    body = (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="message.eml"\r\n'
+        b"Content-Type: message/rfc822\r\n\r\n" + payload + b"\r\n"
+        b"--" + boundary + b"--\r\n"
+    )
+    return "multipart/form-data; boundary=" + boundary.decode(), body
+
+
 class HermesBulkUiSecurityTest(unittest.TestCase):
     def setUp(self):
         self.source = SOURCE.read_text()
@@ -58,6 +69,19 @@ class HermesBulkUiSecurityTest(unittest.TestCase):
     def test_valid_multipart_upload_parses(self):
         content_type, body = multipart(payload=b"hello")
         self.assertEqual(UI.parse_multipart_upload(content_type, body), ("application/pdf", "report.pdf", b"hello"))
+
+    def test_message_rfc822_file_part_is_not_rejected_as_ambiguous(self):
+        source = (b"From: sender@example.test\r\n"
+                  b"To: recipient@example.test\r\n"
+                  b"Subject: EML multipart regression\r\n"
+                  b"MIME-Version: 1.0\r\n"
+                  b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+                  b"PARKER EML REGRESSION VALUE 48\r\n")
+        content_type, body = nested_message_multipart(source)
+        media, filename, data = UI.parse_multipart_upload(content_type, body)
+        self.assertEqual(media, "message/rfc822")
+        self.assertEqual(filename, "message.eml")
+        self.assertIn(b"PARKER EML REGRESSION VALUE 48", data)
 
     def test_missing_file_part_fails(self):
         boundary = "----hermes-test-boundary"
