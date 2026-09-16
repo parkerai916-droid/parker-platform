@@ -1979,6 +1979,7 @@ class OwnerEvidenceHttpServer(
     private fun contentJson(content: OwnerTierAContent): JsonObject = when (content) {
         is OwnerTierAContent.Pdf -> jsonObject(
             "kind" to "PDF",
+            "extractionMethod" to content.extractionMethod,
             "documentText" to content.documentText,
             "pageCount" to content.pageCount,
             "pageTextAssociationAvailable" to content.pageTextAssociationAvailable,
@@ -1990,6 +1991,7 @@ class OwnerEvidenceHttpServer(
         )
         is OwnerTierAContent.Csv -> jsonObject(
             "kind" to "CSV",
+            "extractionMethod" to content.extractionMethod,
             "headers" to jsonArray(content.headers),
             "previewRows" to jsonArray(content.previewRows.map { jsonArray(it) }),
             "totalRowCount" to content.totalRowCount,
@@ -2000,11 +2002,14 @@ class OwnerEvidenceHttpServer(
         )
         is OwnerTierAContent.Eml -> jsonObject(
             "kind" to "EML",
+            "extractionMethod" to content.extractionMethod,
             "from" to content.from,
             "to" to content.to,
             "cc" to content.cc,
+            "bcc" to content.bcc,
             "subject" to content.subject,
             "rawDate" to content.rawDate,
+            "messageFormat" to content.messageFormat,
             "messageId" to content.messageId,
             "bodyAlternatives" to jsonArray(
                 content.bodyAlternatives.map {
@@ -2023,6 +2028,7 @@ class OwnerEvidenceHttpServer(
         )
         is OwnerTierAContent.Docx -> jsonObject(
             "kind" to "DOCX",
+            "extractionMethod" to content.extractionMethod,
             "paragraphs" to jsonArray(content.paragraphs),
             "tables" to jsonArray(content.tables.map { table -> jsonArray(table.rows.map { row -> jsonArray(row) }) }),
             "headers" to jsonArray(content.headers),
@@ -2033,6 +2039,7 @@ class OwnerEvidenceHttpServer(
         )
         is OwnerTierAContent.Structured -> jsonObject(
             "kind" to content.kind,
+            "extractionMethod" to content.extractionMethod,
             "text" to content.text,
             "lines" to jsonArray(content.lines),
             "sheets" to jsonArray(content.spreadsheetSheets.map { sheet -> jsonObject("name" to sheet.name, "cells" to jsonArray(sheet.cells.map { cell -> jsonObject("coordinate" to cell.coordinate, "value" to cell.value, "displayedValue" to cell.displayedValue, "formula" to cell.formula) })) }),
@@ -3544,9 +3551,11 @@ function render() {
       b.onclick = () => loadOcrDerivativeGenerations(index);
       actions.appendChild(b);
     }
-    if (row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) {
+    if ((row.status === 'TIER_A_COMPLETE' && row.derivativeGenerationId) ||
+        (row.status === 'ANALYSIS_READY' && row.analysisSelectable && row.analysisDerivativeGenerationId &&
+          row.analysisDerivativeKind && !['OCR recognised text', 'External transcription recognised text'].includes(row.analysisDerivativeKind))) {
       const b = document.createElement('button');
-      b.textContent = expandedIndex === index ? 'Hide Extracted Content' : 'View Extracted Content';
+      b.textContent = expandedIndex === index ? 'Hide Extracted Content' : 'View structured content';
       b.onclick = () => viewContent(index);
       actions.appendChild(b);
     }
@@ -4190,6 +4199,10 @@ function appendHumanFidelityReviewSection(container, evidenceArtifactId, derivat
 function buildContentPanel(content) {
   const container = document.createElement('div');
   container.className = 'content-panel';
+  const nativeHeading = document.createElement('h3');
+  nativeHeading.textContent = 'Native structured extraction';
+  container.appendChild(nativeHeading);
+  appendField(container, 'Derivative method', content.extractionMethod || 'not recorded');
   if (content.kind === 'PDF') {
     appendField(container, 'Page count', content.pageCount != null ? String(content.pageCount) : 'unknown');
     appendField(container, 'Page/text association available', String(content.pageTextAssociationAvailable));
@@ -4217,8 +4230,10 @@ function buildContentPanel(content) {
     appendField(container, 'From', content.from || '');
     appendField(container, 'To', content.to || '');
     appendField(container, 'Cc', content.cc || '');
+    appendField(container, 'Bcc', content.bcc || '');
     appendField(container, 'Subject', content.subject || '');
     appendField(container, 'Date', content.rawDate || '');
+    appendField(container, 'Message format', content.messageFormat || '');
     appendField(container, 'Attachment candidates', String(content.attachmentCandidateCount));
     appendField(container, 'Completeness', content.completenessState);
     appendWarnings(container, content.warnings);
@@ -4713,6 +4728,7 @@ async function ensureAnalysisEligibilityLoaded(row) {
   if (row.status !== 'ANALYSIS_READY' || !row.evidenceArtifactId) return;
   row.analysisSelectable = false;
   row.analysisDerivativeGenerationId = null;
+  row.analysisDerivativeKind = null;
   try {
     const [acquisitionResponse, preferredResponse] = await Promise.all([
       fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, { method: 'GET', headers: authHeaders() }),
@@ -4726,6 +4742,7 @@ async function ensureAnalysisEligibilityLoaded(row) {
         derivative.rootSourceEvidenceArtifactId === row.evidenceArtifactId && derivative.contentAvailable) {
       row.analysisSelectable = true;
       row.analysisDerivativeGenerationId = derivative.derivativeGenerationId;
+      row.analysisDerivativeKind = derivative.kind;
     }
   } catch (e) {
     row.analysisSelectable = false;
@@ -5161,6 +5178,7 @@ async function processRow(index) {
 // persisted storage, not extraction held only in this page's own memory.
 async function viewContent(index) {
   const row = rows[index];
+  const derivativeGenerationId = row.analysisDerivativeGenerationId || row.derivativeGenerationId;
   if (expandedIndex === index) {
     expandedIndex = null;
     render();
@@ -5168,7 +5186,7 @@ async function viewContent(index) {
   }
   if (!row.content && !row.contentError) {
     const resp = await fetch(
-      `/owner/evidence/${'$'}{row.evidenceArtifactId}/content/${'$'}{row.derivativeGenerationId}`,
+      `/owner/evidence/${'$'}{row.evidenceArtifactId}/content/${'$'}{derivativeGenerationId}`,
       { method: 'GET', headers: authHeaders() },
     );
     const result = await resp.json();

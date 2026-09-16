@@ -456,6 +456,7 @@ sealed interface OwnerTierAContent {
         val transformationHistory: List<String>,
         val completenessState: String,
         val warnings: List<String>,
+        val extractionMethod: String? = null,
         val metadata: List<OwnerPdfMetadataValue>,
     ) : OwnerTierAContent
 
@@ -467,14 +468,17 @@ sealed interface OwnerTierAContent {
         val producer: OwnerDerivativeProducerSummary,
         val completenessState: String,
         val warnings: List<String>,
+        val extractionMethod: String? = null,
     ) : OwnerTierAContent
 
     data class Eml(
         val from: String?,
         val to: String?,
         val cc: String?,
+        val bcc: String? = null,
         val subject: String?,
         val rawDate: String?,
+        val messageFormat: String? = null,
         val messageId: String?,
         val bodyAlternatives: List<OwnerEmlBodySummary>,
         val attachmentCandidateCount: Int,
@@ -482,6 +486,7 @@ sealed interface OwnerTierAContent {
         val producer: OwnerDerivativeProducerSummary,
         val completenessState: String,
         val warnings: List<String>,
+        val extractionMethod: String? = null,
     ) : OwnerTierAContent
 
     data class Docx(
@@ -492,6 +497,7 @@ sealed interface OwnerTierAContent {
         val producer: OwnerDerivativeProducerSummary,
         val completenessState: String,
         val warnings: List<String>,
+        val extractionMethod: String? = null,
     ) : OwnerTierAContent
 
     data class Structured(
@@ -508,6 +514,7 @@ sealed interface OwnerTierAContent {
         val producer: OwnerDerivativeProducerSummary,
         val completenessState: String,
         val warnings: List<String>,
+        val extractionMethod: String? = null,
     ) : OwnerTierAContent
 
     /**

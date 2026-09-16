@@ -103,14 +103,50 @@ class DerivativeContentCodecTest {
     }
 
     @Test
+    fun `structured and EML extraction methods are persisted without kind inference`() {
+        val structured = StructuredDocumentRepresentation(
+            kind = StructuredDocumentKind.XLSX,
+            sourceSha256 = "c".repeat(64),
+            originalMediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            encoding = null,
+            text = "Payments!B4: 2250.00",
+            spreadsheetSheets = listOf(StructuredSpreadsheetSheet("Payments", listOf(StructuredSpreadsheetCell("Payments", "B4", "2250.00", "2250.00")))),
+            parserIdentity = "fixture-parser",
+            parserVersion = "1",
+            transformations = listOf(DerivativeTransformation.STRUCTURAL_PARSING),
+            completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
+            extractionMethod = "STRUCTURED_SPREADSHEET_EXTRACTION",
+        )
+        val structuredEntry = DerivativeContentEntry(
+            DerivativeGenerationId("generation-structured-method"),
+            EvidenceArtifactId("source-structured-method"),
+            TierADerivativePayload.Structured(structured),
+        )
+        val decodedStructured = DerivativeContentCodec.decode(DerivativeContentCodec.encode(structuredEntry)).payload
+            as TierADerivativePayload.Structured
+        assertEquals("STRUCTURED_SPREADSHEET_EXTRACTION", decodedStructured.value.extractionMethod)
+
+        val eml = TierADerivativePayloadFixtures.eml().copy(extractionMethod = "STRUCTURED_EMAIL_EXTRACTION")
+        val emlEntry = DerivativeContentEntry(
+            DerivativeGenerationId("generation-eml-method"),
+            EvidenceArtifactId("source-eml-method"),
+            TierADerivativePayload.Eml(eml, childSourceCandidateCount = 0),
+        )
+        val decodedEml = DerivativeContentCodec.decode(DerivativeContentCodec.encode(emlEntry)).payload
+            as TierADerivativePayload.Eml
+        assertEquals("STRUCTURED_EMAIL_EXTRACTION", decodedEml.value.extractionMethod)
+    }
+
+    @Test
     fun `DOCX payload round trips paragraphs tables headers footers and metadata exactly`() {
         val entry = DerivativeContentEntry(
             DerivativeGenerationId("generation-docx"),
             EvidenceArtifactId("source-docx"),
-            TierADerivativePayload.Docx(TierADerivativePayloadFixtures.docx()),
+            TierADerivativePayload.Docx(TierADerivativePayloadFixtures.docx().copy(extractionMethod = "STRUCTURED_DOCUMENT_EXTRACTION")),
         )
         val decoded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(entry))
         assertEquals(entry, decoded)
+        assertEquals("STRUCTURED_DOCUMENT_EXTRACTION", (decoded.payload as TierADerivativePayload.Docx).value.extractionMethod)
     }
 
     @Test

@@ -43,6 +43,8 @@ data class StructuredDocumentRepresentation(
     val transformations: List<DerivativeTransformation>,
     val completenessState: DerivativeCompletenessState,
     val warnings: List<String> = emptyList(),
+    /** Parker's native governed-derivative extraction method, not Hermes preflight's method list. */
+    val extractionMethod: String? = null,
 ) {
     init {
         require(sourceSha256.matches(Regex("^[0-9a-f]{64}$")))
@@ -53,4 +55,3 @@ data class StructuredDocumentRepresentation(
         require(warnings.none { it.isBlank() })
     }
 }
-

@@ -62,9 +62,9 @@ internal object DerivativeContentCodec {
     // Per-format-kind schema versions (Scope Lock §8) -- independent of ENVELOPE_VERSION,
     // which governs only the outer envelope (id/root/formatKind/version framing itself).
     const val CSV_REPRESENTATION_VERSION = 1
-    const val EML_REPRESENTATION_VERSION = 1
-    const val DOCX_REPRESENTATION_VERSION = 1
-    const val STRUCTURED_REPRESENTATION_VERSION = 1
+    const val EML_REPRESENTATION_VERSION = 2
+    const val DOCX_REPRESENTATION_VERSION = 2
+    const val STRUCTURED_REPRESENTATION_VERSION = 2
     const val PDF_REPRESENTATION_VERSION = 2
     const val OCR_REPRESENTATION_VERSION = 3
     const val OCR_AUTHORITY_REPRESENTATION_VERSION = 4
@@ -162,21 +162,21 @@ internal object DerivativeContentCodec {
                     TierADerivativePayload.Csv(input.readCsv())
                 }
                 FORMAT_EML -> {
-                    if (representationVersion != EML_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
-                    val (eml, childCount) = input.readEml()
+                    if (representationVersion !in 1..EML_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
+                    val (eml, childCount) = input.readEml(representationVersion)
                     TierADerivativePayload.Eml(eml, childCount)
                 }
                 FORMAT_DOCX -> {
-                    if (representationVersion != DOCX_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
-                    TierADerivativePayload.Docx(input.readDocx())
+                    if (representationVersion !in 1..DOCX_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
+                    TierADerivativePayload.Docx(input.readDocx(representationVersion))
                 }
                 FORMAT_PDF -> {
                     if (representationVersion !in 1..PDF_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
                     TierADerivativePayload.Pdf(input.readPdf(representationVersion))
                 }
                 FORMAT_STRUCTURED -> {
-                    if (representationVersion != STRUCTURED_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
-                    TierADerivativePayload.Structured(input.readStructured())
+                    if (representationVersion !in 1..STRUCTURED_REPRESENTATION_VERSION) throw UnsupportedRepresentationVersionException(representationVersion)
+                    TierADerivativePayload.Structured(input.readStructured(representationVersion))
                 }
                 FORMAT_OCR -> {
                     val ocr = when (representationVersion) {
@@ -216,9 +216,10 @@ internal object DerivativeContentCodec {
         writeCollectionSize(r.attachments.size); r.attachments.forEach { writeNullableString(it.filename); writeNullableString(it.mediaType); writeNullableString(it.sha256); writeString(it.childRelationship, MAX_SHORT_STRING_BYTES) }
         writeString(r.parserIdentity, MAX_SHORT_STRING_BYTES); writeString(r.parserVersion, MAX_SHORT_STRING_BYTES)
         writeTransformations(r.transformations); writeString(r.completenessState.name, MAX_SHORT_STRING_BYTES); writeStrings(r.warnings)
+        writeNullableString(r.extractionMethod)
     }
 
-    private fun DataInputStream.readStructured(): StructuredDocumentRepresentation {
+    private fun DataInputStream.readStructured(representationVersion: Int): StructuredDocumentRepresentation {
         val kind = enumValueOf<StructuredDocumentKind>(readString(MAX_SHORT_STRING_BYTES)); val source = readString(MAX_SHORT_STRING_BYTES)
         val media = readString(MAX_SHORT_STRING_BYTES); val encoding = readNullableString(); val text = readString(MAX_LARGE_TEXT_BYTES)
         val lines = List(readCollectionSize()) { StructuredTextLine(readInt(), readString(MAX_LARGE_TEXT_BYTES), readInt(), readInt()) }
@@ -231,7 +232,8 @@ internal object DerivativeContentCodec {
         val attachments = List(readCollectionSize()) { StructuredEmailAttachment(readNullableString(), readNullableString(), readNullableString(), readString(MAX_SHORT_STRING_BYTES)) }
         val parser = readString(MAX_SHORT_STRING_BYTES); val version = readString(MAX_SHORT_STRING_BYTES)
         val transformations = readTransformations(); val completeness = enumValueOf<DerivativeCompletenessState>(readString(MAX_SHORT_STRING_BYTES)); val warnings = readStrings()
-        return StructuredDocumentRepresentation(kind, source, media, encoding, text, lines, blocks, sheets, sender, recipients, cc, bcc, subject, timestamp, bodyFormat, attachments, parser, version, transformations, completeness, warnings)
+        val method = if (representationVersion >= 2) readNullableString() else null
+        return StructuredDocumentRepresentation(kind, source, media, encoding, text, lines, blocks, sheets, sender, recipients, cc, bcc, subject, timestamp, bodyFormat, attachments, parser, version, transformations, completeness, warnings, method)
     }
 
     // ---- Ordinary external region-v5 transcription ------------------------------------------
@@ -563,9 +565,10 @@ internal object DerivativeContentCodec {
         writeString(r.completenessState.name, MAX_SHORT_STRING_BYTES)
         writeStrings(r.warnings)
         writeInt(childSourceCandidateCount)
+        writeNullableString(r.extractionMethod)
     }
 
-    private fun DataInputStream.readEml(): Pair<EmlStructuralResult, Int> {
+    private fun DataInputStream.readEml(representationVersion: Int): Pair<EmlStructuralResult, Int> {
         val headers = List(readCollectionSize()) { EmlHeader(readString(MAX_SHORT_STRING_BYTES), readString(MAX_SHORT_STRING_BYTES), ByteArray(0), readString(MAX_SHORT_STRING_BYTES)) }
         val from = readNullableString(); val to = readNullableString(); val cc = readNullableString()
         val rawDate = readNullableString()
@@ -593,9 +596,10 @@ internal object DerivativeContentCodec {
         val completeness = enumValueOf<DerivativeCompletenessState>(readString(MAX_SHORT_STRING_BYTES))
         val warnings = readStrings()
         val childSourceCandidateCount = readInt()
+        val method = if (representationVersion >= 2) readNullableString() else null
         return EmlStructuralResult(
             headers, from, to, cc, rawDate, parsedDate, subject, messageId, mimeVersion, contentType,
-            mimeEntities, bodyAlternatives, attachmentCandidates, producer, transformations, completeness, warnings,
+            mimeEntities, bodyAlternatives, attachmentCandidates, producer, transformations, completeness, warnings, method,
         ) to childSourceCandidateCount
     }
 
@@ -628,6 +632,7 @@ internal object DerivativeContentCodec {
         writeTransformations(r.transformationHistory)
         writeString(r.completenessState.name, MAX_SHORT_STRING_BYTES)
         writeStrings(r.warnings)
+        writeNullableString(r.extractionMethod)
     }
 
     private fun DataOutputStream.writeParagraph(p: DocxParagraph) {
@@ -657,7 +662,7 @@ internal object DerivativeContentCodec {
         return DocxHeaderFooter(kind, order, relationshipId, paragraphs)
     }
 
-    private fun DataInputStream.readDocx(): DocxStructuralResult {
+    private fun DataInputStream.readDocx(representationVersion: Int): DocxStructuralResult {
         val paragraphs = List(readCollectionSize()) { readParagraph() }
         val tables = List(readCollectionSize()) {
             val order = readInt(); val styleId = readNullableString()
@@ -682,7 +687,8 @@ internal object DerivativeContentCodec {
         val transformations = readTransformations()
         val completeness = enumValueOf<DerivativeCompletenessState>(readString(MAX_SHORT_STRING_BYTES))
         val warnings = readStrings()
-        return DocxStructuralResult(paragraphs, tables, headers, footers, metadata, parts, relationshipCount, relationshipTypes, mediaPartNames, producer, transformations, completeness, warnings)
+        val method = if (representationVersion >= 2) readNullableString() else null
+        return DocxStructuralResult(paragraphs, tables, headers, footers, metadata, parts, relationshipCount, relationshipTypes, mediaPartNames, producer, transformations, completeness, warnings, method)
     }
 
     // ---- shared helpers -------------------------------------------------------------------------

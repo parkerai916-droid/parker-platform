@@ -3379,6 +3379,35 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
+    fun `ANALYSIS_READY native structured content is viewable without OCR and uses safe text rendering`() {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            assertTrue(body.contains("View structured content"))
+            assertTrue(body.contains("row.status === 'ANALYSIS_READY' && row.analysisSelectable && row.analysisDerivativeGenerationId"))
+            assertTrue(body.contains("row.analysisDerivativeKind"))
+            assertTrue(body.contains("const derivativeGenerationId = row.analysisDerivativeGenerationId || row.derivativeGenerationId"))
+            assertTrue(body.contains("/content/${'$'}{derivativeGenerationId}"))
+            assertTrue(body.contains("Native structured extraction"))
+            assertTrue(body.contains("appendField(container, 'Derivative method', content.extractionMethod || 'not recorded')"))
+            assertFalse(body.contains("const extractionMethods ="))
+            assertFalse(body.contains("DIRECT_TEXT_EXTRACTION"))
+            assertTrue(body.contains("appendField(container, 'Bcc', content.bcc || '')"))
+            assertTrue(body.contains("appendField(container, 'Message format', content.messageFormat || '')"))
+            assertTrue(body.contains("content.attachmentCandidates.forEach(a =>"))
+            assertTrue(body.contains("a.filename || '(unnamed)'"))
+            assertTrue(body.contains("a.declaredMimeType"))
+            assertTrue(body.contains("textContent"))
+            assertFalse(body.contains("innerHTML = content"))
+            // The existing OCR control remains a separate discovery/action path.
+            assertTrue(body.contains("View enhanced transcriptions"))
+            assertTrue(body.contains("ocr-content"))
+        } finally {
+            harness.shutdown()
+        }
+    }
+
+    @Test
     fun `the unverified-external-transcription acknowledgement control still applies to a discovered generation confirmed to be external transcription`() {
         val harness = startHarness("")
         try {

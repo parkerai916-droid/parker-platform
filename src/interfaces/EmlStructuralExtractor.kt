@@ -67,6 +67,8 @@ data class EmlStructuralResult(
     val transformationHistory: List<DerivativeTransformation>,
     val completenessState: DerivativeCompletenessState,
     val warnings: List<String>,
+    /** Parker's native governed-derivative extraction method, not Hermes preflight's method list. */
+    val extractionMethod: String? = null,
 )
 
 sealed class EmlStructuralExtractionOutcome {

@@ -68,7 +68,7 @@ class ApacheJamesMime4jExtractor : EmlStructuralExtractor {
                 contentType = value(message, "Content-Type"), mimeEntities = entities,
                 bodyAlternatives = bodies, attachmentCandidates = attachments,
                 producerIdentity = PRODUCER_IDENTITY, transformationHistory = TRANSFORMATIONS,
-                completenessState = completeness, warnings = warnings.distinct(),
+                completenessState = completeness, warnings = warnings.distinct(), extractionMethod = "STRUCTURED_EMAIL_EXTRACTION",
             )
         )
     }

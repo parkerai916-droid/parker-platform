@@ -629,6 +629,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                 transformationHistory = r.transformationHistory.map { it.name },
                 completenessState = r.completenessState.name,
                 warnings = r.warnings,
+                extractionMethod = r.pageTextSegments.firstOrNull()?.extractionMethod,
                 metadata = r.metadata.map { OwnerPdfMetadataValue(it.name, it.value) },
             )
         }
@@ -649,8 +650,10 @@ class OwnerUiEvidenceRuntimeAdapter(
                 from = r.from,
                 to = r.to,
                 cc = r.cc,
+                bcc = r.headers.firstOrNull { it.name.equals("Bcc", ignoreCase = true) }?.value,
                 subject = r.subject,
                 rawDate = r.rawDate,
+                messageFormat = r.bodyAlternatives.firstOrNull()?.mediaType ?: r.contentType,
                 messageId = r.messageId,
                 bodyAlternatives = r.bodyAlternatives.map { OwnerEmlBodySummary(it.mediaType, it.charset, it.decodedText) },
                 attachmentCandidateCount = r.attachmentCandidates.size,
@@ -660,6 +663,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                 producer = r.producerIdentity.toSummary(),
                 completenessState = r.completenessState.name,
                 warnings = r.warnings,
+                extractionMethod = r.extractionMethod,
             )
         }
         is TierADerivativePayload.Docx -> payload.value.let { r ->
@@ -675,6 +679,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                 producer = r.producerIdentity.toSummary(),
                 completenessState = r.completenessState.name,
                 warnings = r.warnings,
+                extractionMethod = r.extractionMethod,
             )
         }
         is TierADerivativePayload.Structured -> payload.value.let { r ->
@@ -684,6 +689,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                 sender = r.sender, recipients = r.recipients, cc = r.cc, subject = r.subject, timestamp = r.timestamp,
                 attachments = r.attachments.mapNotNull { it.filename }, producer = r.parserIdentity.let { identity -> OwnerDerivativeProducerSummary(identity, r.parserVersion, "structured-representation-v1", null, null, null, null) },
                 completenessState = r.completenessState.name, warnings = r.warnings,
+                extractionMethod = r.extractionMethod,
             )
         }
         is TierADerivativePayload.Ocr -> error(

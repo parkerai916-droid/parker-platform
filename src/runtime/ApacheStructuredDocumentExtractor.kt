@@ -35,7 +35,7 @@ class ApacheStructuredDocumentExtractor : StructuredDocumentExtractor {
         }
         val lines = lineOffsets(value)
         return StructuredDocumentExtractionOutcome.Extracted(StructuredDocumentRepresentation(kind, sha, media, "UTF-8", value, lines = lines,
-            parserIdentity = "parker-utf8-text", parserVersion = "1", transformations = listOf(DerivativeTransformation.CHARACTER_DECODING),
+            parserIdentity = "parker-utf8-text", parserVersion = "1", transformations = listOf(DerivativeTransformation.CHARACTER_DECODING), extractionMethod = "DIRECT_TEXT_EXTRACTION",
             completenessState = DerivativeCompletenessState.ACCOUNTED_FOR))
     }
 
@@ -47,7 +47,7 @@ class ApacheStructuredDocumentExtractor : StructuredDocumentExtractor {
             .replace("{", "").replace("}", "").replace("\\", "").trim()
         if (value.isBlank()) return StructuredDocumentExtractionOutcome.Malformed("RTF contains no readable text")
         return StructuredDocumentExtractionOutcome.Extracted(StructuredDocumentRepresentation(StructuredDocumentKind.RTF, sha, media, "ASCII", value,
-            lines = lineOffsets(value), parserIdentity = "parker-bounded-rtf", parserVersion = "1",
+            lines = lineOffsets(value), parserIdentity = "parker-bounded-rtf", parserVersion = "1", extractionMethod = "STRUCTURED_DOCUMENT_EXTRACTION",
             transformations = listOf(DerivativeTransformation.CHARACTER_DECODING, DerivativeTransformation.STRUCTURAL_PARSING),
             completenessState = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
             warnings = listOf("RTF text and control structure are preserved only where safely exposed; layout and pagination are not claimed")))
@@ -74,7 +74,7 @@ class ApacheStructuredDocumentExtractor : StructuredDocumentExtractor {
             return StructuredDocumentExtractionOutcome.Extracted(StructuredDocumentRepresentation(
                 if (media == "application/vnd.ms-excel") StructuredDocumentKind.XLS else StructuredDocumentKind.XLSX,
                 sha, media, null, sheets.flatMap { it.cells }.joinToString("\n") { "${it.sheetName}!${it.coordinate}: ${it.displayedValue}" }, spreadsheetSheets = sheets,
-                parserIdentity = "apache-poi", parserVersion = "5.5.1", transformations = listOf(DerivativeTransformation.STRUCTURAL_PARSING),
+                parserIdentity = "apache-poi", parserVersion = "5.5.1", transformations = listOf(DerivativeTransformation.STRUCTURAL_PARSING), extractionMethod = "STRUCTURED_SPREADSHEET_EXTRACTION",
                 completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
             ))
         }
@@ -86,7 +86,7 @@ class ApacheStructuredDocumentExtractor : StructuredDocumentExtractor {
         if (value.isBlank()) return StructuredDocumentExtractionOutcome.Malformed("DOC contains no readable text")
         val blocks = value.split(Regex("[\\r\\n]+")).filter { it.isNotBlank() }.mapIndexed { index, text -> StructuredWordBlock(index, text) }
         return StructuredDocumentExtractionOutcome.Extracted(StructuredDocumentRepresentation(StructuredDocumentKind.DOC, sha, media, null, value,
-            lines = lineOffsets(value), wordBlocks = blocks, parserIdentity = "apache-poi-hwpf", parserVersion = "5.5.1", transformations = listOf(DerivativeTransformation.STRUCTURAL_PARSING),
+            lines = lineOffsets(value), wordBlocks = blocks, parserIdentity = "apache-poi-hwpf", parserVersion = "5.5.1", transformations = listOf(DerivativeTransformation.STRUCTURAL_PARSING), extractionMethod = "STRUCTURED_DOCUMENT_EXTRACTION",
             completenessState = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
             warnings = listOf("Legacy DOC pagination and visual layout are not claimed")))
     }
@@ -121,7 +121,7 @@ class ApacheStructuredDocumentExtractor : StructuredDocumentExtractor {
             cc = cc ?: recipientGroups.second,
             bcc = bcc ?: recipientGroups.third,
             subject = call("getSubject"), timestamp = call("getMessageDate"), bodyFormat = "text/plain", attachments = attachments,
-            parserIdentity = "apache-poi-hsmf", parserVersion = "5.5.1", transformations = listOf(DerivativeTransformation.STRUCTURAL_PARSING),
+            parserIdentity = "apache-poi-hsmf", parserVersion = "5.5.1", transformations = listOf(DerivativeTransformation.STRUCTURAL_PARSING), extractionMethod = "STRUCTURED_EMAIL_EXTRACTION",
             completenessState = DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
             warnings = listOf("MSG attachment enumeration remains separate from parent body text")))
     }
