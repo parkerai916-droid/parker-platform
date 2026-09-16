@@ -76,3 +76,20 @@ def supported_extensions() -> tuple[str, ...]:
         and definition.text_extraction not in ("no", "container only")
         and definition.parker_native_route in ("native", "governed external", "Tier B/external OCR")
     )
+
+
+def supported_mime_types() -> frozenset[str]:
+    """Return MIME types belonging to at least one end-to-end supported format.
+
+    A MIME type may legitimately serve more than one extension (for example,
+    message/rfc822 is used by EML and MIME archives), so this must aggregate
+    the catalogue rather than use the lossy one-to-one BY_MIME index.
+    """
+    return frozenset(
+        mime
+        for definition in CATALOGUE
+        if definition.hermes_inspect
+        and definition.text_extraction not in ("no", "container only")
+        and definition.parker_native_route in ("native", "governed external", "Tier B/external OCR")
+        for mime in definition.mime_types
+    )

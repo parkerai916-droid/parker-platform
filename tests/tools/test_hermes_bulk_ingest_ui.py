@@ -121,6 +121,9 @@ class HermesBulkUiSecurityTest(unittest.TestCase):
         for extension in (".doc", ".xls", ".xlsx", ".eml", ".msg", ".rtf", ".tif", ".tiff"):
             self.assertIn(extension, UI.supported_extensions())
 
+    def test_governed_external_eml_is_dispatchable(self):
+        self.assertIn("message/rfc822", UI.SUPPORTED)
+
 
 if __name__ == "__main__":
     unittest.main()

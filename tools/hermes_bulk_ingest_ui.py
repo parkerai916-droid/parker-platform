@@ -22,7 +22,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
-    from hermes_format_catalogue import BY_MIME, supported_extensions
+    from hermes_format_catalogue import BY_MIME, supported_extensions, supported_mime_types
 except ModuleNotFoundError:  # direct spec loading from the repository tests
     _catalogue_spec = importlib.util.spec_from_file_location("hermes_format_catalogue", Path(__file__).with_name("hermes_format_catalogue.py"))
     if _catalogue_spec is None or _catalogue_spec.loader is None:
@@ -32,6 +32,7 @@ except ModuleNotFoundError:  # direct spec loading from the repository tests
     _catalogue_spec.loader.exec_module(_catalogue_module)
     BY_MIME = _catalogue_module.BY_MIME
     supported_extensions = _catalogue_module.supported_extensions
+    supported_mime_types = _catalogue_module.supported_mime_types
 
 try:
     from hermes_processing_ingest import ParkerClient, media_type_for, process_one
@@ -46,7 +47,7 @@ except ModuleNotFoundError:  # also supports direct spec-based test loading
     media_type_for = _processor_module.media_type_for
     process_one = _processor_module.process_one
 
-SUPPORTED = {media for media, definition in BY_MIME.items() if definition.hermes_inspect and definition.text_extraction not in ("no", "container only") and definition.parker_native_route in ("native", "Tier B/external OCR")}
+SUPPORTED = supported_mime_types()
 MAX_FILE = 64 * 1024 * 1024
 MULTIPART_ALLOWANCE = 1024 * 1024
 
