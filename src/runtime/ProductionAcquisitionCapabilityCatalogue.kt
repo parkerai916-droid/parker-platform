@@ -51,9 +51,12 @@ object ProductionAcquisitionCapabilityCatalogue {
         AcquisitionEgress.LOCAL_ONLY, null, AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
         mapOf(
             "application/pdf" to AcquisitionFidelitySuitability.ACCEPTED,
-            // CSV and EML retain their established external-verification selection policy.
+            // CSV retains its established external-verification selection policy. EML has a
+            // durable, structured native representation produced by the governed Tier-A route;
+            // a valid structured EML result must not be forced through OCR or optional external
+            // verification.
             "text/csv" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
-            "message/rfc822" to AcquisitionFidelitySuitability.NOT_ACCEPTED,
+            "message/rfc822" to AcquisitionFidelitySuitability.ACCEPTED,
             // DOCX has a governed Apache POI/XWPF representation and is accepted as native
             // structured evidence; no OCR or external verification is required.
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" to AcquisitionFidelitySuitability.ACCEPTED,

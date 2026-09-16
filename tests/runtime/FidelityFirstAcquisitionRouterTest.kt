@@ -96,7 +96,7 @@ class FidelityFirstAcquisitionRouterTest {
         assertFalse("message/rfc822" in fidelityFirst.supportedMediaTypes, "registering EML must never widen the existing PDF/image/CSV capability")
     }
 
-    @Test fun `STEP 4G -- router selects the EML capability for message-rfc822 once it is Available, native remains untouched`() {
+    @Test fun `STEP 4G -- native structured EML remains preferred when external EML is Available`() {
         val emlSource = AcquisitionSource(
             EvidenceArtifactId("synthetic-eml"), "a".repeat(64), 100, "message/rfc822",
             AcquisitionPageCount.Unknown, AcquisitionSourceCharacteristics(
@@ -117,8 +117,7 @@ class FidelityFirstAcquisitionRouterTest {
             ExternalEgressAuthorisation.AUTHORISED,
         )
         val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
-        assertEquals(ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID, selected.decision.capability.capabilityId)
-        assertNotEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
     }
 
     private val emlSource = AcquisitionSource(
@@ -147,9 +146,9 @@ class FidelityFirstAcquisitionRouterTest {
         val eml = catalogue.capabilities().single { it.capabilityId == ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID }
         assertEquals(AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.CONFIGURATION_NOT_ACCEPTED), eml.availability)
 
-        val outcome = DeterministicEvidenceAcquisitionRouter().route(emlSource, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
-        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
-        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(emlSource, catalogue.capabilities(), ExternalEgressAuthorisation.NOT_AUTHORISED)
+        val selected = assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome)
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID, selected.decision.capability.capabilityId)
     }
 
     @Test fun `accepting EML alone leaves the fidelity-first capability at its own unavailable default`() {
@@ -179,15 +178,15 @@ class FidelityFirstAcquisitionRouterTest {
 
         val emlOutcome = DeterministicEvidenceAcquisitionRouter().route(emlSource, catalogue.capabilities(), ExternalEgressAuthorisation.AUTHORISED)
         assertEquals(
-            ProductionAcquisitionCapabilityCatalogue.EML_DERIVED_TEXT_EXTERNAL_CAPABILITY_ID,
+            ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
             assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(emlOutcome).decision.capability.capabilityId,
         )
 
         // No side-effect on native's own per-media-type fidelity suitability from accepting either
-        // or both externals -- structured formats remain NOT_ACCEPTED, while searchable PDF is
-        // intentionally accepted as the authoritative native representation.
+        // or both externals -- CSV remains externally governed, while EML and searchable PDF are
+        // accepted as authoritative native representations.
         val native = catalogue.capabilities().single { it.capabilityId == ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID }
-        assertEquals(AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType["message/rfc822"])
+        assertEquals(AcquisitionFidelitySuitability.ACCEPTED, native.fidelitySuitabilityByMediaType["message/rfc822"])
         assertEquals(AcquisitionFidelitySuitability.ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
     }
 

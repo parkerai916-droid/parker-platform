@@ -126,10 +126,57 @@ class UnifiedProcessingStateEndToEndAcceptanceTest {
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private fun processingResultJson(sha: String) = """{"sourceSha256":"$sha","status":"PASS","methods":["DIRECT_TEXT_EXTRACTION"],"processingCompleteness":"COMPLETE","processingWarnings":[],"issues":[]}""".toByteArray()
+    private fun processingResultJson(
+        sha: String,
+        method: String = "DIRECT_TEXT_EXTRACTION",
+        structuredRepresentation: String? = null,
+    ) = """{"sourceSha256":"$sha","status":"PASS","methods":["$method"],"processingCompleteness":"COMPLETE","processingWarnings":[],"issues":[]${structuredRepresentation?.let { ",\"structuredRepresentation\":$it" } ?: ""}}""".toByteArray()
 
     private fun runFixture(h: Harness, fileName: String, mediaType: String): FixtureResult =
         runFixture(h, fileName, Files.readAllBytes(fixtureRoot.resolve(fileName)), mediaType)
+
+    private fun runStructuredFixture(
+        h: Harness,
+        fileName: String,
+        bytes: ByteArray,
+        mediaType: String,
+        method: String,
+        structuredRepresentation: String,
+    ): FixtureResult {
+        val sha = sha256(bytes)
+        val case = runBlocking { assertIs<BulkIngestionAuthorisation.Authorised>(h.runtime.authoriseBulkIngestionAsOwner(h.caseId)) }
+        val agentBase = "http://127.0.0.1:${h.agent.boundPort}"
+        val result = request(
+            "$agentBase/agent/ingestion-batches/${case.binding.batchId}/processing-results", agentToken, "POST",
+            processingResultJson(sha, method, structuredRepresentation), "application/json",
+        )
+        assertEquals(201, result.statusCode(), result.body())
+        val admitted = request("$agentBase/agent/ingestion-batches/${case.binding.batchId}/sources/$sha", agentToken, "POST", bytes, mediaType)
+        assertTrue(admitted.statusCode() in 200..202, admitted.body())
+        val evidenceId = Regex("\"evidenceArtifactId\":\"([^\"]+)\"").find(admitted.body())!!.groupValues[1]
+        val persisted = runBlocking {
+            FileSystemEvidenceProcessingStateStore(Path.of(h.config.evidenceStorageRootPath, "processing-state"))
+                .find(EvidenceArtifactId(evidenceId))
+        }
+        assertEquals(EvidenceProcessingState.ANALYSIS_READY, persisted!!.state, "$fileName: ${admitted.body()}")
+        return FixtureResult(EvidenceArtifactId(evidenceId), persisted.state, sha, case.binding.batchId)
+    }
+
+    @Test
+    fun `EML PASS structured result proceeds to native governed acquisition instead of REQUIRES_OCR`() {
+        val h = startHarness()
+        try {
+            val eml = Files.readAllBytes(fixtureRoot.resolve("05-email-with-attachment.eml"))
+            val structured = """{"from":"sender@example.test","to":"recipient@example.test","cc":"cc@example.test","bcc":null,"subject":"Parker EML acceptance","date":"2026-01-01T00:00:00Z","body":"PARKER EML TEST","messageFormat":"text/plain","attachments":[{"filename":"attachment.txt","contentType":"text/plain"}]}"""
+            val result = runStructuredFixture(
+                h, "05-email-with-attachment.eml", eml, "message/rfc822", "STRUCTURED_EMAIL_EXTRACTION", structured,
+            )
+            assertEquals(EvidenceProcessingState.ANALYSIS_READY, result.state)
+            assertTrue(runBlocking { h.runtime.evaluateGovernedAcquisitionAsOwner(result.evidenceId) }.toString().contains("Selected"))
+        } finally {
+            h.agent.stop(); h.owner.stop(); runBlocking { h.runtime.shutdown() }
+        }
+    }
 
     @Test
     fun `real external OCR completes the unified state transition for scanned PDF`() {

@@ -5,14 +5,13 @@ import parker.core.interfaces.*
 
 /**
  * STEP 2 -- OpenAI-first production selection correction
- * (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §7.2). Proves Native Tier A is
- * production-ineligible for CSV/EML, that no other capability silently fills the gap yet,
- * and that PDF/image behaviour is unchanged.
+ * (FIDELITY_PRESERVING_EVIDENCE_ACQUISITION_SCOPE_LOCK.md §7.2). Proves CSV's deliberate
+ * external-verification policy, EML's governed native structured route, and unchanged PDF/image
+ * behaviour.
  */
 class NativeTierAProductionIneligibilityTest {
-    private val nativeStructuredMediaTypes = listOf(
-        "text/csv", "message/rfc822",
-    )
+    private val csvMediaType = "text/csv"
+    private val emlMediaType = "message/rfc822"
 
     private fun nativeStructuredSource(mediaType: String) = AcquisitionSource(
         EvidenceArtifactId("synthetic-$mediaType"), "a".repeat(64), 100, mediaType,
@@ -41,67 +40,56 @@ class NativeTierAProductionIneligibilityTest {
         ), HumanAuthorisedCustody.CONFIRMED,
     )
 
-    @Test fun `native capability reports NOT_ACCEPTED fidelity suitability for CSV and EML`() {
+    @Test fun `native capability keeps CSV external policy but accepts structured EML`() {
         val native = ProductionAcquisitionCapabilityCatalogue.nativeCapability()
-        nativeStructuredMediaTypes.forEach { mediaType ->
-            assertEquals(
-                AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType[mediaType],
-                "expected NOT_ACCEPTED for $mediaType",
-            )
-        }
+        assertEquals(AcquisitionFidelitySuitability.NOT_ACCEPTED, native.fidelitySuitabilityByMediaType[csvMediaType])
+        assertEquals(AcquisitionFidelitySuitability.ACCEPTED, native.fidelitySuitabilityByMediaType[emlMediaType])
         assertEquals(AcquisitionFidelitySuitability.ACCEPTED, native.fidelitySuitabilityByMediaType["application/pdf"])
     }
 
-    @Test fun `eligibility evaluation returns FIDELITY_NOT_ACCEPTED for native on CSV and EML`() {
+    @Test fun `eligibility evaluation keeps CSV native-ineligible and EML native-eligible`() {
         val native = ProductionAcquisitionCapabilityCatalogue.nativeCapability()
-        nativeStructuredMediaTypes.forEach { mediaType ->
-            val outcome = EvidenceAcquisitionEligibilityEvaluator.evaluate(
-                native, nativeStructuredSource(mediaType), ExternalEgressAuthorisation.AUTHORISED,
-            )
-            val ineligible = assertIs<AcquisitionEligibility.Ineligible>(outcome, "expected ineligible for $mediaType")
-            assertContains(ineligible.reasons, AcquisitionEligibilityReason.FIDELITY_NOT_ACCEPTED)
-        }
+        val csv = assertIs<AcquisitionEligibility.Ineligible>(EvidenceAcquisitionEligibilityEvaluator.evaluate(
+            native, nativeStructuredSource(csvMediaType), ExternalEgressAuthorisation.AUTHORISED,
+        ))
+        assertContains(csv.reasons, AcquisitionEligibilityReason.FIDELITY_NOT_ACCEPTED)
+        assertIs<AcquisitionEligibility.Eligible>(EvidenceAcquisitionEligibilityEvaluator.evaluate(
+            native, nativeStructuredSource(emlMediaType), ExternalEgressAuthorisation.AUTHORISED,
+        ))
     }
 
-    @Test fun `router does not select native for CSV or EML even though nativeSearchableText is PRESENT`() {
-        nativeStructuredMediaTypes.forEach { mediaType ->
-            val outcome = DeterministicEvidenceAcquisitionRouter().route(
-                nativeStructuredSource(mediaType),
-                ProductionAcquisitionCapabilityCatalogue.create().capabilities(),
-                ExternalEgressAuthorisation.AUTHORISED,
-            )
-            if (outcome is EvidenceAcquisitionRoutingOutcome.Selected) {
-                assertNotEquals(
-                    ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
-                    outcome.decision.capability.capabilityId,
-                    "native must not be selected for $mediaType",
-                )
-            }
-        }
+    @Test fun `router selects native for structured EML while CSV remains externally governed`() {
+        val emlOutcome = DeterministicEvidenceAcquisitionRouter().route(
+            nativeStructuredSource(emlMediaType), ProductionAcquisitionCapabilityCatalogue.create().capabilities(),
+            ExternalEgressAuthorisation.AUTHORISED,
+        )
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
+            assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(emlOutcome).decision.capability.capabilityId)
+        val csvOutcome = DeterministicEvidenceAcquisitionRouter().route(
+            nativeStructuredSource(csvMediaType), ProductionAcquisitionCapabilityCatalogue.create().capabilities(),
+            ExternalEgressAuthorisation.AUTHORISED,
+        )
+        assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(csvOutcome)
     }
 
-    @Test fun `CSV and EML fail closed with no eligible capability under current production registration`() {
-        nativeStructuredMediaTypes.forEach { mediaType ->
-            val outcome = DeterministicEvidenceAcquisitionRouter().route(
-                nativeStructuredSource(mediaType),
-                ProductionAcquisitionCapabilityCatalogue.create().capabilities(),
-                ExternalEgressAuthorisation.AUTHORISED,
-            )
-            val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome, "expected fail-closed for $mediaType")
-            assertContains(noSelection.reasons, AcquisitionNoSelectionReason.NO_ELIGIBLE_CAPABILITY)
-            assertContains(noSelection.reasons, AcquisitionNoSelectionReason.NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY)
-        }
+    @Test fun `CSV remains fail closed when its external capability is unavailable`() {
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(
+            nativeStructuredSource(csvMediaType), ProductionAcquisitionCapabilityCatalogue.create().capabilities(),
+            ExternalEgressAuthorisation.AUTHORISED,
+        )
+        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.NO_ELIGIBLE_CAPABILITY)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.NO_ACCEPTED_FIDELITY_SUITABLE_CAPABILITY)
     }
 
-    @Test fun `no silent fallback to native, local OCR, or any unrelated capability for CSV or EML`() {
-        nativeStructuredMediaTypes.forEach { mediaType ->
-            val outcome = DeterministicEvidenceAcquisitionRouter().route(
-                nativeStructuredSource(mediaType),
-                ProductionAcquisitionCapabilityCatalogue.create().capabilities(),
-                ExternalEgressAuthorisation.AUTHORISED,
-            )
-            assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome, "expected no selection at all for $mediaType")
-        }
+    @Test fun `structured EML does not fall back to OCR or external transcription`() {
+        val outcome = DeterministicEvidenceAcquisitionRouter().route(
+            nativeStructuredSource(emlMediaType), ProductionAcquisitionCapabilityCatalogue.create(
+                localOcrAvailability = AcquisitionAvailability.Unavailable(AcquisitionAvailabilityReason.DISABLED),
+            ).capabilities(), ExternalEgressAuthorisation.NOT_AUTHORISED,
+        )
+        assertEquals(ProductionAcquisitionCapabilityCatalogue.NATIVE_CAPABILITY_ID,
+            assertIs<EvidenceAcquisitionRoutingOutcome.Selected>(outcome).decision.capability.capabilityId)
     }
 
     @Test fun `searchable PDF selects the durable native representation path`() {

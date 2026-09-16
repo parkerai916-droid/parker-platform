@@ -351,6 +351,18 @@ class AgentGatewayAcquisitionRequestTest {
     }
 
     @Test
+    fun `EML fixture completes governed native admission after a successful structured processing result`() = runTest {
+        val env = buildEnvironment(registry = registryWithout(null))
+        env.registerHermes(PrincipalStatus.ACTIVE)
+        val bytes = Files.readAllBytes(java.nio.file.Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/05-email-with-attachment.eml"))
+        val id = env.accept(bytes, "message/rfc822", "05-email-with-attachment.eml")
+
+        val result = assertIs<AgentGatewayAcquisitionResult.Completed>(env.projection.requestAcquisition(id))
+        assertEquals(id, result.evidenceArtifactId)
+        assertEquals(EvidenceAcquisitionMechanism.DIRECT_NATIVE_EXTRACTION, result.mechanism)
+    }
+
+    @Test
     fun `DOCX fixture completes governed native admission and acquisition`() = runTest {
         val env = buildEnvironment(registry = registryWithout(null))
         env.registerHermes(PrincipalStatus.ACTIVE)
