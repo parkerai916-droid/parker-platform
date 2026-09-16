@@ -43,6 +43,10 @@ class ApacheJamesMime4jExtractorTest {
         assertEquals("3b5a3e7f8d5d7873feedfb2d4c026a73c94308016e82cf4f0f4dbd9eeb740828", attachment.sha256)
         assertEquals(attachment.sha256, sha256(attachment.decodedBytes))
         assertTrue(result.warnings.any { "no declared charset" in it })
+        val reloaded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(
+            DerivativeContentEntry(DerivativeGenerationId("eml-method"), EvidenceArtifactId("eml-source"), TierADerivativePayload.Eml(result, 1))
+        ))
+        assertEquals("STRUCTURED_EMAIL_EXTRACTION", assertIs<TierADerivativePayload.Eml>(reloaded.payload).value.extractionMethod)
     }
 
     @Test fun `hostile attachment filename remains inert metadata`() = runTest {

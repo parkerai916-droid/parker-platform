@@ -37,6 +37,8 @@ data class DocxStructuralResult(
     val transformationHistory: List<DerivativeTransformation>,
     val completenessState: DerivativeCompletenessState,
     val warnings: List<String>,
+    /** Parker's native governed-derivative extraction method; null is retained for legacy payloads. */
+    val extractionMethod: String? = null,
 )
 
 sealed class DocxStructuralExtractionOutcome {

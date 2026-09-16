@@ -152,6 +152,10 @@ class ApacheStructuredDocumentExtractorTest {
         assertTrue(paragraphs.contains("PARKER DOCX TEST VALUE 46"), paragraphs.toString())
         assertTrue(paragraphs.indexOf("PARKER DOCX TEST VALUE 46") < paragraphs.indexOf("Literal fidelity controls"), paragraphs.toString())
         assertTrue(result.tables.isNotEmpty(), "controlled fixture retains its table structure")
+        val reloaded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(
+            DerivativeContentEntry(DerivativeGenerationId("docx-method"), EvidenceArtifactId("docx-source"), TierADerivativePayload.Docx(result))
+        ))
+        assertEquals("STRUCTURED_DOCUMENT_EXTRACTION", assertIs<TierADerivativePayload.Docx>(reloaded.payload).value.extractionMethod)
     }
 
     @Test
@@ -160,6 +164,7 @@ class ApacheStructuredDocumentExtractorTest {
         assertEquals(StructuredDocumentKind.TXT, result.kind)
         assertEquals("PARKER TXT TEST VALUE 42", result.lines.first().text)
         assertEquals("PARKER TXT TEST VALUE 42\nsecond", result.text)
+        assertEquals("DIRECT_TEXT_EXTRACTION", result.extractionMethod)
     }
 
     @Test
@@ -174,6 +179,10 @@ class ApacheStructuredDocumentExtractorTest {
             assertEquals("Payments", cells.first().sheetName)
             assertEquals("B4", cells.first().coordinate)
             assertTrue(cells.any { it.coordinate == "C4" && it.formula == "B4*2" })
+            val reloaded = DerivativeContentCodec.decode(DerivativeContentCodec.encode(
+                DerivativeContentEntry(DerivativeGenerationId("xlsx-method"), EvidenceArtifactId("xlsx-source"), TierADerivativePayload.Structured(result))
+            ))
+            assertEquals("STRUCTURED_SPREADSHEET_EXTRACTION", assertIs<TierADerivativePayload.Structured>(reloaded.payload).value.extractionMethod)
         }
     }
 

@@ -64,6 +64,7 @@ class ApachePoiXwpfExtractor : DocxStructuralExtractor {
             relationshipTypes,
             parts.filter { it.name.startsWith("word/media/") }.map { it.name },
             PRODUCER_IDENTITY, TRANSFORMATIONS, DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS, warnings,
+            extractionMethod = "STRUCTURED_DOCUMENT_EXTRACTION",
         ))
     }
 
