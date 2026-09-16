@@ -60,6 +60,7 @@ class ProcessedFile:
     governed_ingestion: str
     reason: str | None = None
     pending_source_retained: bool = False
+    submission_error: dict | None = None
 
     def json(self) -> dict:
         return self.__dict__.copy()
@@ -67,6 +68,16 @@ class ProcessedFile:
 
 def media_type_for(path: Path) -> str | None:
     return media_type_for_extension(path.suffix)
+
+
+def processing_result_endpoint(batch_id: str) -> str:
+    return f"/agent/ingestion-batches/{batch_id}/processing-results"
+
+
+def processing_result_submission_error(batch_id: str, source_sha256: str, status: int, payload: object) -> dict:
+    """Return a browser-safe diagnostic; authentication headers are never included."""
+    return {"endpoint": processing_result_endpoint(batch_id), "batchId": batch_id,
+            "sourceSha256": source_sha256, "httpStatus": status, "response": payload}
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -382,9 +393,9 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
     elif code == 200 and isinstance(payload, dict) and payload.get("status") == "ALREADY_RECORDED":
         submission = "ALREADY_RECORDED"
     elif code == 409:
-        return ProcessedFile(display_name, digest, result["status"], result["methods"], "CONFLICT", "NOT_ATTEMPTED", str(payload))
+        return ProcessedFile(display_name, digest, result["status"], result["methods"], "CONFLICT", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
     else:
-        return ProcessedFile(display_name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED", str(payload))
+        return ProcessedFile(display_name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
     if result["status"] != "PASS":
         if result["status"] == "REVIEW_REQUIRED":
             custody_code, custody_payload = client.submit_pending_review_source(batch_id, digest, data, display_name, media_type_for(path))

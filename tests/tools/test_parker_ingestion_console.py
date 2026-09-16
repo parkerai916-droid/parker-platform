@@ -96,8 +96,16 @@ console.log(JSON.stringify([
     def test_ingestion_ui_preserves_success_and_non_duplicate_result_labels(self):
         source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
         self.assertIn("DUPLICATE — already exists in Parker", source)
-        self.assertIn("d.governed_ingestion||d.result_submission||d.reason", source)
+        self.assertIn("ingestionOutcome(d)", source)
         self.assertIn("technicalDetails(e.httpStatus,e.response)", source)
+
+    def test_ingestion_ui_exposes_processing_result_rejection_without_auth_material(self):
+        source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
+        self.assertIn("function ingestionOutcome(d)", source)
+        self.assertIn("HTTP_${e.httpStatus} — ${response}", source)
+        self.assertIn("ingestionOutcome(d)", source)
+        self.assertNotIn("PARKER_AGENT_GATEWAY_TOKEN", source)
+        self.assertNotIn("Authorization", source)
 
     def test_console_uses_real_api_data_and_has_no_static_metrics_or_case_names(self):
         source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()

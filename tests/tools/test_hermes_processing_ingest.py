@@ -202,7 +202,28 @@ class FakeParker:
         return 201, {"status": "STORED"}
 
 
+class RejectingParker(FakeParker):
+    def submit_result(self, batch_id, result):
+        self.results.append((batch_id, result))
+        return 400, {"error": "malformed processing result", "detail": "controlled rejection"}
+
+
 class SubmissionBoundaryTest(unittest.TestCase):
+    def test_failed_processing_result_submission_preserves_safe_downstream_diagnostic(self):
+        fake = RejectingParker()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "message.eml"
+            path.write_bytes(b"From: sender@example.test\nSubject: Test\n\nBody\n")
+            item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.status, "PASS")
+        self.assertEqual(item.governed_ingestion, "NOT_ATTEMPTED")
+        self.assertEqual(item.result_submission, "HTTP_400")
+        self.assertEqual(item.submission_error["httpStatus"], 400)
+        self.assertEqual(item.submission_error["endpoint"], "/agent/ingestion-batches/bulk-test/processing-results")
+        self.assertEqual(item.submission_error["batchId"], "bulk-test")
+        self.assertEqual(item.submission_error["sourceSha256"], item.source_sha256)
+        self.assertNotIn("Authorization", json.dumps(item.json()))
+
     def test_only_pass_submits_exact_source_bytes(self):
         fake = FakeParker()
         with tempfile.TemporaryDirectory() as directory:
