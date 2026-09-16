@@ -1108,6 +1108,22 @@ class AgentGatewayHttpServerTest {
     }
 
     @Test
+    fun `every canonical Hermes processing method is accepted by the processing-result contract`() = withFakeHarness { fake ->
+        parker.core.interfaces.HermesProcessingMethod.values().forEachIndexed { index, method ->
+            val source = "a".repeat(63) + index.toString(16)
+            fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(
+                parker.core.interfaces.HermesProcessingResult(source, "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS, setOf(method)),
+            )
+            val response = postProcessingResult(
+                fake.baseUri(), "bulk-abc",
+                """{"sourceSha256":"$source","status":"PASS","methods":["${method.name}"]}""",
+            )
+            assertEquals(201, response.statusCode(), "Parker rejected canonical method ${method.name}: ${response.body()}")
+        }
+        assertEquals(parker.core.interfaces.HermesProcessingMethod.values().size, fake.submitProcessingResultCalls.size)
+    }
+
+    @Test
     fun `valid XLSX and RTF structured representations are typed and preserved by processing-result intake`() = withFakeHarness { fake ->
         fake.submitProcessingResultResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded(
             parker.core.interfaces.HermesProcessingResult("a".repeat(64), "bulk-abc", parker.core.interfaces.HermesProcessingStatus.PASS,

@@ -121,6 +121,14 @@ class ProcessingDecisionTest(unittest.TestCase):
         self.assertEqual(hermes.media_type_for(Path("mail.eml")), "message/rfc822")
         self.assertEqual(hermes.media_type_for(Path("scan.tiff")), "image/tiff")
 
+    def test_all_emitted_processing_methods_use_the_typed_parker_vocabulary(self):
+        emitted = {"DIRECT_TEXT_EXTRACTION", "STRUCTURED_DOCUMENT_EXTRACTION",
+                   "STRUCTURED_SPREADSHEET_EXTRACTION", "STRUCTURED_EMAIL_EXTRACTION",
+                   "OCR", "TIFF_FRAME_INSPECTION"}
+        source = Path(hermes.__file__).read_text()
+        for method in emitted:
+            self.assertIn(f'"{method}"', source)
+
     def test_eml_metadata_survives_authoritative_processing_result(self):
         source = (b"From: sender@example.test\nTo: recipient@example.test\n"
                   b"Subject: Training Agreement\nDate: Tue, 1 Jan 2030 10:00:00 +0000\n"
