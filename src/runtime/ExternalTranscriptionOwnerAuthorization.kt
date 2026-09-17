@@ -144,8 +144,24 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
     private val store: ExternalTranscriptionOwnerAuthorizationStore,
     private val clock: Clock = Clock.systemUTC(),
     private val auditReader: CaseGovernanceAuditReader? = null,
+    private val standingPolicy: FileSystemStandingExternalTranscriptionPolicyStore? = null,
+    private val governanceAudit: CaseGovernanceAudit? = null,
 ) {
     private val purpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE
+
+    /** Explicit Owner-only administrative establishment of the standing policy. */
+    suspend fun establishStandingExternalTranscriptionPolicy(presented: OwnerVerificationCredential?): Boolean {
+        val policyStore = standingPolicy ?: return false
+        if (!purposes.isActive(purpose)) return false
+        val target = ResourceId("standing-external-transcription-policy-${ownerPrincipalId.value}")
+        if (!ownerVerification.verify(ownerPrincipalId, purpose, target, presented)) return false
+        val decision = permissions.evaluate(ExternalTranscriptionInvocationGate.buildStandingPolicyExecutionRequest(ownerPrincipalId))
+        if (decision.decision != PermissionDecisionOutcome.APPROVED && decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION) return false
+        return policyStore.establish(
+            StandingExternalTranscriptionPolicy(ownerPrincipalId, purpose, clock.instant()),
+            governanceAudit ?: return false,
+        )
+    }
 
     suspend fun status(evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionAuthorizationView {
         val existing = loadUsable(evidenceArtifactId.value)
@@ -197,6 +213,8 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
         afterPersist: suspend (ExternalTranscriptionOwnerAuthorization) -> Unit = {},
     ): Boolean {
         if (!purposes.isActive(purpose)) return false
+        val policy = standingPolicy?.load() ?: return false
+        if (policy.ownerPrincipalId != ownerPrincipalId || policy.authorizationPurpose != purpose) return false
         val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
             is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
             else -> return false
@@ -251,6 +269,7 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
             if (reader.has(CaseGovernanceAuditQuery(
                     CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED,
                     null, EvidenceArtifactId(evidenceArtifactId), batchId, true,
+                    authorizationPurpose = grant.purpose, policyVersion = STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION,
                 ))) grant else null
         }.getOrNull()
     }

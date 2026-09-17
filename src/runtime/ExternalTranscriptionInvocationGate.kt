@@ -62,4 +62,22 @@ object ExternalTranscriptionInvocationGate {
             authorizationPurpose = AUTHORIZATION_PURPOSE,
         )
     }
+
+    /** Owner-only request used to establish the durable standing policy, never an evidence grant. */
+    fun buildStandingPolicyExecutionRequest(ownerPrincipalId: PrincipalId): ExecutionRequest {
+        val requestId = UUID.randomUUID()
+        return ExecutionRequest(
+            requestId = RequestId("external-transcription-standing-policy-$requestId"),
+            principalId = ownerPrincipalId,
+            origin = RequestOrigin.REMOTE_INTERFACE,
+            intent = "Establish standing Owner approval for authoritative external transcription",
+            targetResources = listOf(EvidenceIntelligenceInvocationGate.EVIDENCE_INTELLIGENCE_INVOCATION_RESOURCE_ID),
+            proposedActions = listOf(ACTION_NAME),
+            priority = RequestPriority.NORMAL,
+            createdAt = Instant.now(),
+            correlationId = "external-transcription-standing-policy-$requestId",
+            metadata = mapOf("policyVersion" to STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION),
+            authorizationPurpose = AUTHORIZATION_PURPOSE,
+        )
+    }
 }

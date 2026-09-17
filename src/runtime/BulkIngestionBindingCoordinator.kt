@@ -13,8 +13,6 @@ import parker.core.interfaces.CaseGovernanceAuditEventType
 import parker.core.interfaces.CaseGovernanceAuditRecord
 import parker.core.interfaces.CaseId
 import parker.core.interfaces.CaseStorage
-import parker.core.interfaces.CaseGovernanceAuditQuery
-import parker.core.interfaces.CaseGovernanceAuditReader
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.PrincipalId
 
@@ -55,9 +53,6 @@ internal class BulkIngestionBindingCoordinator(
     private val audit: CaseGovernanceAudit,
     private val ownerPrincipalId: PrincipalId,
     private val clock: () -> java.time.Instant = java.time.Instant::now,
-    private val auditReader: CaseGovernanceAuditReader? = audit as? CaseGovernanceAuditReader,
-    private val activateBinding: ((BulkIngestionBinding) -> Unit)? = null,
-    private val authoriseExternalTranscriptionBatch: (suspend (String, CaseId, parker.core.interfaces.OwnerVerificationCredential?) -> Boolean)? = null,
 ) {
     private val mutex = Mutex()
 
@@ -66,39 +61,13 @@ internal class BulkIngestionBindingCoordinator(
         require(Files.isDirectory(storageRoot) && Files.isWritable(storageRoot)) { "bulk-ingestion binding storage is unavailable" }
     }
 
-    suspend fun authoriseAsOwner(
-        caseId: CaseId,
-        externalTranscriptionAuthorised: Boolean = false,
-        presented: parker.core.interfaces.OwnerVerificationCredential? = null,
-    ): BulkIngestionAuthorisation = mutex.withLock {
+    suspend fun authoriseAsOwner(caseId: CaseId): BulkIngestionAuthorisation = mutex.withLock {
         if (caseStorage.read(caseId) == null) return@withLock BulkIngestionAuthorisation.UnknownCase
         val batchId = "bulk-${UUID.randomUUID()}"
-        if (externalTranscriptionAuthorised && authoriseExternalTranscriptionBatch?.invoke(batchId, caseId, presented) != true) {
-            return@withLock BulkIngestionAuthorisation.Failure("HIGH_AUTHORITY_VERIFICATION_FAILED")
-        }
-        val binding = BulkIngestionBinding(batchId, caseId, emptySet(), externalTranscriptionAuthorised)
+        val binding = BulkIngestionBinding(batchId, caseId, emptySet(), false)
         return@withLock try {
-            if (externalTranscriptionAuthorised) {
-                write(binding, staged = true)
-                audit.record(CaseGovernanceAuditRecord(
-                    CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED,
-                    caseId, actorPrincipalId = ownerPrincipalId, recordedAt = clock(), batchId = batchId,
-                    externalTranscriptionAuthorised = true,
-                ))
-                if (activateBinding != null) activateBinding.invoke(binding) else activate(binding)
-                audit.record(CaseGovernanceAuditRecord(
-                    CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED,
-                    caseId, actorPrincipalId = ownerPrincipalId, recordedAt = clock(), batchId = batchId,
-                    externalTranscriptionAuthorised = true,
-                ))
-                audit.record(CaseGovernanceAuditRecord(
-                    CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED,
-                    caseId, actorPrincipalId = ownerPrincipalId, recordedAt = clock(), batchId = batchId,
-                ))
-            } else {
-                write(binding)
-                audit.record(CaseGovernanceAuditRecord(CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED, caseId, actorPrincipalId = ownerPrincipalId, recordedAt = clock()))
-            }
+            write(binding)
+            audit.record(CaseGovernanceAuditRecord(CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED, caseId, actorPrincipalId = ownerPrincipalId, recordedAt = clock()))
             BulkIngestionAuthorisation.Authorised(binding)
         } catch (e: Exception) {
             BulkIngestionAuthorisation.Failure(e.message ?: "batch authorisation failed")
@@ -120,7 +89,8 @@ internal class BulkIngestionBindingCoordinator(
     }
 
     suspend fun externalTranscriptionIsAuthorised(batchId: String): Boolean = mutex.withLock {
-        read(batchId)?.externalTranscriptionAuthorised == true
+        // Retained only as a compatibility query; batch metadata is never policy authority.
+        false
     }
 
     /** Proves the exact authorised batch/evidence pair before deriving the existing grant. */
@@ -133,7 +103,7 @@ internal class BulkIngestionBindingCoordinator(
         ) -> Boolean,
     ): Boolean = mutex.withLock {
         val binding = read(batchId) ?: return@withLock false
-        if (!binding.externalTranscriptionAuthorised || evidenceArtifactId !in binding.evidence) return@withLock false
+        if (evidenceArtifactId !in binding.evidence) return@withLock false
         derive({ _ ->
             audit.record(CaseGovernanceAuditRecord(
                 CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED,
@@ -143,6 +113,8 @@ internal class BulkIngestionBindingCoordinator(
                 recordedAt = clock(),
                 batchId = batchId,
                 externalTranscriptionAuthorised = true,
+                authorizationPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE.value,
+                policyVersion = STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION,
             ))
         }, { _ ->
             audit.record(CaseGovernanceAuditRecord(
@@ -153,6 +125,8 @@ internal class BulkIngestionBindingCoordinator(
                 recordedAt = clock(),
                 batchId = batchId,
                 externalTranscriptionAuthorised = true,
+                authorizationPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE.value,
+                policyVersion = STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION,
             ))
         })
     }
@@ -208,22 +182,16 @@ internal class BulkIngestionBindingCoordinator(
 
     private fun safeBatchId(batchId: String) = require(Regex("^bulk-[a-f0-9-]+$").matches(batchId)) { "invalid batch id" }
     private fun path(batchId: String): Path { safeBatchId(batchId); return storageRoot.resolve("$batchId.binding") }
-    private fun preparedPath(batchId: String): Path { safeBatchId(batchId); return storageRoot.resolve(".$batchId.binding.prepared") }
-
-    private fun write(binding: BulkIngestionBinding, staged: Boolean = false) {
+    private fun write(binding: BulkIngestionBinding) {
         val body = buildString {
             append("case=").append(enc(binding.caseId.value)).append('\n')
             append("evidence=").append(binding.evidence.joinToString(",") { enc(it.value) }).append('\n')
             append("externalTranscriptionAuthorised=").append(binding.externalTranscriptionAuthorised).append('\n')
         }.toByteArray(StandardCharsets.UTF_8)
-        val target = if (staged) preparedPath(binding.batchId) else path(binding.batchId)
+        val target = path(binding.batchId)
         val tmp = Files.createTempFile(storageRoot, ".binding-", ".tmp")
         Files.write(tmp, body)
         Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    }
-
-    private fun activate(binding: BulkIngestionBinding) {
-        Files.move(preparedPath(binding.batchId), path(binding.batchId), StandardCopyOption.ATOMIC_MOVE)
     }
 
     private fun read(batchId: String): BulkIngestionBinding? {
@@ -238,24 +206,7 @@ internal class BulkIngestionBindingCoordinator(
         val external = fields["externalTranscriptionAuthorised"]?.let { value ->
             when (value) { "true" -> true; "false" -> false; else -> return null }
         } ?: false
-        if (external && !hasCompletedBatchAuthority(batchId, case)) return null
         return BulkIngestionBinding(batchId, case, evidence, external)
-    }
-
-    private fun hasCompletedBatchAuthority(batchId: String, caseId: CaseId): Boolean {
-        val reader = auditReader ?: return false
-        val external = reader.has(CaseGovernanceAuditQuery(
-            CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED,
-            caseId, batchId = batchId, externalTranscriptionAuthorised = true,
-        ))
-        if (!external) return false
-        return reader.has(CaseGovernanceAuditQuery(
-            CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED,
-            caseId, batchId = batchId,
-        )) || reader.has(CaseGovernanceAuditQuery(
-            CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED,
-            caseId,
-        ))
     }
 
     private fun enc(value: String) = Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray(StandardCharsets.UTF_8))

@@ -239,6 +239,7 @@ import parker.core.runtime.BulkIngestionBindingCoordinator
 import parker.core.runtime.CaseCreationOutcome
 import parker.core.runtime.FileSystemCaseAssignmentStorage
 import parker.core.runtime.FileSystemCaseGovernanceAudit
+import parker.core.runtime.FileSystemStandingExternalTranscriptionPolicyStore
 import parker.core.runtime.FileSystemCaseStorage
 import parker.core.interfaces.CaseId
 import parker.core.interfaces.CaseRecord
@@ -2189,6 +2190,11 @@ class ParkerRuntime(
                 ),
                 store = parker.core.runtime.FileSystemExternalTranscriptionAuthorizationStore(Path.of(externalTranscriptionAuthorizationRoot)),
                 auditReader = FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath))),
+                standingPolicy = FileSystemStandingExternalTranscriptionPolicyStore(
+                    Files.createDirectories(Path.of(externalTranscriptionAuthorizationRoot).resolve("standing-policy")),
+                    FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath))),
+                ),
+                governanceAudit = FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath))),
             )
         } else null
         // A separately persisted authority is the only bridge from ACCEPTANCE_PENDING to the raw
@@ -2529,13 +2535,6 @@ class ParkerRuntime(
                 caseGovernanceAudit,
                 PrincipalId(config.ownerPrincipalId),
                 clock,
-                auditReader = caseGovernanceAudit,
-                authoriseExternalTranscriptionBatch = { batchId, caseId, presented ->
-                    when (requireNotNull(externalTranscriptionAuthorizationCoordinator).authorizeBatch(batchId, caseId, presented)) {
-                        parker.core.runtime.ExternalTranscriptionBatchAuthorizationOutcome.Authorised -> true
-                        is parker.core.runtime.ExternalTranscriptionBatchAuthorizationOutcome.Rejected -> false
-                    }
-                },
             )
         }
         // Parker Agent Gateway, AG-1D/AG-1F/AG-1G (Section 20): Hermes's own fixed PrincipalId and
@@ -4025,18 +4024,24 @@ class ParkerRuntime(
     }
 
     /** Owner-only creation of one immutable opaque Hermes bulk-ingestion binding. */
-    internal suspend fun authoriseBulkIngestionAsOwner(caseId: CaseId): BulkIngestionAuthorisation {
-        return authoriseBulkIngestionAsOwner(caseId, false, null)
-    }
-
     internal suspend fun authoriseBulkIngestionAsOwner(
         caseId: CaseId,
-        externalTranscriptionAuthorised: Boolean,
-        presented: parker.core.interfaces.OwnerVerificationCredential?,
     ): BulkIngestionAuthorisation {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        return bulkIngestionBindingCoordinator?.authoriseAsOwner(caseId)
+            ?: BulkIngestionAuthorisation.Failure(
+                "Bulk ingestion case binding is not configured",
+            )
+    }
+
+    /** Separate Owner-only administrative establishment of the standing external-transcription policy. */
+    internal suspend fun establishStandingExternalTranscriptionPolicyAsOwner(
+        presented: parker.core.interfaces.OwnerVerificationCredential?,
+    ): Boolean {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
-        return bulkIngestionBindingCoordinator?.authoriseAsOwner(caseId, externalTranscriptionAuthorised, presented)
-            ?: BulkIngestionAuthorisation.Failure("Bulk ingestion case binding is not configured")
+        return externalTranscriptionAuthorizationCoordinator?.establishStandingExternalTranscriptionPolicy(presented) == true
     }
 
     /**

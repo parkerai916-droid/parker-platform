@@ -61,6 +61,8 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
         custodian: EvidenceCustodian = FakeCustodian(mapOf(evidenceId.value to EvidenceManifestRetrievalResult.Found(manifest(evidenceId)))),
         store: ExternalTranscriptionOwnerAuthorizationStore = FileSystemExternalTranscriptionAuthorizationStore(Files.createTempDirectory("ext-transcription-auth")),
         auditReader: CaseGovernanceAuditReader? = null,
+        standingPolicy: FileSystemStandingExternalTranscriptionPolicyStore? = null,
+        governanceAudit: CaseGovernanceAudit? = null,
     ): ExternalTranscriptionOwnerAuthorizationCoordinator {
         return ExternalTranscriptionOwnerAuthorizationCoordinator(
             ownerPrincipalId = owner,
@@ -75,6 +77,8 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
             ownerVerification = verification,
             store = store,
             auditReader = auditReader,
+            standingPolicy = standingPolicy,
+            governanceAudit = governanceAudit,
         )
     }
 
@@ -260,7 +264,10 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
     fun `authorization-store failure after derivation preparation has no completed derivation audit`() = runTest {
         val auditFile = Files.createTempDirectory("ext-transcription-audit").resolve("audit.log")
         val audit = FileSystemCaseGovernanceAudit(auditFile)
-        val c = coordinator(store = ThrowingStore(), auditReader = audit)
+        val policyRoot = Files.createTempDirectory("ext-transcription-policy")
+        val policy = FileSystemStandingExternalTranscriptionPolicyStore(policyRoot, audit)
+        val c = coordinator(store = ThrowingStore(), auditReader = audit, standingPolicy = policy, governanceAudit = audit)
+        assertTrue(c.establishStandingExternalTranscriptionPolicy(OwnerVerificationCredential.presented(secret)))
         assertFailsWith<IllegalStateException> {
             c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch(
                 "bulk-deadbeef", evidenceId,
@@ -268,6 +275,8 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
                     CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED,
                     CaseId("case-derived"), evidenceArtifactId = evidenceId, actorPrincipalId = owner,
                     recordedAt = Instant.EPOCH, batchId = "bulk-deadbeef", externalTranscriptionAuthorised = true,
+                    authorizationPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE.value,
+                    policyVersion = STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION,
                 )) },
             )
         }
@@ -287,21 +296,124 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
                 backing.record(record)
             }
         }
-        val c = coordinator(store = FileSystemExternalTranscriptionAuthorizationStore(directory.resolve("grants").also { Files.createDirectories(it) }), auditReader = backing)
+        val policyRoot = directory.resolve("policy").also { Files.createDirectories(it) }
+        val policy = FileSystemStandingExternalTranscriptionPolicyStore(policyRoot, backing)
+        val c = coordinator(store = FileSystemExternalTranscriptionAuthorizationStore(directory.resolve("grants").also { Files.createDirectories(it) }), auditReader = backing, standingPolicy = policy, governanceAudit = backing)
+        assertTrue(c.establishStandingExternalTranscriptionPolicy(OwnerVerificationCredential.presented(secret)))
         assertFailsWith<IllegalStateException> {
             c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch("bulk-cafebabe", evidenceId,
                 beforePersist = { failingAudit.record(CaseGovernanceAuditRecord(
                     CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED,
                     CaseId("case-derived"), evidenceArtifactId = evidenceId, actorPrincipalId = owner,
                     recordedAt = Instant.EPOCH, batchId = "bulk-cafebabe", externalTranscriptionAuthorised = true,
+                    authorizationPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE.value,
+                    policyVersion = STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION,
                 )) },
                 afterPersist = { failingAudit.record(CaseGovernanceAuditRecord(
                     CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED,
                     CaseId("case-derived"), evidenceArtifactId = evidenceId, actorPrincipalId = owner,
                     recordedAt = Instant.EPOCH, batchId = "bulk-cafebabe", externalTranscriptionAuthorised = true,
+                    authorizationPurpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE.value,
+                    policyVersion = STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION,
                 )) },
             )
         }
         assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `standing policy is explicit durable owner authority and gates batch derivation`(@TempDir directory: java.nio.file.Path) = runTest {
+        val auditFile = directory.resolve("case-audit.log")
+        val audit = FileSystemCaseGovernanceAudit(auditFile)
+        Files.createDirectories(directory.resolve("policy"))
+        val policyStore = FileSystemStandingExternalTranscriptionPolicyStore(directory.resolve("policy"), audit)
+        val c = coordinator(auditReader = audit, standingPolicy = policyStore, governanceAudit = audit)
+        assertEquals(false, c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch("bulk-deadbeef", evidenceId))
+        assertTrue(c.establishStandingExternalTranscriptionPolicy(OwnerVerificationCredential.presented(secret)))
+        assertNotNull(FileSystemStandingExternalTranscriptionPolicyStore(directory.resolve("policy"), FileSystemCaseGovernanceAudit(auditFile)).load())
+        val restartedPolicy = FileSystemStandingExternalTranscriptionPolicyStore(directory.resolve("policy"), FileSystemCaseGovernanceAudit(auditFile))
+        val restarted = coordinator(auditReader = audit, standingPolicy = restartedPolicy, governanceAudit = audit)
+        assertTrue(restarted.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch(
+            "bulk-deadbeef", evidenceId,
+            beforePersist = {},
+            afterPersist = { grant -> audit.record(CaseGovernanceAuditRecord(
+                CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED,
+                CaseId("case-derived"), evidenceArtifactId = evidenceId, actorPrincipalId = owner,
+                recordedAt = Instant.EPOCH, batchId = "bulk-deadbeef", externalTranscriptionAuthorised = true,
+                authorizationPurpose = grant.purpose, policyVersion = STANDING_EXTERNAL_TRANSCRIPTION_POLICY_VERSION,
+            )) },
+        ))
+    }
+
+    @Test
+    fun `standing policy establishment is idempotent for the exact completed policy`(@TempDir directory: java.nio.file.Path) = runTest {
+        val auditFile = directory.resolve("audit.log")
+        val audit = FileSystemCaseGovernanceAudit(auditFile)
+        val store = FileSystemStandingExternalTranscriptionPolicyStore(directory.resolve("policy").also { Files.createDirectories(it) }, audit)
+        val policy = StandingExternalTranscriptionPolicy(owner, ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE, Instant.parse("2026-01-01T00:00:00Z"))
+
+        assertTrue(store.establish(policy, audit))
+        assertTrue(store.establish(policy.copy(approvedAt = Instant.parse("2026-02-01T00:00:00Z")), audit))
+        assertEquals(policy, store.load())
+        assertEquals(1, Files.readAllLines(auditFile).count { it.contains("eventType=STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED") })
+    }
+
+    @Test
+    fun `owner retry repairs an active policy whose completion audit was interrupted without replacing its identity`(@TempDir directory: java.nio.file.Path) = runTest {
+        val auditFile = directory.resolve("audit.log")
+        val backing = FileSystemCaseGovernanceAudit(auditFile)
+        val failing = object : CaseGovernanceAudit {
+            var failCompletion = true
+            override suspend fun record(record: CaseGovernanceAuditRecord) {
+                if (record.eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED && failCompletion) {
+                    failCompletion = false
+                    error("injected completion-audit failure")
+                }
+                backing.record(record)
+            }
+        }
+        val store = FileSystemStandingExternalTranscriptionPolicyStore(directory.resolve("policy").also { Files.createDirectories(it) }, backing)
+        val original = StandingExternalTranscriptionPolicy(owner, ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE, Instant.parse("2026-03-01T00:00:00Z"))
+
+        assertFailsWith<IllegalStateException> { store.establish(original, failing) }
+        assertNull(store.load())
+        val retry = original.copy(approvedAt = Instant.parse("2026-04-01T00:00:00Z"))
+        assertTrue(store.establish(retry, backing))
+        assertEquals(original, store.load())
+        assertEquals(original.policyId, store.load()?.policyId)
+    }
+
+    @Test
+    fun `incompatible standing policy cannot replace an existing active policy`(@TempDir directory: java.nio.file.Path) = runTest {
+        val audit = FileSystemCaseGovernanceAudit(directory.resolve("audit.log"))
+        val store = FileSystemStandingExternalTranscriptionPolicyStore(directory.resolve("policy").also { Files.createDirectories(it) }, audit)
+        val original = StandingExternalTranscriptionPolicy(owner, ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE, Instant.parse("2026-05-01T00:00:00Z"))
+        assertTrue(store.establish(original, audit))
+        assertEquals(false, store.establish(original.copy(ownerPrincipalId = PrincipalId("other-owner")), audit))
+        assertEquals(original, store.load())
+    }
+
+    @Test
+    fun `completed audit for a different policy identity cannot activate the current policy`(@TempDir directory: java.nio.file.Path) = runTest {
+        val auditFile = directory.resolve("audit.log")
+        val backing = FileSystemCaseGovernanceAudit(auditFile)
+        val failing = object : CaseGovernanceAudit {
+            override suspend fun record(record: CaseGovernanceAuditRecord) {
+                if (record.eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED) error("completion interrupted")
+                backing.record(record)
+            }
+        }
+        val store = FileSystemStandingExternalTranscriptionPolicyStore(directory.resolve("policy").also { Files.createDirectories(it) }, backing)
+        val current = StandingExternalTranscriptionPolicy(owner, ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE, Instant.parse("2026-06-01T00:00:00Z"))
+        val stale = current.copy(approvedAt = Instant.parse("2026-07-01T00:00:00Z"))
+
+        assertFailsWith<IllegalStateException> { store.establish(current, failing) }
+        backing.record(CaseGovernanceAuditRecord(
+            CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED,
+            null, actorPrincipalId = owner, recordedAt = stale.approvedAt,
+            externalTranscriptionAuthorised = true, authorizationPurpose = stale.authorizationPurpose.value,
+            policyVersion = stale.policyVersion, policyId = stale.policyId,
+        ))
+        assertNull(store.load())
     }
 }

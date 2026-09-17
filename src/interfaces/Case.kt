@@ -139,6 +139,8 @@ interface CaseAssignmentStorage {
 enum class CaseGovernanceAuditEventType {
     CASE_CREATED,
     INGESTION_BATCH_AUTHORISED,
+    STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED,
+    STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED,
     INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED,
     INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED,
     INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED,
@@ -165,9 +167,12 @@ data class CaseGovernanceAuditRecord(
     val recordedAt: Instant,
     val batchId: String? = null,
     val externalTranscriptionAuthorised: Boolean? = null,
+    val authorizationPurpose: String? = null,
+    val policyVersion: String? = null,
+    val policyId: String? = null,
 ) {
     init {
-        require((eventType == CaseGovernanceAuditEventType.CASE_CREATED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED) == (evidenceArtifactId == null)) {
+        require((eventType == CaseGovernanceAuditEventType.CASE_CREATED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED) == (evidenceArtifactId == null)) {
             "CaseGovernanceAuditRecord.evidenceArtifactId must be present except for case/batch authorisation events"
         }
         require(eventType == CaseGovernanceAuditEventType.EVIDENCE_REASSIGNED || previousCaseId == null) {
@@ -191,11 +196,29 @@ data class CaseGovernanceAuditRecord(
         require(eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || batchId == null) {
             "batchId is meaningful only for external-transcription batch events"
         }
-        require(eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || externalTranscriptionAuthorised == null) {
+        require(eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || externalTranscriptionAuthorised == null) {
             "externalTranscriptionAuthorised is meaningful only for external-transcription batch events"
         }
         require(eventType != CaseGovernanceAuditEventType.EVIDENCE_ASSIGNED || caseId != null) {
             "CaseGovernanceAuditRecord.caseId must be present for EVIDENCE_ASSIGNED -- a first assignment is always to a real case, never to Unassigned"
+        }
+        require(eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || authorizationPurpose == null) {
+            "authorizationPurpose is meaningful only for standing-policy or derivation events"
+        }
+        require(eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || policyVersion == null) {
+            "policyVersion is meaningful only for standing-policy or derivation events"
+        }
+        require(eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || policyId == null) {
+            "policyId is meaningful only for standing-policy or derivation events"
+        }
+        require(eventType != CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED && eventType != CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || (!authorizationPurpose.isNullOrBlank() && !policyVersion.isNullOrBlank() && externalTranscriptionAuthorised == true)) {
+            "standing policy audit requires purpose, version, and true authority"
+        }
+        require(eventType != CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED && eventType != CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || !policyId.isNullOrBlank()) {
+            "standing policy audit requires an exact policy identity"
+        }
+        require(eventType != CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED && eventType != CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || (!authorizationPurpose.isNullOrBlank() && !policyVersion.isNullOrBlank())) {
+            "derivation audit requires purpose and policy version"
         }
     }
 }
@@ -215,6 +238,9 @@ data class CaseGovernanceAuditQuery(
     val evidenceArtifactId: EvidenceArtifactId? = null,
     val batchId: String? = null,
     val externalTranscriptionAuthorised: Boolean? = null,
+    val authorizationPurpose: String? = null,
+    val policyVersion: String? = null,
+    val policyId: String? = null,
 )
 
 /** Read-side of the append-only audit journal, used only to make staged authority usable. */
