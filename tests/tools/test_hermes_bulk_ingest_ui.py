@@ -1,5 +1,6 @@
 import unittest
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -123,6 +124,59 @@ class HermesBulkUiSecurityTest(unittest.TestCase):
 
     def test_governed_external_eml_is_dispatchable(self):
         self.assertIn("message/rfc822", UI.SUPPORTED)
+
+
+class HermesBulkUiHealthTest(unittest.TestCase):
+    def setUp(self):
+        self.server = type("Server", (), {})()
+        self.server.hermes_token = "test-token"
+        self.server.ui_nonce = "test-nonce"
+        self.handler = object.__new__(UI.Handler)
+        self.handler.server = self.server
+        self.handler.headers = {}
+
+    def get(self, path, headers=None):
+        result = {}
+        self.handler.path = path
+        self.handler.headers = headers or {}
+        self.handler.send_json = lambda status, value: result.update(status=status, value=value)
+        self.handler.do_GET()
+        return result["status"], result["value"]
+
+    def test_health_returns_200_and_healthy_for_passing_preflight(self):
+        original = UI.docling_health
+        UI.docling_health = lambda: {"status": "PASS", "problems": []}
+        try:
+            status, payload = self.get("/api/health")
+        finally:
+            UI.docling_health = original
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["state"], "HEALTHY")
+        self.assertEqual(payload["docling"]["state"], "HEALTHY")
+
+    def test_health_returns_200_and_diagnostic_for_failing_preflight(self):
+        original = UI.docling_health
+        UI.docling_health = lambda: {"status": "FAIL", "problems": ["model unavailable"]}
+        try:
+            status, payload = self.get("/api/health")
+        finally:
+            UI.docling_health = original
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["state"], "HEALTHY")
+        self.assertEqual(payload["docling"]["state"], "DEGRADED")
+        self.assertEqual(payload["docling"]["problems"], ["model unavailable"])
+
+    def test_ready_batches_behavior_remains_unchanged(self):
+        original = UI.parker_request
+        calls = []
+        UI.parker_request = lambda path, token: (calls.append((path, token)) or (200, b'{"batches": []}'))
+        try:
+            status, payload = self.get("/api/ready-batches", {"X-Hermes-Ui-Nonce": "test-nonce"})
+        finally:
+            UI.parker_request = original
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"batches": []})
+        self.assertEqual(calls, [("/agent/ingestion-batches", "test-token")])
 
 
 if __name__ == "__main__":

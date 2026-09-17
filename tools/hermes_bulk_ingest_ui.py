@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+from subprocess import run as run_process
 import sys
 import tempfile
 from pathlib import Path
@@ -117,6 +118,22 @@ def parker_request(path: str, token: str, method: str = "GET", body: bytes | Non
         return error.code, error.read()
 
 
+def docling_health():
+    """Run the existing Hermes Docling capability preflight without ingestion."""
+    python = os.environ.get("HERMES_DOCLING_PYTHON", "/home/steve/docling-venv/bin/python")
+    try:
+        completed = run_process(
+            [python, str(Path(__file__).with_name("hermes_docling_preflight.py"))],
+            capture_output=True, text=True, timeout=90, check=False,
+        )
+    except Exception as error:
+        return {"status": "FAIL", "problems": [f"Docling preflight unavailable: {error}"]}
+    problems = [line.strip() for line in completed.stderr.splitlines() if line.strip()]
+    if completed.returncode != 0 and not problems:
+        problems = [f"Docling preflight exited with code {completed.returncode}"]
+    return {"status": "PASS" if completed.returncode == 0 else "FAIL", "problems": problems}
+
+
 PAGE = r'''<!doctype html><meta charset="utf-8"><title>Hermes Bulk Ingestion</title>
 <style>body{font:16px system-ui;max-width:850px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}button,select{padding:.45rem}#drop{border:2px dashed #888;padding:2rem;text-align:center;margin:1rem 0}.drag{border-color:#6f6}pre{white-space:pre-wrap}.note{color:#fd8}</style>
 <h1>Hermes · Bulk Ingestion</h1><p class="note">Choose an existing Parker-authorised READY batch. Hermes cannot select its case.</p><p>Supported formats: __SUPPORTED_EXTENSIONS__</p>
@@ -158,6 +175,17 @@ class Handler(BaseHTTPRequestHandler):
             try: value = json.loads(payload)
             except ValueError: value = {"batches": [], "error": "Parker returned invalid data"}
             self.send_json(code, value); return
+        if self.path == "/api/health":
+            preflight = docling_health()
+            healthy = preflight["status"] == "PASS"
+            self.send_json(200, {
+                "state": "HEALTHY",
+                "processing": "AVAILABLE" if healthy else "UNAVAILABLE",
+                "docling": {
+                    "state": "HEALTHY" if healthy else "DEGRADED",
+                    **preflight,
+                },
+            }); return
         self.send_json(404, {"error": "not found"})
 
     def do_POST(self):
