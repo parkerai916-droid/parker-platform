@@ -61,6 +61,9 @@ class ProcessedFile:
     reason: str | None = None
     pending_source_retained: bool = False
     submission_error: dict | None = None
+    acquisition_attempted: bool = False
+    acquisition_status: str | None = None
+    acquisition_error: dict | None = None
 
     def json(self) -> dict:
         return self.__dict__.copy()
@@ -78,6 +81,17 @@ def processing_result_submission_error(batch_id: str, source_sha256: str, status
     """Return a browser-safe diagnostic; authentication headers are never included."""
     return {"endpoint": processing_result_endpoint(batch_id), "batchId": batch_id,
             "sourceSha256": source_sha256, "httpStatus": status, "response": payload}
+
+
+def acquisition_endpoint(evidence_artifact_id: str) -> str:
+    return f"/agent/evidence/{evidence_artifact_id}/acquire"
+
+
+def acquisition_error(evidence_artifact_id: str, status: int, payload: object) -> dict:
+    """Return a browser-safe governed-acquisition diagnostic."""
+    return {"endpoint": acquisition_endpoint(evidence_artifact_id),
+            "evidenceArtifactId": evidence_artifact_id, "httpStatus": status,
+            "response": payload}
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -381,6 +395,10 @@ class ParkerClient:
         body = json.dumps({"sourceSha256": source_hash, **representation}, separators=(",", ":")).encode()
         return self.request(f"/agent/ingestion-batches/{batch_id}/ocr-representations/{source_hash}", "POST", body, {"Content-Type": "application/json"})
 
+    def acquire(self, evidence_artifact_id: str) -> tuple[int, object]:
+        """Ask Parker to continue governed acquisition; Parker owns authorization and OCR."""
+        return self.request(acquisition_endpoint(evidence_artifact_id), "POST")
+
 
 def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float, original_filename: str | None = None) -> ProcessedFile:
     data = path.read_bytes()
@@ -420,7 +438,34 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
         if status in ("INGESTED", "ALREADY_INGESTED"):
             status = "REGISTERED"
         detail = payload.get("detail")
-        return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, status, str(detail) if detail else None)
+        if status != "REQUIRES_OCR":
+            return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, status, str(detail) if detail else None)
+
+        # Source admission has succeeded and supplied the opaque evidence identity.  Continue
+        # only through Parker's existing governed acquisition endpoint.  This call does not
+        # authorize anything, select a provider, or promote local OCR: Parker decides whether
+        # the existing per-evidence authorization and capability permits continuation.
+        evidence_id = payload.get("evidenceArtifactId")
+        if not isinstance(evidence_id, str) or not evidence_id:
+            return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, "REQUIRES_OCR",
+                                 "Parker returned REQUIRES_OCR without an evidenceArtifactId")
+        acquire_code, acquire_payload = client.acquire(evidence_id)
+        acquire_status = acquire_payload.get("status") if isinstance(acquire_payload, dict) else None
+        if acquire_code == 200 and acquire_status == "COMPLETED":
+            return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, "ANALYSIS_READY",
+                                 None, False, None, True, "COMPLETED", None)
+        if acquire_status == "AUTHORIZATION_REQUIRED":
+            final_status = "REQUIRES_OCR"
+        elif acquire_status == "PROVIDER_NOT_READY":
+            final_status = "CAPABILITY_UNAVAILABLE"
+        elif acquire_status == "FAILED":
+            final_status = "FAILED"
+        else:
+            final_status = f"HTTP_{acquire_code}"
+        detail = acquire_payload.get("reason") if isinstance(acquire_payload, dict) else None
+        return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, final_status,
+                             str(detail) if detail else str(acquire_payload), False, None, True,
+                             acquire_status or f"HTTP_{acquire_code}", acquisition_error(evidence_id, acquire_code, acquire_payload))
     return ProcessedFile(display_name, digest, "PASS", result["methods"], submission, f"HTTP_{code}", str(payload))
 
 

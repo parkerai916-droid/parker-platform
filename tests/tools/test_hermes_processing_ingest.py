@@ -192,6 +192,9 @@ class FakeParker:
         self.sources = []
         self.pending = []
         self.representations = []
+        self.acquisitions = []
+        self.source_response = (201, {"status": "INGESTED", "evidenceArtifactId": "evidence-test"})
+        self.acquire_response = (200, {"status": "COMPLETED", "evidenceArtifactId": "evidence-test", "derivativeGenerationId": "external-generation"})
 
     def submit_result(self, batch_id, result):
         self.results.append((batch_id, result))
@@ -199,7 +202,11 @@ class FakeParker:
 
     def submit_source(self, batch_id, source_hash, data, filename, media):
         self.sources.append((batch_id, source_hash, data, filename, media))
-        return 201, {"status": "INGESTED", "evidenceArtifactId": "evidence-test"}
+        return self.source_response
+
+    def acquire(self, evidence_artifact_id):
+        self.acquisitions.append(evidence_artifact_id)
+        return self.acquire_response
 
     def submit_ocr_representation(self, batch_id, source_hash, representation):
         self.representations.append((batch_id, source_hash, representation))
@@ -242,6 +249,71 @@ class SubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(item.governed_ingestion, "REGISTERED")
         self.assertEqual(fake.sources[0][2], b"exact bytes\n")
         self.assertEqual(fake.sources[0][1], hermes.sha256_bytes(b"exact bytes\n"))
+        self.assertFalse(fake.acquisitions)
+
+    def test_authorized_ocr_required_admission_continues_through_governed_acquire(self):
+        fake = FakeParker()
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "processingState": "REQUIRES_OCR", "evidenceArtifactId": "evidence-scan"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.pdf"
+            path.write_bytes(b"scanned bytes")
+            with patch.object(hermes, "run_docling", return_value={"status": "recognised", "recognisedText": "external candidate"}):
+                item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.governed_ingestion, "ANALYSIS_READY")
+        self.assertTrue(item.acquisition_attempted)
+        self.assertEqual(item.acquisition_status, "COMPLETED")
+        self.assertEqual(fake.acquisitions, ["evidence-scan"])
+
+    def test_authorized_jpg_uses_the_same_governed_acquire_continuation(self):
+        fake = FakeParker()
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "evidenceArtifactId": "evidence-jpg"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.jpg"
+            path.write_bytes(b"jpeg bytes")
+            with patch.object(hermes, "run_docling", return_value={"status": "recognised", "recognisedText": "image text"}):
+                item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.governed_ingestion, "ANALYSIS_READY")
+        self.assertEqual(fake.acquisitions, ["evidence-jpg"])
+
+    def test_review_required_png_and_webp_never_call_acquire(self):
+        for extension in (".png", ".webp"):
+            fake = FakeParker()
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / ("uncertain" + extension)
+                path.write_bytes(b"image bytes")
+                with patch.object(hermes, "run_docling", return_value={"status": "partial", "confidence": 0.4}):
+                    item = hermes.process_one(fake, "bulk-test", path, 1)
+            self.assertEqual(item.status, "REVIEW_REQUIRED")
+            self.assertEqual(item.governed_ingestion, "BLOCKED")
+            self.assertFalse(fake.acquisitions)
+
+    def test_unauthorized_ocr_required_admission_stays_requires_ocr(self):
+        fake = FakeParker()
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "evidenceArtifactId": "evidence-scan"})
+        fake.acquire_response = (409, {"status": "AUTHORIZATION_REQUIRED", "evidenceArtifactId": "evidence-scan"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.pdf"
+            path.write_bytes(b"scanned bytes")
+            with patch.object(hermes, "run_docling", return_value={"status": "recognised"}):
+                item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.governed_ingestion, "REQUIRES_OCR")
+        self.assertTrue(item.acquisition_attempted)
+        self.assertEqual(item.acquisition_status, "AUTHORIZATION_REQUIRED")
+        self.assertEqual(fake.acquisitions, ["evidence-scan"])
+
+    def test_provider_unavailable_is_preserved_as_capability_unavailable(self):
+        fake = FakeParker()
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "evidenceArtifactId": "evidence-scan"})
+        fake.acquire_response = (409, {"status": "PROVIDER_NOT_READY", "evidenceArtifactId": "evidence-scan"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.pdf"
+            path.write_bytes(b"scanned bytes")
+            with patch.object(hermes, "run_docling", return_value={"status": "recognised"}):
+                item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.governed_ingestion, "CAPABILITY_UNAVAILABLE")
+        self.assertEqual(item.acquisition_status, "PROVIDER_NOT_READY")
+        self.assertEqual(item.acquisition_error["endpoint"], "/agent/evidence/evidence-scan/acquire")
+        self.assertEqual(item.acquisition_error["httpStatus"], 409)
 
     def test_failed_result_is_submitted_but_source_is_not(self):
         fake = FakeParker()
@@ -267,6 +339,7 @@ class SubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(len(fake.pending), 1)
         self.assertEqual(fake.pending[0][2], b"pending bytes")
         self.assertEqual(fake.sources, [])
+        self.assertFalse(fake.acquisitions)
 
     def test_pass_image_submits_source_then_ocr_representation(self):
         fake = FakeParker()
@@ -288,6 +361,7 @@ class SubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(fake.sources[0][3], "images.jpg")
         self.assertEqual(fake.representations[0][2]["evidenceArtifactId"], "evidence-test")
         self.assertEqual(fake.representations[0][2]["recognisedText"], outcome["recognisedText"])
+        self.assertFalse(fake.acquisitions)
 
 
 if __name__ == "__main__":
