@@ -2188,6 +2188,7 @@ class ParkerRuntime(
                     allowedPurposes = setOf(ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE),
                 ),
                 store = parker.core.runtime.FileSystemExternalTranscriptionAuthorizationStore(Path.of(externalTranscriptionAuthorizationRoot)),
+                auditReader = FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath))),
             )
         } else null
         // A separately persisted authority is the only bridge from ACCEPTANCE_PENDING to the raw
@@ -2528,6 +2529,13 @@ class ParkerRuntime(
                 caseGovernanceAudit,
                 PrincipalId(config.ownerPrincipalId),
                 clock,
+                auditReader = caseGovernanceAudit,
+                authoriseExternalTranscriptionBatch = { batchId, caseId, presented ->
+                    when (requireNotNull(externalTranscriptionAuthorizationCoordinator).authorizeBatch(batchId, caseId, presented)) {
+                        parker.core.runtime.ExternalTranscriptionBatchAuthorizationOutcome.Authorised -> true
+                        is parker.core.runtime.ExternalTranscriptionBatchAuthorizationOutcome.Rejected -> false
+                    }
+                },
             )
         }
         // Parker Agent Gateway, AG-1D/AG-1F/AG-1G (Section 20): Hermes's own fixed PrincipalId and
@@ -2591,13 +2599,20 @@ class ParkerRuntime(
                     }?.derivativeGenerationId
             },
         )
+        val batchCoordinatorForProjection = bulkIngestionBindingCoordinator
         agentGatewayEvidenceProjection = parker.core.runtime.AgentGatewayEvidenceProjection(
             hermesPrincipalId = HERMES_INGESTION_OPERATOR_PRINCIPAL_ID,
             agentGatewayPurpose = AGENT_GATEWAY_HERMES_INGESTION_PURPOSE,
             permissionEngine = permissionEngine,
             evidenceCustodian = defaultEvidenceCustodian,
             governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
-            bulkIngestionBindingCoordinator = bulkIngestionBindingCoordinator,
+            bulkIngestionBindingCoordinator = batchCoordinatorForProjection,
+            deriveBatchExternalTranscriptionAuthorization = { batchId, evidenceId ->
+                val coordinator = batchCoordinatorForProjection
+                if (coordinator == null) false else coordinator.deriveExternalTranscriptionAuthorization(batchId, evidenceId) { beforePersist, afterPersist ->
+                    externalTranscriptionAuthorizationCoordinator?.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch(batchId, evidenceId, beforePersist, afterPersist) == true
+                }
+            },
             processingResultRegistry = requireNotNull(hermesProcessingResultRegistry),
             derivativeGenerationCoordinator = tierBDerivativeGenerationCoordinator,
             humanDecisionRegistry = hermesProcessingDecisionRegistry,
@@ -4011,8 +4026,16 @@ class ParkerRuntime(
 
     /** Owner-only creation of one immutable opaque Hermes bulk-ingestion binding. */
     internal suspend fun authoriseBulkIngestionAsOwner(caseId: CaseId): BulkIngestionAuthorisation {
+        return authoriseBulkIngestionAsOwner(caseId, false, null)
+    }
+
+    internal suspend fun authoriseBulkIngestionAsOwner(
+        caseId: CaseId,
+        externalTranscriptionAuthorised: Boolean,
+        presented: parker.core.interfaces.OwnerVerificationCredential?,
+    ): BulkIngestionAuthorisation {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
-        return bulkIngestionBindingCoordinator?.authoriseAsOwner(caseId)
+        return bulkIngestionBindingCoordinator?.authoriseAsOwner(caseId, externalTranscriptionAuthorised, presented)
             ?: BulkIngestionAuthorisation.Failure("Bulk ingestion case binding is not configured")
     }
 

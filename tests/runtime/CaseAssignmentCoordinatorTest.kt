@@ -16,6 +16,7 @@ import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CaseAssignmentStorage
 import parker.core.interfaces.CaseGovernanceAuditEventType
 import parker.core.interfaces.CaseGovernanceAuditRecord
+import parker.core.interfaces.CaseGovernanceAudit
 import parker.core.interfaces.CaseId
 import parker.core.interfaces.CaseRecord
 import parker.core.interfaces.CaseStorage
@@ -39,6 +40,19 @@ import parker.core.interfaces.PrincipalId
 class CaseAssignmentCoordinatorTest {
     private val owner = PrincipalId("owner.case-1-test")
     private val clock = { Instant.parse("2026-09-06T00:00:00Z") }
+
+    private class FailingAudit : CaseGovernanceAudit {
+        override suspend fun record(record: CaseGovernanceAuditRecord): Unit = error("injected audit failure")
+    }
+
+    private class FailOnAuditCall(private val failAt: Int, private val delegate: CaseGovernanceAudit) : CaseGovernanceAudit {
+        private var calls = 0
+        override suspend fun record(record: CaseGovernanceAuditRecord) {
+            calls++
+            if (calls == failAt) error("injected audit failure at call $failAt")
+            delegate.record(record)
+        }
+    }
 
     private fun approvingEngine() = FakePermissionEngine { request ->
         PermissionDecision(
@@ -275,4 +289,89 @@ class CaseAssignmentCoordinatorTest {
         assertEquals(BulkIngestionAssignment.Assigned(case.caseId), restarted.assignFromHermes(authorised.binding.batchId, evidence))
         assertTrue(Files.readAllLines(fixture.auditLogFile).any { it.contains("INGESTION_BATCH_AUTHORISED") })
     }
+
+    @Test
+    fun `batch external transcription authority persists, survives restart, and membership updates preserve it`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "bulk-authority")
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Bulk authority target")).case
+        val bindings = directory.resolve("bulk-authority/bindings")
+        val coordinator = BulkIngestionBindingCoordinator(
+            bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock,
+        ) { _, _, _ -> true }
+        val authorised = assertIs<BulkIngestionAuthorisation.Authorised>(coordinator.authoriseAsOwner(case.caseId, true))
+        assertTrue(authorised.binding.externalTranscriptionAuthorised)
+        val evidence = acceptEvidence(fixture.custodian, "authorised source")
+        assertTrue(coordinator.recordSubmission(authorised.binding.batchId, evidence))
+        val restarted = BulkIngestionBindingCoordinator(
+            bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner,
+        )
+        assertTrue(restarted.externalTranscriptionIsAuthorised(authorised.binding.batchId))
+        assertTrue(restarted.containsEvidence(authorised.binding.batchId, evidence))
+        assertTrue(Files.readAllLines(fixture.auditLogFile).any { it.contains("INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED") && it.contains("externalTranscriptionAuthorised=true") })
+    }
+
+    @Test
+    fun `legacy binding without authority field loads as unauthorized and malformed value fails closed`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "legacy-binding")
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Legacy binding target")).case
+        val bindings = directory.resolve("legacy-binding/bindings")
+        Files.createDirectories(bindings)
+        val batchId = "bulk-abc123"
+        Files.writeString(bindings.resolve("$batchId.binding"), "case=${java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(case.caseId.value.toByteArray())}\nevidence=\n")
+        val coordinator = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner)
+        assertEquals(false, coordinator.externalTranscriptionIsAuthorised(batchId))
+        Files.writeString(bindings.resolve("$batchId.binding"), "case=${java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(case.caseId.value.toByteArray())}\nevidence=\nexternalTranscriptionAuthorised=maybe\n")
+        assertEquals(false, coordinator.externalTranscriptionIsAuthorised(batchId))
+    }
+
+    @Test
+    fun `failed required batch authority audit leaves no usable authorised binding`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "batch-audit-failure")
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Audit failure target")).case
+        val bindings = directory.resolve("batch-audit-failure/bindings")
+        val coordinator = BulkIngestionBindingCoordinator(
+            bindings, fixture.caseStorage, fixture.coordinator, FailingAudit(), owner, clock,
+        ) { _, _, _ -> true }
+        val result = coordinator.authoriseAsOwner(case.caseId, true)
+        assertIs<BulkIngestionAuthorisation.Failure>(result)
+        assertTrue(Files.list(bindings).use { paths -> paths.noneMatch { it.fileName.toString().endsWith(".binding") } })
+        assertTrue(Files.readAllLines(fixture.auditLogFile).none { it.contains("INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED") })
+    }
+
+    @Test
+    fun `binding activation failure after prepared audit leaves no completed authority`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "batch-activation-failure")
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Activation failure target")).case
+        val bindings = directory.resolve("batch-activation-failure/bindings")
+        val audit = FileSystemCaseGovernanceAudit(fixture.auditLogFile)
+        val coordinator = BulkIngestionBindingCoordinator(
+            bindings, fixture.caseStorage, fixture.coordinator, audit, owner, clock,
+            activateBinding = { error("injected binding activation failure") },
+        ) { _, _, _ -> true }
+        val result = coordinator.authoriseAsOwner(case.caseId, true)
+        assertIs<BulkIngestionAuthorisation.Failure>(result)
+        assertTrue(Files.list(bindings).use { paths -> paths.noneMatch { it.fileName.toString().endsWith(".binding") } })
+        assertTrue(Files.readAllLines(fixture.auditLogFile).any { it.contains("EXTERNAL_TRANSCRIPTION_PREPARED") })
+        assertTrue(Files.readAllLines(fixture.auditLogFile).none { it.contains("EXTERNAL_TRANSCRIPTION_AUTHORISED") })
+    }
+
+    @Test
+    fun `completion audit failure after activation leaves active binding unusable`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "batch-completion-audit-failure")
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Completion audit failure target")).case
+        val bindings = directory.resolve("batch-completion-audit-failure/bindings")
+        val coordinator = BulkIngestionBindingCoordinator(
+            bindings, fixture.caseStorage, fixture.coordinator,
+            FailOnAuditCall(2, FileSystemCaseGovernanceAudit(fixture.auditLogFile)), owner, clock,
+        ) { _, _, _ -> true }
+        val result = coordinator.authoriseAsOwner(case.caseId, true)
+        assertIs<BulkIngestionAuthorisation.Failure>(result)
+        val active = Files.list(bindings).use { paths -> paths.anyMatch { it.fileName.toString().endsWith(".binding") } }
+        assertTrue(active)
+        val activeBatchId = Files.list(bindings).use { paths -> paths.filter { it.fileName.toString().endsWith(".binding") }.findFirst().get().fileName.toString().removeSuffix(".binding") }
+        val restarted = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner)
+        assertEquals(false, restarted.isAuthorised(activeBatchId))
+        assertTrue(Files.readAllLines(fixture.auditLogFile).none { it.contains("EXTERNAL_TRANSCRIPTION_AUTHORISED") })
+    }
+
 }

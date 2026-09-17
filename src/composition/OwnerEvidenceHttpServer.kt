@@ -65,7 +65,7 @@ import parker.core.interfaces.SpeechTranscriptionOutcome
 
 /** Transport-safe Owner HTTP result for creating one governed ingestion batch. */
 sealed interface OwnerIngestionBatchAuthorisation {
-    data class Authorised(val batchId: String, val caseId: String) : OwnerIngestionBatchAuthorisation
+    data class Authorised(val batchId: String, val caseId: String, val externalTranscriptionAuthorised: Boolean = false) : OwnerIngestionBatchAuthorisation
     data object UnknownCase : OwnerIngestionBatchAuthorisation
     data class Failure(val reason: String) : OwnerIngestionBatchAuthorisation
 }
@@ -118,6 +118,7 @@ class OwnerEvidenceHttpServer(
     private val authoriseBulkIngestionAsOwner: suspend (CaseId) -> OwnerIngestionBatchAuthorisation = {
         OwnerIngestionBatchAuthorisation.Failure("BULK_INGESTION_AUTHORIZATION_LANE_NOT_CONFIGURED")
     },
+    private val authoriseBulkIngestionWithExternalTranscriptionAsOwner: suspend (CaseId, Boolean, String?) -> OwnerIngestionBatchAuthorisation? = { _, _, _ -> null },
     private val prepareCorrectedEvidence: suspend (EvidenceArtifactId, String, Int) -> parker.core.runtime.GovernedCorrectedPreparationOutcome =
         { _, _, _ -> parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected("PREPARATION_LANE_NOT_CONFIGURED") },
     private val continuePostEgress: suspend (EvidenceArtifactId, String, String, String) -> parker.core.runtime.OrdinaryRegionOwnerResult =
@@ -248,18 +249,22 @@ class OwnerEvidenceHttpServer(
                     writeJson(exchange, 413, jsonObject("error" to "request body too large"))
                     return
                 }
-                val caseId = try {
+                val request = try {
                     parseIngestionBatchAuthorisationRequest(body)
                 } catch (_: Exception) {
                     writeJson(exchange, 400, jsonObject("error" to "malformed request body"))
                     return
                 }
-                when (val outcome = runBlocking { authoriseBulkIngestionAsOwner(caseId) }) {
-                    is OwnerIngestionBatchAuthorisation.Authorised -> writeJson(exchange, 201, jsonObject(
-                        "status" to "AUTHORISED",
-                        "batchId" to outcome.batchId,
-                        "caseId" to outcome.caseId,
-                    ))
+                val credential = exchange.requestHeaders.getFirst(EXTERNAL_TRANSCRIPTION_BATCH_CREDENTIAL_HEADER)
+                when (val outcome = runBlocking {
+                    authoriseBulkIngestionWithExternalTranscriptionAsOwner(request.caseId, request.externalTranscriptionAuthorised, credential)
+                        ?: if (!request.externalTranscriptionAuthorised) authoriseBulkIngestionAsOwner(request.caseId)
+                        else OwnerIngestionBatchAuthorisation.Failure("EXTERNAL_TRANSCRIPTION_AUTHORIZATION_LANE_NOT_CONFIGURED")
+                }) {
+                    is OwnerIngestionBatchAuthorisation.Authorised -> writeJson(exchange, 201, if (outcome.externalTranscriptionAuthorised) jsonObject(
+                        "status" to "AUTHORISED", "batchId" to outcome.batchId, "caseId" to outcome.caseId,
+                        "externalTranscriptionAuthorised" to true,
+                    ) else jsonObject("status" to "AUTHORISED", "batchId" to outcome.batchId, "caseId" to outcome.caseId))
                     OwnerIngestionBatchAuthorisation.UnknownCase -> writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_CASE"))
                     is OwnerIngestionBatchAuthorisation.Failure -> writeJson(exchange, 500, jsonObject(
                         "status" to "FAILED", "reason" to outcome.reason,
@@ -2413,12 +2418,18 @@ private fun parseCaseCreationRequestBody(bodyBytes: ByteArray): String {
 }
 
 /** Parses the exact Owner request for authorising one governed ingestion batch. */
-private fun parseIngestionBatchAuthorisationRequest(bodyBytes: ByteArray): CaseId {
+private data class IngestionBatchAuthorisationRequest(val caseId: CaseId, val externalTranscriptionAuthorised: Boolean)
+
+private const val EXTERNAL_TRANSCRIPTION_BATCH_CREDENTIAL_HEADER = "X-Parker-Owner-High-Authority-Credential"
+
+private fun parseIngestionBatchAuthorisationRequest(bodyBytes: ByteArray): IngestionBatchAuthorisationRequest {
     val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
     val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
-    if (obj.keys != setOf("caseId")) throw JsonParseException("unexpected ingestion batch fields")
+    if (obj.keys != setOf("caseId") && obj.keys != setOf("caseId", "externalTranscriptionAuthorised")) throw JsonParseException("unexpected ingestion batch fields")
     val rawCaseId = obj["caseId"] as? String ?: throw JsonParseException("expected a 'caseId' string")
-    return try { CaseId(rawCaseId) } catch (_: IllegalArgumentException) {
+    val external = if (obj.containsKey("externalTranscriptionAuthorised")) obj["externalTranscriptionAuthorised"] as? Boolean
+        ?: throw JsonParseException("expected 'externalTranscriptionAuthorised' boolean") else false
+    return try { IngestionBatchAuthorisationRequest(CaseId(rawCaseId), external) } catch (_: IllegalArgumentException) {
         throw JsonParseException("invalid caseId")
     }
 }
@@ -3000,6 +3011,8 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
   <p>Select and confirm an existing case. Parker will mint a READY batch for Hermes. This tab never uploads files.</p>
   <label>Case <select id="bulkCaseSelector"><option value="">Select a case</option></select></label>
   <p>Case: <span id="bulkCaseName">—</span></p>
+  <p><label><input type="checkbox" id="bulkExternalTranscription"> Authorise external transcription for eligible documents in this batch</label><br><span class="note">Allows Parker to send documents that require authoritative transcription to the configured external provider. This applies only to this batch.</span></p>
+  <p id="bulkExternalCredentialRow" hidden><label>Owner high-authority verification credential <input id="bulkExternalCredential" type="password" autocomplete="off"></label></p>
   <button id="bulkConfirmButton" disabled>Confirm Case and Authorise Batch</button>
   <div id="bulkBatchStatus" class="note"></div>
 </section>
@@ -3162,12 +3175,21 @@ document.getElementById('bulkConfirmButton').onclick = async () => {
   if (!selectedBulkCase) return;
   const status = document.getElementById('bulkBatchStatus'); const button = document.getElementById('bulkConfirmButton'); button.disabled = true; status.textContent = 'Authorising…';
   try {
-    const response = await fetch('/owner/ingestion-batches', {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body:JSON.stringify({caseId:selectedBulkCase.caseId})});
+    const external = document.getElementById('bulkExternalTranscription').checked;
+    const credential = document.getElementById('bulkExternalCredential').value;
+    if (external && !credential) throw new Error('Owner high-authority verification credential is required.');
+    const headers = {'Content-Type':'application/json', ...authHeaders()};
+    if (external) headers['X-Parker-Owner-High-Authority-Credential'] = credential;
+    const response = await fetch('/owner/ingestion-batches', {method:'POST', headers, body:JSON.stringify({caseId:selectedBulkCase.caseId, externalTranscriptionAuthorised:external})});
     if (response.status === 401) throw new Error('Owner authentication expired.');
     const result = await response.json();
     if (!response.ok || !result.batchId) throw new Error(result.status === 'UNKNOWN_CASE' ? 'The selected case no longer exists.' : (result.reason || 'Batch authorisation failed.'));
-    status.textContent = 'Case: ' + selectedBulkCase.caseName + ' · Batch status: READY · Batch ID: ' + result.batchId;
+    status.textContent = 'Case: ' + selectedBulkCase.caseName + ' · Batch status: READY · External transcription: ' + (result.externalTranscriptionAuthorised ? 'AUTHORISED' : 'NOT AUTHORISED') + ' · Batch ID: ' + result.batchId;
   } catch (e) { status.textContent = e.message; button.disabled = false; }
+  finally { document.getElementById('bulkExternalCredential').value = ''; }
+};
+document.getElementById('bulkExternalTranscription').onchange = e => {
+  document.getElementById('bulkExternalCredentialRow').hidden = !e.target.checked;
 };
 
 async function loadAnalysisCases() {

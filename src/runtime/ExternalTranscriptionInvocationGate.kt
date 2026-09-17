@@ -40,4 +40,26 @@ object ExternalTranscriptionInvocationGate {
             authorizationPurpose = AUTHORIZATION_PURPOSE,
         )
     }
+
+    /** The same governed external-transcription purpose/action for one Owner-authorised batch. */
+    fun buildBatchExecutionRequest(
+        ownerPrincipalId: PrincipalId,
+        batchId: String,
+        caseId: String,
+    ): ExecutionRequest {
+        val requestId = UUID.randomUUID()
+        return ExecutionRequest(
+            requestId = RequestId("external-transcription-batch-$requestId"),
+            principalId = ownerPrincipalId,
+            origin = RequestOrigin.REMOTE_INTERFACE,
+            intent = "Authorize external transcription for one owner-selected ingestion batch",
+            targetResources = listOf(EvidenceIntelligenceInvocationGate.EVIDENCE_INTELLIGENCE_INVOCATION_RESOURCE_ID),
+            proposedActions = listOf(ACTION_NAME),
+            priority = RequestPriority.NORMAL,
+            createdAt = Instant.now(),
+            correlationId = "external-transcription-batch-$requestId",
+            metadata = mapOf("batchId" to batchId, "caseId" to caseId),
+            authorizationPurpose = AUTHORIZATION_PURPOSE,
+        )
+    }
 }

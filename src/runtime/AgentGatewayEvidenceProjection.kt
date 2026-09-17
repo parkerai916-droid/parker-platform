@@ -102,6 +102,7 @@ internal class AgentGatewayEvidenceProjection(
     private val governedAcquisitionWorkflow: GovernedAcquisitionOwnerWorkflow? = null,
     private val clock: () -> Instant = Instant::now,
     private val bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null,
+    private val deriveBatchExternalTranscriptionAuthorization: (suspend (String, EvidenceArtifactId) -> Boolean)? = null,
     /**
      * Hermes Processing Result Intake, Task 2. `null` only for compositions that never wire
      * processing-result intake at all -- [submitProcessingResult]/[listProcessingResultsForBatch]
@@ -514,7 +515,16 @@ internal class AgentGatewayEvidenceProjection(
             processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.REGISTERED, "Source admitted; processing not configured", updatedAt = clock()))
             return admitted
         }
-        return when (val outcome = processor(projection.evidenceArtifactId)) {
+        var outcome = processor(projection.evidenceArtifactId)
+        // A batch approval is consulted only after the ordinary post-admission route has
+        // truthfully reached REQUIRES_OCR. It derives the existing exact-evidence grant, then
+        // retries the same coordinator/acquisition machinery once; it never authorizes Hermes,
+        // bypasses case membership, or creates a second provider path.
+        if (outcome is PostAdmissionProcessingOutcome.RequiresOcr &&
+            deriveBatchExternalTranscriptionAuthorization?.invoke(batchId, projection.evidenceArtifactId) == true) {
+            outcome = processor(projection.evidenceArtifactId)
+        }
+        return when (outcome) {
             is PostAdmissionProcessingOutcome.AnalysisReady -> {
                 processingStateStore?.record(EvidenceProcessingStateRecord(projection.evidenceArtifactId, EvidenceProcessingState.ANALYSIS_READY, null, outcome.derivativeGenerationId, clock()))
                 AgentGatewayGovernedIngestionResult.AnalysisReady(projection, outcome.derivativeGenerationId, outcome.capabilityId, correction?.representationId, alreadyIngested)

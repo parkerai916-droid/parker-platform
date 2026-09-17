@@ -13,9 +13,11 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.CaseGovernanceAudit
 import parker.core.interfaces.CaseGovernanceAuditException
 import parker.core.interfaces.CaseGovernanceAuditRecord
+import parker.core.interfaces.CaseGovernanceAuditQuery
+import parker.core.interfaces.CaseGovernanceAuditReader
 
 /** CASE-1. Mirrors [FileSystemDocumentIngestionAudit]'s own single append-only log file, base64-encoded tab-separated line shape exactly. Write-only: no read-back capability exists because none is required. */
-class FileSystemCaseGovernanceAudit(private val logFile: Path) : CaseGovernanceAudit {
+class FileSystemCaseGovernanceAudit(private val logFile: Path) : CaseGovernanceAudit, CaseGovernanceAuditReader {
     private val mutex = Mutex()
 
     init {
@@ -40,7 +42,9 @@ class FileSystemCaseGovernanceAudit(private val logFile: Path) : CaseGovernanceA
             append("previousCaseId=").append(encode(record.previousCaseId?.value)).append('\t')
             append("evidenceArtifactId=").append(encode(record.evidenceArtifactId?.value)).append('\t')
             append("actorPrincipalId=").append(encode(record.actorPrincipalId.value)).append('\t')
-            append("recordedAt=").append(record.recordedAt)
+            append("recordedAt=").append(record.recordedAt).append('\t')
+            append("batchId=").append(encode(record.batchId)).append('\t')
+            append("externalTranscriptionAuthorised=").append(record.externalTranscriptionAuthorised?.toString() ?: "-")
             append('\n')
         }.toByteArray(StandardCharsets.UTF_8)
         mutex.withLock {
@@ -56,6 +60,21 @@ class FileSystemCaseGovernanceAudit(private val logFile: Path) : CaseGovernanceA
                     e,
                 )
             }
+        }
+    }
+
+    override fun has(query: CaseGovernanceAuditQuery): Boolean {
+        if (!Files.exists(logFile)) return false
+        return Files.readAllLines(logFile).any { line ->
+            val fields = line.split('\t').mapNotNull { part ->
+                val index = part.indexOf('=')
+                if (index < 0) null else part.substring(0, index) to part.substring(index + 1)
+            }.toMap()
+            fields["eventType"] == query.eventType.name &&
+                (query.caseId == null || fields["caseId"] == encode(query.caseId.value)) &&
+                fields["evidenceArtifactId"] == encode(query.evidenceArtifactId?.value) &&
+                fields["batchId"] == encode(query.batchId) &&
+                fields["externalTranscriptionAuthorised"] == (query.externalTranscriptionAuthorised?.toString() ?: "-")
         }
     }
 

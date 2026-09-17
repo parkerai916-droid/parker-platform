@@ -5,9 +5,13 @@ import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import parker.core.interfaces.*
+import parker.core.runtime.FileSystemCaseGovernanceAudit
+import org.junit.jupiter.api.io.TempDir
 
 class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
     private val owner = PrincipalId("owner.auth-test")
@@ -42,6 +46,12 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
             throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
+    private class ThrowingStore : ExternalTranscriptionOwnerAuthorizationStore {
+        override fun loadIfPresent(evidenceArtifactId: String): ExternalTranscriptionOwnerAuthorization? = null
+        override fun createOrGet(grant: ExternalTranscriptionOwnerAuthorization): ExternalTranscriptionOwnerAuthorizationStoreOutcome =
+            error("injected authorization-store failure")
+    }
+
     private fun manifest(id: EvidenceArtifactId, sha256: String = sha) = EvidenceSourceManifest(id, sha256, 10L, "application/pdf")
 
     private fun coordinator(
@@ -49,7 +59,8 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
         verification: OwnerHighAuthorityVerification = FakeVerification(secret),
         purposeActive: Boolean = true,
         custodian: EvidenceCustodian = FakeCustodian(mapOf(evidenceId.value to EvidenceManifestRetrievalResult.Found(manifest(evidenceId)))),
-        store: FileSystemExternalTranscriptionAuthorizationStore = FileSystemExternalTranscriptionAuthorizationStore(Files.createTempDirectory("ext-transcription-auth")),
+        store: ExternalTranscriptionOwnerAuthorizationStore = FileSystemExternalTranscriptionAuthorizationStore(Files.createTempDirectory("ext-transcription-auth")),
+        auditReader: CaseGovernanceAuditReader? = null,
     ): ExternalTranscriptionOwnerAuthorizationCoordinator {
         return ExternalTranscriptionOwnerAuthorizationCoordinator(
             ownerPrincipalId = owner,
@@ -63,6 +74,7 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
             permissions = permission,
             ownerVerification = verification,
             store = store,
+            auditReader = auditReader,
         )
     }
 
@@ -213,5 +225,83 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
         val conflicting = grant.copy(sourceSha256 = "b".repeat(64))
         val conflict = store.createOrGet(conflicting)
         assert(conflict is ExternalTranscriptionOwnerAuthorizationStoreOutcome.Conflict)
+    }
+
+    @Test
+    fun `batch authority uses the same high-authority verifier and derives the normal evidence grant idempotently`() = runTest {
+        val verification = FakeVerification(secret)
+        val store = FileSystemExternalTranscriptionAuthorizationStore(Files.createTempDirectory("ext-transcription-batch"))
+        val c = coordinator(store = store, verification = verification)
+        assertEquals(
+            ExternalTranscriptionBatchAuthorizationOutcome.Authorised,
+            c.authorizeBatch("bulk-authorized", CaseId("case-authorized"), OwnerVerificationCredential.presented(secret)),
+        )
+        assertEquals(
+            ExternalTranscriptionBatchAuthorizationOutcome.Rejected("HIGH_AUTHORITY_VERIFICATION_FAILED"),
+            c.authorizeBatch("bulk-authorized", CaseId("case-authorized"), OwnerVerificationCredential.presented("wrong")),
+        )
+        assertTrue(c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch(evidenceId))
+        assertTrue(c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch(evidenceId))
+        assertTrue(c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `derivation audit failure occurs before grant persistence`() = runTest {
+        val c = coordinator()
+        assertFailsWith<IllegalStateException> {
+            c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch(evidenceId) {
+                error("injected derivation audit failure")
+            }
+        }
+        assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `authorization-store failure after derivation preparation has no completed derivation audit`() = runTest {
+        val auditFile = Files.createTempDirectory("ext-transcription-audit").resolve("audit.log")
+        val audit = FileSystemCaseGovernanceAudit(auditFile)
+        val c = coordinator(store = ThrowingStore(), auditReader = audit)
+        assertFailsWith<IllegalStateException> {
+            c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch(
+                "bulk-deadbeef", evidenceId,
+                beforePersist = { audit.record(CaseGovernanceAuditRecord(
+                    CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED,
+                    CaseId("case-derived"), evidenceArtifactId = evidenceId, actorPrincipalId = owner,
+                    recordedAt = Instant.EPOCH, batchId = "bulk-deadbeef", externalTranscriptionAuthorised = true,
+                )) },
+            )
+        }
+        assertTrue(Files.readAllLines(auditFile).none { it.contains("INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED") })
+        assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `derived grant remains unusable when completion audit fails after grant persistence`(@TempDir directory: java.nio.file.Path) = runTest {
+        val auditFile = directory.resolve("audit.log")
+        val backing = FileSystemCaseGovernanceAudit(auditFile)
+        val failingAudit = object : CaseGovernanceAudit {
+            override suspend fun record(record: CaseGovernanceAuditRecord) {
+                if (record.eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED) {
+                    error("injected completion audit failure")
+                }
+                backing.record(record)
+            }
+        }
+        val c = coordinator(store = FileSystemExternalTranscriptionAuthorizationStore(directory.resolve("grants").also { Files.createDirectories(it) }), auditReader = backing)
+        assertFailsWith<IllegalStateException> {
+            c.deriveEvidenceAuthorizationFromOwnerAuthorisedBatch("bulk-cafebabe", evidenceId,
+                beforePersist = { failingAudit.record(CaseGovernanceAuditRecord(
+                    CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED,
+                    CaseId("case-derived"), evidenceArtifactId = evidenceId, actorPrincipalId = owner,
+                    recordedAt = Instant.EPOCH, batchId = "bulk-cafebabe", externalTranscriptionAuthorised = true,
+                )) },
+                afterPersist = { failingAudit.record(CaseGovernanceAuditRecord(
+                    CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED,
+                    CaseId("case-derived"), evidenceArtifactId = evidenceId, actorPrincipalId = owner,
+                    recordedAt = Instant.EPOCH, batchId = "bulk-cafebabe", externalTranscriptionAuthorised = true,
+                )) },
+            )
+        }
+        assertEquals(false, c.isAuthorized(evidenceId))
     }
 }

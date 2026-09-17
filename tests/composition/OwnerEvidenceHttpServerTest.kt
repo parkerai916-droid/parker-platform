@@ -146,6 +146,7 @@ class OwnerEvidenceHttpServerTest {
         authoriseBulkIngestion: suspend (CaseId) -> OwnerIngestionBatchAuthorisation = {
             OwnerIngestionBatchAuthorisation.Failure("disabled")
         },
+        authoriseBulkIngestionWithExternalTranscription: suspend (CaseId, Boolean, String?) -> OwnerIngestionBatchAuthorisation? = { _, _, _ -> null },
         evaluateRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
         prepareCorrected: suspend (EvidenceArtifactId, String, Int) -> GovernedCorrectedPreparationOutcome =
             { _, _, _ -> GovernedCorrectedPreparationOutcome.Rejected("disabled") },
@@ -238,6 +239,7 @@ class OwnerEvidenceHttpServerTest {
             createOrdinaryRegionCapabilityAcceptance = invokePromotion,
             evaluateOrdinaryRegionCapability = evaluateRegionCapability,
             authoriseBulkIngestionAsOwner = authoriseBulkIngestion,
+            authoriseBulkIngestionWithExternalTranscriptionAsOwner = authoriseBulkIngestionWithExternalTranscription,
             prepareCorrectedEvidence = prepareCorrected,
             listHermesProcessingReviewAsOwner = runtime::listHermesProcessingReviewAsOwner,
             recordHermesProcessingDecisionAsOwner = { batchId, sourceSha256, decision, reason, correction ->
@@ -297,6 +299,26 @@ class OwnerEvidenceHttpServerTest {
             assertEquals(201, response.statusCode(), response.body())
             assertEquals("{\"status\":\"AUTHORISED\",\"batchId\":\"bulk-parker-minted\",\"caseId\":\"case-existing\"}", response.body())
             assertEquals(1, calls)
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `batch external transcription authority requires the transient high-authority credential and is returned explicitly`() {
+        var received: Triple<CaseId, Boolean, String?>? = null
+        val harness = startHarness("", authoriseBulkIngestionWithExternalTranscription = { caseId, external, credential ->
+            received = Triple(caseId, external, credential)
+            OwnerIngestionBatchAuthorisation.Authorised("bulk-authorised", caseId.value, true)
+        })
+        try {
+            val response = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/ingestion-batches"))
+                .header("Cookie", pairedCookie(harness))
+                .header("Content-Type", "application/json")
+                .header("X-Parker-Owner-High-Authority-Credential", "transient-secret")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"caseId\":\"case-authorised\",\"externalTranscriptionAuthorised\":true}"))
+                .build())
+            assertEquals(201, response.statusCode(), response.body())
+            assertTrue(response.body().contains("\"externalTranscriptionAuthorised\":true"))
+            assertEquals(Triple(CaseId("case-authorised"), true, "transient-secret"), received)
         } finally { harness.shutdown() }
     }
 

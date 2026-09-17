@@ -204,6 +204,14 @@ fun main(args: Array<String>) = runBlocking {
                         OwnerIngestionBatchAuthorisation.Failure(outcome.reason)
                 }
             },
+            authoriseBulkIngestionWithExternalTranscriptionAsOwner = { caseId, external, credential ->
+                when (val outcome = runtime.authoriseBulkIngestionAsOwner(caseId, external, parker.core.interfaces.OwnerVerificationCredential.presented(credential))) {
+                    is parker.core.runtime.BulkIngestionAuthorisation.Authorised ->
+                        OwnerIngestionBatchAuthorisation.Authorised(outcome.binding.batchId, outcome.binding.caseId.value, outcome.binding.externalTranscriptionAuthorised)
+                    parker.core.runtime.BulkIngestionAuthorisation.UnknownCase -> OwnerIngestionBatchAuthorisation.UnknownCase
+                    is parker.core.runtime.BulkIngestionAuthorisation.Failure -> OwnerIngestionBatchAuthorisation.Failure(outcome.reason)
+                }
+            },
             prepareCorrectedEvidence = runtime::prepareCorrectedEvidenceAsOwner,
             continuePostEgress = runtime::continueOrdinaryRegionPostEgressAsOwner,
             listHermesProcessingReviewAsOwner = runtime::listHermesProcessingReviewAsOwner,
