@@ -65,13 +65,42 @@ class ProcessingDecisionTest(unittest.TestCase):
         }
         with patch.object(hermes, "run_docling", return_value=outcome):
             result = hermes.make_result("bulk-test", "a" * 64, Path("scan.pdf"), b"pdf", 1)
-        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["issues"][0]["observedConfidence"], 0.74)
         self.assertEqual(result["reviewConfidenceThreshold"], 0.80)
         self.assertEqual(result["processingCompleteness"], "PARTIAL")
         self.assertEqual(result["processingWarnings"][0], "page 3 was incomplete")
         self.assertIn("preliminary PDF routing diagnostics", result["processingWarnings"][1])
+        self.assertIn("authoritative REQUIRES_OCR", result["processingWarnings"][2])
         self.assertNotIn("failure", result)
+
+    def test_low_confidence_scanned_pdf_is_submitted_not_pending_review(self):
+        fake = FakeParker()
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "processingState": "REQUIRES_OCR", "evidenceArtifactId": "evidence-low-confidence"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.pdf"
+            path.write_bytes(b"valid scanned pdf bytes")
+            with patch.object(hermes, "run_docling", return_value={"status": "recognised", "confidence": 0.62}):
+                item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.status, "PASS")
+        self.assertEqual(item.governed_ingestion, "ANALYSIS_READY")
+        self.assertEqual(len(fake.sources), 1)
+        self.assertEqual(fake.pending, [])
+        self.assertEqual(fake.acquisitions, ["evidence-low-confidence"])
+
+    def test_partial_scanned_pdf_is_pass_with_diagnostic_uncertainty(self):
+        outcome = {"status": "partial", "confidence": 0.62, "reason": "one page incomplete", "recognisedText": "partial text"}
+        with patch.object(hermes, "run_docling", return_value=outcome):
+            result, representation = hermes.make_result_and_representation(
+                "bulk-test", "a" * 64, Path("scan.pdf"), b"pdf", 1,
+            )
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["processingCompleteness"], "PARTIAL")
+        self.assertEqual(result["issues"][0]["kind"], "OCR_UNCERTAINTY")
+        self.assertIn("one page incomplete", result["issues"][0]["explanation"])
+        self.assertEqual(representation["status"], "PASS")
+        self.assertEqual(representation["completeness"], "PARTIAL")
+        self.assertIn("authoritative REQUIRES_OCR", representation["warnings"][-1])
 
     def test_searchable_pdf_is_native_and_does_not_invoke_docling(self):
         with patch.object(hermes, "native_pdf_text_available", return_value=True), \
@@ -341,6 +370,26 @@ class SubmissionBoundaryTest(unittest.TestCase):
             self.assertEqual(item.governed_ingestion, "BLOCKED")
             self.assertFalse(fake.acquisitions)
 
+    def test_corrupt_pdf_remains_failed_and_is_not_admitted(self):
+        with patch.object(hermes, "native_pdf_text_available", return_value=False), \
+             patch.object(hermes, "run_docling", side_effect=ValueError("invalid PDF")):
+            result, representation = hermes.make_result_and_representation(
+                "bulk-test", "a" * 64, Path("corrupt.pdf"), b"not-a-pdf", 1,
+            )
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["failure"]["kind"], "CORRUPT_SOURCE")
+        self.assertIsNone(representation)
+
+    def test_no_recognised_pdf_content_remains_failed(self):
+        with patch.object(hermes, "native_pdf_text_available", return_value=False), \
+             patch.object(hermes, "run_docling", return_value={"status": "no_recognisable_content", "reason": "blank pages"}):
+            result, representation = hermes.make_result_and_representation(
+                "bulk-test", "a" * 64, Path("blank.pdf"), b"pdf", 1,
+            )
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["failure"]["kind"], "NO_READABLE_CONTENT")
+        self.assertIsNone(representation)
+
     def test_unauthorized_ocr_required_admission_stays_requires_ocr(self):
         fake = FakeParker()
         fake.source_response = (201, {"status": "REQUIRES_OCR", "evidenceArtifactId": "evidence-scan"})
@@ -384,7 +433,8 @@ class SubmissionBoundaryTest(unittest.TestCase):
     def test_review_required_custodies_source_before_temp_scope_exits(self):
         fake = FakeParker()
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "uncertain.pdf"
+            # Non-PDF preliminary OCR retains the existing human-review gate.
+            path = Path(directory) / "uncertain.png"
             path.write_bytes(b"pending bytes")
             with patch.object(hermes, "run_docling", return_value={"status": "recognised", "confidence": 0.4}):
                 item = hermes.process_one(fake, "bulk-test", path, 1)

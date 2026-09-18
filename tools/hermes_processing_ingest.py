@@ -387,7 +387,15 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
         issue = {"kind": "OCR_UNCERTAINTY", "explanation": explanation}
         if observed_confidence is not None:
             issue["observedConfidence"] = observed_confidence
-        result = {**common, "status": "REVIEW_REQUIRED", "issues": [issue]}
+        if media == "application/pdf":
+            # PDF Docling output is preliminary routing material.  A structurally
+            # valid scanned PDF must reach Parker even when this diagnostic OCR is
+            # partial or below Hermes' local confidence threshold; Parker owns the
+            # authoritative REQUIRES_OCR/admission decision.
+            warning = "Preliminary PDF OCR is uncertain; Parker must make the authoritative REQUIRES_OCR decision"
+            result = {**common, "status": "PASS", "issues": [issue], "processingWarnings": common["processingWarnings"] + [warning]}
+        else:
+            result = {**common, "status": "REVIEW_REQUIRED", "issues": [issue]}
     else:
         result = {**common, "status": "PASS", "issues": []}
     recognised_text = outcome.get("recognisedText")
@@ -399,7 +407,7 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
         "confidence": observed_confidence,
         "completeness": completeness,
         "status": result["status"],
-        "warnings": warnings,
+        "warnings": result.get("processingWarnings", warnings),
         "issues": result["issues"],
         "mechanismVersion": outcome.get("mechanismVersion"),
         "modelIdentity": outcome.get("modelIdentity"),
