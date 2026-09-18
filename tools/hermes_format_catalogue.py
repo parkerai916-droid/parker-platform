@@ -36,9 +36,12 @@ CATALOGUE: tuple[FormatDefinition, ...] = (
     FormatDefinition((".eml",), ("message/rfc822",), "email", "email/MIME parser", "yes", "headers/MIME parts/attachments", False, "not applicable", "multi-part MIME", True, "governed external"),
     FormatDefinition((".msg",), ("application/vnd.ms-outlook", "application/x-ole-storage"), "email", "Apache POI HSMF", "yes", "headers/body/attachment relationships", False, "not applicable", "attachments", True, "native"),
     FormatDefinition((".rtf",), ("application/rtf", "text/rtf", "application/x-rtf"), "document", "bounded RTF reader", "yes", "text and reliable control structure", False, "not applicable", "single document", True, "native"),
-    FormatDefinition((".jpg", ".jpeg", ".png", ".webp"), ("image/jpeg", "image/png", "image/webp"), "image", "Docling/RapidOCR preliminary", "OCR-dependent", "page/frame only when established", True, "EXTERNAL_AUTHORITATIVE", "single frame", True, "Tier B/external OCR"),
+    FormatDefinition((".jpg", ".jpeg"), ("image/jpeg",), "image", "Docling/RapidOCR preliminary", "OCR-dependent", "page/frame only when established", True, "EXTERNAL_AUTHORITATIVE", "single frame", True, "Tier B/external OCR"),
+    FormatDefinition((".png",), ("image/png",), "image", "Docling/RapidOCR preliminary", "OCR-dependent", "page/frame only when established", True, "EXTERNAL_AUTHORITATIVE", "single frame", True, "Tier B/external OCR"),
+    FormatDefinition((".webp",), ("image/webp",), "image", "Docling/RapidOCR preliminary", "OCR-dependent", "page/frame only when established", True, "EXTERNAL_AUTHORITATIVE", "single frame", True, "Tier B/external OCR"),
     FormatDefinition((".tif", ".tiff"), ("image/tiff",), "image", "TIFF frame reader + OCR", "OCR-dependent", "frame identity; no fabricated coordinates", True, "EXTERNAL_AUTHORITATIVE", "single/multi-frame", True, "Tier B/external OCR"),
-    FormatDefinition((".ppt", ".pptx"), ("application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation"), "presentation", "not implemented", "no", "unavailable", False, "not applicable", "multi-slide", True, "planned"),
+    FormatDefinition((".ppt",), ("application/vnd.ms-powerpoint",), "presentation", "not implemented", "no", "unavailable", False, "not applicable", "multi-slide", True, "planned"),
+    FormatDefinition((".pptx",), ("application/vnd.openxmlformats-officedocument.presentationml.presentation",), "presentation", "not implemented", "no", "unavailable", False, "not applicable", "multi-slide", True, "planned"),
     FormatDefinition((".html", ".htm"), ("text/html",), "web", "not implemented", "no", "unavailable", False, "not applicable", "single document", True, "planned"),
     FormatDefinition((".mht", ".mhtml"), ("message/rfc822", "application/x-mimearchive"), "web archive", "not implemented", "no", "unavailable", False, "not applicable", "multi-part MIME", True, "planned"),
     FormatDefinition((".heic", ".heif"), ("image/heic", "image/heif"), "image", "not installed", "no", "unavailable", True, "EXTERNAL_AUTHORITATIVE", "single/multi-frame", True, "planned"),
@@ -65,6 +68,18 @@ def media_type_for_extension(extension: str) -> str | None:
         return exact
     definition = definition_for_extension(normalized)
     return definition.mime_types[0] if definition else None
+
+
+def allowed_media_types_for_extension(extension: str) -> frozenset[str]:
+    """Return the catalogue-declared MIME aliases for one exact extension."""
+    definition = definition_for_extension(extension)
+    return frozenset(definition.mime_types) if definition else frozenset()
+
+
+def media_type_matches_extension(extension: str, declared_media_type: str) -> bool:
+    """Check a declared MIME against the aliases for the named extension."""
+    media_type = declared_media_type.split(";", 1)[0].strip().lower()
+    return media_type in allowed_media_types_for_extension(extension)
 
 
 def supported_extensions() -> tuple[str, ...]:

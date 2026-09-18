@@ -1,6 +1,8 @@
 import unittest
 import importlib.util
 import json
+import http.client
+import threading
 from pathlib import Path
 
 
@@ -177,6 +179,104 @@ class HermesBulkUiHealthTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"batches": []})
         self.assertEqual(calls, [("/agent/ingestion-batches", "test-token")])
+
+
+class HermesBulkUiMultipartHttpTest(unittest.TestCase):
+    def setUp(self):
+        self.server = UI.ThreadingHTTPServer(("127.0.0.1", 0), UI.Handler)
+        self.server.hermes_token = "test-token"
+        self.server.ui_nonce = "test-nonce"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.calls = []
+        self.original_parker_request = UI.parker_request
+        self.original_process_one = UI.process_one
+        UI.parker_request = lambda path, token: (200, b'{"batches":[{"batchId":"bulk-dead-1"}]}')
+
+    def tearDown(self):
+        UI.parker_request = self.original_parker_request
+        UI.process_one = self.original_process_one
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+    def post(self, media, filename, payload=b"{\\rtf1\\ansi Valid RTF}"):
+        content_type, body = multipart(media=media, filename=filename, payload=payload)
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        connection.request("POST", "/api/ingest?batchId=bulk-dead-1", body, {
+            "Content-Type": content_type,
+            "Content-Length": str(len(body)),
+            "X-Hermes-Ui-Nonce": "test-nonce",
+        })
+        response = connection.getresponse()
+        result = response.status, json.loads(response.read())
+        connection.close()
+        return result
+
+    def install_result(self, status="PASS", governed_ingestion="ANALYSIS_READY"):
+        class Item:
+            pending_source_retained = False
+
+            def __init__(self, item_status, item_governed_ingestion):
+                self.item_status = item_status
+                self.item_governed_ingestion = item_governed_ingestion
+
+            def json(self):
+                return {"status": self.item_status, "governed_ingestion": self.item_governed_ingestion}
+
+        def fake_process(client, batch, source_path, timeout, original_filename):
+            self.calls.append((batch, source_path.read_bytes(), original_filename))
+            return Item(status, governed_ingestion)
+
+        UI.process_one = fake_process
+
+    def test_all_rtf_mime_aliases_cross_real_http_boundary(self):
+        self.install_result()
+        for media in ("application/rtf", "text/rtf", "application/x-rtf"):
+            with self.subTest(media=media):
+                status, payload = self.post(media, "document.rtf")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["governed_ingestion"], "ANALYSIS_READY")
+        self.assertEqual([call[2] for call in self.calls], ["document.rtf"] * 3)
+
+    def test_catalogue_alias_for_msg_is_also_accepted(self):
+        self.install_result()
+        status, payload = self.post("application/x-ole-storage", "message.msg", b"msg fixture")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["governed_ingestion"], "ANALYSIS_READY")
+
+    def test_cross_format_mime_declarations_are_rejected_before_processing(self):
+        self.install_result()
+        for media, filename in (("image/png", "document.rtf"), ("text/rtf", "image.png")):
+            with self.subTest(media=media, filename=filename):
+                status, payload = self.post(media, filename, b"not a real document")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload, {"status": "FAILED", "reason": "unsupported media type"})
+        self.assertEqual(self.calls, [])
+
+    def test_malformed_rtf_reaches_downstream_processing_and_fails_truthfully(self):
+        self.install_result(status="FAILED", governed_ingestion="BLOCKED")
+        status, payload = self.post("text/rtf", "corrupt.rtf", b"not RTF")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "FAILED")
+        self.assertEqual(payload["governed_ingestion"], "BLOCKED")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_other_supported_formats_keep_their_declared_mime_boundary(self):
+        self.install_result()
+        for media, filename in (
+            ("text/plain", "notes.txt"),
+            ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "letter.docx"),
+            ("application/vnd.ms-excel", "sheet.xls"),
+            ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sheet.xlsx"),
+            ("message/rfc822", "message.eml"),
+            ("application/pdf", "report.pdf"),
+            ("image/png", "scan.png"),
+        ):
+            with self.subTest(media=media, filename=filename):
+                status, payload = self.post(media, filename, b"fixture")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["governed_ingestion"], "ANALYSIS_READY")
 
 
 if __name__ == "__main__":

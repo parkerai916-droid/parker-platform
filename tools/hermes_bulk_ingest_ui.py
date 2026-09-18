@@ -23,7 +23,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
-    from hermes_format_catalogue import BY_MIME, supported_extensions, supported_mime_types
+    from hermes_format_catalogue import media_type_matches_extension, supported_extensions, supported_mime_types
 except ModuleNotFoundError:  # direct spec loading from the repository tests
     _catalogue_spec = importlib.util.spec_from_file_location("hermes_format_catalogue", Path(__file__).with_name("hermes_format_catalogue.py"))
     if _catalogue_spec is None or _catalogue_spec.loader is None:
@@ -31,12 +31,12 @@ except ModuleNotFoundError:  # direct spec loading from the repository tests
     _catalogue_module = importlib.util.module_from_spec(_catalogue_spec)
     sys.modules["hermes_format_catalogue"] = _catalogue_module
     _catalogue_spec.loader.exec_module(_catalogue_module)
-    BY_MIME = _catalogue_module.BY_MIME
+    media_type_matches_extension = _catalogue_module.media_type_matches_extension
     supported_extensions = _catalogue_module.supported_extensions
     supported_mime_types = _catalogue_module.supported_mime_types
 
 try:
-    from hermes_processing_ingest import ParkerClient, media_type_for, process_one
+    from hermes_processing_ingest import ParkerClient, process_one
 except ModuleNotFoundError:  # also supports direct spec-based test loading
     _processor_spec = importlib.util.spec_from_file_location("hermes_processing_ingest", Path(__file__).with_name("hermes_processing_ingest.py"))
     if _processor_spec is None or _processor_spec.loader is None:
@@ -45,7 +45,6 @@ except ModuleNotFoundError:  # also supports direct spec-based test loading
     sys.modules["hermes_processing_ingest"] = _processor_module
     _processor_spec.loader.exec_module(_processor_module)
     ParkerClient = _processor_module.ParkerClient
-    media_type_for = _processor_module.media_type_for
     process_one = _processor_module.process_one
 
 SUPPORTED = supported_mime_types()
@@ -216,7 +215,8 @@ class Handler(BaseHTTPRequestHandler):
             media, filename, data = parse_multipart_upload(content_type, request_body)
         except MultipartUploadError as error:
             self.send_json(400, {"status": "FAILED", "reason": str(error)}); return
-        if media_type_for(Path(filename)) != media or media not in SUPPORTED: self.send_json(200, {"status":"FAILED", "reason":"unsupported media type"}); return
+        if not media_type_matches_extension(Path(filename).suffix, media) or media not in SUPPORTED:
+            self.send_json(200, {"status":"FAILED", "reason":"unsupported media type"}); return
         if len(data) > MAX_FILE: self.send_json(413, {"status":"FAILED", "reason":"file is too large"}); return
         try:
             source_path = None
