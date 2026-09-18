@@ -330,7 +330,7 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
         if error:
             return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_EMAIL_EXTRACTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": error}}, None)
         return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_EMAIL_EXTRACTION"], "issues": [], "structuredRepresentation": structure}, None)
-    if media in ("application/rtf", "text/rtf"):
+    if media in ("application/rtf", "text/rtf", "application/x-rtf"):
         text, error = rtf_text(data)
         if error:
             return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": {"kind": "CORRUPT_SOURCE", "detail": error}}, None)

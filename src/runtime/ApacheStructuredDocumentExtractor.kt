@@ -17,7 +17,7 @@ class ApacheStructuredDocumentExtractor : StructuredDocumentExtractor {
         return try {
             when (mediaType) {
                 "text/plain" -> text(sourceBytes, sourceSha256, mediaType, StructuredDocumentKind.TXT)
-                "application/rtf", "text/rtf" -> rtf(sourceBytes, sourceSha256, mediaType)
+                "application/rtf", "text/rtf", "application/x-rtf" -> rtf(sourceBytes, sourceSha256, mediaType)
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel" -> workbook(sourceBytes, sourceSha256, mediaType)
                 "application/msword" -> legacyWord(sourceBytes, sourceSha256, mediaType)
                 "application/vnd.ms-outlook", "application/x-ole-storage" -> outlook(sourceBytes, sourceSha256, mediaType)

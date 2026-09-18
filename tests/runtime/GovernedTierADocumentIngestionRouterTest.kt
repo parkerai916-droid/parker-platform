@@ -77,6 +77,24 @@ class GovernedTierADocumentIngestionRouterTest {
         assertEquals(0, storage.prepareCalls); assertTrue(audit.records.isEmpty())
     }
 
+    @Test fun `RTF signature is detected, MIME aliases route natively, and fake RTF fails closed`() = runTest {
+        val storage = RecordingStorage(); val audit = RecordingAudit(); val router = router(storage, audit)
+        val rtf = Files.readAllBytes(FIXTURE_ROOT.resolve("13-parker-rtf-test.rtf"))
+        val admitted = assertIs<TierADocumentRoutingResult.Admitted>(
+            router.ingest(context("renamed.bin", rtf, "application/x-rtf", sha256(rtf))),
+        )
+        assertEquals(TierADocumentFormat.RTF, admitted.format)
+        val representation = assertIs<TierADerivativePayload.Structured>(admitted.payload).value
+        assertEquals(StructuredDocumentKind.RTF, representation.kind)
+        assertTrue(representation.text.contains("PARKER RTF TEST VALUE 44"))
+        assertEquals("application/rtf", representation.originalMediaType, "RTF aliases use application/rtf as Parker's canonical internal media type")
+
+        val fake = "not an RTF document".toByteArray()
+        assertIs<TierADocumentRoutingResult.ExtractionFailed>(
+            router(RecordingStorage(), RecordingAudit()).ingest(context("fake.rtf", fake, "application/rtf", sha256(fake))),
+        )
+    }
+
     @Test fun `near PNG arbitrary ZIP and random eml filename do not false route`() = runTest {
         val router = router(RecordingStorage(), RecordingAudit())
         val nearPng = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x00)

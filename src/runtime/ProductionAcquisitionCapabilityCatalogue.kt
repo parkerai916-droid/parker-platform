@@ -43,7 +43,7 @@ object ProductionAcquisitionCapabilityCatalogue {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "text/plain", "application/msword", "application/vnd.ms-excel",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.ms-outlook", "application/x-ole-storage", "application/rtf", "text/rtf"),
+            "application/vnd.ms-outlook", "application/x-ole-storage", "application/rtf", "text/rtf", "application/x-rtf"),
         setOf(AcquisitionSourceForm.NATIVE_SEARCHABLE),
         AcquisitionFidelityCapabilities(false, true, false, false, false, false,
             pageAssociation = true, regionAssociation = false, uncertaintyReporting = false, structuredOutput = true),
@@ -68,6 +68,7 @@ object ProductionAcquisitionCapabilityCatalogue {
             "application/x-ole-storage" to AcquisitionFidelitySuitability.ACCEPTED,
             "application/rtf" to AcquisitionFidelitySuitability.ACCEPTED,
             "text/rtf" to AcquisitionFidelitySuitability.ACCEPTED,
+            "application/x-rtf" to AcquisitionFidelitySuitability.ACCEPTED,
         ),
     )
 

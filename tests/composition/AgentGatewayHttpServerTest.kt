@@ -1647,6 +1647,61 @@ class AgentGatewayHttpServerTest {
     }
 
     @Test
+    fun `real HTTP RTF ingestion persists native text and reaches analysis ready without OCR`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Real RTF Ingestion Case")
+            val source = Files.readAllBytes(Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/13-parker-rtf-test.rtf"))
+            val sourceSha256 = sha256Of(source)
+            val processing = postProcessingResult(
+                harness.baseUri(), batchId,
+                """{"sourceSha256":"$sourceSha256","status":"PASS","methods":["STRUCTURED_DOCUMENT_EXTRACTION"],"structuredRepresentation":{"text":"PARKER RTF TEST VALUE 44\nSECOND RTF PARAGRAPH"}}""",
+            )
+            assertEquals(201, processing.statusCode())
+
+            val admission = postGovernedIngestion(
+                harness.baseUri(), batchId, sourceSha256, source,
+                contentType = "application/rtf", filename = "13-parker-rtf-test.rtf",
+            )
+            assertEquals(201, admission.statusCode(), admission.body())
+            assertTrue(admission.body().contains("\"status\":\"ANALYSIS_READY\""), admission.body())
+            val evidenceArtifactId = assertNotNull(jsonStringField(admission.body(), "evidenceArtifactId"))
+            val derivativeGenerationId = assertNotNull(jsonStringField(admission.body(), "derivativeGenerationId"))
+
+            val retrieved = harness.runtime.retrieveTierAExtractedContentAsOwner(
+                EvidenceArtifactId(evidenceArtifactId),
+                parker.core.interfaces.DerivativeGenerationId(derivativeGenerationId),
+            )
+            val structured = assertIs<parker.core.interfaces.TierAContentRetrievalOutcome.Retrieved>(retrieved)
+            val representation = assertIs<parker.core.interfaces.TierADerivativePayload.Structured>(structured.payload).value
+            assertEquals(parker.core.interfaces.StructuredDocumentKind.RTF, representation.kind)
+            assertTrue(representation.text.contains("PARKER RTF TEST VALUE 44"))
+            assertTrue(representation.text.contains("SECOND RTF PARAGRAPH"))
+            assertEquals(sourceSha256, representation.sourceSha256)
+            assertEquals("application/rtf", representation.originalMediaType)
+            assertEquals("parker-bounded-rtf", representation.parserIdentity)
+            assertEquals("STRUCTURED_DOCUMENT_EXTRACTION", representation.extractionMethod)
+            assertEquals(EvidenceArtifactId(evidenceArtifactId), structured.record.rootSourceEvidenceArtifactId)
+
+            val acquired = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/agent/evidence/$evidenceArtifactId/acquire"))
+                    .header("Authorization", "Bearer $token")
+                    .POST(HttpRequest.BodyPublishers.noBody()).build(),
+            )
+            assertEquals(200, acquired.statusCode(), acquired.body())
+            assertTrue(acquired.body().contains("\"status\":\"COMPLETED\""), acquired.body())
+            val acquiredGenerationId = assertNotNull(jsonStringField(acquired.body(), "derivativeGenerationId"))
+            val acquiredContent = harness.runtime.retrieveTierAExtractedContentAsOwner(
+                EvidenceArtifactId(evidenceArtifactId),
+                parker.core.interfaces.DerivativeGenerationId(acquiredGenerationId),
+            )
+            val acquiredStructured = assertIs<parker.core.interfaces.TierAContentRetrievalOutcome.Retrieved>(acquiredContent)
+            val acquiredRepresentation = assertIs<parker.core.interfaces.TierADerivativePayload.Structured>(acquiredStructured.payload).value
+            assertEquals(parker.core.interfaces.StructuredDocumentKind.RTF, acquiredRepresentation.kind)
+            assertTrue(acquiredRepresentation.text.contains("PARKER RTF TEST VALUE 44"))
+        }
+    }
+
+    @Test
     fun `real HTTP PDF OCR handoff persists a source-bound derivative and acquire uses it`() = runTest {
         withRealHarness(token, enableCaseClassification = true) { harness ->
             val batchId = harness.activateHermesAndMintBatch("Real PDF OCR Handoff Case")

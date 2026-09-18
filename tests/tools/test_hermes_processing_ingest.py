@@ -246,6 +246,12 @@ class ProcessingDecisionTest(unittest.TestCase):
         bad = hermes.make_result("bulk-test", "a" * 64, Path("note.rtf"), b"not rtf", 1)
         self.assertEqual(bad["status"], "FAILED")
 
+    def test_rtf_mime_alias_remains_native_and_never_uses_ocr(self):
+        result = hermes.make_result("bulk-test", "a" * 64, Path("note.rtf"), b"{\\rtf1\\ansi Alias RTF text}", 1)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["methods"], ["STRUCTURED_DOCUMENT_EXTRACTION"])
+        self.assertNotIn("OCR", result["methods"])
+
     def test_tiff_frames_are_counted_but_local_ocr_is_not_authoritative(self):
         # Little-endian TIFF with two empty IFDs linked together.
         data = bytearray(b"II" + (42).to_bytes(2, "little") + (8).to_bytes(4, "little"))

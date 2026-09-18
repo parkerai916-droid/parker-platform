@@ -131,7 +131,7 @@ internal class GovernedAcquisitionOwnerWorkflow(
             media == "application/vnd.ms-excel" ||
             media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
             media == "application/vnd.ms-outlook" || media == "application/x-ole-storage" ||
-            media == "application/rtf" || media == "text/rtf"
+            media == "application/rtf" || media == "text/rtf" || media == "application/x-rtf"
         val image = media.startsWith("image/")
         val pdfInspection = if (media == "application/pdf") {
             when (val resolved = authoritativeSourceResolver.resolve(ownerPrincipalId, manifest.evidenceArtifactId)) {

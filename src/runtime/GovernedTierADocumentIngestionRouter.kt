@@ -37,13 +37,14 @@ class GovernedTierADocumentIngestionRouter internal constructor(
         XLS -> TierADocumentFormat.XLS
         XLSX -> TierADocumentFormat.XLSX
         MSG, MSG_OLE -> TierADocumentFormat.MSG
-        RTF, RTF_TEXT -> TierADocumentFormat.RTF
+        RTF, RTF_TEXT, RTF_X -> TierADocumentFormat.RTF
         PDF -> TierADocumentFormat.PDF
         else -> null
     }
 
     private fun detect(bytes: ByteArray): String? {
         if (bytes.size >= 5 && String(bytes, 0, 5, StandardCharsets.ISO_8859_1) == "%PDF-") return PDF
+        if (bytes.size >= 5 && String(bytes, 0, 5, StandardCharsets.ISO_8859_1) == "{\\rtf") return RTF
         if (bytes.size >= PNG_SIGNATURE.size && bytes.copyOfRange(0, PNG_SIGNATURE.size).contentEquals(PNG_SIGNATURE)) return PNG
         if (bytes.size >= 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
             var entries = 0; var contentTypes = false; var document = false
@@ -118,7 +119,7 @@ class GovernedTierADocumentIngestionRouter internal constructor(
     companion object {
         const val TXT = "text/plain"; const val CSV = "text/csv"; const val EML = "message/rfc822"; const val PDF = "application/pdf"; const val PNG = "image/png"
         const val DOC = "application/msword"; const val XLS = "application/vnd.ms-excel"; const val XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        const val MSG = "application/vnd.ms-outlook"; const val MSG_OLE = "application/x-ole-storage"; const val RTF = "application/rtf"; const val RTF_TEXT = "text/rtf"
+        const val MSG = "application/vnd.ms-outlook"; const val MSG_OLE = "application/x-ole-storage"; const val RTF = "application/rtf"; const val RTF_TEXT = "text/rtf"; const val RTF_X = "application/x-rtf"
         const val DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         const val MAX_DETECTION_ZIP_ENTRIES = 100
         const val MAX_HEADER_DETECTION_BYTES = 64 * 1024
