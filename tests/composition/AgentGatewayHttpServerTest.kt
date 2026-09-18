@@ -6,6 +6,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.reflect.full.declaredFunctions
 import kotlinx.coroutines.test.runTest
 import parker.core.interfaces.EvidenceArtifactId
@@ -67,6 +68,7 @@ class AgentGatewayHttpServerTest {
         val manifestCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
         val submitCalls: MutableList<Pair<parker.core.interfaces.CandidateEvidenceArtifact, String?>> = mutableListOf(),
         val acquireCalls: MutableList<EvidenceArtifactId> = mutableListOf(),
+        val ocrRepresentationCalls: MutableList<Pair<String, parker.core.interfaces.HermesOcrRepresentation>> = mutableListOf(),
         val submitProcessingResultCalls: MutableList<Pair<String, parker.core.interfaces.HermesProcessingResult>> = mutableListOf(),
         val listProcessingResultCalls: MutableList<String> = mutableListOf(),
         val submitGovernedIngestionCalls: MutableList<Triple<String, String, parker.core.interfaces.CandidateEvidenceArtifact>> = mutableListOf(),
@@ -90,6 +92,7 @@ class AgentGatewayHttpServerTest {
             requestAcquisitionAsAgent = { id -> acquireCalls.add(id); acquireResult },
             listReadyIngestionBatchesAsAgent = { readyBatches },
             submitProcessingResultAsAgent = { batchId, result -> submitProcessingResultCalls.add(batchId to result); submitProcessingResultResult },
+            submitOcrRepresentationAsAgent = { batchId, representation -> ocrRepresentationCalls.add(batchId to representation); parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult.AlreadyAdmitted },
             listProcessingResultsForBatchAsAgent = { batchId -> listProcessingResultCalls.add(batchId); listProcessingResultsResult },
             submitGovernedIngestionAsAgent = { batchId, sha, candidate -> submitGovernedIngestionCalls.add(Triple(batchId, sha, candidate)); submitGovernedIngestionResult },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
@@ -123,6 +126,39 @@ class AgentGatewayHttpServerTest {
         assertEquals(401, unauthorised.statusCode())
     }
 
+    @Test
+    fun `HTTP parser accepts PDF PASS COMPLETE and PDF PASS PARTIAL OCR representations`() = withFakeHarness { fake ->
+        val sourceSha = "a".repeat(64)
+        fun body(completeness: String) = """
+            {"evidenceArtifactId":"evidence-pdf","sourceSha256":"$sourceSha","originalFilename":"scan.pdf","originalMediaType":"application/pdf","processingMethod":"OCR","status":"PASS","recognisedText":"scanned text","derivativeContentSha256":"${parker.core.interfaces.CanonicalPagePixelDigests.sha256("scanned text".toByteArray())}","confidence":0.62,"completeness":"$completeness","warnings":["preliminary"],"issues":[{"kind":"OCR_UNCERTAINTY","explanation":"low confidence","observedConfidence":0.62}],"mechanismVersion":"docling-test","modelIdentity":"rapidocr-test","modelVersion":"model-test"}
+        """.trimIndent()
+        listOf("COMPLETE", "PARTIAL").forEach { completeness ->
+            val response = send(HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-pdf/ocr-representations/$sourceSha"))
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body(completeness))).build())
+            assertEquals(200, response.statusCode())
+        }
+        assertEquals(listOf("COMPLETE", "PARTIAL"), fake.ocrRepresentationCalls.map { it.second.completeness.name })
+        assertTrue(fake.ocrRepresentationCalls.all { it.second.originalMediaType == "application/pdf" })
+    }
+
+    @Test
+    fun `HTTP parser rejects source hash mismatch and malformed OCR representation`() = withFakeHarness { fake ->
+        val routeSha = "a".repeat(64)
+        val mismatch = send(HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-pdf/ocr-representations/$routeSha"))
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString("{\"sourceSha256\":\"${"b".repeat(64)}\"}")).build())
+        assertEquals(400, mismatch.statusCode())
+        val malformed = send(HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-pdf/ocr-representations/$routeSha"))
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString("not-json")).build())
+        assertEquals(400, malformed.statusCode())
+        assertTrue(fake.ocrRepresentationCalls.isEmpty())
+    }
+
     private fun realConfig(enableCaseClassification: Boolean = false): ParkerRuntimeConfig {
         val base = ParkerRuntimeConfig(
             modelEndpointUrl = "http://127.0.0.1:1/api/generate",
@@ -151,8 +187,9 @@ class AgentGatewayHttpServerTest {
         )
     }
 
-    private class RealHarness(val runtime: ParkerRuntime, val server: AgentGatewayHttpServer) {
+    private class RealHarness(val runtime: ParkerRuntime, val server: AgentGatewayHttpServer, val accessAuditLogFile: Path, val logger: RecordingParkerLogger) {
         fun baseUri(): String = "http://127.0.0.1:${server.boundPort}"
+        fun accessAuditLines(): List<String> = Files.readAllLines(accessAuditLogFile)
         suspend fun stop() {
             server.stop()
             runtime.shutdown()
@@ -164,7 +201,8 @@ class AgentGatewayHttpServerTest {
         enableCaseClassification: Boolean = false,
         block: suspend (RealHarness) -> Unit,
     ) {
-        val runtime = ParkerRuntime(realConfig(enableCaseClassification), RecordingParkerLogger())
+        val logger = RecordingParkerLogger()
+        val runtime = ParkerRuntime(realConfig(enableCaseClassification), logger)
         runtime.start()
         val auditLogFile = Files.createTempDirectory("agent-gateway-http-real-audit").resolve("audit.log")
         val server = AgentGatewayHttpServer(
@@ -176,12 +214,13 @@ class AgentGatewayHttpServerTest {
             submitSourceAsAgent = { candidate, advisory -> runtime.submitSourceAsAgent(candidate, advisory) },
             requestAcquisitionAsAgent = { id -> runtime.requestAcquisitionAsAgent(id) },
             submitProcessingResultAsAgent = { batchId, result -> runtime.submitProcessingResultAsAgent(batchId, result) },
+            submitOcrRepresentationAsAgent = { batchId, representation -> runtime.submitOcrRepresentationAsAgent(batchId, representation) },
             listProcessingResultsForBatchAsAgent = { batchId -> runtime.listProcessingResultsForBatchAsAgent(batchId) },
             submitGovernedIngestionAsAgent = { batchId, sha, candidate -> runtime.submitGovernedIngestionAsAgent(batchId, sha, candidate) },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
-            logger = RecordingParkerLogger(),
+            logger = logger,
         ).also { it.start() }
-        val harness = RealHarness(runtime, server)
+        val harness = RealHarness(runtime, server, auditLogFile, logger)
         try {
             block(harness)
         } finally {
@@ -1314,13 +1353,57 @@ class AgentGatewayHttpServerTest {
 
     // ================= Hermes Governed Ingestion, Task 3 (fake harness: isolated HTTP layer) =================
 
-    private fun postGovernedIngestion(baseUri: String, batchId: String, sha256: String, bytes: ByteArray = "content".toByteArray(), bearer: String = token): HttpResponse<String> = send(
+    private fun postGovernedIngestion(
+        baseUri: String,
+        batchId: String,
+        sha256: String,
+        bytes: ByteArray = "content".toByteArray(),
+        bearer: String = token,
+        contentType: String = "text/plain",
+        filename: String? = null,
+    ): HttpResponse<String> = send(
         HttpRequest.newBuilder(URI.create("$baseUri/agent/ingestion-batches/$batchId/sources/$sha256"))
             .header("Authorization", "Bearer $bearer")
-            .header("Content-Type", "text/plain")
+            .header("Content-Type", contentType)
+            .apply { if (filename != null) header("X-Original-Filename", filename) }
             .POST(HttpRequest.BodyPublishers.ofByteArray(bytes))
             .build(),
     )
+
+    private fun postOcrRepresentation(
+        baseUri: String,
+        batchId: String,
+        sourceSha256: String,
+        evidenceArtifactId: String,
+        originalFilename: String,
+        recognisedText: String,
+        derivativeContentSha256: String,
+        completeness: String = "PARTIAL",
+        confidence: String = "0.62",
+        bearer: String = token,
+    ): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("$baseUri/agent/ingestion-batches/$batchId/ocr-representations/$sourceSha256"))
+            .header("Authorization", "Bearer $bearer")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(
+                """{"evidenceArtifactId":"$evidenceArtifactId","sourceSha256":"$sourceSha256","originalFilename":"$originalFilename","originalMediaType":"application/pdf","processingMethod":"OCR","status":"PASS","recognisedText":${jsonQuote(recognisedText)},"derivativeContentSha256":"$derivativeContentSha256","confidence":$confidence,"completeness":"$completeness","warnings":["preliminary OCR confidence below local threshold"],"issues":[{"kind":"OCR_UNCERTAINTY","explanation":"preliminary OCR is lower confidence but source admission remains Parker-governed"}],"mechanismVersion":"hermes-docling-preingestion-v1","modelIdentity":"docling","modelVersion":"sha256:${"a".repeat(64)}"}""",
+            )).build(),
+    )
+
+    private fun jsonQuote(value: String): String = buildString {
+        append('"')
+        value.forEach { character ->
+            when (character) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> append(character)
+            }
+        }
+        append('"')
+    }
 
     @Test
     fun `governed ingestion with a missing credential is rejected before the coordinator is reached`() = withFakeHarness { fake ->
@@ -1560,6 +1643,100 @@ class AgentGatewayHttpServerTest {
             assertEquals(bytes.size, retrieved.byteLength)
             val caseId = harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(evidenceArtifactId))
             assertNotNull(caseId, "governed ingestion must complete real case binding, not just registration")
+        }
+    }
+
+    @Test
+    fun `real HTTP PDF OCR handoff persists a source-bound derivative and acquire uses it`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Real PDF OCR Handoff Case")
+            val source = Files.readAllBytes(Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/03-scanned.pdf"))
+            val sourceSha256 = sha256Of(source)
+            val recognisedText = "Scanned PDF text preserved through the governed local OCR handoff."
+            val recognisedTextSha256 = sha256Of(recognisedText.toByteArray())
+
+            val processing = postProcessingResult(
+                harness.baseUri(),
+                batchId,
+                """{"sourceSha256":"$sourceSha256","status":"PASS","methods":["OCR"],"processingCompleteness":"PARTIAL","processingWarnings":["preliminary OCR confidence below local threshold"],"issues":[{"kind":"OCR_UNCERTAINTY","explanation":"preliminary OCR uncertainty retained"}]}""",
+            )
+            assertEquals(201, processing.statusCode())
+
+            val admission = postGovernedIngestion(
+                harness.baseUri(), batchId, sourceSha256, source,
+                contentType = "application/pdf", filename = "03-scanned.pdf",
+            )
+            assertEquals(202, admission.statusCode())
+            assertTrue(admission.body().contains("\"status\":\"REQUIRES_OCR\""), admission.body())
+            val evidenceArtifactId = assertNotNull(jsonStringField(admission.body(), "evidenceArtifactId"))
+
+            // A malformed/mismatched handoff is rejected before any derivative exists, and the
+            // following acquire therefore remains authorization-gated rather than silently
+            // pretending that local OCR was admitted.
+            val rejected = postOcrRepresentation(
+                harness.baseUri(), batchId, sourceSha256, evidenceArtifactId, "03-scanned.pdf",
+                recognisedText, "0".repeat(64),
+            )
+            assertEquals(409, rejected.statusCode(), rejected.body())
+            val acquireBeforeAdmission = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/agent/evidence/$evidenceArtifactId/acquire"))
+                    .header("Authorization", "Bearer $token")
+                    .POST(HttpRequest.BodyPublishers.noBody()).build(),
+            )
+            assertEquals(409, acquireBeforeAdmission.statusCode())
+            assertTrue(acquireBeforeAdmission.body().contains("\"status\":\"AUTHORIZATION_REQUIRED\""), acquireBeforeAdmission.body())
+
+            val admitted = postOcrRepresentation(
+                harness.baseUri(), batchId, sourceSha256, evidenceArtifactId, "03-scanned.pdf",
+                recognisedText, recognisedTextSha256,
+            )
+            assertEquals(201, admitted.statusCode(), admitted.body() + " logs=" + harness.logger.entries.map { it.throwable?.stackTraceToString() ?: it.message })
+            val derivativeGenerationId = assertNotNull(jsonStringField(admitted.body(), "derivativeGenerationId"))
+
+            val candidates = harness.runtime.listDerivativeGenerationsAsOwner(EvidenceArtifactId(evidenceArtifactId))
+            assertEquals(1, candidates.size)
+            assertEquals(derivativeGenerationId, candidates.single().derivativeGenerationId.value)
+            assertTrue(candidates.single().contentAvailable)
+            assertEquals(EvidenceArtifactId(evidenceArtifactId), candidates.single().rootSourceEvidenceArtifactId)
+            assertEquals(parker.core.interfaces.OcrAuthorityClassification.LOCAL_PRELIMINARY, candidates.single().authority)
+            assertTrue(candidates.single().warnings.any { it.contains("preliminary") })
+
+            val retrieved = harness.runtime.retrieveTierAExtractedContentAsOwner(
+                EvidenceArtifactId(evidenceArtifactId),
+                parker.core.interfaces.DerivativeGenerationId(derivativeGenerationId),
+            )
+            val retrievedOcr = assertIs<parker.core.interfaces.TierAContentRetrievalOutcome.Retrieved>(retrieved)
+            val ocrPayload = assertIs<parker.core.interfaces.TierADerivativePayload.Ocr>(retrievedOcr.payload).value
+            assertEquals(recognisedText, ocrPayload.recognisedText)
+            assertEquals(EvidenceArtifactId(evidenceArtifactId), retrievedOcr.record.rootSourceEvidenceArtifactId)
+            assertEquals(sourceSha256, ocrPayload.processingProvenance?.sourceManifestSha256?.value)
+            assertEquals("application/pdf", ocrPayload.processingProvenance?.sourceMediaType)
+            assertEquals(0.62, retrievedOcr.record.confidence)
+            assertTrue(retrievedOcr.record.warnings.contains("preliminary OCR confidence below local threshold"))
+            assertTrue(retrievedOcr.record.warnings.contains("preliminary OCR is lower confidence but source admission remains Parker-governed"))
+            assertEquals(parker.core.interfaces.DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS, retrievedOcr.record.completenessState)
+            assertEquals("docling", retrievedOcr.record.producerIdentity.pluginIdentity)
+            assertEquals("docling", retrievedOcr.record.producerIdentity.modelIdentity)
+            assertEquals(null, ocrPayload.providerProvenance, "Hermes preliminary OCR must not be classified as external-authoritative provider output")
+
+            val processingReadBack = getProcessingResults(harness.baseUri(), batchId)
+            assertTrue(processingReadBack.body().contains("preliminary OCR uncertainty retained"))
+            assertTrue(harness.accessAuditLines().any { it.contains("ocr-representation.submit") && it.contains("REGISTERED") })
+
+            val acquireAfterAdmission = send(
+                HttpRequest.newBuilder(URI.create("${harness.baseUri()}/agent/evidence/$evidenceArtifactId/acquire"))
+                    .header("Authorization", "Bearer $token")
+                    .POST(HttpRequest.BodyPublishers.noBody()).build(),
+            )
+            assertEquals(200, acquireAfterAdmission.statusCode(), acquireAfterAdmission.body())
+            assertTrue(acquireAfterAdmission.body().contains("\"status\":\"COMPLETED\""), acquireAfterAdmission.body())
+            assertTrue(acquireAfterAdmission.body().contains("\"derivativeGenerationId\":\"$derivativeGenerationId\""), acquireAfterAdmission.body())
+
+            val ingestionAudit = harness.runtime.privateField<parker.composition.ParkerRuntimeConfig>("config")
+            val auditText = Files.readString(Path.of(ingestionAudit.documentIngestionAuditLogPath))
+            assertTrue(auditText.contains("stage=ADMISSION_AUTHORISED"), auditText)
+            assertTrue(auditText.contains("stage=ADMITTED"), auditText)
+            assertTrue(auditText.contains("derivativeGenerationId=${java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(derivativeGenerationId.toByteArray())}"), auditText)
         }
     }
 

@@ -21,8 +21,8 @@ data class HermesOcrRepresentation(
     init {
         require(sourceSha256.matches(Regex("^[0-9a-f]{64}$"))) { "sourceSha256 must be a lowercase SHA-256 digest" }
         require(originalFilename.isNotBlank())
-        require(originalMediaType == "image/jpeg" || originalMediaType == "image/png" || originalMediaType == "image/webp") {
-            "only image OCR representations are accepted"
+        require(originalMediaType == "application/pdf" || originalMediaType == "image/jpeg" || originalMediaType == "image/png" || originalMediaType == "image/webp") {
+            "only PDF or image OCR representations are accepted"
         }
         require(processingMethod == HermesProcessingMethod.OCR) { "Hermes OCR representation must use OCR processing" }
         require(recognisedText.isNotBlank()) { "recognisedText must not be blank" }
@@ -34,8 +34,12 @@ data class HermesOcrRepresentation(
         require(status == HermesProcessingStatus.PASS || status == HermesProcessingStatus.REVIEW_REQUIRED) {
             "FAILED OCR results cannot submit a representation"
         }
-        require(status != HermesProcessingStatus.PASS || completeness == HermesProcessingCompleteness.COMPLETE) {
-            "PASS requires complete OCR"
+        require(
+            status != HermesProcessingStatus.PASS ||
+                completeness == HermesProcessingCompleteness.COMPLETE ||
+                (originalMediaType == "application/pdf" && completeness == HermesProcessingCompleteness.PARTIAL),
+        ) {
+            "PASS requires complete OCR except for preliminary PDF OCR, which may be partial"
         }
     }
 }

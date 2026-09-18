@@ -623,6 +623,7 @@ class DerivativeGenerationCoordinator(
             producerIdentity = producerIdentity,
             transformationHistory = transformationHistory,
             completenessState = completenessState,
+            pageAccounting = result.pageAccounting.takeIf { persistProcessingProvenance },
             processingProvenance = result.processingProvenance.takeIf { persistProcessingProvenance },
             providerProvenance = result.providerProvenance.takeIf { persistProcessingProvenance },
             recognisedAt = result.recognisedAt.takeIf { persistProcessingProvenance },

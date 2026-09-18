@@ -333,7 +333,9 @@ internal class AgentGatewayEvidenceProjection(
             materialTransformation = parker.core.interfaces.OcrMaterialTransformation(
                 mechanismIdentity = "docling",
                 mechanismVersion = representation.mechanismVersion,
-                sourcePageScope = parker.core.interfaces.OcrPageScope(listOf(1)),
+                // The representation contract carries no page alignment. Preserve that fact as
+                // an empty/unknown scope rather than fabricating page 1 provenance.
+                sourcePageScope = parker.core.interfaces.OcrPageScope(emptyList()),
             ),
         )
         val result = parker.core.interfaces.OcrRecognitionResult(
@@ -351,14 +353,20 @@ internal class AgentGatewayEvidenceProjection(
             warnings = representation.warnings,
             processingProvenance = processing,
         )
-        val outcomeKind = if (representation.status == parker.core.interfaces.HermesProcessingStatus.PASS)
+        val outcomeKind = if (representation.status == parker.core.interfaces.HermesProcessingStatus.PASS &&
+            representation.completeness == parker.core.interfaces.HermesProcessingCompleteness.COMPLETE)
             parker.core.interfaces.OcrDerivativeOutcomeKind.RECOGNISED
         else parker.core.interfaces.OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED
+        val degradationReason = if (outcomeKind == parker.core.interfaces.OcrDerivativeOutcomeKind.PARTIAL_OR_DEGRADED) {
+            representation.issues.firstOrNull()?.explanation
+                ?: representation.warnings.firstOrNull()
+                ?: "Hermes preliminary OCR was incomplete or degraded"
+        } else null
         val outcome = coordinator.ingestOcr(
             representation.evidenceArtifactId,
             result,
             outcomeKind,
-            representation.issues.firstOrNull()?.explanation,
+            degradationReason,
             hermesPrincipalId,
             "hermes-ocr-${batchId}-${representation.sourceSha256}",
             if (representation.status == parker.core.interfaces.HermesProcessingStatus.PASS)

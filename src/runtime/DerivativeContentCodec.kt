@@ -67,6 +67,8 @@ internal object DerivativeContentCodec {
     const val STRUCTURED_REPRESENTATION_VERSION = 2
     const val PDF_REPRESENTATION_VERSION = 2
     const val OCR_REPRESENTATION_VERSION = 3
+    /** OCR provenance without asserting an external provider or fabricated page accounting. */
+    const val OCR_PROVENANCE_REPRESENTATION_VERSION = 5
     const val OCR_AUTHORITY_REPRESENTATION_VERSION = 4
     const val OCR_V2_REPRESENTATION_VERSION = 2
     const val OCR_LEGACY_REPRESENTATION_VERSION = 1
@@ -118,9 +120,13 @@ internal object DerivativeContentCodec {
                         val v3 = v2 && payload.value.providerProvenance?.transcriptionConfiguration is
                             OcrTranscriptionConfiguration.DigestedConfiguration
                         val authorityVersion = payload.value.authority != null
-                        output.writeInt(if (authorityVersion) OCR_AUTHORITY_REPRESENTATION_VERSION else
+                        val provenanceOnly = payload.value.processingProvenance != null && payload.value.recognisedAt != null &&
+                            (!v2 || payload.value.providerProvenance == null)
+                        output.writeInt(if (provenanceOnly) OCR_PROVENANCE_REPRESENTATION_VERSION else if (authorityVersion) OCR_AUTHORITY_REPRESENTATION_VERSION else
                             when { v3 -> OCR_REPRESENTATION_VERSION; v2 -> OCR_V2_REPRESENTATION_VERSION; else -> OCR_LEGACY_REPRESENTATION_VERSION })
-                        if (authorityVersion) {
+                        if (provenanceOnly) {
+                            output.writeOcrV5(payload.value)
+                        } else if (authorityVersion) {
                             output.writeOcrV4(payload.value, when { v3 -> OCR_REPRESENTATION_VERSION; v2 -> OCR_V2_REPRESENTATION_VERSION; else -> OCR_LEGACY_REPRESENTATION_VERSION })
                         } else when { v3 -> output.writeOcrV3(payload.value); v2 -> output.writeOcrV2(payload.value); else -> output.writeOcr(payload.value) }
                     }
@@ -183,6 +189,7 @@ internal object DerivativeContentCodec {
                         OCR_LEGACY_REPRESENTATION_VERSION -> input.readOcr()
                         OCR_V2_REPRESENTATION_VERSION -> input.readOcrV2()
                         OCR_REPRESENTATION_VERSION -> input.readOcrV3()
+                        OCR_PROVENANCE_REPRESENTATION_VERSION -> input.readOcrV5()
                         OCR_AUTHORITY_REPRESENTATION_VERSION -> input.readOcrV4()
                         else -> throw UnsupportedRepresentationVersionException(representationVersion)
                     }
@@ -470,6 +477,75 @@ internal object DerivativeContentCodec {
             OcrSha256Digest(readString(MAX_SHORT_STRING_BYTES)),
         )
         return v2.copy(providerProvenance = provider.copy(transcriptionConfiguration = configuration))
+    }
+
+    /** Versioned path for preliminary OCR that has truthful processing provenance but no
+     * provider provenance/page alignment. It must not be forced through the external-provider
+     * v2 shape because provider provenance is also the policy signal for external authority. */
+    private fun DataOutputStream.writeOcrV5(r: OcrDerivativeExtractedResult) {
+        writeOcr(r)
+        writeNullableString(r.authority?.name)
+        writeBoolean(r.pageAccounting != null)
+        r.pageAccounting?.let { accounting ->
+            writeScope(accounting.requestedScope); writeScope(accounting.submittedScope); writeScope(accounting.returnedScope)
+            writeCollectionSize(accounting.pageOutcomes.size)
+            accounting.pageOutcomes.forEach { page ->
+                writeInt(page.pageNumber); writeString(page.outcome.name, MAX_SHORT_STRING_BYTES)
+                writeBoolean(page.reason != null); page.reason?.let { writeString(it.classification, MAX_SHORT_STRING_BYTES); writeNullableString(it.detail) }
+                writeStrings(page.warnings); writeCollectionSize(page.uncertaintySpans.size)
+                page.uncertaintySpans.forEach { span ->
+                    writeInt(span.pageNumber); writeInt(span.startOffsetInclusive); writeInt(span.endOffsetExclusive)
+                    writeString(span.kind.name, MAX_SHORT_STRING_BYTES); writeString(span.disclosure, MAX_SHORT_STRING_BYTES)
+                }
+            }
+        }
+        writeBoolean(r.processingProvenance != null)
+        r.processingProvenance?.let { processing ->
+            writeString(processing.sourceEvidenceArtifactId.value, MAX_SHORT_STRING_BYTES)
+            writeString(processing.sourceManifestSha256.value, MAX_SHORT_STRING_BYTES)
+            writeString(processing.sourceMediaType, MAX_SHORT_STRING_BYTES); writeLong(processing.sourceByteLength)
+            writeNullableScope(processing.requestedPageScope); writeNullableScope(processing.submittedPageScope)
+            writeString(processing.representationMediaType, MAX_SHORT_STRING_BYTES); writeLong(processing.representationByteLength)
+            writeString(processing.representationSha256.value, MAX_SHORT_STRING_BYTES); writeBoolean(processing.byteExactCopy)
+            writeString(processing.processingProfileIdentity, MAX_SHORT_STRING_BYTES); writeString(processing.createdAt.toString(), MAX_SHORT_STRING_BYTES)
+            writeBoolean(processing.materialTransformation != null)
+            processing.materialTransformation?.let { t ->
+                writeString(t.mechanismIdentity, MAX_SHORT_STRING_BYTES); writeString(t.mechanismVersion, MAX_SHORT_STRING_BYTES); writeScope(t.sourcePageScope)
+                writeNullableInt(t.dpi); writeBoolean(t.dimensions != null); t.dimensions?.let { writeInt(it.width); writeInt(it.height) }
+                writeNullableDouble(t.rotationDegrees); writeNullableString(t.colourMode); writeNullableDouble(t.scaleX); writeNullableDouble(t.scaleY)
+                writeBoolean(t.crop != null); t.crop?.let { writeInt(it.leftPx); writeInt(it.topPx); writeInt(it.widthPx); writeInt(it.heightPx) }
+                writeNullableString(t.compression)
+            }
+        }
+        writeBoolean(r.recognisedAt != null); r.recognisedAt?.let { writeString(it.toString(), MAX_SHORT_STRING_BYTES) }
+    }
+
+    private fun DataInputStream.readOcrV5(): OcrDerivativeExtractedResult {
+        val base = readOcr()
+        val authority = readNullableString()?.let { enumValueOf<OcrAuthorityClassification>(it) }
+        val accounting = if (readBoolean()) OcrPageAccounting(readScope(), readScope(), readScope(), List(readOcrCount("page outcome")) {
+            val pageNumber = readInt(); val kind = enumValueOf<OcrPageOutcomeKind>(readString(MAX_SHORT_STRING_BYTES))
+            val reason = if (readBoolean()) OcrPageOutcomeReason(readString(MAX_SHORT_STRING_BYTES), readNullableString()) else null
+            val warnings = readStrings()
+            val spans = List(readOcrCount("uncertainty span")) {
+                OcrUncertaintySpan(readInt(), readInt(), readInt(), enumValueOf(readString(MAX_SHORT_STRING_BYTES)), readString(MAX_SHORT_STRING_BYTES))
+            }
+            OcrPageOutcome(pageNumber, kind, reason, warnings, spans)
+        }) else null
+        val processing = if (readBoolean()) OcrProcessingProvenance(
+            EvidenceArtifactId(readString(MAX_SHORT_STRING_BYTES)), OcrSha256Digest(readString(MAX_SHORT_STRING_BYTES)),
+            readString(MAX_SHORT_STRING_BYTES), readLong(), readNullableScope(), readNullableScope(),
+            readString(MAX_SHORT_STRING_BYTES), readLong(), OcrSha256Digest(readString(MAX_SHORT_STRING_BYTES)), readBoolean(),
+            readString(MAX_SHORT_STRING_BYTES), Instant.parse(readString(MAX_SHORT_STRING_BYTES)),
+            if (readBoolean()) OcrMaterialTransformation(
+                readString(MAX_SHORT_STRING_BYTES), readString(MAX_SHORT_STRING_BYTES), readScope(), readNullableInt(),
+                if (readBoolean()) OcrPixelDimensions(readInt(), readInt()) else null, readNullableDouble(), readNullableString(),
+                readNullableDouble(), readNullableDouble(), if (readBoolean()) OcrCropParameters(readInt(), readInt(), readInt(), readInt()) else null,
+                readNullableString(),
+            ) else null,
+        ) else null
+        val recognisedAt = if (readBoolean()) Instant.parse(readString(MAX_SHORT_STRING_BYTES)) else null
+        return base.copy(pageAccounting = accounting, processingProvenance = processing, recognisedAt = recognisedAt, authority = authority)
     }
 
     private fun DataOutputStream.writeOcrV4(r: OcrDerivativeExtractedResult, baseVersion: Int) {

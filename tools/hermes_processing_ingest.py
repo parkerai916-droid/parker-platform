@@ -102,6 +102,16 @@ def acquisition_error(evidence_artifact_id: str, status: int, payload: object) -
             "response": payload}
 
 
+def ocr_representation_error(batch_id: str, source_sha256: str, status: int, payload: object) -> dict:
+    """Return a browser-safe diagnostic for failed governed OCR handoff."""
+    return {
+        "endpoint": f"/agent/ingestion-batches/{batch_id}/ocr-representations/{source_sha256}",
+        "sourceSha256": source_sha256,
+        "httpStatus": status,
+        "response": payload,
+    }
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -499,10 +509,26 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
         # Docling result may still be retained as explicitly preliminary diagnostic material,
         # but it can never turn a source-only admission into COMPLETE_INGESTION.
         if representation is not None and isinstance(representation.get("recognisedText"), str) and representation["recognisedText"].strip():
-            evidence_id = payload.get("evidenceArtifactId")
-            if isinstance(evidence_id, str) and evidence_id:
-                representation["evidenceArtifactId"] = evidence_id
-                client.submit_ocr_representation(batch_id, digest, representation)
+                evidence_id = payload.get("evidenceArtifactId")
+                if isinstance(evidence_id, str) and evidence_id:
+                    representation["evidenceArtifactId"] = evidence_id
+                    representation_code, representation_payload = client.submit_ocr_representation(batch_id, digest, representation)
+                    if not (
+                        representation_code in (200, 201) and
+                        isinstance(representation_payload, dict) and
+                        representation_payload.get("status") in ("ADMITTED", "ALREADY_ADMITTED")
+                    ):
+                        return ProcessedFile(
+                            display_name,
+                            digest,
+                            "PASS",
+                            result["methods"],
+                            submission,
+                            "OCR_HANDOFF_FAILED",
+                            f"OCR representation admission failed: HTTP_{representation_code} {representation_payload}",
+                            False,
+                            ocr_representation_error(batch_id, digest, representation_code, representation_payload),
+                        )
         # Parker's persisted evidence processing projection is the shared state source for
         # Dual and Owner presentations. The legacy status remains a transport fallback only for
         # older Parker gateways; current gateways return processingState explicitly.

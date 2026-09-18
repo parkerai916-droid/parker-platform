@@ -277,6 +277,7 @@ class FakeParker:
         self.representations = []
         self.acquisitions = []
         self.source_response = (201, {"status": "INGESTED", "evidenceArtifactId": "evidence-test"})
+        self.representation_response = (201, {"status": "ADMITTED", "derivativeGenerationId": "generation-test"})
         self.acquire_response = (200, {"status": "COMPLETED", "evidenceArtifactId": "evidence-test", "derivativeGenerationId": "external-generation"})
 
     def submit_result(self, batch_id, result):
@@ -293,7 +294,7 @@ class FakeParker:
 
     def submit_ocr_representation(self, batch_id, source_hash, representation):
         self.representations.append((batch_id, source_hash, representation))
-        return 201, {"status": "ADMITTED", "derivativeGenerationId": "generation-test"}
+        return self.representation_response
 
     def submit_pending_review_source(self, batch_id, source_hash, data, filename, media):
         self.pending.append((batch_id, source_hash, data, filename, media))
@@ -466,6 +467,25 @@ class SubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(fake.representations[0][2]["evidenceArtifactId"], "evidence-test")
         self.assertEqual(fake.representations[0][2]["recognisedText"], outcome["recognisedText"])
         self.assertFalse(fake.acquisitions)
+
+    def test_failed_pdf_ocr_handoff_is_visible_and_does_not_acquire(self):
+        fake = FakeParker()
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "processingState": "REQUIRES_OCR", "evidenceArtifactId": "evidence-pdf"})
+        fake.representation_response = (400, {"error": "malformed OCR representation", "detail": "only PDF or image OCR representations are accepted"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.pdf"
+            path.write_bytes(b"pdf bytes")
+            with patch.object(hermes, "run_docling", return_value={
+                "status": "recognised", "recognisedText": "scanned text", "confidence": 0.62,
+                "mechanismVersion": "docling-test", "modelIdentity": "rapidocr-test", "modelVersion": "model-test",
+            }):
+                item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.governed_ingestion, "OCR_HANDOFF_FAILED")
+        self.assertEqual(item.acquisition_attempted, False)
+        self.assertEqual(fake.acquisitions, [])
+        self.assertEqual(item.submission_error["httpStatus"], 400)
+        self.assertEqual(item.submission_error["sourceSha256"], hermes.sha256_bytes(b"pdf bytes"))
+        self.assertIn("only PDF or image OCR representations are accepted", item.reason)
 
 
 if __name__ == "__main__":

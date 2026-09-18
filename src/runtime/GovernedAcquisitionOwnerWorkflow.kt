@@ -160,10 +160,10 @@ internal class GovernedAcquisitionOwnerWorkflow(
         derivativeDiscoveryProjection?.discover(evidenceArtifactId)
             ?.filter {
                 it.rootSourceEvidenceArtifactId == evidenceArtifactId &&
-                    it.derivativeKind == "External transcription recognised text" &&
+                    it.derivativeKind in setOf("External transcription recognised text", "OCR recognised text") &&
                     it.operationalOutcome == DerivativeOperationalOutcome.USABLE &&
                     it.contentAvailable &&
-                    it.authority == OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE &&
+                    it.authority in setOf(OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE, OcrAuthorityClassification.LOCAL_PRELIMINARY) &&
                     DerivativeTransformation.OCR in it.transformationHistory &&
                     it.completenessState in setOf(
                         DerivativeCompletenessState.ACCOUNTED_FOR,
