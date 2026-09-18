@@ -40,7 +40,15 @@ except ModuleNotFoundError:  # direct spec loading from the repository tests
 
 
 BRIDGE = Path(__file__).with_name("docling-ocr-bridge.py")
+NATIVE_PDF_TEXT_PROBE = Path(__file__).with_name("hermes_native_pdf_text.py")
 REVIEW_CONFIDENCE_THRESHOLD = 0.80
+# Parker's authoritative extractor accepts one non-whitespace character
+# (TikaEvidenceExtractor.SEARCHABLE_TEXT_THRESHOLD == 1). These deliberately
+# separate constants are only Hermes' preliminary routing heuristic: Hermes
+# requires materially usable text before it suppresses its own Docling
+# diagnostic run, but it never changes Parker's authoritative decision.
+HERMES_PRELIMINARY_NATIVE_TEXT_MIN_CHARS = 32
+HERMES_PRELIMINARY_NATIVE_TEXT_MIN_TOKENS = 5
 
 
 class ParkerRequestError(RuntimeError):
@@ -242,6 +250,52 @@ def run_docling(path: Path, media_type: str, timeout: float) -> dict:
     return value
 
 
+def native_pdf_text_available(path: Path, timeout: float) -> bool:
+    """Return true only when an embedded/native PDF text layer is readable.
+
+    Probe failure is deliberately treated as unknown, so Hermes falls through
+    to the existing Docling path rather than claiming native text it could not
+    verify.  The probe is PDFium text extraction only; it does not render or
+    OCR pages.
+    """
+    python = os.environ.get("HERMES_DOCLING_PYTHON", "/home/steve/docling-venv/bin/python")
+    try:
+        completed = subprocess.run(
+            [python, str(NATIVE_PDF_TEXT_PROBE), str(path.absolute())],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if completed.returncode != 0:
+        return False
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return False
+    pages = value.get("pages") if isinstance(value, dict) else None
+    return native_pdf_text_usable(pages)
+
+
+def native_pdf_text_usable(pages: object) -> bool:
+    """Apply Hermes' conservative preliminary Docling-routing heuristic.
+
+    Parker alone decides authoritative native-PDF usability. The normalized
+    character count is comparable to Parker's trim-and-count signal, while the
+    higher Hermes-only minimum prevents page numbers, watermarks, or tiny
+    hidden text fragments from suppressing Docling. Short legitimate PDFs may
+    therefore run through Docling even though Parker will still use their
+    native NO_OCR derivative if Parker's own criterion is satisfied.
+    """
+    if not isinstance(pages, list) or not all(isinstance(page, str) for page in pages):
+        return False
+    normalized = " ".join(" ".join(page.split()) for page in pages)
+    tokens = re.findall(r"[\w]+", normalized, flags=re.UNICODE)
+    return len(normalized) >= HERMES_PRELIMINARY_NATIVE_TEXT_MIN_CHARS and len(tokens) >= HERMES_PRELIMINARY_NATIVE_TEXT_MIN_TOKENS
+
+
 def make_result_and_representation(batch_id: str, source_hash: str, path: Path, data: bytes, timeout: float, original_filename: str | None = None) -> tuple[dict, dict | None]:
     media = media_type_for(path)
     definition = definition_for_extension(path.suffix)
@@ -291,6 +345,14 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
             kind = "CORRUPT_SOURCE" if "corrupt" in error else "NO_READABLE_CONTENT"
             return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": {"kind": kind, "detail": error}}, None)
         return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": []}, None)
+    if media == "application/pdf" and native_pdf_text_available(path, timeout):
+        return ({
+            "sourceSha256": source_hash,
+            "status": "PASS",
+            "methods": ["DIRECT_TEXT_EXTRACTION"],
+            "issues": [],
+            "processingCompleteness": "COMPLETE",
+        }, None)
     try:
         outcome = run_docling(path, media, timeout)
     except TimeoutError as error:
@@ -315,7 +377,9 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
         "methods": ["OCR"],
         "reviewConfidenceThreshold": REVIEW_CONFIDENCE_THRESHOLD,
         "processingCompleteness": completeness,
-        "processingWarnings": warnings,
+        "processingWarnings": warnings + ([
+            "Hermes Docling output is preliminary PDF routing diagnostics only; Parker remains authoritative for native PDF usability and derivative selection."
+        ] if media == "application/pdf" else []),
     }
     uncertain = status == "partial" or (observed_confidence is not None and observed_confidence < REVIEW_CONFIDENCE_THRESHOLD)
     if uncertain:

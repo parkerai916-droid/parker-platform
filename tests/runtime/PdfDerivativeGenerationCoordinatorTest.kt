@@ -35,6 +35,50 @@ class PdfDerivativeGenerationCoordinatorTest {
         assertNotEquals(first.record.derivativeGenerationId, second.record.derivativeGenerationId); assertNotNull(storage.retrieve(first.record.derivativeGenerationId)); assertNotNull(storage.retrieve(second.record.derivativeGenerationId)); assertEquals(4, audit.records.size); assertContentEquals(original, bytes)
     }
 
+    @Test fun `ordinary searchable PDF reprocessing is idempotent when durable stores support discovery`() = runTest {
+        val bytes = Files.readAllBytes(TikaPdfStructuralExtractorTest.FIXTURE_01)
+        val generationsRoot = directory.resolve("idempotent-generations").also(Files::createDirectory)
+        val contentsRoot = directory.resolve("idempotent-content").also(Files::createDirectory)
+        val storage = FileSystemDerivativeGenerationStorage(generationsRoot)
+        val contents = FileSystemDerivativeContentStorage(contentsRoot)
+        val audit = RecordingAudit()
+        val coordinator = coordinator(storage, audit, listOf("unused-a", "unused-b"), contentStorage = contents)
+
+        val first = assertIs<PdfDerivativeGenerationCoordinationOutcome.Admitted>(coordinator.ingestPdf(source(bytes), PRINCIPAL, "idempotent-a"))
+        val second = assertIs<PdfDerivativeGenerationCoordinationOutcome.Admitted>(coordinator.ingestPdf(source(bytes), PRINCIPAL, "idempotent-b"))
+
+        assertEquals(first.record.derivativeGenerationId, second.record.derivativeGenerationId)
+        assertEquals(1, storage.findGenerationsForEvidence(EvidenceArtifactId("pdf-source")).size)
+        assertEquals(2, audit.records.size)
+        assertNotNull(contents.retrieve(first.record.derivativeGenerationId))
+    }
+
+    @Test fun `whole-document fallback remains idempotent without page segments`() = runTest {
+        val bytes = Files.readAllBytes(TikaPdfStructuralExtractorTest.FIXTURE_01)
+        val generationsRoot = directory.resolve("whole-generations").also(Files::createDirectory)
+        val contentsRoot = directory.resolve("whole-content").also(Files::createDirectory)
+        val storage = FileSystemDerivativeGenerationStorage(generationsRoot)
+        val contents = FileSystemDerivativeContentStorage(contentsRoot)
+        val audit = RecordingAudit()
+        val wholeDocumentExtractor = PdfStructuralExtractor {
+            val extracted = assertIs<PdfStructuralExtractionOutcome.Extracted>(TikaPdfStructuralExtractor().extract(it)).result
+            PdfStructuralExtractionOutcome.Extracted(extracted.copy(
+                pageTextAssociationAvailable = false,
+                pageTextSegments = emptyList(),
+                producerIdentity = TikaPdfStructuralExtractor.PRODUCER_IDENTITY,
+            ))
+        }
+        val coordinator = coordinator(storage, audit, listOf("unused-a", "unused-b"), wholeDocumentExtractor, contents)
+
+        val first = assertIs<PdfDerivativeGenerationCoordinationOutcome.Admitted>(coordinator.ingestPdf(source(bytes), PRINCIPAL, "whole-a"))
+        val second = assertIs<PdfDerivativeGenerationCoordinationOutcome.Admitted>(coordinator.ingestPdf(source(bytes), PRINCIPAL, "whole-b"))
+
+        assertEquals(first.record.derivativeGenerationId, second.record.derivativeGenerationId)
+        assertTrue(first.pdfStructure.pageTextSegments.isEmpty())
+        assertEquals(1, storage.findGenerationsForEvidence(EvidenceArtifactId("pdf-source")).size)
+        assertNotNull(storage.retrieve(first.record.derivativeGenerationId))
+    }
+
     @Test fun `integrity extractor persistence and audit failures preserve boundaries`() = runTest {
         val fixture = Files.readAllBytes(TikaPdfStructuralExtractorTest.FIXTURE_01); val storage = SpyStorage()
         assertIs<PdfDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed>(coordinator(storage, RecordingAudit(), listOf("i")).ingestPdf(PdfIngestionSource(EvidenceArtifactId("pdf-source"), fixture, "0".repeat(64)), PRINCIPAL, "i"))
@@ -46,10 +90,11 @@ class PdfDerivativeGenerationCoordinatorTest {
         val admittedStorage = SpyStorage(); val reconciled = assertIs<PdfDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed>(coordinator(admittedStorage, RecordingAudit(2), listOf("d")).ingestPdf(source(fixture), PRINCIPAL, "d")); assertEquals(reconciled.record, admittedStorage.admitted)
     }
 
-    private fun coordinator(storage: DerivativeGenerationStorage, audit: DocumentIngestionAudit, ids: List<String>, extractor: PdfStructuralExtractor = TikaPdfStructuralExtractor()): DerivativeGenerationCoordinator {
+    private fun coordinator(storage: DerivativeGenerationStorage, audit: DocumentIngestionAudit, ids: List<String>, extractor: PdfStructuralExtractor = TikaPdfStructuralExtractor(), contentStorage: DerivativeContentStorage? = null): DerivativeGenerationCoordinator {
         val iterator = ids.iterator(); return DerivativeGenerationCoordinator(ApacheCommonsCsvExtractor(), storage, audit,
             idFactory = { DerivativeGenerationId(iterator.next()) }, now = { Instant.parse("2026-08-23T00:00:00Z") },
-            emlExtractor = ApacheJamesMime4jExtractor(), docxExtractor = ApachePoiXwpfExtractor(), pdfExtractor = extractor)
+            emlExtractor = ApacheJamesMime4jExtractor(), docxExtractor = ApachePoiXwpfExtractor(), pdfExtractor = extractor,
+            contentStorage = contentStorage)
     }
     private fun source(bytes: ByteArray) = PdfIngestionSource(EvidenceArtifactId("pdf-source"), bytes, sha256(bytes))
     private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

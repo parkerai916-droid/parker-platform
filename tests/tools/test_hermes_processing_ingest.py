@@ -21,6 +21,9 @@ spec.loader.exec_module(hermes)
 
 
 class ProcessingDecisionTest(unittest.TestCase):
+    SEARCHABLE_FIXTURE = ROOT / "tests" / "fixtures" / "document-ingestion-bakeoff" / "fixtures" / "01-searchable-simple.pdf"
+    SCANNED_FIXTURE = ROOT / "tests" / "fixtures" / "document-ingestion-bakeoff" / "fixtures" / "03-scanned.pdf"
+
     def test_text_is_pass_and_uses_direct_extraction(self):
         result = hermes.make_result("bulk-test", "a" * 64, Path("source.txt"), b"hello Parker\n", 1)
         self.assertEqual(result["status"], "PASS")
@@ -66,8 +69,59 @@ class ProcessingDecisionTest(unittest.TestCase):
         self.assertEqual(result["issues"][0]["observedConfidence"], 0.74)
         self.assertEqual(result["reviewConfidenceThreshold"], 0.80)
         self.assertEqual(result["processingCompleteness"], "PARTIAL")
-        self.assertEqual(result["processingWarnings"], ["page 3 was incomplete"])
+        self.assertEqual(result["processingWarnings"][0], "page 3 was incomplete")
+        self.assertIn("preliminary PDF routing diagnostics", result["processingWarnings"][1])
         self.assertNotIn("failure", result)
+
+    def test_searchable_pdf_is_native_and_does_not_invoke_docling(self):
+        with patch.object(hermes, "native_pdf_text_available", return_value=True), \
+             patch.object(hermes, "run_docling", side_effect=AssertionError("Docling must not run")):
+            result, representation = hermes.make_result_and_representation(
+                "bulk-test", "a" * 64, Path("searchable.pdf"), b"pdf", 1,
+            )
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["methods"], ["DIRECT_TEXT_EXTRACTION"])
+        self.assertIsNone(representation)
+
+    def test_native_text_usability_rejects_tiny_stray_text_and_accepts_material_text(self):
+        self.assertFalse(hermes.native_pdf_text_usable(["1"]))
+        self.assertFalse(hermes.native_pdf_text_usable(["CONFIDENTIAL"]))
+        self.assertFalse(hermes.native_pdf_text_usable(["x y z"]))
+        self.assertTrue(hermes.native_pdf_text_usable([
+            "Parker searchable evidence contains materially usable embedded text."
+        ]))
+
+    @unittest.skipUnless(Path("/home/steve/docling-venv/bin/python").exists(), "native PDF probe runtime is unavailable")
+    def test_real_searchable_pdf_uses_native_route_before_docling(self):
+        data = self.SEARCHABLE_FIXTURE.read_bytes()
+        with patch.object(hermes, "run_docling", side_effect=AssertionError("Docling must not run")):
+            result, representation = hermes.make_result_and_representation(
+                "bulk-test", hermes.sha256_bytes(data), self.SEARCHABLE_FIXTURE, data, 5,
+            )
+        self.assertEqual(result["methods"], ["DIRECT_TEXT_EXTRACTION"])
+        self.assertIsNone(representation)
+
+    @unittest.skipUnless(Path("/home/steve/docling-venv/bin/python").exists(), "native PDF probe runtime is unavailable")
+    def test_real_image_only_pdf_uses_docling_route(self):
+        data = self.SCANNED_FIXTURE.read_bytes()
+        with patch.object(hermes, "run_docling", return_value={"status": "recognised"}) as docling:
+            result = hermes.make_result("bulk-test", hermes.sha256_bytes(data), self.SCANNED_FIXTURE, data, 5)
+        self.assertEqual(result["methods"], ["OCR"])
+        docling.assert_called_once()
+
+    def test_scanned_pdf_falls_through_to_docling(self):
+        with patch.object(hermes, "native_pdf_text_available", return_value=False), \
+             patch.object(hermes, "run_docling", return_value={"status": "recognised"}) as docling:
+            result = hermes.make_result("bulk-test", "a" * 64, Path("scanned.pdf"), b"pdf", 1)
+        self.assertEqual(result["methods"], ["OCR"])
+        docling.assert_called_once()
+
+    def test_pdf_docling_label_is_explicitly_preliminary(self):
+        with patch.object(hermes, "native_pdf_text_available", return_value=False), \
+             patch.object(hermes, "run_docling", return_value={"status": "recognised"}):
+            result = hermes.make_result("bulk-test", "a" * 64, Path("short.pdf"), b"pdf", 1)
+        self.assertEqual(result["methods"], ["OCR"])
+        self.assertIn("preliminary PDF routing diagnostics", result["processingWarnings"][0])
 
     def test_missing_ocr_confidence_stays_absent(self):
         outcome = {"status": "recognised", "warnings": []}

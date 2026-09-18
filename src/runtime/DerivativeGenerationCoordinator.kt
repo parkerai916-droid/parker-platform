@@ -20,6 +20,7 @@ import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationRecord
 import parker.core.interfaces.DerivativeGenerationStorage
 import parker.core.interfaces.DerivativeGenerationStorageException
+import parker.core.interfaces.DerivativeGenerationDiscovery
 import parker.core.interfaces.DerivativeCompletenessState
 import parker.core.interfaces.DerivativeOperationalOutcome
 import parker.core.interfaces.DerivativeParentReference
@@ -405,7 +406,11 @@ class DerivativeGenerationCoordinator(
             is PdfStructuralExtractionOutcome.Extracted -> outcome.result
         }
         if (sha256(source.content) != source.expectedSha256) return PdfDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 changed during PDF extraction")
-        val id = idFactory()
+        findEquivalentPdf(source, extracted)?.let { existing ->
+            return PdfDerivativeGenerationCoordinationOutcome.Admitted(existing.first, existing.second)
+        }
+        val idempotentPdfPersistence = storage is DerivativeGenerationDiscovery && contentStorage != null
+        val id = if (idempotentPdfPersistence) stablePdfGenerationId(source, extracted) else idFactory()
         val boundExtracted = extracted.copy(pageTextSegments = extracted.pageTextSegments.map { segment ->
             require(segment.sourceSha256 == source.expectedSha256) { "PDF page segment source digest does not match the governed source" }
             segment.copy(derivativeGenerationId = id)
@@ -416,8 +421,22 @@ class DerivativeGenerationCoordinator(
             DerivativeContentIdentity.NoCanonicalSerialization, boundExtracted.completenessState,
             DerivativeOperationalOutcome.USABLE, boundExtracted.warnings,
         )
-        publishContentFirst(id, source.evidenceArtifactId, TierADerivativePayload.Pdf(boundExtracted))?.let {
-            return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
+        val payload = TierADerivativePayload.Pdf(boundExtracted)
+        publishContentFirst(id, source.evidenceArtifactId, payload)?.let { failure ->
+            // A deterministic id makes the content-first sequence restart-safe.  If a
+            // previous process published content and stopped before the record, verify the
+            // exact payload and continue with the record; never accept a mismatched payload.
+            if (idempotentPdfPersistence) {
+                existingPdfById(id, source.evidenceArtifactId, payload)?.let { existing ->
+                    return PdfDerivativeGenerationCoordinationOutcome.Admitted(existing.first, existing.second)
+                }
+            }
+            if (!idempotentPdfPersistence || !contentMatches(id, source.evidenceArtifactId, payload)) {
+                findEquivalentPdf(source, extracted)?.let { existing ->
+                    return PdfDerivativeGenerationCoordinationOutcome.Admitted(existing.first, existing.second)
+                }
+                return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, failure)
+            }
         }
         try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) { return PdfDerivativeGenerationCoordinationOutcome.PreparationFailed(id, e.message ?: e::class.simpleName.orEmpty()) }
         try { audit.record(auditRecord(correlationValue, source.evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMISSION_AUTHORISED)) }
@@ -427,6 +446,124 @@ class DerivativeGenerationCoordinator(
         catch (e: DocumentIngestionAuditException) { return PdfDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, boundExtracted, e.message ?: e::class.simpleName.orEmpty()) }
         return PdfDerivativeGenerationCoordinationOutcome.Admitted(record, boundExtracted)
     }
+
+    private suspend fun findEquivalentPdf(
+        source: PdfIngestionSource,
+        extracted: PdfStructuralResult,
+    ): Pair<DerivativeGenerationRecord, PdfStructuralResult>? {
+        val discovery = storage as? DerivativeGenerationDiscovery ?: return null
+        val contents = contentStorage ?: return null
+        val records = try {
+            discovery.findGenerationsForEvidence(source.evidenceArtifactId)
+        } catch (_: Exception) {
+            return null
+        }
+        for (record in records) {
+            if (record.derivativeKind != "Searchable PDF literal text" ||
+                record.operationalOutcome != DerivativeOperationalOutcome.USABLE ||
+                record.producerIdentity != extracted.producerIdentity ||
+                record.transformationHistory != extracted.transformationHistory ||
+                record.completenessState != extracted.completenessState ||
+                record.warnings != extracted.warnings
+            ) continue
+            val entry = try { contents.retrieve(record.derivativeGenerationId) } catch (_: Exception) { null } ?: continue
+            if (entry.rootSourceEvidenceArtifactId != source.evidenceArtifactId) continue
+            val pdf = (entry.payload as? TierADerivativePayload.Pdf)?.value ?: continue
+            // Historical whole-document PDFs did not persist a source digest in a page
+            // segment.  Do not collapse those records against a new source merely because
+            // their extracted text happens to compare equal: source identity must remain
+            // explicit for idempotent reuse.
+            if (pdf.pageTextSegments.isEmpty() || pdf.pageTextSegments.any { it.sourceSha256 != source.expectedSha256 }) continue
+            if (normalisePdf(pdf) == normalisePdf(extracted)) return record to pdf
+        }
+        return null
+    }
+
+    private suspend fun contentMatches(
+        id: DerivativeGenerationId,
+        evidenceArtifactId: EvidenceArtifactId,
+        payload: TierADerivativePayload,
+    ): Boolean {
+        val entry = try { contentStorage?.retrieve(id) } catch (_: Exception) { null } ?: return false
+        return entry.rootSourceEvidenceArtifactId == evidenceArtifactId && entry.payload == payload
+    }
+
+    private suspend fun existingPdfById(
+        id: DerivativeGenerationId,
+        evidenceArtifactId: EvidenceArtifactId,
+        expectedPayload: TierADerivativePayload,
+    ): Pair<DerivativeGenerationRecord, PdfStructuralResult>? {
+        val record = try { storage.retrieve(id) } catch (_: Exception) { null } ?: return null
+        if (record.rootSourceEvidenceArtifactId != evidenceArtifactId || record.derivativeKind != "Searchable PDF literal text") return null
+        val entry = try { contentStorage?.retrieve(id) } catch (_: Exception) { null } ?: return null
+        if (entry.rootSourceEvidenceArtifactId != evidenceArtifactId || entry.payload != expectedPayload) return null
+        val pdf = (entry.payload as? TierADerivativePayload.Pdf)?.value ?: return null
+        return record to pdf
+    }
+
+    private fun stablePdfGenerationId(source: PdfIngestionSource, extracted: PdfStructuralResult): DerivativeGenerationId {
+        val fingerprint = canonicalPdfFingerprint(source, extracted)
+        val digest = MessageDigest.getInstance("SHA-256").digest(fingerprint.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return DerivativeGenerationId("pdf-native-$digest")
+    }
+
+    /** Versioned, field-ordered identity input; never rely on data-class toString(). */
+    private fun canonicalPdfFingerprint(source: PdfIngestionSource, result: PdfStructuralResult): String = buildString {
+        appendField("version", "pdf-native-fingerprint-v1")
+        appendField("evidence", source.evidenceArtifactId.value)
+        appendField("sourceSha256", source.expectedSha256)
+        appendField("documentText", result.documentText)
+        appendField("pageCount", result.pageCount?.toString())
+        appendField("pageTextAssociationAvailable", result.pageTextAssociationAvailable.toString())
+        appendField("metadata.count", result.metadata.size.toString())
+        result.metadata.forEachIndexed { index, value ->
+            appendField("metadata[$index].name", value.name)
+            appendField("metadata[$index].value", value.value)
+            appendField("metadata[$index].representation", value.representation)
+        }
+        appendField("embeddedResources.count", result.embeddedResources.size.toString())
+        result.embeddedResources.forEachIndexed { index, value ->
+            appendField("embeddedResources[$index].fileName", value.declaredFileName)
+            appendField("embeddedResources[$index].mediaType", value.declaredMediaType)
+        }
+        appendField("producer.pluginIdentity", result.producerIdentity.pluginIdentity)
+        appendField("producer.pluginVersion", result.producerIdentity.pluginVersion)
+        appendField("producer.configurationIdentity", result.producerIdentity.configurationIdentity)
+        appendField("producer.adapterIdentity", result.producerIdentity.adapterIdentity)
+        appendField("producer.adapterVersion", result.producerIdentity.adapterVersion)
+        appendField("producer.modelIdentity", result.producerIdentity.modelIdentity)
+        appendField("producer.modelVersion", result.producerIdentity.modelVersion)
+        appendField("transformations.count", result.transformationHistory.size.toString())
+        result.transformationHistory.forEachIndexed { index, value -> appendField("transformations[$index]", value.name) }
+        appendField("completeness", result.completenessState.name)
+        appendField("warnings.count", result.warnings.size.toString())
+        result.warnings.forEachIndexed { index, value -> appendField("warnings[$index]", value) }
+        appendField("pageSegments.count", result.pageTextSegments.size.toString())
+        result.pageTextSegments.forEachIndexed { index, segment ->
+            appendField("pageSegments[$index].pageNumber", segment.pageNumber.toString())
+            appendField("pageSegments[$index].text", segment.text)
+            appendField("pageSegments[$index].startOffset", segment.startOffset.toString())
+            appendField("pageSegments[$index].endOffset", segment.endOffset.toString())
+            appendField("pageSegments[$index].sectionHeading", segment.sectionHeading)
+            appendField("pageSegments[$index].region.left", segment.region?.left?.toString())
+            appendField("pageSegments[$index].region.top", segment.region?.top?.toString())
+            appendField("pageSegments[$index].region.right", segment.region?.right?.toString())
+            appendField("pageSegments[$index].region.bottom", segment.region?.bottom?.toString())
+            appendField("pageSegments[$index].extractionMethod", segment.extractionMethod)
+            appendField("pageSegments[$index].confidence", segment.confidence?.toString())
+            appendField("pageSegments[$index].sourceSha256", segment.sourceSha256)
+        }
+    }
+
+    private fun StringBuilder.appendField(name: String, value: String?) {
+        val encoded = value ?: "<null>"
+        append(name).append(':').append(encoded.toByteArray(Charsets.UTF_8).size).append(':').append(encoded).append(';')
+    }
+
+    private fun normalisePdf(result: PdfStructuralResult): PdfStructuralResult = result.copy(
+        pageTextSegments = result.pageTextSegments.map { it.copy(derivativeGenerationId = null) },
+    )
 
     /**
      * Document Ingestion — Tier B Durable OCR Derivative Content Scope

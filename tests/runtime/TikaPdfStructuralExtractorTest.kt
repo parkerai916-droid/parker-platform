@@ -24,10 +24,11 @@ class TikaPdfStructuralExtractorTest {
         assertTrue("Whitespace control: Alpha     Beta  Gamma" in result.documentText)
         assertTrue("PAGE-2-ONLY: KŌWHAI-SECOND-PAGE-882" in result.documentText)
         assertEquals(2, result.pageCount)
-        assertFalse(result.pageTextAssociationAvailable)
-        assertTrue(result.pageTextSegments.isEmpty())
+        assertTrue(result.pageTextAssociationAvailable)
+        assertEquals(listOf(1, 2), result.pageTextSegments.map { it.pageNumber })
+        assertTrue(result.pageTextSegments[1].text.contains("PAGE-2-ONLY: KŌWHAI-SECOND-PAGE-882"))
         assertTrue(result.embeddedResources.isEmpty())
-        assertEquals(ApacheTikaIdentity, result.producerIdentity)
+        assertEquals(TikaPdfStructuralExtractor.PAGE_AWARE_PRODUCER_IDENTITY, result.producerIdentity)
         assertFalse(DerivativeTransformation.OCR in result.transformationHistory)
         assertContentEquals(original, bytes)
     }
@@ -36,6 +37,8 @@ class TikaPdfStructuralExtractorTest {
         val result = extracted(Files.readAllBytes(FIXTURE_02))
         CONTROLS_02.forEach { assertTrue(it in result.documentText, "missing literal control: $it") }
         assertEquals(1, result.pageCount)
+        assertTrue(result.pageTextAssociationAvailable)
+        assertEquals(listOf(1), result.pageTextSegments.map { it.pageNumber })
         assertTrue(result.documentText.indexOf("L1 Alpha one") < result.documentText.indexOf("TABLE-END"))
         assertTrue(result.warnings.any { "no column, table, or layout reconstruction" in it })
         assertEquals(DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS, result.completenessState)

@@ -81,17 +81,36 @@ class TikaPdfStructuralExtractor(
         private fun pageSegments(bytes: ByteArray, expectedPageCount: Int?, sourceDigest: String, documentText: String): List<PageTextSegment>? = try {
             Loader.loadPDF(bytes).use { document ->
                 if (expectedPageCount != null && document.numberOfPages != expectedPageCount) return null
+                if (document.numberOfPages == 1 && documentText.isNotBlank()) {
+                    return listOf(PageTextSegment(
+                        pageNumber = 1,
+                        text = documentText,
+                        startOffset = 0,
+                        endOffset = documentText.length,
+                        extractionMethod = "Tika PDFParser single-page text",
+                        sourceSha256 = sourceDigest,
+                    ))
+                }
                 val extracted = mutableListOf<PageTextSegment>(); var sourceOffset = 0
                 for (page in 1..document.numberOfPages) {
                     val text = PDFTextStripper().apply { startPage = page; endPage = page }.getText(document)
-                    val offset = documentText.indexOf(text, sourceOffset)
-                    if (offset < 0) return null
-                    val end = offset + text.length
-                    extracted += PageTextSegment(page, text, offset, end, extractionMethod = "PDFBox page text", sourceSha256 = sourceDigest)
-                    sourceOffset = end
+                    val match = locatePageText(documentText, text, sourceOffset) ?: return null
+                    extracted += PageTextSegment(page, documentText.substring(match.first, match.second), match.first, match.second,
+                        extractionMethod = "PDFBox page text", sourceSha256 = sourceDigest)
+                    sourceOffset = match.second
                 }
                 extracted
             }
         } catch (_: Exception) { null }
+
+        private fun locatePageText(documentText: String, pageText: String, sourceOffset: Int): Pair<Int, Int>? {
+            val exact = documentText.indexOf(pageText, sourceOffset)
+            if (exact >= 0) return exact to exact + pageText.length
+            val tokens = pageText.trim().split(Regex("\\s+")).filter(String::isNotEmpty)
+            if (tokens.isEmpty()) return null
+            val pattern = tokens.joinToString("\\s+") { Regex.escape(it) }
+            val match = Regex(pattern).find(documentText, sourceOffset) ?: return null
+            return match.range.first to (match.range.last + 1)
+        }
     }
 }
