@@ -66,6 +66,36 @@ class OwnerAnalysisInvocationCoordinatorTest {
     }
 
     @Test
+    fun `completed owner analysis is durably persisted before completion is returned`() = runTest {
+        val packageValue = AnalysisRetrievalPackage(
+            AnalysisRequestId.new(), "What date?", AnalysisType.ISSUE_ANALYSIS,
+            AnalysisEvidenceScope(listOf(evidence), mapOf(evidence.value to generation)),
+            listOf(AnalysisRetrievedEvidence(evidence, AgentGatewayEvidenceManifestProjection(evidence, "a".repeat(64), 4, "text/plain", "source.txt"))),
+        )
+        val storage = object : GovernedAnalysisResultStorage {
+            var stored: GovernedAnalysisResult? = null
+            override suspend fun createOrGet(result: GovernedAnalysisResult): GovernedAnalysisResultCreationOutcome {
+                stored = stored ?: result
+                return GovernedAnalysisResultCreationOutcome.Created(result)
+            }
+            override suspend fun findByAnalysisRequestId(analysisRequestId: AnalysisRequestId): GovernedAnalysisResult? = stored
+        }
+        val result = OwnerAnalysisInvocationCoordinator(
+            resolvePreferredDerivative = { PreferredDerivativeResolution.Preferred(evidence, candidate(), "only") },
+            submitGovernedAnalysis = { request -> AnalysisRequestResult.Accepted(packageValue.copy(requestId = request.requestId)) },
+            hermesInvoker = object : HermesAnalysisInvoker {
+                override suspend fun invoke(question: String, analysisType: AnalysisType, governedPackage: AnalysisRetrievalPackage) =
+                    HermesAnalysisInvocation("""{"answer":"supported","findings":[],"contraryEvidence":[],"uncertainties":[],"evidenceGaps":[],"conclusion":"supported"}""", "session-1")
+            },
+            governedAnalysisResultStorage = storage,
+        ).invoke(OwnerAnalysisInvocationRequest("What date?", listOf(evidence), caseId = caseId))
+        assertIs<OwnerAnalysisInvocationOutcome.Completed>(result)
+        assertEquals(result.analysisRequestId, storage.stored?.analysisRequestId)
+        assertEquals(caseId, storage.stored?.caseId)
+        assertEquals(generation, storage.stored?.evidenceScope?.single()?.derivativeGenerationId)
+    }
+
+    @Test
     fun `ambiguity prevents governed retrieval and Hermes invocation`() = runTest {
         var called = false
         val result = coordinator(

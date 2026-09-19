@@ -30,6 +30,8 @@ import parker.core.interfaces.EvidenceDeletionResult
 import parker.core.interfaces.EvidenceIntelligence
 import parker.core.interfaces.EvidenceRetrievalResult
 import parker.core.interfaces.EvidenceManifestRetrievalResult
+import parker.core.interfaces.AnalysisRequestId
+import parker.core.interfaces.GovernedAnalysisResult
 import parker.core.interfaces.ExternalTranscriptionExecutionBinding
 import parker.core.interfaces.ExternalTranscriptionMechanism
 import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
@@ -128,6 +130,10 @@ import parker.core.runtime.DeterministicAgentStepSource
 import parker.core.runtime.AnalysisEffectiveHumanFidelityReviewResolver
 import parker.core.runtime.DocumentAnalysisCoordinator
 import parker.core.runtime.FileSystemSavedAnalysisStorage
+import parker.core.runtime.FileSystemGovernedAnalysisResultStorage
+import parker.core.runtime.GovernedAnalysisExport
+import parker.core.runtime.GovernedAnalysisExportFormat
+import parker.core.runtime.GovernedAnalysisResultExporter
 import parker.core.runtime.FileSystemHumanVerificationStorage
 import parker.core.runtime.FileSystemHumanFidelityGovernanceAudit
 import parker.core.runtime.FileSystemHumanFidelityReviewStorage
@@ -477,6 +483,7 @@ class ParkerRuntime(
     // two readers, mirroring this class's own established narrow-isolation discipline.
     private lateinit var pendingAnalysisCache: PendingAnalysisCache
     private lateinit var savedAnalysisCoordinator: SavedAnalysisCoordinator
+    private lateinit var governedAnalysisResultStorage: parker.core.interfaces.GovernedAnalysisResultStorage
     private lateinit var humanVerificationStorage: HumanVerificationStorage
 
     // OI11R6V-A5: internally composed only. No HTTP/UI/public recording entry point exists.
@@ -2675,6 +2682,9 @@ class ParkerRuntime(
             analysisPrincipalId = HERMES_ANALYSIS_OPERATOR_PRINCIPAL_ID,
             tierAContentRetrievalCoordinator = tierAContentRetrievalCoordinator,
         )
+        governedAnalysisResultStorage = stage("Governed analysis result storage construction") {
+            FileSystemGovernedAnalysisResultStorage(Path.of(config.savedAnalysisStorageRootPath).resolve("governed-analysis-results"))
+        }
         ownerAnalysisInvocationCoordinator = parker.core.runtime.OwnerAnalysisInvocationCoordinator(
             resolvePreferredDerivative = this::resolvePreferredDerivativeAsOwner,
             submitGovernedAnalysis = parkerAnalysisRequestCoordinator::submit,
@@ -2683,6 +2693,8 @@ class ParkerRuntime(
                 knownHostsPath = "/home/steve/.ssh/parker_hermes_analysis_known_hosts",
             ),
             validateCaseScope = this::validateOwnerAnalysisCaseScope,
+            governedAnalysisResultStorage = governedAnalysisResultStorage,
+            resolveAssociationId = { caseId, evidenceArtifactId -> caseEvidenceAssociationStorageForProjection?.find(caseId, evidenceArtifactId)?.associationId },
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
@@ -4319,6 +4331,20 @@ class ParkerRuntime(
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         logger.info("Governed Hermes analysis invoked by owner (selectionCount=${request.evidenceArtifactIds.size})")
         return ownerAnalysisInvocationCoordinator.invoke(request, priorContext)
+    }
+
+    /** Internal owner-scoped retrieval seam for the later analysis export unit. */
+    suspend fun retrieveGovernedAnalysisResultAsOwner(analysisRequestId: AnalysisRequestId): GovernedAnalysisResult? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return governedAnalysisResultStorage.findByAnalysisRequestId(analysisRequestId)
+    }
+
+    suspend fun exportGovernedAnalysisAsOwner(
+        analysisRequestId: AnalysisRequestId,
+        format: GovernedAnalysisExportFormat,
+    ): GovernedAnalysisExport? {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return GovernedAnalysisResultExporter(governedAnalysisResultStorage).export(analysisRequestId, format)
     }
 
     /**

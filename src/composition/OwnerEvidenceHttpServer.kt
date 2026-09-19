@@ -19,6 +19,7 @@ import parker.core.interfaces.DerivativeContentStorageException
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.DerivativeGenerationStorageException
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.AnalysisRequestId
 import parker.core.interfaces.EvidenceGenerationSelection
 import parker.core.interfaces.PendingAnalysisId
 import parker.core.interfaces.SavedAnalysisId
@@ -60,6 +61,8 @@ import parker.core.runtime.DeterministicSourcePageRenderer
 import parker.core.runtime.SourcePageRendererLimits
 import parker.core.runtime.OwnerAnalysisInvocationRequest
 import parker.core.runtime.OwnerAnalysisInvocationOutcome
+import parker.core.runtime.GovernedAnalysisExport
+import parker.core.runtime.GovernedAnalysisExportFormat
 import parker.core.runtime.AnalysisWorkspaceSessionStore
 import parker.core.interfaces.AnalysisWorkspaceSessionId
 import parker.core.interfaces.SpeechTranscriptionOutcome
@@ -166,6 +169,7 @@ class OwnerEvidenceHttpServer(
     private val analysisSessions: AnalysisWorkspaceSessionStore = AnalysisWorkspaceSessionStore(),
     private val transcribeSpeechAsOwner: suspend (ByteArray, String) -> SpeechTranscriptionOutcome =
         { _, _ -> SpeechTranscriptionOutcome.BackendUnavailable },
+    private val exportGovernedAnalysisAsOwner: suspend (AnalysisRequestId, GovernedAnalysisExportFormat) -> GovernedAnalysisExport? = { _, _ -> null },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -189,6 +193,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/admin/external-transcription-policy", StandingExternalTranscriptionPolicyHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/analysis-workspace/analyse", AnalysisWorkspaceHandler())
+        httpServer.createContext("/owner/analysis", GovernedAnalysisExportHandler())
         httpServer.createContext("/owner/analysis-workspace/transcribe", SpeechTranscriptionHandler())
         httpServer.createContext("/owner/saved-analyses", SavedAnalysisHandler())
         httpServer.createContext("/owner/admin/region-capability-acceptance", RegionCapabilityAcceptanceHandler())
@@ -241,6 +246,43 @@ class OwnerEvidenceHttpServer(
             } catch (_: Exception) {
                 runCatching { writeJson(exchange, 500, jsonObject("error" to "internal error")) }
             } finally { exchange.close() }
+        }
+    }
+
+    private inner class GovernedAnalysisExportHandler : HttpHandler {
+        override fun handle(exchange: HttpExchange) {
+            try {
+                if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                if (exchange.requestMethod != "GET") { writeJson(exchange, 404, jsonObject("error" to "not found")); return }
+                val prefix = "/owner/analysis/"
+                val path = exchange.requestURI.path
+                val suffix = path.removePrefix(prefix)
+                if (path == suffix || suffix.isBlank()) { writeJson(exchange, 400, jsonObject("error" to "malformed analysis request id")); return }
+                val parts = suffix.split('/')
+                if (parts.size != 2 || parts[1] != "export" || !SAFE_ROUTE_ID.matches(parts[0])) {
+                    writeJson(exchange, 400, jsonObject("error" to "malformed analysis export path")); return
+                }
+                val requestId = try { AnalysisRequestId(parts[0]) } catch (_: IllegalArgumentException) {
+                    writeJson(exchange, 400, jsonObject("error" to "malformed analysis request id")); return
+                }
+                val format = parseExportFormat(exchange.requestURI.rawQuery)
+                    ?: run { writeJson(exchange, 400, jsonObject("error" to "unsupported export format")); return }
+                val export = runBlocking { exportGovernedAnalysisAsOwner(requestId, format) }
+                    ?: run { writeJson(exchange, 404, jsonObject("error" to "analysis result not found")); return }
+                writeExport(exchange, export)
+            } catch (e: Exception) {
+                logger.error("Owner HTTP: governed analysis export failed safely", e)
+                runCatching { writeJson(exchange, 500, jsonObject("error" to "analysis export unavailable")) }
+            } finally { exchange.close() }
+        }
+
+        private fun parseExportFormat(rawQuery: String?): GovernedAnalysisExportFormat? {
+            val value = rawQuery.orEmpty().split('&').firstOrNull { it.startsWith("format=") }?.substringAfter('=')?.lowercase()
+            return when (value) {
+                "markdown" -> GovernedAnalysisExportFormat.MARKDOWN
+                "json" -> GovernedAnalysisExportFormat.JSON
+                else -> null
+            }
         }
     }
 
@@ -1851,6 +1893,7 @@ class OwnerEvidenceHttpServer(
         is OwnerAnalysisInvocationOutcome.ReasoningTimeout -> jsonObject("status" to "REASONING_TIMEOUT", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value)
         is OwnerAnalysisInvocationOutcome.StructuredOutputInvalid -> jsonObject("status" to "STRUCTURED_OUTPUT_INVALID", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
         is OwnerAnalysisInvocationOutcome.InvalidAnalysisReference -> jsonObject("status" to "INVALID_ANALYSIS_REFERENCE", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.PersistenceFailed -> jsonObject("status" to "PERSISTENCE_FAILED", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
     }
 
     private fun structuredAnalysisJson(result: parker.core.interfaces.StructuredAnalysisResult): JsonObject = jsonObject(
@@ -2313,6 +2356,14 @@ class OwnerEvidenceHttpServer(
         val bytes = sb.toString().toByteArray(StandardCharsets.UTF_8)
         exchange.responseHeaders.set("Content-Type", "application/json; charset=utf-8")
         exchange.sendResponseHeaders(status, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
+    }
+
+    private fun writeExport(exchange: HttpExchange, export: GovernedAnalysisExport) {
+        val bytes = export.body.toByteArray(StandardCharsets.UTF_8)
+        exchange.responseHeaders.set("Content-Type", export.contentType)
+        exchange.responseHeaders.set("Content-Disposition", "attachment; filename=\"${export.fileName}\"")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
         exchange.responseBody.use { it.write(bytes) }
     }
 

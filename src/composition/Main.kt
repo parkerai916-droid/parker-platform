@@ -240,6 +240,7 @@ fun main(args: Array<String>) = runBlocking {
             recordHermesProcessingDecisionAsOwner = runtime::recordHermesProcessingDecisionAsOwner,
             readPendingReviewSourceAsOwner = runtime::readPendingReviewSourceAsOwner,
             analyseSelectedEvidenceAsOwnerWithContext = runtime::analyseSelectedEvidenceAsOwner,
+            exportGovernedAnalysisAsOwner = runtime::exportGovernedAnalysisAsOwner,
             transcribeSpeechAsOwner = { audio, mediaType -> HermesSshSpeechTranscriber().transcribe(audio, mediaType) },
         ).also { it.start() }
     } else {

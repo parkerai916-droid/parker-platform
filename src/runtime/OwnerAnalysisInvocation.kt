@@ -9,6 +9,11 @@ import parker.core.interfaces.AnalysisType
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.CaseId
+import parker.core.interfaces.CaseEvidenceAssociationId
+import parker.core.interfaces.GovernedAnalysisResult
+import parker.core.interfaces.GovernedAnalysisEvidenceScopeEntry
+import parker.core.interfaces.GovernedAnalysisResultCreationOutcome
+import parker.core.interfaces.GovernedAnalysisResultStorage
 
 data class OwnerAnalysisInvocationRequest(
     val question: String,
@@ -67,6 +72,7 @@ sealed interface OwnerAnalysisInvocationOutcome {
     data class ReasoningTimeout(val analysisRequestId: AnalysisRequestId, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
     data class StructuredOutputInvalid(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
     data class InvalidAnalysisReference(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
+    data class PersistenceFailed(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
 }
 
 /** Owner-side logical analysis orchestration. It never retrieves content directly. */
@@ -76,6 +82,8 @@ class OwnerAnalysisInvocationCoordinator(
     private val hermesInvoker: HermesAnalysisInvoker,
     private val profile: String = ANALYSIS_PROFILE,
     private val validateCaseScope: suspend (CaseId?, List<EvidenceArtifactId>) -> OwnerAnalysisCaseScopeValidation = { _, _ -> OwnerAnalysisCaseScopeValidation.Valid },
+    private val governedAnalysisResultStorage: GovernedAnalysisResultStorage? = null,
+    private val resolveAssociationId: suspend (CaseId, EvidenceArtifactId) -> CaseEvidenceAssociationId? = { _, _ -> null },
 ) {
     suspend fun invoke(request: OwnerAnalysisInvocationRequest, priorContext: String? = null): OwnerAnalysisInvocationOutcome {
         when (val scope = validateCaseScope(request.caseId, request.evidenceArtifactIds)) {
@@ -119,10 +127,39 @@ class OwnerAnalysisInvocationCoordinator(
         } catch (e: StructuredAnalysisOutputException) {
             return OwnerAnalysisInvocationOutcome.StructuredOutputInvalid(analysisRequest.requestId, e.message ?: "invalid structured analysis output", governedPackage)
         }
-        return OwnerAnalysisInvocationOutcome.Completed(
+        val completed = OwnerAnalysisInvocationOutcome.Completed(
             analysisRequest.requestId, request.caseId, request.analysisType, request.question, request.evidenceArtifactIds,
             mapping, profile, reasoning.analysisText, reasoning.sessionId, governedPackage, structured,
         )
+        if (governedAnalysisResultStorage != null) {
+            val caseId = request.caseId ?: return OwnerAnalysisInvocationOutcome.PersistenceFailed(analysisRequest.requestId, "CASE_REQUIRED_FOR_DURABLE_ANALYSIS", governedPackage)
+            val record = GovernedAnalysisResult(
+                schemaVersion = 1,
+                resultId = parker.core.interfaces.GovernedAnalysisResultId.forRequest(analysisRequest.requestId),
+                analysisRequestId = analysisRequest.requestId,
+                caseId = caseId,
+                caseName = null,
+                question = request.question,
+                analysisType = request.analysisType,
+                generatedAt = java.time.Instant.now(),
+                providerIdentity = "Hermes",
+                modelIdentity = null,
+                hermesSessionId = reasoning.sessionId,
+                profile = profile,
+                evidenceScope = governedPackage.evidence.map { evidence ->
+                    GovernedAnalysisEvidenceScopeEntry(evidence.evidenceArtifactId, resolveAssociationId(caseId, evidence.evidenceArtifactId), emptyList(), requireNotNull(governedPackage.scope.derivativeGenerationIds[evidence.evidenceArtifactId.value]), evidence.manifest.sha256, evidence.manifest.originalFileName)
+                },
+                analysisText = reasoning.analysisText,
+                structuredResult = structured,
+            )
+            when (try { governedAnalysisResultStorage.createOrGet(record) } catch (_: Exception) {
+                return OwnerAnalysisInvocationOutcome.PersistenceFailed(analysisRequest.requestId, "GOVERNED_ANALYSIS_RESULT_PERSISTENCE_FAILED", governedPackage)
+            }) {
+                is GovernedAnalysisResultCreationOutcome.Created, is GovernedAnalysisResultCreationOutcome.AlreadyPresent -> Unit
+                is GovernedAnalysisResultCreationOutcome.ConflictingResult -> return OwnerAnalysisInvocationOutcome.PersistenceFailed(analysisRequest.requestId, "GOVERNED_ANALYSIS_RESULT_CONFLICT", governedPackage)
+            }
+        }
+        return completed
     }
 
     companion object { const val ANALYSIS_PROFILE = "parker-analysis-agent" }

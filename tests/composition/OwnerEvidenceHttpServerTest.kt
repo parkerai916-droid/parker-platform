@@ -179,6 +179,7 @@ class OwnerEvidenceHttpServerTest {
         runtimeConfigOverride: ParkerRuntimeConfig? = null,
         pendingPreviewSource: suspend (String, String) -> PendingReviewSource? = { _, _ -> null },
         analysisWorkspace: suspend (parker.core.runtime.OwnerAnalysisInvocationRequest, String?) -> parker.core.runtime.OwnerAnalysisInvocationOutcome = { _, _ -> parker.core.runtime.OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed(null, "not configured") },
+        exportGovernedAnalysis: suspend (AnalysisRequestId, parker.core.runtime.GovernedAnalysisExportFormat) -> parker.core.runtime.GovernedAnalysisExport? = { _, _ -> null },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -251,9 +252,29 @@ class OwnerEvidenceHttpServerTest {
             },
             readPendingReviewSourceAsOwner = pendingPreviewSource,
             analyseSelectedEvidenceAsOwnerWithContext = analysisWorkspace,
+            exportGovernedAnalysisAsOwner = exportGovernedAnalysis,
         )
         server.start()
         return Harness(runtime, server, authentication, runtimeLogger, serverLogger)
+    }
+
+    @Test
+    fun `governed analysis export is owner authenticated and format explicit`() {
+        val result = parker.core.runtime.GovernedAnalysisExport("text/markdown; charset=utf-8", "parker-analysis-analysis-test.md", "# Parker Case Analysis Export\n")
+        val harness = startHarness("", exportGovernedAnalysis = { requestId, format ->
+            if (requestId.value == "analysis-22222222-2222-2222-2222-222222222222" && format == parker.core.runtime.GovernedAnalysisExportFormat.MARKDOWN) result else null
+        })
+        try {
+            val base = harness.baseUri() + "/owner/analysis/analysis-22222222-2222-2222-2222-222222222222/export"
+            assertEquals(401, send(HttpRequest.newBuilder(URI.create("$base?format=markdown")).GET().build()).statusCode())
+            val response = send(HttpRequest.newBuilder(URI.create("$base?format=markdown")).header("Cookie", pairedCookie(harness)).GET().build())
+            assertEquals(200, response.statusCode(), response.body())
+            assertEquals("text/markdown; charset=utf-8", response.headers().firstValue("Content-Type").orElse(null))
+            assertEquals("attachment; filename=\"parker-analysis-analysis-test.md\"", response.headers().firstValue("Content-Disposition").orElse(null))
+            assertEquals(result.body, response.body())
+            assertEquals(400, send(HttpRequest.newBuilder(URI.create("$base?format=xml")).header("Cookie", pairedCookie(harness)).GET().build()).statusCode())
+            assertEquals(400, send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/analysis/not-an-id/export?format=json")).header("Cookie", pairedCookie(harness)).GET().build()).statusCode())
+        } finally { harness.shutdown() }
     }
 
     private fun pairedCookie(harness: Harness): String {
