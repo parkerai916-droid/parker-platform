@@ -162,6 +162,10 @@ interface OwnerEvidenceOperations {
         derivativeGenerationId: DerivativeGenerationId,
     ): TierAContentRetrievalResult
 
+    /** Retrieves original registered image bytes through the governed custodian boundary. */
+    suspend fun retrieveOriginalImage(evidenceArtifactId: EvidenceArtifactId): OwnerOriginalImageResult =
+        OwnerOriginalImageResult.NotFound
+
     /**
      * Document Ingestion — Tier B Durable OCR Derivative Content
      * (`DOCUMENT_INGESTION_TIER_B_DURABLE_OCR_DERIVATIVE_CONTENT_SCOPE_LOCK.md`).
@@ -512,9 +516,10 @@ sealed interface OwnerTierAContent {
         val sender: String?,
         val recipients: List<String>,
         val cc: List<String>,
+        val bcc: List<String>,
         val subject: String?,
         val timestamp: String?,
-        val attachments: List<String>,
+        val attachments: List<OwnerStructuredAttachmentSummary>,
         val producer: OwnerDerivativeProducerSummary,
         val completenessState: String,
         val warnings: List<String>,
@@ -572,6 +577,13 @@ sealed interface OwnerTierAContent {
 
 data class OwnerStructuredSheetSummary(val name: String, val cells: List<OwnerStructuredCellSummary>)
 data class OwnerStructuredCellSummary(val coordinate: String, val value: String?, val displayedValue: String?, val formula: String?)
+data class OwnerStructuredAttachmentSummary(val filename: String?, val mediaType: String?, val sha256: String?)
+
+sealed interface OwnerOriginalImageResult {
+    data class Found(val mediaType: String, val filename: String?, val bytes: ByteArray) : OwnerOriginalImageResult
+    data object NotFound : OwnerOriginalImageResult
+    data class Rejected(val safeMessage: String) : OwnerOriginalImageResult
+}
 
 /** Producer/model identity fields only -- no configuration values, paths, or secrets. */
 data class OwnerDerivativeProducerSummary(

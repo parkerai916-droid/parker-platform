@@ -207,6 +207,7 @@ class OwnerEvidenceHttpServerTest {
             invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
             analyseEvidence = runtime::analyseEvidence,
             retrieveTierAExtractedContentAsOwner = retrieveTierA ?: runtime::retrieveTierAExtractedContentAsOwner,
+            retrieveOriginalImageAsOwner = runtime::retrieveOriginalImageAsOwner,
             invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
             retrieveTierBOcrContentAsOwner = retrieveTierB ?: runtime::retrieveTierBOcrContentAsOwner,
             discoverOcrDerivativeGenerationsAsOwner = discoverOcrDerivativeGenerations ?: runtime::discoverOcrDerivativeGenerationsAsOwner,
@@ -961,6 +962,44 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("Machine transcription — unverified"))
             assertTrue(body.contains("Fluent machine transcription may contain plausible text that is inconsistent with the source."))
             listOf("best evidence", "preferred evidence", "high-quality evidence").forEach { assertFalse(body.contains(it, true)) }
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `owner page renders structured text spreadsheets and MSG safely and exposes image route`() {
+        val harness = startHarness("")
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("content.kind === 'TXT'"))
+            assertTrue(body.contains("content.kind === 'XLS' || content.kind === 'XLSX'"))
+            assertTrue(body.contains("content.kind === 'MSG'"))
+            assertTrue(body.contains("Formula text is displayed only"))
+            assertTrue(body.contains("/owner/evidence/${'$'}{row.evidenceArtifactId}/source"))
+            assertTrue(body.contains("textContent"))
+            assertFalse(body.contains("content.text" + ".innerHTML"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `registered PNG is retrievable only as governed inline image`() {
+        val harness = startHarness("")
+        try {
+            val bytes = Files.readAllBytes(fixtureRoot.resolve("07-text-image.png"))
+            val upload = send(uploadRequest(harness, listOf(UploadPart("files", "review.png", "image/png", bytes))))
+            assertEquals(200, upload.statusCode())
+            val id = requireNotNull(extractField(upload.body(), "evidenceArtifactId"))
+            val request = HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/source"))
+                .header("Cookie", pairedCookie(harness)).GET().build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofByteArray())
+            assertEquals(200, response.statusCode())
+            assertEquals("image/png", response.headers().firstValue("Content-Type").orElse(null))
+            assertTrue(bytes.contentEquals(response.body()))
+            val unauthorised = client.send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$id/source")).GET().build(), HttpResponse.BodyHandlers.ofByteArray())
+            assertEquals(401, unauthorised.statusCode())
+            val textUpload = send(uploadRequest(harness, listOf(UploadPart("files", "not-image.txt", "text/plain", "plain text".toByteArray()))))
+            val textId = requireNotNull(extractField(textUpload.body(), "evidenceArtifactId"))
+            val rejected = client.send(HttpRequest.newBuilder(URI.create("${harness.baseUri()}/owner/evidence/$textId/source")).header("Cookie", pairedCookie(harness)).GET().build(), HttpResponse.BodyHandlers.ofByteArray())
+            assertEquals(415, rejected.statusCode())
         } finally { harness.shutdown() }
     }
 

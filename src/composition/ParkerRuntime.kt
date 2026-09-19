@@ -74,6 +74,7 @@ import parker.core.interfaces.PlanningSessionResult
 import parker.core.interfaces.Principal
 import parker.core.interfaces.PrincipalId
 import parker.core.interfaces.PrincipalStatus
+import parker.ui.OwnerOriginalImageResult
 import parker.core.interfaces.PrincipalType
 import parker.core.interfaces.ReasoningContextAssembler
 import parker.core.interfaces.ReasoningKnowledgeSource
@@ -3544,6 +3545,27 @@ class ParkerRuntime(
                     else -> evidence
                 }
             } else evidence
+        }
+    }
+
+    /** Owner-authenticated original-image view; media type is taken only from the governed manifest. */
+    suspend fun retrieveOriginalImageAsOwner(evidenceArtifactId: EvidenceArtifactId): OwnerOriginalImageResult {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val owner = PrincipalId(config.ownerPrincipalId)
+        val manifest = when (val result = evidenceCustodian.retrieveManifest(owner, evidenceArtifactId)) {
+            is EvidenceManifestRetrievalResult.Found -> result.manifest
+            is EvidenceManifestRetrievalResult.NotFound -> return OwnerOriginalImageResult.NotFound
+            is EvidenceManifestRetrievalResult.Rejected -> return OwnerOriginalImageResult.Rejected("SOURCE_MANIFEST_UNAVAILABLE")
+        }
+        val mediaType = manifest.receivedMediaType?.lowercase()
+            ?: return OwnerOriginalImageResult.Rejected("SOURCE_MEDIA_TYPE_UNAVAILABLE")
+        if (mediaType !in setOf("image/jpeg", "image/png")) {
+            return OwnerOriginalImageResult.Rejected("SOURCE_IS_NOT_A_SUPPORTED_INLINE_IMAGE")
+        }
+        return when (val result = evidenceCustodian.retrieve(owner, evidenceArtifactId)) {
+            is EvidenceRetrievalResult.Found -> OwnerOriginalImageResult.Found(mediaType, manifest.originalFileName, result.content)
+            is EvidenceRetrievalResult.NotFound -> OwnerOriginalImageResult.NotFound
+            is EvidenceRetrievalResult.Rejected -> OwnerOriginalImageResult.Rejected("SOURCE_UNAVAILABLE")
         }
     }
 

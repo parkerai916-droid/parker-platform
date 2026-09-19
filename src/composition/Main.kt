@@ -86,6 +86,7 @@ internal fun buildOwnerHttpAdapter(runtime: ParkerRuntime, config: ParkerRuntime
         invokeTierAIngestionAsOwner = runtime::invokeTierAIngestionAsOwner,
         analyseEvidence = runtime::analyseEvidence,
         retrieveTierAExtractedContentAsOwner = runtime::retrieveTierAExtractedContentAsOwner,
+        retrieveOriginalImageAsOwner = runtime::retrieveOriginalImageAsOwner,
         invokeTierBOcrDurableGenerationAsOwner = runtime::invokeTierBOcrDurableGenerationAsOwner,
         retrieveTierBOcrContentAsOwner = runtime::retrieveTierBOcrContentAsOwner,
         analyseDocumentsAsOwner = runtime::analyseDocumentsAsOwner,

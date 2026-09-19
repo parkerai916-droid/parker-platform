@@ -48,6 +48,8 @@ import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
 import parker.ui.OwnerStructuredSheetSummary
 import parker.ui.OwnerStructuredCellSummary
+import parker.ui.OwnerStructuredAttachmentSummary
+import parker.ui.OwnerOriginalImageResult
 import parker.ui.OwnerHumanFidelityStatus
 import parker.ui.OwnerHumanCorrectedRepresentation
 import parker.ui.OwnerTierBOcrContent
@@ -215,6 +217,7 @@ class OwnerUiEvidenceRuntimeAdapter(
     private val invokeTierAIngestionAsOwner: suspend (EvidenceArtifactId) -> TierAOwnerInvocationOutcome,
     private val analyseEvidence: suspend (PrincipalId, EvidenceAnalysisRequest) -> EvidenceIntelligenceInvocationOutcome,
     private val retrieveTierAExtractedContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome,
+    private val retrieveOriginalImageAsOwner: suspend (EvidenceArtifactId) -> OwnerOriginalImageResult = { OwnerOriginalImageResult.NotFound },
     private val invokeTierBOcrDurableGenerationAsOwner: suspend (EvidenceArtifactId) -> TierBOcrOwnerInvocationOutcome,
     private val retrieveTierBOcrContentAsOwner: suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome,
     private val discoverOcrDerivativeGenerationsAsOwner: suspend (EvidenceArtifactId) -> List<DerivativeGenerationRecord> = { emptyList() },
@@ -691,7 +694,7 @@ class OwnerUiEvidenceRuntimeAdapter(
                 kind = r.kind.name, text = r.text, lines = r.lines.map { it.text },
                 spreadsheetSheets = r.spreadsheetSheets.map { sheet -> OwnerStructuredSheetSummary(sheet.name, sheet.cells.map { OwnerStructuredCellSummary(it.coordinate, it.rawValue, it.displayedValue, it.formula) }) },
                 sender = r.sender, recipients = r.recipients, cc = r.cc, subject = r.subject, timestamp = r.timestamp,
-                attachments = r.attachments.mapNotNull { it.filename }, producer = r.parserIdentity.let { identity -> OwnerDerivativeProducerSummary(identity, r.parserVersion, "structured-representation-v1", null, null, null, null) },
+                bcc = r.bcc, attachments = r.attachments.map { OwnerStructuredAttachmentSummary(it.filename, it.mediaType, it.sha256) }, producer = r.parserIdentity.let { identity -> OwnerDerivativeProducerSummary(identity, r.parserVersion, "structured-representation-v1", null, null, null, null) },
                 completenessState = r.completenessState.name, warnings = r.warnings,
                 extractionMethod = r.extractionMethod,
             )
@@ -794,6 +797,9 @@ class OwnerUiEvidenceRuntimeAdapter(
             is TierAContentRetrievalOutcome.UnsupportedRepresentationVersion ->
                 TierAContentRetrievalResult.UnsupportedRepresentationVersion(outcome.version)
         }
+
+    override suspend fun retrieveOriginalImage(evidenceArtifactId: EvidenceArtifactId): OwnerOriginalImageResult =
+        retrieveOriginalImageAsOwner(evidenceArtifactId)
 
     override suspend fun processTierB(evidenceArtifactId: EvidenceArtifactId): TierBProcessingOutcome {
         val outcome = analyseEvidence(

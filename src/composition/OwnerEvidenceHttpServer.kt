@@ -33,6 +33,7 @@ import parker.ui.OwnerSaveAnalysisOutcome
 import parker.ui.OwnerSavedAnalysisPresentation
 import parker.ui.OwnerSavedAnalysisSummary
 import parker.ui.OwnerTierAContent
+import parker.ui.OwnerOriginalImageResult
 import parker.ui.OwnerTierBOcrContent
 import parker.ui.TierAContentRetrievalResult
 import parker.ui.TierAProcessingOutcome
@@ -843,6 +844,8 @@ class OwnerEvidenceHttpServer(
                         handleAcceptanceExecution(exchange, segments[1])
                     segments.size == 3 && segments[1] == "content" && method == "GET" ->
                         handleRetrieveContent(exchange, segments[0], segments[2])
+                    segments.size == 2 && segments[1] == "source" && method == "GET" ->
+                        handleRetrieveOriginalImage(exchange, segments[0])
                     segments.size == 3 && segments[1] == "ocr-content" && method == "GET" ->
                         handleRetrieveOcrContent(exchange, segments[0], segments[2])
                     segments.size == 2 && segments[1] == "ocr-derivative-generations" && method == "GET" ->
@@ -1122,6 +1125,23 @@ class OwnerEvidenceHttpServer(
                 is TierAContentRetrievalResult.Failed -> jsonObject("status" to "FAILED", "message" to outcome.safeMessage)
             }
             writeJson(exchange, 200, body)
+        }
+
+        private fun handleRetrieveOriginalImage(exchange: HttpExchange, rawEvidenceArtifactId: String) {
+            val evidenceArtifactId = try { EvidenceArtifactId(rawEvidenceArtifactId) } catch (_: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("error" to "invalid evidence artefact id")); return
+            }
+            when (val outcome = runBlocking { operations.retrieveOriginalImage(evidenceArtifactId) }) {
+                is OwnerOriginalImageResult.Found -> {
+                    exchange.responseHeaders.set("Content-Type", outcome.mediaType)
+                    exchange.responseHeaders.set("Content-Disposition", "inline")
+                    exchange.responseHeaders.set("X-Content-Type-Options", "nosniff")
+                    exchange.sendResponseHeaders(200, outcome.bytes.size.toLong())
+                    exchange.responseBody.use { it.write(outcome.bytes) }
+                }
+                OwnerOriginalImageResult.NotFound -> writeJson(exchange, 404, jsonObject("error" to "evidence not found"))
+                is OwnerOriginalImageResult.Rejected -> writeJson(exchange, 415, jsonObject("error" to outcome.safeMessage))
+            }
         }
 
         /**
@@ -2155,9 +2175,10 @@ class OwnerEvidenceHttpServer(
             "sender" to content.sender,
             "recipients" to jsonArray(content.recipients),
             "cc" to jsonArray(content.cc),
+            "bcc" to jsonArray(content.bcc),
             "subject" to content.subject,
             "timestamp" to content.timestamp,
-            "attachments" to jsonArray(content.attachments),
+            "attachments" to jsonArray(content.attachments.map { jsonObject("filename" to it.filename, "mediaType" to it.mediaType, "sha256" to it.sha256) }),
             "producer" to producerJson(content.producer),
             "completenessState" to content.completenessState,
             "warnings" to jsonArray(content.warnings),
@@ -3638,6 +3659,12 @@ function render() {
     const actions = document.createElement('td');
     actions.className = 'row-actions';
     if (row.evidenceArtifactId && !row.externalResultRow) {
+      if (row.mediaType === 'image/jpeg' || row.mediaType === 'image/png') {
+        const imageButton = document.createElement('button');
+        imageButton.textContent = row.originalImage ? 'Hide original image' : 'View original image';
+        imageButton.onclick = () => viewOriginalImage(index);
+        actions.appendChild(imageButton);
+      }
       const process = document.createElement('button');
       process.textContent = 'Process document';
       process.title = 'Run Parker document processing. Eligible image-only PDFs continue through durable local OCR.';
@@ -3844,6 +3871,17 @@ function render() {
       }
       detailTr.appendChild(detailTd);
       tbody.appendChild(detailTr);
+    }
+    if (row.originalImage || row.originalImageError) {
+      const imageTr = document.createElement('tr');
+      const imageTd = document.createElement('td'); imageTd.colSpan = 8;
+      if (row.originalImage) {
+        const heading = document.createElement('h3'); heading.textContent = 'Original registered image'; imageTd.appendChild(heading);
+        const image = document.createElement('img'); image.src = row.originalImage; image.alt = documentName(row); image.className = 'evidence-image'; imageTd.appendChild(image);
+      } else {
+        const p = document.createElement('p'); p.className = 'note'; p.textContent = row.originalImageError; imageTd.appendChild(p);
+      }
+      imageTr.appendChild(imageTd); tbody.appendChild(imageTr);
     }
     if (expandedIndex === index && (row.ocrContent || row.ocrContentError)) {
       const detailTr = document.createElement('tr');
@@ -4410,6 +4448,56 @@ function buildContentPanel(content) {
       tlabel.textContent = 'Tables (' + content.tables.length + '):';
       container.appendChild(tlabel);
       content.tables.forEach(t => appendTable(container, null, t));
+    }
+  } else if (content.kind === 'TXT') {
+    appendField(container, 'Completeness', content.completenessState);
+    appendWarnings(container, content.warnings);
+    appendProducer(container, content.producer);
+    appendExtractedText(container, 'Text:', content.text);
+  } else if (content.kind === 'XLS' || content.kind === 'XLSX') {
+    appendField(container, 'Completeness', content.completenessState);
+    appendWarnings(container, content.warnings);
+    appendProducer(container, content.producer);
+    const selector = document.createElement('select');
+    const tableHost = document.createElement('div'); tableHost.className = 'spreadsheet-view'; tableHost.style.overflow = 'auto'; tableHost.style.maxHeight = '480px';
+    const renderSheet = sheet => {
+      tableHost.textContent = '';
+      const cells = sheet.cells || [];
+      const displayCells = cells.slice(0, 5000);
+      const table = document.createElement('table'); table.className = 'evidence-spreadsheet';
+      const head = table.insertRow(); ['Coordinate', 'Displayed value', 'Formula'].forEach(v => appendTextCell(head, v));
+      displayCells.forEach(cell => {
+        const tr = table.insertRow();
+        appendTextCell(tr, cell.coordinate || '');
+        appendTextCell(tr, cell.displayedValue || cell.value || '');
+        appendTextCell(tr, cell.formula || '');
+      });
+      tableHost.appendChild(table);
+      if (displayCells.length < cells.length) {
+        const note = document.createElement('p'); note.className = 'note'; note.textContent = 'Display bounded at 5,000 cells; ' + (cells.length - displayCells.length) + ' cells are not shown.'; tableHost.appendChild(note);
+      }
+    };
+    (content.sheets || []).forEach((sheet, i) => { const option = document.createElement('option'); option.value = String(i); option.textContent = sheet.name; selector.appendChild(option); });
+    selector.onchange = () => renderSheet(content.sheets[Number(selector.value)]);
+    container.appendChild(selector);
+    if (content.sheets.length) renderSheet(content.sheets[0]); else appendField(container, 'Sheets', 'No sheets were extracted.');
+    appendField(container, 'Formula handling', 'Formula text is displayed only; formulas are never evaluated.');
+  } else if (content.kind === 'MSG') {
+    appendField(container, 'From', content.sender || '');
+    appendField(container, 'To', (content.recipients || []).join(', '));
+    appendField(container, 'Cc', (content.cc || []).join(', '));
+    appendField(container, 'Bcc', (content.bcc || []).join(', '));
+    appendField(container, 'Date', content.timestamp || '');
+    appendField(container, 'Subject', content.subject || '');
+    appendField(container, 'Completeness', content.completenessState);
+    appendWarnings(container, content.warnings);
+    appendProducer(container, content.producer);
+    appendExtractedText(container, 'Body:', content.text);
+    if ((content.attachments || []).length) {
+      const label = document.createElement('div'); label.textContent = 'Attachments:'; container.appendChild(label);
+      const ul = document.createElement('ul');
+      content.attachments.forEach(a => { const li = document.createElement('li'); li.textContent = (a.filename || '(unnamed)') + ' -- ' + (a.mediaType || 'unknown type') + (a.sha256 ? ' -- ' + a.sha256 : ''); ul.appendChild(li); });
+      container.appendChild(ul);
     }
   } else if (content.kind === 'REGION_TRANSCRIPTION') {
     const providerHeading = document.createElement('h3');
@@ -5351,6 +5439,20 @@ async function viewContent(index) {
   }
   expandedIndex = index;
   render();
+}
+
+async function viewOriginalImage(index) {
+  const row = rows[index];
+  if (row.originalImage) { URL.revokeObjectURL(row.originalImage); row.originalImage = null; render(); return; }
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/source`, { method: 'GET', headers: authHeaders() });
+    if (!resp.ok) { row.originalImageError = 'Original image unavailable.'; render(); return; }
+    const trustedType = resp.headers.get('Content-Type') || '';
+    if (trustedType !== 'image/jpeg' && trustedType !== 'image/png') { row.originalImageError = 'Original image refused: unsupported media type.'; render(); return; }
+    row.originalImage = URL.createObjectURL(await resp.blob());
+    row.originalImageError = null;
+    render();
+  } catch (_) { row.originalImageError = 'Original image request failed safely.'; render(); }
 }
 
 async function ocrRow(index) {
