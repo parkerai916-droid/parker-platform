@@ -19,7 +19,7 @@ WORKDIR /workspace
 # cached across rebuilds that only change src/.
 COPY gradlew ./
 COPY gradle ./gradle
-COPY settings.gradle.kts build.gradle.kts ./
+COPY settings.gradle.kts build.gradle.kts gradle.properties ./
 RUN ./gradlew --version --no-daemon
 
 COPY src ./src
