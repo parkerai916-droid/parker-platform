@@ -8,6 +8,7 @@ import parker.core.interfaces.CaseGovernanceAudit
 import parker.core.interfaces.CaseGovernanceAuditEventType
 import parker.core.interfaces.CaseGovernanceAuditRecord
 import parker.core.interfaces.CaseId
+import parker.core.interfaces.CaseLifecycleStatus
 import parker.core.interfaces.CaseRecord
 import parker.core.interfaces.CaseStorage
 import parker.core.interfaces.EvidenceArtifactId
@@ -68,7 +69,7 @@ internal class CaseAssignmentCoordinator(
         }
     }
 
-    suspend fun listCases(): List<CaseRecord> = caseStorage.list()
+    suspend fun listCases(): List<CaseRecord> = caseStorage.list().filter { it.lifecycleStatus == CaseLifecycleStatus.ACTIVE }
 
     suspend fun currentAssignment(evidenceArtifactId: EvidenceArtifactId): CaseId? =
         assignmentStorage.readAssignment(evidenceArtifactId)?.caseId
@@ -82,8 +83,11 @@ internal class CaseAssignmentCoordinator(
      * governs an actual change, not reselecting the same value.
      */
     suspend fun assign(evidenceArtifactId: EvidenceArtifactId, caseId: CaseId?): CaseAssignmentOutcome {
-        if (caseId != null && caseStorage.read(caseId) == null) {
-            return CaseAssignmentOutcome.UnknownCase
+        if (caseId != null) {
+            val targetCase = caseStorage.read(caseId)
+            if (targetCase == null || targetCase.lifecycleStatus != CaseLifecycleStatus.ACTIVE) {
+                return CaseAssignmentOutcome.UnknownCase
+            }
         }
         val evidenceExists = when (evidenceCustodian.retrieve(ownerPrincipalId, evidenceArtifactId)) {
             is EvidenceRetrievalResult.Found -> true

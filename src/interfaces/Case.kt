@@ -20,15 +20,15 @@ value class CaseId(val value: String) {
 
 /**
  * CASE-1. The minimum durable fact set for one case/matter: a stable
- * [caseId], an owner-facing [caseName] label, and [createdAt]. No status,
- * no lifecycle, no legal-case semantics, no members, no notes -- CASE-1 is
- * exactly "stable human-readable case identity," nothing else (see this
- * unit's own scope boundary list).
+ * [caseId], an owner-facing [caseName] label, [createdAt], and an explicit
+ * operational lifecycle. The lifecycle controls new operational work but
+ * does not alter case identity or historical references.
  */
 data class CaseRecord(
     val caseId: CaseId,
     val caseName: String,
     val createdAt: Instant,
+    val lifecycleStatus: CaseLifecycleStatus = CaseLifecycleStatus.ACTIVE,
 ) {
     init {
         require(caseName.isNotBlank()) { "CaseRecord.caseName must not be blank" }
@@ -40,6 +40,11 @@ data class CaseRecord(
     companion object {
         const val MAX_CASE_NAME_LENGTH = 200
     }
+}
+
+enum class CaseLifecycleStatus {
+    ACTIVE,
+    ARCHIVED,
 }
 
 /** Typed failures for [CaseStorage], mirroring [EvidenceSourceManifestStorageException]'s own established shape and naming. */
@@ -67,12 +72,10 @@ sealed class CaseStorageException(message: String, cause: Throwable? = null) : R
 }
 
 /**
- * CASE-1. The narrow persistence primitive for [CaseRecord]. Deliberately
- * carries no update, rename, delete, status, or archival capability --
- * none of those are in CASE-1's own scope. [list] exists only to populate
- * the Owner UI's case filter/selector with the small, bounded set of
- * defined cases -- it is not a general query capability and this
- * interface never enumerates evidence.
+ * The narrow persistence primitive for [CaseRecord]. Lifecycle updates are
+ * deliberately limited to the status field; identity and case metadata are
+ * not renamed or deleted. [list] exists only to populate bounded owner
+ * projections and this interface never enumerates evidence.
  */
 interface CaseStorage {
     /** Durably persists [case], exactly once, under [CaseRecord.caseId]. Throws [CaseStorageException.DuplicateIdentifier] if one already exists. */
@@ -83,6 +86,9 @@ interface CaseStorage {
 
     /** Every defined case, in no particular guaranteed order -- the caller sorts/presents as needed. Bounded by however many cases the owner has actually created. */
     suspend fun list(): List<CaseRecord>
+
+    /** Atomically changes only the lifecycle field, preserving identity and all case references. */
+    suspend fun updateLifecycle(caseId: CaseId, lifecycleStatus: CaseLifecycleStatus): CaseRecord?
 }
 
 /**
@@ -138,6 +144,8 @@ interface CaseAssignmentStorage {
 /** CASE-1's own closed audit-event vocabulary -- exactly the three facts this unit's own governance requires, nothing broader. */
 enum class CaseGovernanceAuditEventType {
     CASE_CREATED,
+    CASE_ARCHIVED,
+    CASE_RESTORED,
     INGESTION_BATCH_AUTHORISED,
     STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED,
     STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED,
@@ -179,7 +187,7 @@ data class CaseGovernanceAuditRecord(
     val evidenceOccurrenceId: EvidenceOccurrenceId? = null,
 ) {
     init {
-        require((eventType == CaseGovernanceAuditEventType.CASE_CREATED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED) == (evidenceArtifactId == null)) {
+        require((eventType == CaseGovernanceAuditEventType.CASE_CREATED || eventType == CaseGovernanceAuditEventType.CASE_ARCHIVED || eventType == CaseGovernanceAuditEventType.CASE_RESTORED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED) == (evidenceArtifactId == null)) {
             "CaseGovernanceAuditRecord.evidenceArtifactId must be present except for case/batch authorisation events"
         }
         require(eventType == CaseGovernanceAuditEventType.EVIDENCE_REASSIGNED || previousCaseId == null) {
@@ -188,7 +196,7 @@ data class CaseGovernanceAuditRecord(
         require(eventType != CaseGovernanceAuditEventType.EVIDENCE_REASSIGNED || previousCaseId != null) {
             "CaseGovernanceAuditRecord.previousCaseId must be present for EVIDENCE_REASSIGNED -- a reassignment always has a prior case"
         }
-        require(eventType != CaseGovernanceAuditEventType.CASE_CREATED || caseId != null) {
+        require(eventType != CaseGovernanceAuditEventType.CASE_CREATED && eventType != CaseGovernanceAuditEventType.CASE_ARCHIVED && eventType != CaseGovernanceAuditEventType.CASE_RESTORED || caseId != null) {
             "CaseGovernanceAuditRecord.caseId must be present for CASE_CREATED"
         }
         require(eventType != CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || caseId != null) {

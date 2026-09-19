@@ -9,6 +9,7 @@ import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import parker.core.interfaces.CaseId
+import parker.core.interfaces.CaseLifecycleStatus
 import parker.core.interfaces.CaseRecord
 
 /**
@@ -18,7 +19,7 @@ import parker.core.interfaces.CaseRecord
  */
 internal object CaseRecordCodec {
     private const val MAGIC = 0x43415345 // "CASE"
-    private const val VERSION = 1
+    private const val VERSION = 2
     private const val MAX_STRING_BYTES = 1024 * 1024
 
     fun encode(case: CaseRecord): ByteArray = ByteArrayOutputStream().use { bytes ->
@@ -28,18 +29,24 @@ internal object CaseRecordCodec {
             output.writeString(case.caseId.value)
             output.writeString(case.caseName)
             output.writeString(case.createdAt.toString())
+            output.writeString(case.lifecycleStatus.name)
         }
         bytes.toByteArray()
     }
 
     fun decode(content: ByteArray): CaseRecord = DataInputStream(ByteArrayInputStream(content)).use { input ->
         require(input.readInt() == MAGIC) { "invalid case record magic" }
-        require(input.readInt() == VERSION) { "unsupported case record version" }
+        val version = input.readInt()
+        require(version == 1 || version == VERSION) { "unsupported case record version" }
         val caseId = CaseId(input.readString())
         val caseName = input.readString()
         val createdAt = Instant.parse(input.readString())
+        val lifecycleStatus = if (version == 1) CaseLifecycleStatus.ACTIVE else {
+            try { CaseLifecycleStatus.valueOf(input.readString()) }
+            catch (e: Exception) { throw IllegalArgumentException("invalid case lifecycle status", e) }
+        }
         require(input.available() == 0) { "unexpected trailing bytes" }
-        CaseRecord(caseId = caseId, caseName = caseName, createdAt = createdAt)
+        CaseRecord(caseId = caseId, caseName = caseName, createdAt = createdAt, lifecycleStatus = lifecycleStatus)
     }
 
     private fun DataOutputStream.writeString(value: String) {

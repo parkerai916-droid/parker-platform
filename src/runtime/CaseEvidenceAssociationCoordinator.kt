@@ -10,6 +10,7 @@ import parker.core.interfaces.CaseGovernanceAuditQuery
 import parker.core.interfaces.CaseGovernanceAuditReader
 import parker.core.interfaces.CaseGovernanceAuditRecord
 import parker.core.interfaces.CaseId
+import parker.core.interfaces.CaseLifecycleStatus
 import parker.core.interfaces.CaseStorage
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceOccurrence
@@ -43,7 +44,8 @@ internal class CaseEvidenceAssociationCoordinator(
         )
         if (!readiness.ready) return CaseEvidenceAssociationCoordinatorOutcome.MigrationNotReady(readiness.reasons)
         try {
-            if (caseStorage.read(caseId) == null) return CaseEvidenceAssociationCoordinatorOutcome.UnknownCase
+            val targetCase = caseStorage.read(caseId)
+            if (targetCase == null || targetCase.lifecycleStatus != CaseLifecycleStatus.ACTIVE) return CaseEvidenceAssociationCoordinatorOutcome.UnknownCase
             if (manifestStorage.read(evidenceArtifactId) == null) return CaseEvidenceAssociationCoordinatorOutcome.UnknownEvidence
             val result = associationStorage.createOrGet(caseId, evidenceArtifactId, clock())
             val association = when (result) {
@@ -86,7 +88,8 @@ internal class CaseEvidenceAssociationCoordinator(
         val readiness = readinessOrFailure() ?: return EvidenceOccurrenceCoordinatorOutcome.MigrationNotReady(listOf("MIGRATION_READINESS_FAILURE"))
         if (!readiness.ready) return EvidenceOccurrenceCoordinatorOutcome.MigrationNotReady(readiness.reasons)
         try {
-            if (caseStorage.read(occurrence.caseId) == null) return EvidenceOccurrenceCoordinatorOutcome.UnknownCase
+            val targetCase = caseStorage.read(occurrence.caseId)
+            if (targetCase == null || targetCase.lifecycleStatus != CaseLifecycleStatus.ACTIVE) return EvidenceOccurrenceCoordinatorOutcome.UnknownCase
             val manifest = manifestStorage.read(occurrence.evidenceArtifactId)
                 ?: return EvidenceOccurrenceCoordinatorOutcome.UnknownEvidence
             if (occurrence.sourceSha256 != manifest.sha256) return EvidenceOccurrenceCoordinatorOutcome.SourceSha256Mismatch

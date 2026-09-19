@@ -25,6 +25,7 @@ import parker.core.interfaces.DocumentAnalysisInvocationResult
 import parker.core.interfaces.DocumentAnalysisOutcome
 import parker.core.interfaces.EvidenceAnalysisRequest
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.CaseLifecycleStatus
 import parker.core.interfaces.EvidenceCustodian
 import parker.core.interfaces.EvidenceDeletionResult
 import parker.core.interfaces.EvidenceIntelligence
@@ -498,6 +499,7 @@ class ParkerRuntime(
     // CASE-1: null unless caseStorageRootPath/caseAssignmentStorageRootPath/caseGovernanceAuditLogPath
     // are all configured together, mirroring every other optional collaborator in this file.
     private var caseAssignmentCoordinator: CaseAssignmentCoordinator? = null
+    private var caseLifecycleCoordinator: parker.core.runtime.CaseLifecycleCoordinator? = null
     private var caseStorageForProjection: CaseStorage? = null
     private var caseAssignmentStorageForProjection: CaseAssignmentStorage? = null
     private var caseEvidenceAssociationStorageForProjection: CaseEvidenceAssociationStorage? = null
@@ -2553,6 +2555,12 @@ class ParkerRuntime(
             val caseGovernanceAudit = stage("Case governance audit construction") {
                 FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath)))
             }
+            caseLifecycleCoordinator = parker.core.runtime.CaseLifecycleCoordinator(
+                caseStorage = caseStorage,
+                audit = caseGovernanceAudit,
+                actor = PrincipalId(config.ownerPrincipalId),
+                clock = clock,
+            )
             val migrationRunner = parker.core.runtime.CaseEvidenceAssociationMigrationRunner(
                 assignmentStorage = caseAssignmentStorage,
                 assignmentSource = caseAssignmentStorage,
@@ -4087,6 +4095,27 @@ class ParkerRuntime(
         return caseAssignmentCoordinator?.listCases() ?: emptyList()
     }
 
+    internal suspend fun listCasesByLifecycleAsOwner(status: String): List<CaseRecord> {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val cases = caseStorageForProjection?.list() ?: return emptyList()
+        return when (status) {
+            "active" -> cases.filter { it.lifecycleStatus == CaseLifecycleStatus.ACTIVE }
+            "archived" -> cases.filter { it.lifecycleStatus == CaseLifecycleStatus.ARCHIVED }
+            "all" -> cases
+            else -> emptyList()
+        }.sortedBy { it.caseId.value }
+    }
+
+    internal suspend fun archiveCaseAsOwner(caseId: parker.core.interfaces.CaseId): parker.core.runtime.CaseLifecycleOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return caseLifecycleCoordinator?.archive(caseId) ?: parker.core.runtime.CaseLifecycleOutcome.Failed("CASE_LIFECYCLE_NOT_CONFIGURED")
+    }
+
+    internal suspend fun restoreCaseAsOwner(caseId: parker.core.interfaces.CaseId): parker.core.runtime.CaseLifecycleOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return caseLifecycleCoordinator?.restore(caseId) ?: parker.core.runtime.CaseLifecycleOutcome.Failed("CASE_LIFECYCLE_NOT_CONFIGURED")
+    }
+
     /** Association-backed, read-only owner case evidence projection. Legacy assignments are not an authority here. */
     suspend fun listEvidenceForCaseAsOwner(caseIdValue: String): parker.ui.OwnerCaseEvidenceDiscoveryOutcome {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
@@ -4140,8 +4169,12 @@ class ParkerRuntime(
             ?: return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_ASSOCIATION_NOT_CONFIGURED")
         val readiness = caseAssociationMigrationReadinessForProjection
             ?: return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_ASSOCIATION_MIGRATION_NOT_CONFIGURED")
-        if (caseStorageForProjection?.read(typedCaseId) == null) {
+        val selectedCase = caseStorageForProjection?.read(typedCaseId)
+        if (selectedCase == null) {
             return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("UNKNOWN_CASE")
+        }
+        if (selectedCase.lifecycleStatus != CaseLifecycleStatus.ACTIVE) {
+            return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("ARCHIVED_CASE")
         }
         val ready = try { readiness.readiness() } catch (_: Exception) {
             return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_ASSOCIATION_MIGRATION_UNREADABLE")

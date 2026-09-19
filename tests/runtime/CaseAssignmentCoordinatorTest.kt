@@ -193,6 +193,20 @@ class CaseAssignmentCoordinatorTest {
     }
 
     @Test
+    fun `archived case is absent from the operational list and rejects new assignment`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "archived-case")
+        val evidenceArtifactId = acceptEvidence(fixture.custodian)
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Historical case")).case
+        val lifecycleAudit = FileSystemCaseGovernanceAudit(fixture.auditLogFile)
+        val lifecycle = CaseLifecycleCoordinator(fixture.caseStorage, lifecycleAudit, owner, clock)
+
+        assertIs<CaseLifecycleOutcome.Changed>(lifecycle.archive(case.caseId))
+        assertTrue(fixture.coordinator.listCases().isEmpty())
+        assertEquals(CaseAssignmentOutcome.UnknownCase, fixture.coordinator.assign(evidenceArtifactId, case.caseId))
+        assertNull(fixture.assignmentStorage.readAssignment(evidenceArtifactId))
+    }
+
+    @Test
     fun `reassignment is explicit and yields a distinct Reassigned outcome with the correct previous case`(@TempDir directory: Path) = runTest {
         val fixture = fixture(directory, "reassign")
         val evidenceArtifactId = acceptEvidence(fixture.custodian)

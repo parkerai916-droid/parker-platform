@@ -54,6 +54,7 @@ import parker.core.runtime.OrdinaryRegionCapabilityPromotionOutcome
 import parker.core.runtime.OrdinaryRegionCapabilityPromotionRequest
 import parker.core.runtime.OrdinaryRegionCapabilityStatus
 import parker.core.interfaces.CaseId
+import parker.core.interfaces.CaseRecord
 import parker.core.interfaces.PendingReviewPageRenderRequest
 import parker.core.interfaces.PendingReviewPagePreviewOutcome
 import parker.core.interfaces.PageRenderProfile
@@ -170,6 +171,9 @@ class OwnerEvidenceHttpServer(
     private val transcribeSpeechAsOwner: suspend (ByteArray, String) -> SpeechTranscriptionOutcome =
         { _, _ -> SpeechTranscriptionOutcome.BackendUnavailable },
     private val exportGovernedAnalysisAsOwner: suspend (AnalysisRequestId, GovernedAnalysisExportFormat) -> GovernedAnalysisExport? = { _, _ -> null },
+    private val listCasesByLifecycleAsOwner: (suspend (String) -> List<CaseRecord>)? = null,
+    private val archiveCaseAsOwner: suspend (CaseId) -> parker.core.runtime.CaseLifecycleOutcome = { parker.core.runtime.CaseLifecycleOutcome.Failed("CASE_LIFECYCLE_NOT_CONFIGURED") },
+    private val restoreCaseAsOwner: suspend (CaseId) -> parker.core.runtime.CaseLifecycleOutcome = { parker.core.runtime.CaseLifecycleOutcome.Failed("CASE_LIFECYCLE_NOT_CONFIGURED") },
 ) {
     private var server: HttpServer? = null
     private var executor: java.util.concurrent.ExecutorService? = null
@@ -1574,15 +1578,20 @@ class OwnerEvidenceHttpServer(
                     rejectUnauthorised(exchange)
                     return
                 }
+                val segments = exchange.requestURI.path.removePrefix("/owner/cases")
+                    .split('/').filter { it.isNotEmpty() }
                 when (exchange.requestMethod) {
                     "GET" -> {
-                        val segments = exchange.requestURI.path.removePrefix("/owner/cases")
-                            .split('/').filter { it.isNotEmpty() }
                         if (segments.isEmpty()) handleListCases(exchange)
                         else if (segments.size == 2 && segments[1] == "evidence") handleListCaseEvidence(exchange, segments[0])
                         else writeJson(exchange, 404, jsonObject("error" to "not found"))
                     }
-                    "POST" -> handleCreateCase(exchange)
+                    "POST" -> {
+                        if (segments.isEmpty()) handleCreateCase(exchange)
+                        else if (segments.size == 2 && (segments[1] == "archive" || segments[1] == "restore")) {
+                            handleLifecycleChange(exchange, segments[0], segments[1] == "archive")
+                        } else writeJson(exchange, 404, jsonObject("error" to "not found"))
+                    }
                     else -> {
                         runCatching { exchange.requestBody.use { it.readBytes() } }
                         writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -1599,10 +1608,40 @@ class OwnerEvidenceHttpServer(
         /** CASE-1. Every defined case -- for the Owner UI's case filter/selector. Never an evidence listing. */
         private fun handleListCases(exchange: HttpExchange) {
             runCatching { exchange.requestBody.use { it.readBytes() } }
-            val cases = runBlocking { operations.listCases() }
-            writeJson(exchange, 200, jsonObject("cases" to jsonArray(cases.map {
-                jsonObject("caseId" to it.caseId, "caseName" to it.caseName, "createdAt" to it.createdAt)
-            })))
+            val rawStatus = exchange.requestURI.query?.split('&')?.firstOrNull { it.startsWith("status=") }?.substringAfter('=')
+            val status = when (rawStatus ?: "active") {
+                "active", "archived", "all" -> rawStatus ?: "active"
+                else -> { writeJson(exchange, 400, jsonObject("status" to "INVALID_STATUS")); return }
+            }
+            val cases = listCasesByLifecycleAsOwner
+            if (cases == null && status != "active") {
+                writeJson(exchange, 501, jsonObject("status" to "CASE_LIFECYCLE_QUERY_NOT_CONFIGURED")); return
+            }
+            if (cases == null) {
+                val active = runBlocking { operations.listCases() }
+                writeJson(exchange, 200, jsonObject("cases" to jsonArray(active.map {
+                    jsonObject("caseId" to it.caseId, "caseName" to it.caseName, "createdAt" to it.createdAt)
+                })))
+            } else {
+                val records = runBlocking { cases(status) }
+                writeJson(exchange, 200, jsonObject("cases" to jsonArray(records.map {
+                    jsonObject("caseId" to it.caseId, "caseName" to it.caseName, "createdAt" to it.createdAt, "lifecycleStatus" to it.lifecycleStatus.name)
+                })))
+            }
+        }
+
+        private fun handleLifecycleChange(exchange: HttpExchange, rawCaseId: String, archive: Boolean) {
+            val caseId = try { CaseId(rawCaseId) } catch (_: IllegalArgumentException) {
+                writeJson(exchange, 400, jsonObject("status" to "INVALID_CASE_ID")); return
+            }
+            val outcome = runBlocking { if (archive) archiveCaseAsOwner(caseId) else restoreCaseAsOwner(caseId) }
+            when (outcome) {
+                is parker.core.runtime.CaseLifecycleOutcome.Changed -> writeJson(exchange, 200, jsonObject("status" to "UPDATED", "caseId" to outcome.case.caseId, "lifecycleStatus" to outcome.case.lifecycleStatus.name))
+                is parker.core.runtime.CaseLifecycleOutcome.AlreadyArchived -> writeJson(exchange, 200, jsonObject("status" to "ALREADY_ARCHIVED", "caseId" to outcome.case.caseId, "lifecycleStatus" to outcome.case.lifecycleStatus.name))
+                is parker.core.runtime.CaseLifecycleOutcome.AlreadyActive -> writeJson(exchange, 200, jsonObject("status" to "ALREADY_ACTIVE", "caseId" to outcome.case.caseId, "lifecycleStatus" to outcome.case.lifecycleStatus.name))
+                parker.core.runtime.CaseLifecycleOutcome.UnknownCase -> writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_CASE"))
+                is parker.core.runtime.CaseLifecycleOutcome.Failed -> writeJson(exchange, 500, jsonObject("status" to "FAILED", "reason" to outcome.reason))
+            }
         }
 
         /** CASE-1. Exact case-id targeting; case names are never accepted as lookup keys. */

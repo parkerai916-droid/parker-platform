@@ -180,6 +180,9 @@ class OwnerEvidenceHttpServerTest {
         pendingPreviewSource: suspend (String, String) -> PendingReviewSource? = { _, _ -> null },
         analysisWorkspace: suspend (parker.core.runtime.OwnerAnalysisInvocationRequest, String?) -> parker.core.runtime.OwnerAnalysisInvocationOutcome = { _, _ -> parker.core.runtime.OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed(null, "not configured") },
         exportGovernedAnalysis: suspend (AnalysisRequestId, parker.core.runtime.GovernedAnalysisExportFormat) -> parker.core.runtime.GovernedAnalysisExport? = { _, _ -> null },
+        listCasesByLifecycle: (suspend (String) -> List<CaseRecord>)? = null,
+        archiveCase: suspend (CaseId) -> parker.core.runtime.CaseLifecycleOutcome = { parker.core.runtime.CaseLifecycleOutcome.Failed("disabled") },
+        restoreCase: suspend (CaseId) -> parker.core.runtime.CaseLifecycleOutcome = { parker.core.runtime.CaseLifecycleOutcome.Failed("disabled") },
     ): Harness {
         val scriptDir = Files.createTempDirectory("evidence-http-scripts")
         val bridgePath = doclingBridgeScriptPath.ifEmpty { writeFakeBridgeScript(scriptDir, 0, "").toString() }
@@ -253,9 +256,42 @@ class OwnerEvidenceHttpServerTest {
             readPendingReviewSourceAsOwner = pendingPreviewSource,
             analyseSelectedEvidenceAsOwnerWithContext = analysisWorkspace,
             exportGovernedAnalysisAsOwner = exportGovernedAnalysis,
+            listCasesByLifecycleAsOwner = listCasesByLifecycle,
+            archiveCaseAsOwner = archiveCase,
+            restoreCaseAsOwner = restoreCase,
         )
         server.start()
         return Harness(runtime, server, authentication, runtimeLogger, serverLogger)
+    }
+
+    @Test
+    fun `case listing defaults to active and supports explicit archived and all projections`() {
+        val active = CaseRecord(CaseId("case-active-http"), "Active case", Instant.parse("2026-09-19T00:00:00Z"))
+        val archived = CaseRecord(CaseId("case-archived-http"), "Archived case", Instant.parse("2026-09-19T00:00:01Z"), CaseLifecycleStatus.ARCHIVED)
+        val harness = startHarness("", listCasesByLifecycle = { status ->
+            when (status) {
+                "active" -> listOf(active)
+                "archived" -> listOf(archived)
+                "all" -> listOf(active, archived)
+                else -> error("unexpected status $status")
+            }
+        })
+        try {
+            val cookie = pairedCookie(harness)
+            fun get(path: String) = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + path)).header("Cookie", cookie).GET().build())
+            assertEquals(200, get("/owner/cases").statusCode())
+            val activeBody = get("/owner/cases").body()
+            assertTrue(activeBody.contains("\"caseId\":\"CaseId(value=case-active-http)\""), activeBody)
+            assertTrue(activeBody.contains("\"lifecycleStatus\":\"ACTIVE\""))
+            assertTrue(!activeBody.contains("case-archived-http"))
+            val archivedBody = get("/owner/cases?status=archived").body()
+            assertTrue(archivedBody.contains("\"caseId\":\"CaseId(value=case-archived-http)\""))
+            assertTrue(archivedBody.contains("\"lifecycleStatus\":\"ARCHIVED\""))
+            val allBody = get("/owner/cases?status=all").body()
+            assertTrue(allBody.contains("\"caseId\":\"CaseId(value=case-active-http)\""))
+            assertTrue(allBody.contains("\"caseId\":\"CaseId(value=case-archived-http)\""))
+            assertEquals(400, get("/owner/cases?status=invalid").statusCode())
+        } finally { harness.shutdown() }
     }
 
     @Test

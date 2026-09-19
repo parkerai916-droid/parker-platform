@@ -12,6 +12,7 @@ import parker.core.interfaces.CaseGovernanceAudit
 import parker.core.interfaces.CaseGovernanceAuditEventType
 import parker.core.interfaces.CaseGovernanceAuditRecord
 import parker.core.interfaces.CaseId
+import parker.core.interfaces.CaseLifecycleStatus
 import parker.core.interfaces.CaseStorage
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceOccurrence
@@ -77,7 +78,8 @@ internal class BulkIngestionBindingCoordinator(
     }
 
     suspend fun authoriseAsOwner(caseId: CaseId): BulkIngestionAuthorisation = mutex.withLock {
-        if (caseStorage.read(caseId) == null) return@withLock BulkIngestionAuthorisation.UnknownCase
+        val targetCase = caseStorage.read(caseId)
+        if (targetCase == null || targetCase.lifecycleStatus != CaseLifecycleStatus.ACTIVE) return@withLock BulkIngestionAuthorisation.UnknownCase
         val batchId = "bulk-${UUID.randomUUID()}"
         val binding = BulkIngestionBinding(batchId, caseId, emptySet(), false)
         return@withLock try {
@@ -91,12 +93,16 @@ internal class BulkIngestionBindingCoordinator(
 
     suspend fun recordSubmission(batchId: String, evidenceArtifactId: EvidenceArtifactId): Boolean = mutex.withLock {
         val existing = read(batchId) ?: return@withLock false
+        if (caseStorage.read(existing.caseId)?.lifecycleStatus != CaseLifecycleStatus.ACTIVE) return@withLock false
         if (evidenceArtifactId in existing.evidence) return@withLock true
         write(existing.copy(evidence = existing.evidence + evidenceArtifactId))
         true
     }
 
-    suspend fun isAuthorised(batchId: String): Boolean = mutex.withLock { read(batchId) != null }
+    suspend fun isAuthorised(batchId: String): Boolean = mutex.withLock {
+        val binding = read(batchId) ?: return@withLock false
+        caseStorage.read(binding.caseId)?.lifecycleStatus == CaseLifecycleStatus.ACTIVE
+    }
 
     /** Exact read-only membership check used by source-bound derivative intake. */
     suspend fun containsEvidence(batchId: String, evidenceArtifactId: EvidenceArtifactId): Boolean = mutex.withLock {
@@ -179,6 +185,7 @@ internal class BulkIngestionBindingCoordinator(
                     val batchId = path.fileName.toString().removeSuffix(".binding")
                     val binding = runCatching { read(batchId) }.getOrNull() ?: return@mapNotNull null
                     val case = caseStorage.read(binding.caseId) ?: return@mapNotNull null
+                    if (case.lifecycleStatus != CaseLifecycleStatus.ACTIVE) return@mapNotNull null
                     ReadyBulkIngestionBatch(
                         batchId = batchId,
                         caseName = case.caseName,

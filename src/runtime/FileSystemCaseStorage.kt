@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.CaseId
 import parker.core.interfaces.CaseIdentifierSafety
+import parker.core.interfaces.CaseLifecycleStatus
 import parker.core.interfaces.CaseRecord
 import parker.core.interfaces.CaseStorage
 import parker.core.interfaces.CaseStorageException
@@ -112,6 +113,38 @@ class FileSystemCaseStorage(storageRoot: Path) : CaseStorage {
         }
     }
 
+    override suspend fun updateLifecycle(caseId: CaseId, lifecycleStatus: CaseLifecycleStatus): CaseRecord? {
+        requireSafe(caseId)
+        return mutex.withLock {
+            withCaseLock(caseId) {
+                val target = target(caseId)
+                val current = readFile(caseId, target) ?: return@withCaseLock null
+                val updated = current.copy(lifecycleStatus = lifecycleStatus)
+                val encoded = CaseRecordCodec.encode(updated)
+                val temporary = try {
+                    Files.createTempFile(tempDirectory, TEMP_FILE_PREFIX, TEMP_FILE_SUFFIX)
+                } catch (e: IOException) {
+                    throw CaseStorageException.StorageIOFailure("Failed to create a temporary file for case lifecycle update '${caseId.value}'", e)
+                }
+                try {
+                    FileChannel.open(temporary, StandardOpenOption.WRITE).use { channel ->
+                        val buffer = ByteBuffer.wrap(encoded)
+                        while (buffer.hasRemaining()) channel.write(buffer)
+                        channel.force(true)
+                    }
+                    try {
+                        Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                    } catch (e: IOException) {
+                        throw CaseStorageException.StorageIOFailure("Failed to persist lifecycle for case '${caseId.value}'", e)
+                    }
+                } finally {
+                    Files.deleteIfExists(temporary)
+                }
+                updated
+            }
+        }
+    }
+
     private fun readFile(caseId: CaseId, target: Path): CaseRecord? {
         if (!Files.exists(target)) return null
         val content = try {
@@ -144,6 +177,19 @@ class FileSystemCaseStorage(storageRoot: Path) : CaseStorage {
             CaseIdentifierSafety.requireSafe(id)
         } catch (e: Exception) {
             throw CaseStorageException.UnsafeIdentifier(id)
+        }
+    }
+
+    private fun <T> withCaseLock(caseId: CaseId, action: () -> T): T {
+        val lockPath = tempDirectory.resolve("${caseId.value}.lifecycle.lock")
+        try {
+            FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
+                return channel.lock().use { action() }
+            }
+        } catch (e: CaseStorageException) {
+            throw e
+        } catch (e: IOException) {
+            throw CaseStorageException.StorageIOFailure("Failed to acquire lifecycle lock for case '${caseId.value}'", e)
         }
     }
 
