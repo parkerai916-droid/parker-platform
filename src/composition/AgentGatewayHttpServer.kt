@@ -286,7 +286,7 @@ class AgentGatewayHttpServer(
                 if (exchange.requestMethod == "GET" && exchange.requestURI.path == "/agent/ingestion-batches") {
                     val batches = runBlocking { listReadyIngestionBatchesAsAgent() }
                     recordAudit(correlationId, principalId, "agent.ingestion-batches.ready", null, AgentGatewayAccessOutcome.APPROVED)
-                    writeJson(exchange, 200, jsonObject("batches" to JsonArray(batches.map { jsonObject("batchId" to it.batchId, "caseName" to it.caseName, "status" to "READY") })))
+                    writeJson(exchange, 200, jsonObject("batches" to JsonArray(batches.map { jsonObject("batchId" to it.batchId, "caseName" to it.caseName, "status" to it.status) })))
                     return
                 }
                 val segments = exchange.requestURI.path.removePrefix("/agent/ingestion-batches/").split('/').filter { it.isNotEmpty() }

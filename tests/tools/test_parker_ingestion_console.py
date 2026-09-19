@@ -156,6 +156,15 @@ console.log(JSON.stringify([
             self.assertTrue(console.validate_authoritative_batch("owner-cookie", "bulk-current"))
             self.assertFalse(console.validate_authoritative_batch("owner-cookie", "bulk-other"))
 
+    def test_in_flight_used_batch_remains_valid_for_remaining_files(self):
+        ready = {"batches": [{"batchId": "bulk-current", "caseName": "Current case", "status": "USED"}]}
+        with patch.object(console, "ready_batches", return_value=ready):
+            self.assertTrue(console.validate_authoritative_batch("owner-cookie", "bulk-current"))
+
+    def test_ready_batch_status_is_used_by_operator_label(self):
+        source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
+        self.assertIn("b.status==='READY'?'Ready batch · unused'", source)
+
     def test_ready_batch_discovery_failure_is_not_converted_to_fabricated_empty_state(self):
         with patch.object(console, "ready_batches", side_effect=RuntimeError("Parker READY batch discovery failed")):
             with self.assertRaises(RuntimeError):

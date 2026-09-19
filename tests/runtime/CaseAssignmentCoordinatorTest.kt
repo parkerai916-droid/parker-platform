@@ -299,6 +299,25 @@ class CaseAssignmentCoordinatorTest {
     }
 
     @Test
+    fun `batch becomes USED after accepted source and remains usable for an in-flight multi-file run across restart`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "bulk-lifecycle")
+        val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Bulk lifecycle target")).case
+        val evidence = acceptEvidence(fixture.custodian, "accepted source")
+        val bindings = directory.resolve("bulk-lifecycle/bindings")
+        val first = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        val batch = assertIs<BulkIngestionAuthorisation.Authorised>(first.authoriseAsOwner(case.caseId)).binding
+        assertEquals("READY", first.listReady().single { it.batchId == batch.batchId }.status)
+
+        assertTrue(first.recordSubmission(batch.batchId, evidence))
+        assertEquals("USED", first.listReady().single { it.batchId == batch.batchId }.status)
+        assertTrue(first.isAuthorised(batch.batchId))
+
+        val restarted = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        assertEquals("USED", restarted.listReady().single { it.batchId == batch.batchId }.status)
+        assertTrue(restarted.isAuthorised(batch.batchId))
+    }
+
+    @Test
     fun `bulk binding creates independent case associations for repeated cross-case content`(@TempDir directory: Path) = runTest {
         val fixture = fixture(directory, "bulk-cross-case")
         val caseA = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Case A")).case

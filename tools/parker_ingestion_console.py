@@ -80,7 +80,7 @@ def validate_authoritative_batch(_cookie, batch_id):
     batches = ready.get("batches", []) if isinstance(ready, dict) else []
     return any(
         item.get("batchId") == batch_id
-        and item.get("status") == "READY"
+        and item.get("status") in ("READY", "USED")
         and bool(item.get("caseName"))
         for item in batches
     )

@@ -43,8 +43,18 @@ internal sealed interface BulkIngestionAssignment {
     data class Failure(val reason: String) : BulkIngestionAssignment
 }
 
-/** Read-only handoff projection; deliberately omits CaseId. */
-data class ReadyBulkIngestionBatch(val batchId: String, val caseName: String)
+/**
+ * Read-only handoff projection; deliberately omits CaseId.
+ *
+ * READY means no source has yet been accepted under the durable binding. USED means at least one
+ * source was accepted. USED remains authorised for the remainder of an in-flight multi-file run,
+ * but is not an unused batch and therefore must not be offered by an operational selector.
+ */
+data class ReadyBulkIngestionBatch(
+    val batchId: String,
+    val caseName: String,
+    val status: String = "READY",
+)
 
 /**
  * The only subordinate case-binding seam. The case id is written once by an Owner call and is
@@ -162,14 +172,22 @@ internal class BulkIngestionBindingCoordinator(
     suspend fun listReady(limit: Int = 32): List<ReadyBulkIngestionBatch> = mutex.withLock {
         val result = mutableListOf<ReadyBulkIngestionBatch>()
         Files.list(storageRoot).use { paths ->
-            val iterator = paths.filter { it.fileName.toString().endsWith(".binding") }.sorted().iterator()
-            while (iterator.hasNext() && result.size < limit) {
-                val path = iterator.next()
-                val batchId = path.fileName.toString().removeSuffix(".binding")
-                val binding = runCatching { read(batchId) }.getOrNull() ?: continue
-                val case = caseStorage.read(binding.caseId) ?: continue
-                result += ReadyBulkIngestionBatch(batchId, case.caseName)
-            }
+            val candidates = paths.filter { it.fileName.toString().endsWith(".binding") }
+                .sorted()
+                .toList()
+                .mapNotNull { path ->
+                    val batchId = path.fileName.toString().removeSuffix(".binding")
+                    val binding = runCatching { read(batchId) }.getOrNull() ?: return@mapNotNull null
+                    val case = caseStorage.read(binding.caseId) ?: return@mapNotNull null
+                    ReadyBulkIngestionBatch(
+                        batchId = batchId,
+                        caseName = case.caseName,
+                        status = if (binding.evidence.isEmpty()) "READY" else "USED",
+                    )
+                }
+                .sortedWith(compareBy<ReadyBulkIngestionBatch> { it.status != "READY" }.thenBy { it.batchId })
+                .take(limit)
+            result += candidates
         }
         result
     }

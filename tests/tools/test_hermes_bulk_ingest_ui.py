@@ -180,6 +180,9 @@ class HermesBulkUiHealthTest(unittest.TestCase):
         self.assertEqual(payload, {"batches": []})
         self.assertEqual(calls, [("/agent/ingestion-batches", "test-token")])
 
+    def test_ready_selector_excludes_durably_used_batches(self):
+        self.assertIn("(d.batches||[]).filter(b=>b.status==='READY')", UI.PAGE)
+
 
 class HermesBulkUiMultipartHttpTest(unittest.TestCase):
     def setUp(self):
