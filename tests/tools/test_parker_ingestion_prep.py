@@ -59,6 +59,7 @@ class ParkerIngestionPrepTest(unittest.TestCase):
         self.assertEqual(result["reconciliation"]["unaccounted"], 0)
         self.assertEqual(result["handoff"]["handoffStatus"], "READY")
         self.assertEqual(result["handoff"]["reconciliationStatus"], "COMPLETE")
+        self.assertEqual(result["handoff"]["caseId"], "case-a")
         self.assertEqual(result["handoff"]["readyItemCount"], len(result["handoff"]["readyContent"]))
         after = {path: self.digest(path) for path in self.source.rglob("*") if path.is_file()}
         self.assertEqual(before, after)

@@ -97,3 +97,41 @@ preparation failure. Interrupted temporary copies are never treated as
 completed files. Re-running a job reuses its durable occurrence and content
 records, verifies the source again, and does not create a second canonical
 record for completed content.
+
+## Case-bound handoff into Parker
+
+Production import is a separate, explicit owner-authorised step:
+
+```text
+python3 tools/parker_ingestion_handoff.py /path/to/job/reports/handoff.json \
+  --owner-url http://127.0.0.1:8080 \
+  --gateway-url http://127.0.0.1:8081 \
+  --token-file /path/to/agent-token
+```
+
+`PARKER_OWNER_COOKIE` authenticates the owner-side case registry and batch
+authorisation. The importer requires an exact authoritative `caseId`; it
+rejects blank, `unassigned`, unknown, missing, unreconciled and `NOT_READY`
+handoffs. It consumes only verified entries in `readyContent`, never rescans
+`source_copy/`, `extracted/`, or the original source folder. READY and
+READY_WITH_EXCEPTIONS both import their READY population; duplicates,
+REVIEW_REQUIRED and FAILED occurrences stay withheld.
+
+Each import is recorded in the job's `prep.db` and
+`reports/handoff-import.json`. The record links the prep job and occurrence,
+case, SHA-256, original relative path, archive parent/member provenance, Parker
+batch and returned EvidenceArtifactId. After governed source admission, the
+owner-authenticated occurrence endpoint derives case authority from the batch
+and registers the provenance through Parker's association coordinator. Parker
+therefore retains one canonical EvidenceArtifact for identical bytes while
+allowing distinct case associations and occurrences.
+
+Repeating the same handoff skips completed occurrences and relies on Parker's
+existing SHA-256 source identity, association, and occurrence idempotency. A
+cross-case repeat reuses the canonical content identity and creates only the
+new case association/occurrence; it never moves or permission-merges the
+existing case.
+
+`tools/parker-ingestion-prep.ps1` provides the Windows operator flow: select a
+source folder, select one case from `/owner/cases`, run preparation with that
+case ID, and optionally invoke the importer with `-Import`.

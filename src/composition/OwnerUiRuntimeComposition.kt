@@ -105,6 +105,7 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         projectEffectiveHumanFidelityReviewAsOwner = runtime::projectEffectiveHumanFidelityReviewAsOwner,
         createCaseAsOwner = runtime::createCaseAsOwner,
         listCasesAsOwner = runtime::listCasesAsOwner,
+        listEvidenceForCaseAsOwner = runtime::listEvidenceForCaseAsOwner,
         currentCaseAssignmentAsOwner = runtime::currentCaseAssignmentAsOwner,
         assignEvidenceToCaseAsOwner = runtime::assignEvidenceToCaseAsOwner,
     )

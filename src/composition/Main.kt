@@ -204,6 +204,30 @@ fun main(args: Array<String>) = runBlocking {
                         OwnerIngestionBatchAuthorisation.Failure(outcome.reason)
                 }
             },
+            registerIngestionOccurrenceAsOwner = { batchId, evidenceArtifactId, request ->
+                val runtimeRequest = parker.core.runtime.BulkIngestionOccurrenceRequest(
+                    sourceSha256 = request.sourceSha256,
+                    prepJobId = request.prepJobId,
+                    prepOccurrenceId = request.prepOccurrenceId,
+                    relativePath = request.relativePath,
+                    archiveParentOccurrenceId = request.archiveParentOccurrenceId,
+                    archiveMemberPath = request.archiveMemberPath,
+                )
+                when (val outcome = runtime.registerPrepOccurrenceAsOwner(batchId, evidenceArtifactId, runtimeRequest)) {
+                    is parker.core.runtime.BulkIngestionOccurrenceRegistration.Created ->
+                        OwnerIngestionOccurrenceRegistration.Created(outcome.associationId, outcome.occurrenceId)
+                    is parker.core.runtime.BulkIngestionOccurrenceRegistration.AlreadyPresent ->
+                        OwnerIngestionOccurrenceRegistration.AlreadyPresent(outcome.associationId, outcome.occurrenceId)
+                    parker.core.runtime.BulkIngestionOccurrenceRegistration.UnknownBatch ->
+                        OwnerIngestionOccurrenceRegistration.UnknownBatch
+                    parker.core.runtime.BulkIngestionOccurrenceRegistration.EvidenceNotSubmittedUnderBatch ->
+                        OwnerIngestionOccurrenceRegistration.EvidenceNotSubmittedUnderBatch
+                    is parker.core.runtime.BulkIngestionOccurrenceRegistration.Rejected ->
+                        OwnerIngestionOccurrenceRegistration.Rejected(outcome.reason)
+                    is parker.core.runtime.BulkIngestionOccurrenceRegistration.Failure ->
+                        OwnerIngestionOccurrenceRegistration.Failure(outcome.reason)
+                }
+            },
             establishStandingExternalTranscriptionPolicyAsOwner = { credential ->
                 runtime.establishStandingExternalTranscriptionPolicyAsOwner(
                     credential?.let { parker.core.interfaces.OwnerVerificationCredential.presented(it) },

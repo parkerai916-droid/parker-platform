@@ -565,6 +565,7 @@ class PrepJob:
         handoff = {
             "schema": "parker-ingestion-prep-handoff-v1",
             "jobId": self.job_id,
+            "caseId": self.case_id,
             "jobRoot": str(self.job_root),
             "uniqueReadyContentRoot": str(self.ready),
             "sourceCopyRoot": str(self.source_copy),
@@ -592,6 +593,13 @@ class PrepJob:
 
     def _materialize_ready(self, items: list[dict]) -> list[dict]:
         """Expose only unique ready files; retained ZIPs never enter this view."""
+        def ready_name(item: dict) -> str:
+            # The governed Hermes route uses the suffix to select its parser.  Keep
+            # the opaque occurrence identity while retaining the source/member
+            # suffix; the occurrence record remains the authoritative provenance.
+            suffix = Path(item["filename"]).suffix
+            return item["occurrence_id"] + suffix
+
         valid_items = []
         for item in items:
             source = Path(item["working_copy_path"] or item["extracted_path"])
@@ -603,14 +611,14 @@ class PrepJob:
                 )
                 continue
             valid_items.append((item, source))
-        expected = {item["occurrence_id"] for item, _ in valid_items}
+        expected = {ready_name(item) for item, _ in valid_items}
         for child in self.ready.iterdir():
             if child.is_file() or child.is_symlink():
                 if child.name not in expected:
                     child.unlink()
         result = []
         for item, source in valid_items:
-            destination = self.ready / item["occurrence_id"]
+            destination = self.ready / ready_name(item)
             if destination.exists() or destination.is_symlink():
                 destination.unlink()
             try:

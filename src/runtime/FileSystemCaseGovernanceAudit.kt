@@ -47,7 +47,9 @@ class FileSystemCaseGovernanceAudit(private val logFile: Path) : CaseGovernanceA
             append("externalTranscriptionAuthorised=").append(record.externalTranscriptionAuthorised?.toString() ?: "-").append('\t')
             append("authorizationPurpose=").append(encode(record.authorizationPurpose)).append('\t')
             append("policyVersion=").append(encode(record.policyVersion)).append('\t')
-            append("policyId=").append(encode(record.policyId))
+            append("policyId=").append(encode(record.policyId)).append('\t')
+            append("caseEvidenceAssociationId=").append(encode(record.caseEvidenceAssociationId?.value)).append('\t')
+            append("evidenceOccurrenceId=").append(encode(record.evidenceOccurrenceId?.value))
             append('\n')
         }.toByteArray(StandardCharsets.UTF_8)
         mutex.withLock {
@@ -80,7 +82,9 @@ class FileSystemCaseGovernanceAudit(private val logFile: Path) : CaseGovernanceA
                 fields["externalTranscriptionAuthorised"] == (query.externalTranscriptionAuthorised?.toString() ?: "-") &&
                 (fields["authorizationPurpose"] ?: "-") == encode(query.authorizationPurpose) &&
                 (fields["policyVersion"] ?: "-") == encode(query.policyVersion) &&
-                (fields["policyId"] ?: "-") == encode(query.policyId)
+                (fields["policyId"] ?: "-") == encode(query.policyId) &&
+                (query.caseEvidenceAssociationId == null || fields["caseEvidenceAssociationId"] == encode(query.caseEvidenceAssociationId.value)) &&
+                (query.evidenceOccurrenceId == null || fields["evidenceOccurrenceId"] == encode(query.evidenceOccurrenceId.value))
         }
     }
 

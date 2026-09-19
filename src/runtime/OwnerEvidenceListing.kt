@@ -52,17 +52,28 @@ class FileSystemOwnerEvidenceListing(
             throw IllegalStateException("durable evidence registration listing unavailable", e)
         }
         return ids.map { id ->
-            val manifest = requireNotNull(manifests.read(id)) { "durable evidence registration disappeared during listing" }
-            val found = evidenceCustodian.retrieve(ownerPrincipalId, id) as? EvidenceRetrievalResult.Found
-                ?: error("durably registered evidence is not retrievable")
-            require(found.evidenceArtifactId == id)
-            require(found.content.size.toLong() == manifest.byteLength) { "durable evidence byte length mismatch" }
-            require(sha256(found.content) == manifest.sha256) { "durable evidence digest mismatch" }
             val registeredAt = Files.getLastModifiedTime(root.resolve("${id.value}$SUFFIX")).toInstant()
-            OwnerRegisteredEvidence(id, manifest.sha256, manifest.byteLength,
-                manifest.receivedMediaType, manifest.originalFileName, registeredAt,
-                processingStateStore?.find(id)?.state ?: EvidenceProcessingState.REGISTERED)
+            findRegistered(id, registeredAt)
         }
+    }
+
+    /** Association-backed case listing resolves one already-known artifact without enumerating all manifests. */
+    suspend fun findRegistered(evidenceArtifactId: EvidenceArtifactId): OwnerRegisteredEvidence? {
+        val target = root.resolve("${evidenceArtifactId.value}$SUFFIX")
+        if (!Files.isRegularFile(target)) return null
+        return findRegistered(evidenceArtifactId, Files.getLastModifiedTime(target).toInstant())
+    }
+
+    private suspend fun findRegistered(evidenceArtifactId: EvidenceArtifactId, registeredAt: Instant): OwnerRegisteredEvidence {
+        val manifest = requireNotNull(manifests.read(evidenceArtifactId)) { "durable evidence registration disappeared during listing" }
+        val found = evidenceCustodian.retrieve(ownerPrincipalId, evidenceArtifactId) as? EvidenceRetrievalResult.Found
+            ?: error("durably registered evidence is not retrievable")
+        require(found.evidenceArtifactId == evidenceArtifactId)
+        require(found.content.size.toLong() == manifest.byteLength) { "durable evidence byte length mismatch" }
+        require(sha256(found.content) == manifest.sha256) { "durable evidence digest mismatch" }
+        return OwnerRegisteredEvidence(evidenceArtifactId, manifest.sha256, manifest.byteLength,
+            manifest.receivedMediaType, manifest.originalFileName, registeredAt,
+            processingStateStore?.find(evidenceArtifactId)?.state ?: EvidenceProcessingState.REGISTERED)
     }
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")

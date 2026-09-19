@@ -1641,8 +1641,33 @@ class AgentGatewayHttpServerTest {
             val retrieved = harness.runtime.retrieveEvidenceAsAgent(EvidenceArtifactId(evidenceArtifactId))
             assertIs<AgentGatewayEvidenceRetrievalResult.Found>(retrieved)
             assertEquals(bytes.size, retrieved.byteLength)
-            val caseId = harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(evidenceArtifactId))
-            assertNotNull(caseId, "governed ingestion must complete real case binding, not just registration")
+            val case = harness.runtime.listCasesAsOwner().single { it.caseName == "PASS Happy Path Case" }
+            val listing = assertIs<parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Found>(
+                harness.runtime.listEvidenceForCaseAsOwner(case.caseId.value),
+            )
+            assertTrue(
+                listing.evidence.any { it.evidenceArtifactId == evidenceArtifactId },
+                "governed ingestion must create the association-backed case binding",
+            )
+        }
+    }
+
+    @Test
+    fun `real runtime prep occurrence registration is batch-bound and idempotent`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Prep Occurrence Case")
+            val bytes = "prep occurrence source".toByteArray()
+            val sha256 = sha256Of(bytes)
+            postProcessingResult(harness.baseUri(), batchId, processingResultRequestBody(sourceSha256 = sha256, status = "PASS"))
+            val admission = postGovernedIngestion(harness.baseUri(), batchId, sha256, bytes)
+            assertEquals(201, admission.statusCode(), admission.body())
+            val evidenceId = assertNotNull(jsonStringField(admission.body(), "evidenceArtifactId"))
+            val request = parker.core.runtime.BulkIngestionOccurrenceRequest(sha256, "JOB-REAL", "prep-occ-real", "docs/source.txt", null, null)
+
+            val first = harness.runtime.registerPrepOccurrenceAsOwner(batchId, EvidenceArtifactId(evidenceId), request)
+            val second = harness.runtime.registerPrepOccurrenceAsOwner(batchId, EvidenceArtifactId(evidenceId), request)
+            assertIs<parker.core.runtime.BulkIngestionOccurrenceRegistration.Created>(first)
+            assertIs<parker.core.runtime.BulkIngestionOccurrenceRegistration.AlreadyPresent>(second)
         }
     }
 
@@ -2125,8 +2150,14 @@ class AgentGatewayHttpServerTest {
             assertEquals(409, failedResponse.statusCode())
             assertTrue(failedResponse.body().contains("REPROCESS_REQUIRED"))
 
-            val caseId = assertNotNull(harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(passArtifact)))
-            assertEquals(caseId, harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(reviewArtifact)))
+            val case = harness.runtime.listCasesAsOwner().single { it.caseName == "Mixed Batch Acceptance Case" }
+            val listing = assertIs<parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Found>(
+                harness.runtime.listEvidenceForCaseAsOwner(case.caseId.value),
+            )
+            assertEquals(
+                setOf(passArtifact, reviewArtifact),
+                listing.evidence.map { it.evidenceArtifactId }.toSet(),
+            )
         }
     }
 

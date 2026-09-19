@@ -277,9 +277,13 @@ class OwnerUiEvidenceRuntimeAdapter(
     // wired -- mirroring the HFR lambda parameters immediately above.
     private val createCaseAsOwner: (suspend (String) -> parker.core.runtime.CaseCreationOutcome)? = null,
     private val listCasesAsOwner: (suspend () -> List<parker.core.interfaces.CaseRecord>)? = null,
+    private val listEvidenceForCaseAsOwner: (suspend (String) -> parker.ui.OwnerCaseEvidenceDiscoveryOutcome)? = null,
     private val currentCaseAssignmentAsOwner: (suspend (EvidenceArtifactId) -> parker.core.interfaces.CaseId?)? = null,
     private val assignEvidenceToCaseAsOwner: (suspend (EvidenceArtifactId, parker.core.interfaces.CaseId?) -> parker.core.runtime.CaseAssignmentOutcome)? = null,
 ) : OwnerEvidenceOperations {
+
+    override suspend fun listEvidenceForCase(caseId: String): parker.ui.OwnerCaseEvidenceDiscoveryOutcome =
+        listEvidenceForCaseAsOwner?.invoke(caseId) ?: super.listEvidenceForCase(caseId)
 
     override suspend fun processingState(evidenceArtifactId: EvidenceArtifactId): String? =
         processingStateAsOwner(evidenceArtifactId)

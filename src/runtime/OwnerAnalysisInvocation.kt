@@ -8,11 +8,13 @@ import parker.core.interfaces.AnalysisRequestId
 import parker.core.interfaces.AnalysisType
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.CaseId
 
 data class OwnerAnalysisInvocationRequest(
     val question: String,
     val evidenceArtifactIds: List<EvidenceArtifactId>,
     val analysisType: AnalysisType = AnalysisType.ISSUE_ANALYSIS,
+    val caseId: CaseId? = null,
 ) {
     init {
         require(question.isNotBlank()) { "analysis question must not be blank" }
@@ -40,6 +42,7 @@ interface HermesAnalysisInvoker {
 sealed interface OwnerAnalysisInvocationOutcome {
     data class Completed(
         val analysisRequestId: AnalysisRequestId,
+        val caseId: CaseId?,
         val analysisType: AnalysisType,
         val question: String,
         val selectedEvidenceArtifactIds: List<EvidenceArtifactId>,
@@ -59,6 +62,7 @@ sealed interface OwnerAnalysisInvocationOutcome {
 
     data class NoUsableDerivative(val evidenceArtifactId: EvidenceArtifactId, val reason: String) : OwnerAnalysisInvocationOutcome
     data class GovernedRetrievalFailed(val evidenceArtifactId: EvidenceArtifactId?, val reason: String) : OwnerAnalysisInvocationOutcome
+    data class CaseScopeRejected(val caseId: CaseId?, val reason: String) : OwnerAnalysisInvocationOutcome
     data class ReasoningFailed(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
     data class ReasoningTimeout(val analysisRequestId: AnalysisRequestId, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
     data class StructuredOutputInvalid(val analysisRequestId: AnalysisRequestId, val reason: String, val governedPackage: AnalysisRetrievalPackage) : OwnerAnalysisInvocationOutcome
@@ -71,8 +75,14 @@ class OwnerAnalysisInvocationCoordinator(
     private val submitGovernedAnalysis: suspend (AnalysisRequest) -> AnalysisRequestResult,
     private val hermesInvoker: HermesAnalysisInvoker,
     private val profile: String = ANALYSIS_PROFILE,
+    private val validateCaseScope: suspend (CaseId?, List<EvidenceArtifactId>) -> OwnerAnalysisCaseScopeValidation = { _, _ -> OwnerAnalysisCaseScopeValidation.Valid },
 ) {
     suspend fun invoke(request: OwnerAnalysisInvocationRequest, priorContext: String? = null): OwnerAnalysisInvocationOutcome {
+        when (val scope = validateCaseScope(request.caseId, request.evidenceArtifactIds)) {
+            OwnerAnalysisCaseScopeValidation.Valid -> Unit
+            is OwnerAnalysisCaseScopeValidation.Rejected ->
+                return OwnerAnalysisInvocationOutcome.CaseScopeRejected(request.caseId, scope.reason)
+        }
         val mapping = linkedMapOf<EvidenceArtifactId, DerivativeGenerationId>()
         for (evidenceId in request.evidenceArtifactIds) {
             when (val resolution = resolvePreferredDerivative(evidenceId)) {
@@ -110,12 +120,17 @@ class OwnerAnalysisInvocationCoordinator(
             return OwnerAnalysisInvocationOutcome.StructuredOutputInvalid(analysisRequest.requestId, e.message ?: "invalid structured analysis output", governedPackage)
         }
         return OwnerAnalysisInvocationOutcome.Completed(
-            analysisRequest.requestId, request.analysisType, request.question, request.evidenceArtifactIds,
+            analysisRequest.requestId, request.caseId, request.analysisType, request.question, request.evidenceArtifactIds,
             mapping, profile, reasoning.analysisText, reasoning.sessionId, governedPackage, structured,
         )
     }
 
     companion object { const val ANALYSIS_PROFILE = "parker-analysis-agent" }
+}
+
+sealed interface OwnerAnalysisCaseScopeValidation {
+    data object Valid : OwnerAnalysisCaseScopeValidation
+    data class Rejected(val reason: String) : OwnerAnalysisCaseScopeValidation
 }
 
 class HermesAnalysisTimeoutException(message: String) : RuntimeException(message)

@@ -70,6 +70,26 @@ sealed interface OwnerIngestionBatchAuthorisation {
     data class Failure(val reason: String) : OwnerIngestionBatchAuthorisation
 }
 
+/** Owner-authenticated result for registering one verified prep provenance occurrence. */
+sealed interface OwnerIngestionOccurrenceRegistration {
+    data class Created(val associationId: String, val occurrenceId: String) : OwnerIngestionOccurrenceRegistration
+    data class AlreadyPresent(val associationId: String, val occurrenceId: String) : OwnerIngestionOccurrenceRegistration
+    data object UnknownBatch : OwnerIngestionOccurrenceRegistration
+    data object EvidenceNotSubmittedUnderBatch : OwnerIngestionOccurrenceRegistration
+    data class Rejected(val reason: String) : OwnerIngestionOccurrenceRegistration
+    data class Failure(val reason: String) : OwnerIngestionOccurrenceRegistration
+}
+
+/** The caller supplies provenance only; case authority is derived from the route-bound batch. */
+data class OwnerIngestionOccurrenceRequest(
+    val sourceSha256: String,
+    val prepJobId: String,
+    val prepOccurrenceId: String,
+    val relativePath: String,
+    val archiveParentOccurrenceId: String?,
+    val archiveMemberPath: String?,
+)
+
 /**
  * Owner LAN Evidence Upload. Pure HTTP transport for the exact same
  * [OwnerEvidenceOperations] the Compose Desktop owner UI already drives
@@ -118,6 +138,9 @@ class OwnerEvidenceHttpServer(
     private val authoriseBulkIngestionAsOwner: suspend (CaseId) -> OwnerIngestionBatchAuthorisation = {
         OwnerIngestionBatchAuthorisation.Failure("BULK_INGESTION_AUTHORIZATION_LANE_NOT_CONFIGURED")
     },
+    private val registerIngestionOccurrenceAsOwner: suspend (String, EvidenceArtifactId, OwnerIngestionOccurrenceRequest) -> OwnerIngestionOccurrenceRegistration = { _, _, _ ->
+        OwnerIngestionOccurrenceRegistration.Failure("INGESTION_OCCURRENCE_LANE_NOT_CONFIGURED")
+    },
     private val establishStandingExternalTranscriptionPolicyAsOwner: suspend (String?) -> Boolean = { false },
     private val prepareCorrectedEvidence: suspend (EvidenceArtifactId, String, Int) -> parker.core.runtime.GovernedCorrectedPreparationOutcome =
         { _, _, _ -> parker.core.runtime.GovernedCorrectedPreparationOutcome.Rejected("PREPARATION_LANE_NOT_CONFIGURED") },
@@ -161,7 +184,7 @@ class OwnerEvidenceHttpServer(
         httpServer.createContext("/owner/logout", LogoutHandler())
         httpServer.createContext("/owner/evidence", EvidenceHandler())
         httpServer.createContext("/owner/cases", CasesHandler())
-        httpServer.createContext("/owner/ingestion-batches", IngestionBatchesHandler())
+                httpServer.createContext("/owner/ingestion-batches", IngestionBatchesHandler())
         httpServer.createContext("/owner/admin/external-transcription-policy", StandingExternalTranscriptionPolicyHandler())
         httpServer.createContext("/owner/analyse", AnalyseHandler())
         httpServer.createContext("/owner/analysis-workspace/analyse", AnalysisWorkspaceHandler())
@@ -190,9 +213,13 @@ class OwnerEvidenceHttpServer(
                     if (workspaceRequest.evidenceArtifactIds.isEmpty()) {
                         writeJson(exchange, 400, jsonObject("error" to "evidenceArtifactIds required for a new analysis session")); return
                     }
-                    analysisSessions.create(null, workspaceRequest.evidenceArtifactIds, workspaceRequest.analysisType)
+                    val caseId = workspaceRequest.caseId
+                    if (caseId == null) {
+                        writeJson(exchange, 400, jsonObject("status" to "CASE_REQUIRED")); return
+                    }
+                    analysisSessions.create(caseId.value, workspaceRequest.evidenceArtifactIds, workspaceRequest.analysisType)
                 } else {
-                    if (workspaceRequest.evidenceArtifactIds.isNotEmpty() || workspaceRequest.analysisTypeWasSupplied) {
+                    if (workspaceRequest.evidenceArtifactIds.isNotEmpty() || workspaceRequest.analysisTypeWasSupplied || workspaceRequest.caseId != null) {
                         writeJson(exchange, 400, jsonObject("status" to "SESSION_CONTEXT_INVALID", "reason" to "follow-up requests cannot change evidence scope or analysis type")); return
                     }
                     val found = analysisSessions.find(workspaceRequest.analysisSessionId)
@@ -201,7 +228,12 @@ class OwnerEvidenceHttpServer(
                     }
                     found
                 }
-                val request = OwnerAnalysisInvocationRequest(workspaceRequest.question, session.selectedEvidenceArtifactIds, session.analysisType)
+                val request = OwnerAnalysisInvocationRequest(
+                    workspaceRequest.question,
+                    session.selectedEvidenceArtifactIds,
+                    session.analysisType,
+                    session.caseId?.let { parker.core.interfaces.CaseId(it) },
+                )
                 val outcome = runBlocking { analyseSelectedEvidenceAsOwnerWithContext(request, analysisSessions.context(session)) }
                 if (outcome is OwnerAnalysisInvocationOutcome.Completed) analysisSessions.record(session.sessionId, workspaceRequest.question, outcome.structuredResult)
                 writeJson(exchange, 200, ownerAnalysisInvocationJson(outcome, session.sessionId))
@@ -239,6 +271,16 @@ class OwnerEvidenceHttpServer(
         override fun handle(exchange: HttpExchange) {
             try {
                 if (!isAuthorised(exchange)) { rejectUnauthorised(exchange); return }
+                val occurrenceRoute = parseOccurrenceRoute(exchange.requestURI.path)
+                if (occurrenceRoute != null) {
+                    if (exchange.requestMethod != "POST") {
+                        runCatching { exchange.requestBody.use { it.readBytes() } }
+                        writeJson(exchange, 404, jsonObject("error" to "not found"))
+                        return
+                    }
+                    handleRegisterOccurrence(exchange, occurrenceRoute.first, occurrenceRoute.second)
+                    return
+                }
                 if (exchange.requestURI.path != "/owner/ingestion-batches" || exchange.requestMethod != "POST") {
                     runCatching { exchange.requestBody.use { it.readBytes() } }
                     writeJson(exchange, 404, jsonObject("error" to "not found"))
@@ -269,6 +311,51 @@ class OwnerEvidenceHttpServer(
                 logger.error("Owner HTTP: ingestion batch authorisation failed safely", e)
                 runCatching { writeJson(exchange, 500, jsonObject("status" to "FAILED", "reason" to "internal error")) }
             } finally { exchange.close() }
+        }
+
+        private fun parseOccurrenceRoute(path: String): Pair<String, EvidenceArtifactId>? {
+            val segments = path.removePrefix("/owner/ingestion-batches/").split('/').filter { it.isNotEmpty() }
+            if (path == "/owner/ingestion-batches" || segments.size != 4 ||
+                segments[1] != "evidence" || segments[3] != "occurrences"
+            ) return null
+            return try {
+                segments[0] to EvidenceArtifactId(segments[2])
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+        }
+
+        private fun handleRegisterOccurrence(exchange: HttpExchange, batchId: String, evidenceArtifactId: EvidenceArtifactId) {
+            val body = try {
+                exchange.requestBody.use { readBounded(it, MAX_INGESTION_OCCURRENCE_REQUEST_BODY_BYTES) }
+            } catch (_: RequestBodyTooLargeException) {
+                writeJson(exchange, 413, jsonObject("error" to "request body too large"))
+                return
+            }
+            val request = try {
+                parseIngestionOccurrenceRequestBody(body)
+            } catch (_: Exception) {
+                writeJson(exchange, 400, jsonObject("error" to "malformed occurrence request"))
+                return
+            }
+            when (val outcome = runBlocking {
+                registerIngestionOccurrenceAsOwner(batchId, evidenceArtifactId, request)
+            }) {
+                is OwnerIngestionOccurrenceRegistration.Created -> writeJson(exchange, 201, jsonObject(
+                    "status" to "CREATED",
+                    "associationId" to outcome.associationId,
+                    "occurrenceId" to outcome.occurrenceId,
+                ))
+                is OwnerIngestionOccurrenceRegistration.AlreadyPresent -> writeJson(exchange, 200, jsonObject(
+                    "status" to "ALREADY_PRESENT",
+                    "associationId" to outcome.associationId,
+                    "occurrenceId" to outcome.occurrenceId,
+                ))
+                OwnerIngestionOccurrenceRegistration.UnknownBatch -> writeJson(exchange, 404, jsonObject("status" to "UNKNOWN_BATCH"))
+                OwnerIngestionOccurrenceRegistration.EvidenceNotSubmittedUnderBatch -> writeJson(exchange, 409, jsonObject("status" to "EVIDENCE_NOT_SUBMITTED_UNDER_BATCH"))
+                is OwnerIngestionOccurrenceRegistration.Rejected -> writeJson(exchange, 409, jsonObject("status" to "REJECTED", "reason" to outcome.reason))
+                is OwnerIngestionOccurrenceRegistration.Failure -> writeJson(exchange, 500, jsonObject("status" to "FAILED", "reason" to outcome.reason))
+            }
         }
     }
 
@@ -1467,6 +1554,8 @@ class OwnerEvidenceHttpServer(
                     "evidence" to jsonArray(outcome.evidence.map { item ->
                         jsonObject(
                             "evidenceArtifactId" to item.evidenceArtifactId,
+                            "associationId" to item.associationId,
+                            "associatedAt" to item.associatedAt,
                             "originalFilename" to item.originalFileName,
                             "mediaType" to item.mediaType,
                             "sourceSha256" to item.sourceSha256,
@@ -1733,10 +1822,11 @@ class OwnerEvidenceHttpServer(
     )
 
     private fun ownerAnalysisInvocationJson(outcome: OwnerAnalysisInvocationOutcome, sessionId: AnalysisWorkspaceSessionId? = null): JsonObject = when (outcome) {
-        is OwnerAnalysisInvocationOutcome.Completed -> jsonObject("status" to "COMPLETED", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "analysisType" to outcome.analysisType.name, "question" to outcome.question, "selectedEvidenceArtifactIds" to jsonArray(outcome.selectedEvidenceArtifactIds.map { it.value }), "resolvedDerivativeGenerationIds" to jsonObject(*outcome.resolvedDerivativeGenerationIds.map { it.key.value to it.value.value }.toTypedArray()), "profile" to outcome.profile, "hermesSessionId" to outcome.hermesSessionId, "analysisText" to outcome.analysisText, "structuredAnalysis" to structuredAnalysisJson(outcome.structuredResult))
+        is OwnerAnalysisInvocationOutcome.Completed -> jsonObject("status" to "COMPLETED", "analysisSessionId" to sessionId?.value, "caseId" to outcome.caseId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "analysisType" to outcome.analysisType.name, "question" to outcome.question, "selectedEvidenceArtifactIds" to jsonArray(outcome.selectedEvidenceArtifactIds.map { it.value }), "resolvedDerivativeGenerationIds" to jsonObject(*outcome.resolvedDerivativeGenerationIds.map { it.key.value to it.value.value }.toTypedArray()), "profile" to outcome.profile, "hermesSessionId" to outcome.hermesSessionId, "analysisText" to outcome.analysisText, "structuredAnalysis" to structuredAnalysisJson(outcome.structuredResult))
         is OwnerAnalysisInvocationOutcome.DerivativeAmbiguous -> jsonObject("status" to "DERIVATIVE_AMBIGUOUS", "analysisSessionId" to sessionId?.value, "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason, "candidates" to jsonArray(outcome.candidates.map { jsonObject("derivativeGenerationId" to it.derivativeGenerationId.value, "kind" to it.derivativeKind, "producer" to it.producerIdentity.pluginIdentity, "completeness" to it.completenessState.name, "warnings" to jsonArray(it.warnings), "contentAvailable" to it.contentAvailable) }))
         is OwnerAnalysisInvocationOutcome.NoUsableDerivative -> jsonObject("status" to "NO_USABLE_DERIVATIVE", "analysisSessionId" to sessionId?.value, "evidenceArtifactId" to outcome.evidenceArtifactId.value, "reason" to outcome.reason)
         is OwnerAnalysisInvocationOutcome.GovernedRetrievalFailed -> jsonObject("status" to "GOVERNED_RETRIEVAL_FAILED", "analysisSessionId" to sessionId?.value, "evidenceArtifactId" to outcome.evidenceArtifactId?.value, "reason" to outcome.reason)
+        is OwnerAnalysisInvocationOutcome.CaseScopeRejected -> jsonObject("status" to "CASE_SCOPE_REJECTED", "analysisSessionId" to sessionId?.value, "caseId" to outcome.caseId?.value, "reason" to outcome.reason)
         is OwnerAnalysisInvocationOutcome.ReasoningFailed -> jsonObject("status" to "REASONING_FAILED", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
         is OwnerAnalysisInvocationOutcome.ReasoningTimeout -> jsonObject("status" to "REASONING_TIMEOUT", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value)
         is OwnerAnalysisInvocationOutcome.StructuredOutputInvalid -> jsonObject("status" to "STRUCTURED_OUTPUT_INVALID", "analysisSessionId" to sessionId?.value, "analysisRequestId" to outcome.analysisRequestId.value, "reason" to outcome.reason)
@@ -2254,6 +2344,7 @@ class OwnerEvidenceHttpServer(
 
         /** The `/owner/ingestion-batches` body contains exactly one existing CaseId. */
         const val MAX_INGESTION_BATCH_REQUEST_BODY_BYTES: Long = 1024L
+        const val MAX_INGESTION_OCCURRENCE_REQUEST_BODY_BYTES: Long = 16L * 1024L
 
         /**
          * Hermes Exception Decision Backend, Task 4. `POST
@@ -2340,13 +2431,16 @@ private fun parseOwnerAnalysisInvocationRequest(bodyBytes: ByteArray): OwnerAnal
     val ids = root["evidenceArtifactIds"] as? List<*> ?: throw JsonParseException("evidenceArtifactIds required")
     val type = (root["analysisType"] as? String)?.let { parker.core.interfaces.AnalysisType.valueOf(it) }
         ?: parker.core.interfaces.AnalysisType.ISSUE_ANALYSIS
-    return OwnerAnalysisInvocationRequest(question, ids.map { parker.core.interfaces.EvidenceArtifactId(it as? String ?: throw JsonParseException("invalid evidence id")) }, type)
+    val caseId = (root["caseId"] as? String)?.let { parker.core.interfaces.CaseId(it) }
+        ?: throw JsonParseException("caseId required")
+    return OwnerAnalysisInvocationRequest(question, ids.map { parker.core.interfaces.EvidenceArtifactId(it as? String ?: throw JsonParseException("invalid evidence id")) }, type, caseId)
 }
 
 private data class OwnerAnalysisWorkspaceRequest(
     val question: String,
     val evidenceArtifactIds: List<parker.core.interfaces.EvidenceArtifactId>,
     val analysisType: parker.core.interfaces.AnalysisType,
+    val caseId: parker.core.interfaces.CaseId?,
     val analysisSessionId: AnalysisWorkspaceSessionId?,
     val analysisTypeWasSupplied: Boolean,
 )
@@ -2365,7 +2459,8 @@ private fun parseOwnerAnalysisWorkspaceRequest(bodyBytes: ByteArray): OwnerAnaly
     val typeSupplied = root.containsKey("analysisType")
     val type = (root["analysisType"] as? String)?.let { parker.core.interfaces.AnalysisType.valueOf(it) }
         ?: parker.core.interfaces.AnalysisType.ISSUE_ANALYSIS
-    return OwnerAnalysisWorkspaceRequest(question, ids, type, sessionId, typeSupplied)
+    val caseId = (root["caseId"] as? String)?.let { parker.core.interfaces.CaseId(it) }
+    return OwnerAnalysisWorkspaceRequest(question, ids, type, caseId, sessionId, typeSupplied)
 }
 
 /** Reviewed Analysis Result — Explicit Owner Save. The `POST /owner/saved-analyses` request body's own tiny, single-field shape -- `{"pendingAnalysisId":"..."}` -- never the analysis content itself. */
@@ -2444,6 +2539,34 @@ private fun parseIngestionBatchAuthorisationRequest(bodyBytes: ByteArray): Inges
     return try { IngestionBatchAuthorisationRequest(CaseId(rawCaseId)) } catch (_: IllegalArgumentException) {
         throw JsonParseException("invalid caseId")
     }
+}
+
+private fun parseIngestionOccurrenceRequestBody(bodyBytes: ByteArray): OwnerIngestionOccurrenceRequest {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected a JSON object")
+    val requiredFields = setOf("sourceSha256", "prepJobId", "prepOccurrenceId", "relativePath")
+    val optionalFields = setOf("archiveParentOccurrenceId", "archiveMemberPath")
+    if (!obj.keys.containsAll(requiredFields) || obj.keys.any { it !in requiredFields + optionalFields }) {
+        throw JsonParseException("unexpected occurrence fields")
+    }
+    fun required(name: String): String {
+        val value = obj[name] as? String ?: throw JsonParseException("expected '$name' string")
+        if (value.isBlank() || value.length > 4096) throw JsonParseException("invalid '$name'")
+        return value
+    }
+    fun optional(name: String): String? = when (val value = obj[name]) {
+        null -> null
+        is String -> value.takeIf { it.isNotBlank() && it.length <= 4096 }
+        else -> throw JsonParseException("invalid '$name'")
+    }
+    return OwnerIngestionOccurrenceRequest(
+        sourceSha256 = required("sourceSha256"),
+        prepJobId = required("prepJobId"),
+        prepOccurrenceId = required("prepOccurrenceId"),
+        relativePath = required("relativePath"),
+        archiveParentOccurrenceId = optional("archiveParentOccurrenceId"),
+        archiveMemberPath = optional("archiveMemberPath"),
+    )
 }
 
 /**
@@ -3345,7 +3468,7 @@ document.getElementById('analysisSubmitButton').onclick = async () => {
   if (!analysisSelectedEvidence.size || !question || question.length > 8000) { status.textContent = question.length > 8000 ? 'Question must be 8,000 characters or fewer.' : 'Select evidence and enter a question.'; return; }
   analysisRequestInFlight = true; updateAnalysisSubmitState(); status.textContent = 'Analysing…';
   try {
-    const payload = analysisSessionId ? { analysisSessionId: analysisSessionId, question: question } : { question: question, analysisType: document.getElementById('analysisTypeSelector').value, evidenceArtifactIds: Array.from(analysisSelectedEvidence) };
+    const payload = analysisSessionId ? { analysisSessionId: analysisSessionId, question: question } : { question: question, caseId: document.getElementById('analysisCaseSelector').value, analysisType: document.getElementById('analysisTypeSelector').value, evidenceArtifactIds: Array.from(analysisSelectedEvidence) };
     const response = await fetch('/owner/analysis-workspace/analyse', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(payload) });
     const result = await response.json();
     const resultDiv = document.getElementById('analysisWorkspaceResult'); resultDiv.innerHTML = '';

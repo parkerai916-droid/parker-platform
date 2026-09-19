@@ -14,6 +14,8 @@ import parker.core.interfaces.CaseGovernanceAuditRecord
 import parker.core.interfaces.CaseId
 import parker.core.interfaces.CaseStorage
 import parker.core.interfaces.EvidenceArtifactId
+import parker.core.interfaces.EvidenceOccurrence
+import parker.core.interfaces.EvidenceOccurrenceId
 import parker.core.interfaces.PrincipalId
 
 /** One Owner-authorised, immutable batch-to-case binding and its submitted opaque artifact ids. */
@@ -34,6 +36,9 @@ internal sealed interface BulkIngestionAssignment {
     data class Assigned(val caseId: CaseId) : BulkIngestionAssignment
     data object UnknownBatch : BulkIngestionAssignment
     data object EvidenceNotSubmittedUnderBatch : BulkIngestionAssignment
+    data object UnknownCase : BulkIngestionAssignment
+    data object UnknownEvidence : BulkIngestionAssignment
+    data class MigrationNotReady(val reasons: List<String>) : BulkIngestionAssignment
     data class Rejected(val reason: String) : BulkIngestionAssignment
     data class Failure(val reason: String) : BulkIngestionAssignment
 }
@@ -49,7 +54,7 @@ data class ReadyBulkIngestionBatch(val batchId: String, val caseName: String)
 internal class BulkIngestionBindingCoordinator(
     private val storageRoot: Path,
     private val caseStorage: CaseStorage,
-    private val caseAssignmentCoordinator: CaseAssignmentCoordinator,
+    private val caseEvidenceAssociationCoordinator: CaseEvidenceAssociationCoordinator,
     private val audit: CaseGovernanceAudit,
     private val ownerPrincipalId: PrincipalId,
     private val clock: () -> java.time.Instant = java.time.Instant::now,
@@ -172,11 +177,75 @@ internal class BulkIngestionBindingCoordinator(
     suspend fun assignFromHermes(batchId: String, evidenceArtifactId: EvidenceArtifactId): BulkIngestionAssignment = mutex.withLock {
         val binding = read(batchId) ?: return@withLock BulkIngestionAssignment.UnknownBatch
         if (evidenceArtifactId !in binding.evidence) return@withLock BulkIngestionAssignment.EvidenceNotSubmittedUnderBatch
-        return@withLock when (val outcome = caseAssignmentCoordinator.assign(evidenceArtifactId, binding.caseId)) {
-            is CaseAssignmentOutcome.Assigned, is CaseAssignmentOutcome.NoChange -> BulkIngestionAssignment.Assigned(binding.caseId)
-            is CaseAssignmentOutcome.Reassigned -> BulkIngestionAssignment.Rejected("evidence is already assigned to another case")
-            is CaseAssignmentOutcome.UnknownCase, is CaseAssignmentOutcome.UnknownEvidence -> BulkIngestionAssignment.Rejected("Parker rejected the governed assignment")
-            is CaseAssignmentOutcome.Failure -> BulkIngestionAssignment.Failure(outcome.reason)
+        return@withLock when (val outcome = caseEvidenceAssociationCoordinator.createOrGet(
+            ownerPrincipalId,
+            binding.caseId,
+            evidenceArtifactId,
+        )) {
+            is CaseEvidenceAssociationCoordinatorOutcome.Created,
+            is CaseEvidenceAssociationCoordinatorOutcome.AlreadyPresent -> BulkIngestionAssignment.Assigned(binding.caseId)
+            CaseEvidenceAssociationCoordinatorOutcome.UnknownCase -> BulkIngestionAssignment.UnknownCase
+            CaseEvidenceAssociationCoordinatorOutcome.UnknownEvidence -> BulkIngestionAssignment.UnknownEvidence
+            is CaseEvidenceAssociationCoordinatorOutcome.MigrationNotReady -> BulkIngestionAssignment.MigrationNotReady(outcome.reasons)
+            is CaseEvidenceAssociationCoordinatorOutcome.Failure -> BulkIngestionAssignment.Failure(outcome.reason)
+        }
+    }
+
+    /**
+     * Owner-authorized prep handoff seam. The case is always derived from the durable batch;
+     * caller-supplied provenance cannot select or override case authority.
+     */
+    suspend fun registerPrepOccurrence(
+        batchId: String,
+        evidenceArtifactId: EvidenceArtifactId,
+        sourceSha256: String,
+        prepJobId: String,
+        prepOccurrenceId: String,
+        relativePath: String,
+        archiveParentOccurrenceId: String?,
+        archiveMemberPath: String?,
+    ): BulkIngestionOccurrenceRegistration = mutex.withLock {
+        val binding = read(batchId) ?: return@withLock BulkIngestionOccurrenceRegistration.UnknownBatch
+        if (evidenceArtifactId !in binding.evidence) {
+            return@withLock BulkIngestionOccurrenceRegistration.EvidenceNotSubmittedUnderBatch
+        }
+        val association = try {
+            caseEvidenceAssociationCoordinator.findAssociation(binding.caseId, evidenceArtifactId)
+        } catch (e: Exception) {
+            return@withLock BulkIngestionOccurrenceRegistration.Failure(e.message ?: "association lookup failed")
+        } ?: return@withLock BulkIngestionOccurrenceRegistration.Rejected("CASE_EVIDENCE_ASSOCIATION_NOT_FOUND")
+        val occurrence = try {
+            EvidenceOccurrence(
+                occurrenceId = deterministicPrepOccurrenceId(prepJobId, prepOccurrenceId),
+                associationId = association.associationId,
+                evidenceArtifactId = evidenceArtifactId,
+                caseId = binding.caseId,
+                sourceSha256 = sourceSha256,
+                prepJobId = prepJobId,
+                prepOccurrenceId = prepOccurrenceId,
+                relativePath = relativePath,
+                archiveParentOccurrenceId = archiveParentOccurrenceId,
+                archiveMemberPath = archiveMemberPath,
+                createdAt = clock(),
+            )
+        } catch (e: IllegalArgumentException) {
+            return@withLock BulkIngestionOccurrenceRegistration.Rejected(e.message ?: "invalid occurrence provenance")
+        }
+        return@withLock when (val result = caseEvidenceAssociationCoordinator.registerOccurrence(ownerPrincipalId, occurrence)) {
+            is EvidenceOccurrenceCoordinatorOutcome.Created -> BulkIngestionOccurrenceRegistration.Created(
+                result.occurrence.associationId.value, result.occurrence.occurrenceId.value,
+            )
+            is EvidenceOccurrenceCoordinatorOutcome.AlreadyPresent -> BulkIngestionOccurrenceRegistration.AlreadyPresent(
+                result.occurrence.associationId.value, result.occurrence.occurrenceId.value,
+            )
+            EvidenceOccurrenceCoordinatorOutcome.UnknownCase -> BulkIngestionOccurrenceRegistration.Rejected("UNKNOWN_CASE")
+            EvidenceOccurrenceCoordinatorOutcome.UnknownEvidence -> BulkIngestionOccurrenceRegistration.Rejected("UNKNOWN_EVIDENCE")
+            EvidenceOccurrenceCoordinatorOutcome.AssociationNotFound -> BulkIngestionOccurrenceRegistration.Rejected("CASE_EVIDENCE_ASSOCIATION_NOT_FOUND")
+            EvidenceOccurrenceCoordinatorOutcome.AssociationMismatch -> BulkIngestionOccurrenceRegistration.Rejected("CASE_EVIDENCE_ASSOCIATION_MISMATCH")
+            EvidenceOccurrenceCoordinatorOutcome.SourceSha256Mismatch -> BulkIngestionOccurrenceRegistration.Rejected("SOURCE_SHA256_MISMATCH")
+            EvidenceOccurrenceCoordinatorOutcome.InvalidProvenance -> BulkIngestionOccurrenceRegistration.Rejected("INVALID_PROVENANCE")
+            is EvidenceOccurrenceCoordinatorOutcome.MigrationNotReady -> BulkIngestionOccurrenceRegistration.Rejected("MIGRATION_NOT_READY:${result.reasons.joinToString("|")}")
+            is EvidenceOccurrenceCoordinatorOutcome.Failure -> BulkIngestionOccurrenceRegistration.Failure(result.reason)
         }
     }
 
@@ -212,3 +281,21 @@ internal class BulkIngestionBindingCoordinator(
     private fun enc(value: String) = Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray(StandardCharsets.UTF_8))
     private fun dec(value: String) = String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8)
 }
+
+internal sealed interface BulkIngestionOccurrenceRegistration {
+    data class Created(val associationId: String, val occurrenceId: String) : BulkIngestionOccurrenceRegistration
+    data class AlreadyPresent(val associationId: String, val occurrenceId: String) : BulkIngestionOccurrenceRegistration
+    data object UnknownBatch : BulkIngestionOccurrenceRegistration
+    data object EvidenceNotSubmittedUnderBatch : BulkIngestionOccurrenceRegistration
+    data class Rejected(val reason: String) : BulkIngestionOccurrenceRegistration
+    data class Failure(val reason: String) : BulkIngestionOccurrenceRegistration
+}
+
+internal data class BulkIngestionOccurrenceRequest(
+    val sourceSha256: String,
+    val prepJobId: String,
+    val prepOccurrenceId: String,
+    val relativePath: String,
+    val archiveParentOccurrenceId: String?,
+    val archiveMemberPath: String?,
+)

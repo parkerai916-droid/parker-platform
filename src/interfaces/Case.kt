@@ -147,6 +147,11 @@ enum class CaseGovernanceAuditEventType {
     INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED,
     EVIDENCE_ASSIGNED,
     EVIDENCE_REASSIGNED,
+    CASE_EVIDENCE_ASSOCIATION_MIGRATED,
+    CASE_EVIDENCE_ASSOCIATION_CREATED,
+    CASE_EVIDENCE_ASSOCIATION_ALREADY_PRESENT,
+    EVIDENCE_OCCURRENCE_ADDED,
+    EVIDENCE_OCCURRENCE_ALREADY_PRESENT,
 }
 
 /**
@@ -170,6 +175,8 @@ data class CaseGovernanceAuditRecord(
     val authorizationPurpose: String? = null,
     val policyVersion: String? = null,
     val policyId: String? = null,
+    val caseEvidenceAssociationId: CaseEvidenceAssociationId? = null,
+    val evidenceOccurrenceId: EvidenceOccurrenceId? = null,
 ) {
     init {
         require((eventType == CaseGovernanceAuditEventType.CASE_CREATED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_AUTHORISED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_PREPARED || eventType == CaseGovernanceAuditEventType.STANDING_EXTERNAL_TRANSCRIPTION_POLICY_AUTHORISED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_PREPARED || eventType == CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_AUTHORISED) == (evidenceArtifactId == null)) {
@@ -220,6 +227,22 @@ data class CaseGovernanceAuditRecord(
         require(eventType != CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVATION_PREPARED && eventType != CaseGovernanceAuditEventType.INGESTION_BATCH_EXTERNAL_TRANSCRIPTION_DERIVED || (!authorizationPurpose.isNullOrBlank() && !policyVersion.isNullOrBlank())) {
             "derivation audit requires purpose and policy version"
         }
+        val associationEvent = eventType == CaseGovernanceAuditEventType.CASE_EVIDENCE_ASSOCIATION_MIGRATED ||
+            eventType == CaseGovernanceAuditEventType.CASE_EVIDENCE_ASSOCIATION_CREATED ||
+            eventType == CaseGovernanceAuditEventType.CASE_EVIDENCE_ASSOCIATION_ALREADY_PRESENT ||
+            eventType == CaseGovernanceAuditEventType.EVIDENCE_OCCURRENCE_ADDED ||
+            eventType == CaseGovernanceAuditEventType.EVIDENCE_OCCURRENCE_ALREADY_PRESENT
+        val occurrenceEvent = eventType == CaseGovernanceAuditEventType.EVIDENCE_OCCURRENCE_ADDED ||
+            eventType == CaseGovernanceAuditEventType.EVIDENCE_OCCURRENCE_ALREADY_PRESENT
+        require((associationEvent) == (caseEvidenceAssociationId != null)) {
+            "caseEvidenceAssociationId is required for association and occurrence governance events"
+        }
+        require((occurrenceEvent) == (evidenceOccurrenceId != null)) {
+            "evidenceOccurrenceId is required only for occurrence governance events"
+        }
+        require(!associationEvent || (caseId != null && evidenceArtifactId != null)) {
+            "association governance audit requires case and evidence identities"
+        }
     }
 }
 
@@ -241,6 +264,8 @@ data class CaseGovernanceAuditQuery(
     val authorizationPurpose: String? = null,
     val policyVersion: String? = null,
     val policyId: String? = null,
+    val caseEvidenceAssociationId: CaseEvidenceAssociationId? = null,
+    val evidenceOccurrenceId: EvidenceOccurrenceId? = null,
 )
 
 /** Read-side of the append-only audit journal, used only to make staged authority usable. */

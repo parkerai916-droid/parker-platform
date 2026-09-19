@@ -15,6 +15,7 @@ import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
@@ -146,6 +147,9 @@ class OwnerEvidenceHttpServerTest {
         authoriseBulkIngestion: suspend (CaseId) -> OwnerIngestionBatchAuthorisation = {
             OwnerIngestionBatchAuthorisation.Failure("disabled")
         },
+        registerIngestionOccurrence: suspend (String, EvidenceArtifactId, OwnerIngestionOccurrenceRequest) -> OwnerIngestionOccurrenceRegistration = { _, _, _ ->
+            OwnerIngestionOccurrenceRegistration.Failure("disabled")
+        },
         evaluateRegionCapability: () -> OrdinaryRegionCapabilityStatus? = { null },
         prepareCorrected: suspend (EvidenceArtifactId, String, Int) -> GovernedCorrectedPreparationOutcome =
             { _, _, _ -> GovernedCorrectedPreparationOutcome.Rejected("disabled") },
@@ -238,6 +242,7 @@ class OwnerEvidenceHttpServerTest {
             createOrdinaryRegionCapabilityAcceptance = invokePromotion,
             evaluateOrdinaryRegionCapability = evaluateRegionCapability,
             authoriseBulkIngestionAsOwner = authoriseBulkIngestion,
+            registerIngestionOccurrenceAsOwner = registerIngestionOccurrence,
             prepareCorrectedEvidence = prepareCorrected,
             listHermesProcessingReviewAsOwner = runtime::listHermesProcessingReviewAsOwner,
             recordHermesProcessingDecisionAsOwner = { batchId, sourceSha256, decision, reason, correction ->
@@ -320,6 +325,29 @@ class OwnerEvidenceHttpServerTest {
             assertEquals(400, post("{\"caseId\":\"case\",\"caseName\":\"A name\"}").statusCode())
             assertEquals(400, post("{\"caseName\":\"A name\"}").statusCode())
             assertEquals(2, calls)
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `owner occurrence endpoint authenticates parses and preserves batch-bound provenance`() {
+        var received: OwnerIngestionOccurrenceRequest? = null
+        val artifact = EvidenceArtifactId("evidence-occurrence-test")
+        val harness = startHarness("", registerIngestionOccurrence = { batchId, evidenceId, request ->
+            assertEquals("bulk-bound", batchId)
+            assertEquals(artifact, evidenceId)
+            received = request
+            OwnerIngestionOccurrenceRegistration.Created("association-bound", "occurrence-bound")
+        })
+        try {
+            val uri = URI.create(harness.baseUri() + "/owner/ingestion-batches/bulk-bound/evidence/${artifact.value}/occurrences")
+            val body = """{"sourceSha256":"${"a".repeat(64)}","prepJobId":"JOB-1","prepOccurrenceId":"prep-occ-1","relativePath":"docs/file.txt"}"""
+            val unauthorised = send(HttpRequest.newBuilder(uri).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build())
+            assertEquals(401, unauthorised.statusCode())
+            val response = send(HttpRequest.newBuilder(uri).header("Cookie", pairedCookie(harness)).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build())
+            assertEquals(201, response.statusCode(), response.body())
+            assertTrue(response.body().contains("association-bound"))
+            assertEquals("docs/file.txt", received?.relativePath)
+            assertEquals("JOB-1", received?.prepJobId)
         } finally { harness.shutdown() }
     }
 
@@ -2954,7 +2982,11 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(failedStillBlocked is parker.core.runtime.AgentGatewayGovernedIngestionResult.ReprocessRequired)
 
             val reviewEvidence = runtimeB.runtime.listRegisteredEvidenceAsOwner().first { it.sha256 == reviewSha }
-            assertEquals((runtimeB.runtime.listCasesAsOwner().first { it.caseName == "Task 6 durable Owner review case" }).caseId, runtimeB.runtime.currentCaseAssignmentAsOwner(reviewEvidence.evidenceArtifactId))
+            val reviewCase = runtimeB.runtime.listCasesAsOwner().first { it.caseName == "Task 6 durable Owner review case" }
+            val reviewListing = assertIs<parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Found>(
+                runtimeB.runtime.listEvidenceForCaseAsOwner(reviewCase.caseId.value),
+            )
+            assertTrue(reviewListing.evidence.any { it.evidenceArtifactId == reviewEvidence.evidenceArtifactId.value })
         } finally {
             runtimeB.shutdown()
         }
@@ -3234,11 +3266,11 @@ class OwnerEvidenceHttpServerTest {
             AnalysisRequestId.new(), "question", AnalysisType.ISSUE_ANALYSIS,
             AnalysisEvidenceScope(listOf(evidence), mapOf(evidence.value to generation)), emptyList(),
         )
-        val seen = mutableListOf<Pair<String, String?>>()
+        val seen = mutableListOf<Triple<String, String?, String?>>()
         val harness = startHarness("", analysisWorkspace = { request, context ->
-            seen += request.question to context
+            seen += Triple(request.question, context, request.caseId?.value)
             parker.core.runtime.OwnerAnalysisInvocationOutcome.Completed(
-                analysisRequestId = AnalysisRequestId.new(), analysisType = request.analysisType, question = request.question,
+                analysisRequestId = AnalysisRequestId.new(), caseId = request.caseId, analysisType = request.analysisType, question = request.question,
                 selectedEvidenceArtifactIds = request.evidenceArtifactIds, resolvedDerivativeGenerationIds = mapOf(evidence to generation),
                 profile = "parker-analysis-agent", analysisText = "{}", hermesSessionId = null, governedPackage = packageValue,
                 structuredResult = StructuredAnalysisResult("Answer", emptyList(), emptyList(), emptyList(), emptyList(), "Conclusion"),
@@ -3248,7 +3280,7 @@ class OwnerEvidenceHttpServerTest {
             val cookie = pairedCookie(harness)
             val uri = URI.create(harness.baseUri() + "/owner/analysis-workspace/analyse")
             fun post(body: String) = send(HttpRequest.newBuilder(uri).header("Cookie", cookie).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build())
-            val initial = post("{\"question\":\"What is established?\",\"analysisType\":\"ISSUE_ANALYSIS\",\"evidenceArtifactIds\":[\"evidence-session\"]}")
+            val initial = post("{\"question\":\"What is established?\",\"caseId\":\"case-session\",\"analysisType\":\"ISSUE_ANALYSIS\",\"evidenceArtifactIds\":[\"evidence-session\"]}")
             assertEquals(200, initial.statusCode(), initial.body())
             val sessionId = extractField(initial.body(), "analysisSessionId")
             assertTrue(sessionId!!.startsWith("analysis-session-"))
@@ -3256,6 +3288,8 @@ class OwnerEvidenceHttpServerTest {
             assertEquals(200, followUp.statusCode(), followUp.body())
             assertEquals(2, seen.size)
             assertTrue(followUp.body().contains("\"selectedEvidenceArtifactIds\":[\"evidence-session\"]"))
+            assertEquals("case-session", seen[0].third)
+            assertEquals("case-session", seen[1].third)
             assertTrue(seen[1].second!!.contains("What is established?"))
             assertEquals(400, post("{\"analysisSessionId\":\"$sessionId\",\"question\":\"new\",\"evidenceArtifactIds\":[\"other\"]}").statusCode())
         } finally { harness.shutdown() }

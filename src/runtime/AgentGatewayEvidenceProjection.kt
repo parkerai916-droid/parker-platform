@@ -246,6 +246,9 @@ internal class AgentGatewayEvidenceProjection(
             is BulkIngestionAssignment.Assigned -> AgentGatewayBulkBindingResult.Assigned(result.caseId)
             BulkIngestionAssignment.UnknownBatch -> AgentGatewayBulkBindingResult.UnknownBatch
             BulkIngestionAssignment.EvidenceNotSubmittedUnderBatch -> AgentGatewayBulkBindingResult.EvidenceNotSubmitted
+            BulkIngestionAssignment.UnknownCase -> AgentGatewayBulkBindingResult.Rejected("unknown case")
+            BulkIngestionAssignment.UnknownEvidence -> AgentGatewayBulkBindingResult.Rejected("unknown evidence artifact")
+            is BulkIngestionAssignment.MigrationNotReady -> AgentGatewayBulkBindingResult.Rejected("case association migration not ready: ${result.reasons.joinToString("|")}")
             is BulkIngestionAssignment.Rejected -> AgentGatewayBulkBindingResult.Rejected(result.reason)
             is BulkIngestionAssignment.Failure -> AgentGatewayBulkBindingResult.Failed(result.reason)
         }

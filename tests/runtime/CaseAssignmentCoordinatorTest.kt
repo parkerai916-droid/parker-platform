@@ -14,6 +14,9 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.io.TempDir
 import parker.core.interfaces.CandidateEvidenceArtifact
 import parker.core.interfaces.CaseAssignmentStorage
+import parker.core.interfaces.CaseEvidenceAssociationMigrationReadiness
+import parker.core.interfaces.CaseEvidenceAssociationMigrationReadinessProvider
+import parker.core.interfaces.CaseEvidenceAssociationMigrationStatus
 import parker.core.interfaces.CaseGovernanceAuditEventType
 import parker.core.interfaces.CaseGovernanceAuditRecord
 import parker.core.interfaces.CaseGovernanceAudit
@@ -59,13 +62,17 @@ class CaseAssignmentCoordinatorTest {
         val custodian: DefaultEvidenceCustodian,
         val caseStorage: FileSystemCaseStorage,
         val assignmentStorage: FileSystemCaseAssignmentStorage,
+        val associationCoordinator: CaseEvidenceAssociationCoordinator,
+        val associationStorage: FileSystemCaseEvidenceAssociationStorage,
         val auditLogFile: Path,
     )
 
     private fun fixture(directory: Path, name: String, caseIdSequence: Iterator<CaseId>? = null): Fixture {
+        val manifestStorage = FileSystemEvidenceSourceManifestStorage(Files.createDirectories(directory.resolve("$name/manifests")))
         val custodian = DefaultEvidenceCustodian(
             FileSystemEvidenceArtifactStorage(Files.createDirectories(directory.resolve("$name/evidence"))),
             approvingEngine(),
+            manifestStorage,
         )
         val caseStorage = FileSystemCaseStorage(Files.createDirectories(directory.resolve("$name/cases")))
         val assignmentStorage = FileSystemCaseAssignmentStorage(Files.createDirectories(directory.resolve("$name/assignments")))
@@ -76,7 +83,20 @@ class CaseAssignmentCoordinatorTest {
         } else {
             CaseAssignmentCoordinator(caseStorage, assignmentStorage, audit, custodian, owner, clock)
         }
-        return Fixture(coordinator, custodian, caseStorage, assignmentStorage, auditLogFile)
+        val associationStorage = FileSystemCaseEvidenceAssociationStorage(Files.createDirectories(directory.resolve("$name/associations")))
+        val associationCoordinator = CaseEvidenceAssociationCoordinator(
+            caseStorage,
+            manifestStorage,
+            associationStorage,
+            FileSystemEvidenceOccurrenceStorage(Files.createDirectories(directory.resolve("$name/occurrences"))),
+            CaseEvidenceAssociationMigrationReadinessProvider {
+                CaseEvidenceAssociationMigrationReadiness(CaseEvidenceAssociationMigrationStatus.COMPLETE, true, emptyList())
+            },
+            audit,
+            audit,
+            clock,
+        )
+        return Fixture(coordinator, custodian, caseStorage, assignmentStorage, associationCoordinator, associationStorage, auditLogFile)
     }
 
     private suspend fun acceptEvidence(custodian: DefaultEvidenceCustodian, content: String = "evidence bytes"): EvidenceArtifactId {
@@ -267,15 +287,40 @@ class CaseAssignmentCoordinatorTest {
         val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Bulk target")).case
         val evidence = acceptEvidence(fixture.custodian, "submitted")
         val bindings = directory.resolve("bulk/bindings")
-        val bindingCoordinator = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        val bindingCoordinator = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
         val authorised = assertIs<BulkIngestionAuthorisation.Authorised>(bindingCoordinator.authoriseAsOwner(case.caseId))
         assertTrue(bindingCoordinator.recordSubmission(authorised.binding.batchId, evidence))
         assertEquals(BulkIngestionAssignment.Assigned(case.caseId), bindingCoordinator.assignFromHermes(authorised.binding.batchId, evidence))
         assertEquals(BulkIngestionAssignment.EvidenceNotSubmittedUnderBatch, bindingCoordinator.assignFromHermes(authorised.binding.batchId, EvidenceArtifactId("evidence-not-in-batch")))
 
-        val restarted = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        val restarted = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
         assertEquals(BulkIngestionAssignment.Assigned(case.caseId), restarted.assignFromHermes(authorised.binding.batchId, evidence))
         assertTrue(Files.readAllLines(fixture.auditLogFile).any { it.contains("INGESTION_BATCH_AUTHORISED") })
+    }
+
+    @Test
+    fun `bulk binding creates independent case associations for repeated cross-case content`(@TempDir directory: Path) = runTest {
+        val fixture = fixture(directory, "bulk-cross-case")
+        val caseA = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Case A")).case
+        val caseB = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Case B")).case
+        val evidence = acceptEvidence(fixture.custodian, "same governed bytes")
+        val bindings = directory.resolve("bulk-cross-case/bindings")
+        val first = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        val batchA = assertIs<BulkIngestionAuthorisation.Authorised>(first.authoriseAsOwner(caseA.caseId)).binding
+        assertTrue(first.recordSubmission(batchA.batchId, evidence))
+        assertIs<BulkIngestionAssignment.Assigned>(first.assignFromHermes(batchA.batchId, evidence))
+
+        val second = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock)
+        val batchB = assertIs<BulkIngestionAuthorisation.Authorised>(second.authoriseAsOwner(caseB.caseId)).binding
+        assertTrue(second.recordSubmission(batchB.batchId, evidence))
+        assertIs<BulkIngestionAssignment.Assigned>(second.assignFromHermes(batchB.batchId, evidence))
+        assertIs<BulkIngestionAssignment.Assigned>(second.assignFromHermes(batchB.batchId, evidence))
+
+        assertEquals(1, fixture.associationStorage.listForCase(caseA.caseId).size)
+        assertEquals(1, fixture.associationStorage.listForCase(caseB.caseId).size)
+        assertEquals(2, fixture.associationStorage.listForEvidence(evidence).size)
+        assertTrue(fixture.assignmentStorage.readAssignment(evidence) == null)
+        assertEquals(2, Files.readAllLines(fixture.auditLogFile).count { it.contains("eventType=CASE_EVIDENCE_ASSOCIATION_CREATED") })
     }
 
     @Test
@@ -284,14 +329,14 @@ class CaseAssignmentCoordinatorTest {
         val case = assertIs<CaseCreationOutcome.Created>(fixture.coordinator.createCase("Bulk authority target")).case
         val bindings = directory.resolve("bulk-authority/bindings")
         val coordinator = BulkIngestionBindingCoordinator(
-            bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock,
+            bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner, clock,
         )
         val authorised = assertIs<BulkIngestionAuthorisation.Authorised>(coordinator.authoriseAsOwner(case.caseId))
         assertEquals(false, authorised.binding.externalTranscriptionAuthorised)
         val evidence = acceptEvidence(fixture.custodian, "authorised source")
         assertTrue(coordinator.recordSubmission(authorised.binding.batchId, evidence))
         val restarted = BulkIngestionBindingCoordinator(
-            bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner,
+            bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner,
         )
         assertEquals(false, restarted.externalTranscriptionIsAuthorised(authorised.binding.batchId))
         assertTrue(restarted.containsEvidence(authorised.binding.batchId, evidence))
@@ -306,7 +351,7 @@ class CaseAssignmentCoordinatorTest {
         Files.createDirectories(bindings)
         val batchId = "bulk-abc123"
         Files.writeString(bindings.resolve("$batchId.binding"), "case=${java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(case.caseId.value.toByteArray())}\nevidence=\n")
-        val coordinator = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.coordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner)
+        val coordinator = BulkIngestionBindingCoordinator(bindings, fixture.caseStorage, fixture.associationCoordinator, FileSystemCaseGovernanceAudit(fixture.auditLogFile), owner)
         assertEquals(false, coordinator.externalTranscriptionIsAuthorised(batchId))
         Files.writeString(bindings.resolve("$batchId.binding"), "case=${java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(case.caseId.value.toByteArray())}\nevidence=\nexternalTranscriptionAuthorised=true\n")
         assertEquals(false, coordinator.externalTranscriptionIsAuthorised(batchId))

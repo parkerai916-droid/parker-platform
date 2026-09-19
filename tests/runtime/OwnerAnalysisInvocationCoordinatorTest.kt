@@ -4,6 +4,7 @@ import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import parker.core.interfaces.*
@@ -11,6 +12,29 @@ import parker.core.interfaces.*
 class OwnerAnalysisInvocationCoordinatorTest {
     private val evidence = EvidenceArtifactId("evidence-a")
     private val generation = DerivativeGenerationId("generation-a")
+    private val caseId = CaseId("case-a")
+
+    @Test
+    fun `case scope is validated before derivative resolution`() = runTest {
+        var resolved = false
+        val outcome = OwnerAnalysisInvocationCoordinator(
+            resolvePreferredDerivative = { resolved = true; PreferredDerivativeResolution.NoUsableDerivative(evidence, "must not resolve") },
+            submitGovernedAnalysis = { error("must not submit") },
+            hermesInvoker = object : HermesAnalysisInvoker {
+                override suspend fun invoke(question: String, analysisType: AnalysisType, governedPackage: AnalysisRetrievalPackage): HermesAnalysisInvocation =
+                    error("must not invoke")
+            },
+            validateCaseScope = { requestedCase, ids ->
+                assertEquals(caseId, requestedCase)
+                assertEquals(listOf(evidence), ids)
+                OwnerAnalysisCaseScopeValidation.Rejected("EVIDENCE_NOT_ASSOCIATED")
+            },
+        ).invoke(OwnerAnalysisInvocationRequest("Question", listOf(evidence), caseId = caseId))
+
+        assertIs<OwnerAnalysisInvocationOutcome.CaseScopeRejected>(outcome)
+        assertEquals("EVIDENCE_NOT_ASSOCIATED", outcome.reason)
+        assertFalse(resolved)
+    }
 
     @Test
     fun `preferred evidence is retrieved then sent to Hermes with exact scope`() = runTest {

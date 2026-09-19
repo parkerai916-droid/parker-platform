@@ -48,6 +48,8 @@ interface OwnerEvidenceOperations {
             .map {
                 OwnerCaseEvidenceView(
                     evidenceArtifactId = it.evidenceArtifactId,
+                    associationId = null,
+                    associatedAt = null,
                     originalFileName = it.originalFileName,
                     mediaType = it.mediaType,
                     sourceSha256 = it.sha256,
@@ -339,6 +341,8 @@ data class OwnerCaseView(
 /** CASE-1. Human-friendly evidence row for one exact case projection. */
 data class OwnerCaseEvidenceView(
     val evidenceArtifactId: String,
+    val associationId: String? = null,
+    val associatedAt: String? = null,
     val originalFileName: String?,
     val mediaType: String?,
     val sourceSha256: String,

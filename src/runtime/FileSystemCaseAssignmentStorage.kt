@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import parker.core.interfaces.CaseAssignmentRecord
 import parker.core.interfaces.CaseAssignmentStorage
 import parker.core.interfaces.CaseAssignmentStorageException
+import parker.core.interfaces.CurrentCaseAssignmentSource
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.EvidenceArtifactIdentifierSafety
 
@@ -27,7 +28,7 @@ import parker.core.interfaces.EvidenceArtifactIdentifierSafety
  * [EvidenceArtifactId] type evidence itself is keyed by, so the identical safety rule applies
  * without needing a second, duplicated implementation.
  */
-class FileSystemCaseAssignmentStorage(storageRoot: Path) : CaseAssignmentStorage {
+class FileSystemCaseAssignmentStorage(storageRoot: Path) : CaseAssignmentStorage, CurrentCaseAssignmentSource {
 
     private val storageRoot: Path = storageRoot.toAbsolutePath().normalize()
     private val tempDirectory: Path
@@ -123,7 +124,23 @@ class FileSystemCaseAssignmentStorage(storageRoot: Path) : CaseAssignmentStorage
         }
     }
 
-    private fun target(id: EvidenceArtifactId): Path = storageRoot.resolve("${id.value}.assignment")
+    override suspend fun listCurrentAssignmentIds(): List<EvidenceArtifactId> = mutex.withLock {
+        try {
+            Files.list(storageRoot).use { paths ->
+                paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(ASSIGNMENT_SUFFIX) }
+                    .map { path -> EvidenceArtifactId(path.fileName.toString().removeSuffix(ASSIGNMENT_SUFFIX)) }
+                    .map { id -> requireSafe(id); id }
+                    .toList()
+                    .sortedBy { it.value }
+            }
+        } catch (e: CaseAssignmentStorageException) {
+            throw e
+        } catch (e: IOException) {
+            throw CaseAssignmentStorageException.StorageIOFailure("Failed to enumerate current case assignments", e)
+        }
+    }
+
+    private fun target(id: EvidenceArtifactId): Path = storageRoot.resolve("${id.value}$ASSIGNMENT_SUFFIX")
 
     private fun requireSafe(id: EvidenceArtifactId) {
         try {
@@ -138,5 +155,6 @@ class FileSystemCaseAssignmentStorage(storageRoot: Path) : CaseAssignmentStorage
         const val TEMP_DIRECTORY_NAME = ".tmp"
         const val TEMP_FILE_PREFIX = "case-assignment-"
         const val TEMP_FILE_SUFFIX = ".tmp"
+        const val ASSIGNMENT_SUFFIX = ".assignment"
     }
 }

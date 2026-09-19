@@ -245,6 +245,8 @@ import parker.core.interfaces.CaseId
 import parker.core.interfaces.CaseRecord
 import parker.core.interfaces.CaseStorage
 import parker.core.interfaces.CaseAssignmentStorage
+import parker.core.interfaces.CaseEvidenceAssociationStorage
+import parker.core.interfaces.CaseEvidenceAssociationMigrationReadinessProvider
 import parker.core.runtime.TierBHumanFidelityReviewSubmission
 import parker.core.runtime.TierBFidelityDiscrepancySubmission
 import parker.core.runtime.TierBHumanFidelityReviewRecordingOutcome
@@ -490,6 +492,9 @@ class ParkerRuntime(
     private var caseAssignmentCoordinator: CaseAssignmentCoordinator? = null
     private var caseStorageForProjection: CaseStorage? = null
     private var caseAssignmentStorageForProjection: CaseAssignmentStorage? = null
+    private var caseEvidenceAssociationStorageForProjection: CaseEvidenceAssociationStorage? = null
+    private var caseAssociationMigrationReadinessForProjection: CaseEvidenceAssociationMigrationReadinessProvider? = null
+    private var caseEvidenceAssociationCoordinator: parker.core.runtime.CaseEvidenceAssociationCoordinator? = null
     private var bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null
     // Hermes Exception Decision Backend, Task 4: null only in the sense that no production
     // composition path ever leaves this unset (constructed unconditionally, mirroring
@@ -2515,11 +2520,56 @@ class ParkerRuntime(
             val caseAssignmentStorage = stage("Case assignment storage construction") {
                 FileSystemCaseAssignmentStorage(Path.of(requireNotNull(config.caseAssignmentStorageRootPath)))
             }
-            caseStorageForProjection = caseStorage
-            caseAssignmentStorageForProjection = caseAssignmentStorage
+            val associationRoot = Path.of(requireNotNull(config.caseAssignmentStorageRootPath)).resolve("case-evidence-associations")
+            val migrationRoot = Path.of(requireNotNull(config.caseAssignmentStorageRootPath)).resolve("case-evidence-association-migration")
+            stage("Case evidence association storage root construction") { Files.createDirectories(associationRoot) }
+            stage("Case evidence association migration root construction") { Files.createDirectories(migrationRoot) }
+            val migrationStateStorage = stage("Case evidence association migration state construction") {
+                parker.core.runtime.FileSystemCaseEvidenceAssociationMigrationStateStorage(migrationRoot)
+            }
+            val caseEvidenceAssociationStorage = stage("Case evidence association storage construction") {
+                parker.core.runtime.FileSystemCaseEvidenceAssociationStorage(associationRoot)
+            }
+            val occurrenceRoot = Path.of(requireNotNull(config.caseAssignmentStorageRootPath)).resolve("evidence-occurrences")
+            stage("Evidence occurrence storage root construction") { Files.createDirectories(occurrenceRoot) }
+            val occurrenceStorage = stage("Evidence occurrence storage construction") {
+                parker.core.runtime.FileSystemEvidenceOccurrenceStorage(occurrenceRoot)
+            }
+            val migrationReadiness = stage("Case evidence association migration readiness construction") {
+                parker.core.runtime.FileSystemCaseEvidenceAssociationMigrationReadinessProvider(
+                    assignmentStorage = caseAssignmentStorage,
+                    assignmentSource = caseAssignmentStorage,
+                    stateStorage = migrationStateStorage,
+                )
+            }
             val caseGovernanceAudit = stage("Case governance audit construction") {
                 FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath)))
             }
+            val migrationRunner = parker.core.runtime.CaseEvidenceAssociationMigrationRunner(
+                assignmentStorage = caseAssignmentStorage,
+                assignmentSource = caseAssignmentStorage,
+                caseStorage = caseStorage,
+                manifestStorage = evidenceSourceManifestStorage,
+                associationStorage = caseEvidenceAssociationStorage,
+                stateStorage = migrationStateStorage,
+                audit = caseGovernanceAudit,
+                auditReader = caseGovernanceAudit,
+            )
+            stage("Case evidence association migration") { migrationRunner.run() }
+            caseEvidenceAssociationCoordinator = parker.core.runtime.CaseEvidenceAssociationCoordinator(
+                caseStorage = caseStorage,
+                manifestStorage = evidenceSourceManifestStorage,
+                associationStorage = caseEvidenceAssociationStorage,
+                occurrenceStorage = occurrenceStorage,
+                migrationReadiness = migrationReadiness,
+                audit = caseGovernanceAudit,
+                auditReader = caseGovernanceAudit,
+                clock = clock,
+            )
+            caseStorageForProjection = caseStorage
+            caseAssignmentStorageForProjection = caseAssignmentStorage
+            caseEvidenceAssociationStorageForProjection = caseEvidenceAssociationStorage
+            caseAssociationMigrationReadinessForProjection = migrationReadiness
             caseAssignmentCoordinator = CaseAssignmentCoordinator(
                 caseStorage,
                 caseAssignmentStorage,
@@ -2531,7 +2581,7 @@ class ParkerRuntime(
             bulkIngestionBindingCoordinator = BulkIngestionBindingCoordinator(
                 Path.of(requireNotNull(config.caseAssignmentStorageRootPath)).resolve("bulk-ingestion-bindings"),
                 caseStorage,
-                requireNotNull(caseAssignmentCoordinator),
+                requireNotNull(caseEvidenceAssociationCoordinator),
                 caseGovernanceAudit,
                 PrincipalId(config.ownerPrincipalId),
                 clock,
@@ -2631,6 +2681,7 @@ class ParkerRuntime(
                 keyPath = "/home/steve/.ssh/parker_hermes_analysis_ed25519",
                 knownHostsPath = "/home/steve/.ssh/parker_hermes_analysis_known_hosts",
             ),
+            validateCaseScope = this::validateOwnerAnalysisCaseScope,
         )
         tierBOcrContentRetrievalCoordinator = TierBOcrContentRetrievalCoordinator(derivativeGenerationStorage, derivativeContentStorage)
         tierBOcrDerivativeGenerationDiscoveryCoordinator = TierBOcrDerivativeGenerationDiscoveryCoordinator(derivativeGenerationStorage)
@@ -4002,6 +4053,88 @@ class ParkerRuntime(
         return caseAssignmentCoordinator?.listCases() ?: emptyList()
     }
 
+    /** Association-backed, read-only owner case evidence projection. Legacy assignments are not an authority here. */
+    suspend fun listEvidenceForCaseAsOwner(caseIdValue: String): parker.ui.OwnerCaseEvidenceDiscoveryOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val associations = caseEvidenceAssociationStorageForProjection
+            ?: return parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Failed("CASE_ASSOCIATION_NOT_CONFIGURED")
+        val readiness = caseAssociationMigrationReadinessForProjection
+            ?: return parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Failed("CASE_ASSOCIATION_MIGRATION_NOT_CONFIGURED")
+        val caseId = try { CaseId(caseIdValue) } catch (_: IllegalArgumentException) {
+            return parker.ui.OwnerCaseEvidenceDiscoveryOutcome.UnknownCase
+        }
+        val case = caseStorageForProjection?.read(caseId)
+            ?: return parker.ui.OwnerCaseEvidenceDiscoveryOutcome.UnknownCase
+        val migration = try { readiness.readiness() } catch (e: Exception) {
+            return parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Failed("CASE_ASSOCIATION_MIGRATION_UNREADABLE")
+        }
+        if (!migration.ready) {
+            return parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Failed(
+                "CASE_ASSOCIATION_MIGRATION_NOT_READY:${migration.reasons.joinToString("|")}",
+            )
+        }
+        return try {
+            val rows = associations.listForCase(caseId).map { association ->
+                val evidence = requireNotNull(ownerEvidenceListing.findRegistered(association.evidenceArtifactId)) {
+                    "association references missing evidence '${association.evidenceArtifactId.value}'"
+                }
+                parker.ui.OwnerCaseEvidenceView(
+                    evidenceArtifactId = evidence.evidenceArtifactId.value,
+                    associationId = association.associationId.value,
+                    associatedAt = association.associatedAt.toString(),
+                    originalFileName = evidence.originalFileName,
+                    mediaType = evidence.mediaType,
+                    sourceSha256 = evidence.sha256,
+                    byteLength = evidence.byteLength,
+                    registeredAt = evidence.registeredAt.toString(),
+                )
+            }
+            parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Found(
+                parker.ui.OwnerCaseView(case.caseId.value, case.caseName, case.createdAt.toString()), rows,
+            )
+        } catch (e: Exception) {
+            parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Failed("CASE_ASSOCIATION_LIST_FAILED")
+        }
+    }
+
+    private suspend fun validateOwnerAnalysisCaseScope(
+        caseId: CaseId?,
+        evidenceArtifactIds: List<EvidenceArtifactId>,
+    ): parker.core.runtime.OwnerAnalysisCaseScopeValidation {
+        val typedCaseId = caseId ?: return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_REQUIRED")
+        val associations = caseEvidenceAssociationStorageForProjection
+            ?: return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_ASSOCIATION_NOT_CONFIGURED")
+        val readiness = caseAssociationMigrationReadinessForProjection
+            ?: return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_ASSOCIATION_MIGRATION_NOT_CONFIGURED")
+        if (caseStorageForProjection?.read(typedCaseId) == null) {
+            return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("UNKNOWN_CASE")
+        }
+        val ready = try { readiness.readiness() } catch (_: Exception) {
+            return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_ASSOCIATION_MIGRATION_UNREADABLE")
+        }
+        if (!ready.ready) {
+            return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected(
+                "CASE_ASSOCIATION_MIGRATION_NOT_READY:${ready.reasons.joinToString("|")}",
+            )
+        }
+        return try {
+            for (evidenceArtifactId in evidenceArtifactIds) {
+                val association = associations.find(typedCaseId, evidenceArtifactId)
+                    ?: return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected(
+                        "EVIDENCE_NOT_ASSOCIATED:${evidenceArtifactId.value}",
+                    )
+                if (association.caseId != typedCaseId || association.evidenceArtifactId != evidenceArtifactId) {
+                    return parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected(
+                        "CORRUPT_CASE_ASSOCIATION:${evidenceArtifactId.value}",
+                    )
+                }
+            }
+            parker.core.runtime.OwnerAnalysisCaseScopeValidation.Valid
+        } catch (_: Exception) {
+            parker.core.runtime.OwnerAnalysisCaseScopeValidation.Rejected("CASE_ASSOCIATION_LOOKUP_FAILED")
+        }
+    }
+
     /** CASE-1. The current case assignment for one exact [evidenceArtifactId], or `null` if Unassigned or if case classification is not configured. */
     suspend fun currentCaseAssignmentAsOwner(evidenceArtifactId: EvidenceArtifactId): CaseId? {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
@@ -4034,6 +4167,25 @@ class ParkerRuntime(
             ?: BulkIngestionAuthorisation.Failure(
                 "Bulk ingestion case binding is not configured",
             )
+    }
+
+    /** Owner-authorized prep handoff occurrence registration; case authority comes from the batch. */
+    internal suspend fun registerPrepOccurrenceAsOwner(
+        batchId: String,
+        evidenceArtifactId: EvidenceArtifactId,
+        request: parker.core.runtime.BulkIngestionOccurrenceRequest,
+    ): parker.core.runtime.BulkIngestionOccurrenceRegistration {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        return bulkIngestionBindingCoordinator?.registerPrepOccurrence(
+            batchId = batchId,
+            evidenceArtifactId = evidenceArtifactId,
+            sourceSha256 = request.sourceSha256,
+            prepJobId = request.prepJobId,
+            prepOccurrenceId = request.prepOccurrenceId,
+            relativePath = request.relativePath,
+            archiveParentOccurrenceId = request.archiveParentOccurrenceId,
+            archiveMemberPath = request.archiveMemberPath,
+        ) ?: parker.core.runtime.BulkIngestionOccurrenceRegistration.Failure("bulk ingestion is not configured")
     }
 
     /** Separate Owner-only administrative establishment of the standing external-transcription policy. */
@@ -4441,8 +4593,8 @@ class ParkerRuntime(
             } catch (e: Exception) {
                 logger.error("Runtime Event Logger failed to stop cleanly", e)
                 firstFailure = e
-            }
         }
+    }
 
         state = if (firstFailure == null) RuntimeLifecycleState.STOPPED else RuntimeLifecycleState.FAILED
         logger.info("Runtime stopped")
