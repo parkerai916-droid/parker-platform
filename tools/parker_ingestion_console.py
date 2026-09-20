@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import threading
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +34,8 @@ GATEWAY_TOKEN_FILE = Path(os.environ.get(
     "PARKER_CONSOLE_GATEWAY_TOKEN_FILE",
     "/mnt/parker-secrets/parker/parker-agent-gateway-token",
 )).expanduser()
+_PREPARED_IMPORT_LOCK = threading.Lock()
+_ACTIVE_PREPARED_IMPORTS: set[str] = set()
 
 
 class UpstreamConnectionUnavailable(RuntimeError):
@@ -138,6 +141,9 @@ def _prepared_job_projection(job_id: str, cookie: str = ""):
         raise parker_ingestion_handoff.HandoffError("unsupported or missing handoff schema")
     if handoff.get("jobId") != job_id:
         raise parker_ingestion_handoff.HandoffError("handoff job ID does not match its configured path")
+    declared_job_root = Path(handoff.get("jobRoot", "")).expanduser().resolve()
+    if declared_job_root != job_root:
+        raise parker_ingestion_handoff.HandoffError("handoff job root does not match its configured path")
     case_id = handoff.get("caseId")
     if not isinstance(case_id, str) or not case_id.strip() or case_id.strip().lower() in {"unassigned", "unknown", "null"}:
         raise parker_ingestion_handoff.HandoffError("production handoff requires a real caseId")
@@ -160,6 +166,7 @@ def _prepared_job_projection(job_id: str, cookie: str = ""):
     except Exception:
         pass
     imported = _read_import_report(job_root)
+    progress = parker_ingestion_handoff.import_status(handoff_path)
     return {
         "jobId": handoff["jobId"],
         "caseId": case_id,
@@ -174,6 +181,7 @@ def _prepared_job_projection(job_id: str, cookie: str = ""):
         "handoffImportExists": imported is not None,
         "importStatus": imported.get("status") if imported else "NOT_IMPORTED",
         "importedCount": imported.get("importedCount") if imported else None,
+        "importProgress": progress,
         "importReport": imported,
         "handoffPath": str(handoff_path),
     }
@@ -226,6 +234,43 @@ def import_prepared_job(job_id: str, cookie: str, confirmed: bool):
     return report
 
 
+def prepared_job_status(job_id: str):
+    return parker_ingestion_handoff.import_status(_prep_job_path(job_id) / "reports" / "handoff.json")
+
+
+def _run_prepared_import(job_id: str, cookie: str):
+    handoff_path = _prep_job_path(job_id) / "reports" / "handoff.json"
+    try:
+        parker_ingestion_handoff.import_handoff(
+            handoff_path, OWNER, cookie, GATEWAY, _gateway_token(),
+            timeout=BATCH_TIMEOUT_SECONDS, processor_timeout=INGEST_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        try:
+            parker_ingestion_handoff.mark_import_failed(handoff_path)
+        except Exception:
+            pass
+    finally:
+        with _PREPARED_IMPORT_LOCK:
+            _ACTIVE_PREPARED_IMPORTS.discard(job_id)
+
+
+def start_prepared_import(job_id: str, cookie: str, confirmed: bool):
+    if not confirmed:
+        raise parker_ingestion_handoff.HandoffError("explicit import confirmation is required")
+    handoff_path = _prep_job_path(job_id) / "reports" / "handoff.json"
+    with _PREPARED_IMPORT_LOCK:
+        if job_id in _ACTIVE_PREPARED_IMPORTS:
+            return prepared_job_status(job_id)
+        progress = parker_ingestion_handoff.claim_import(handoff_path)
+        if progress["state"] in {"COMPLETE", "COMPLETE_WITH_EXCEPTIONS"}:
+            return progress
+        _ACTIVE_PREPARED_IMPORTS.add(job_id)
+        threading.Thread(target=_run_prepared_import, args=(job_id, cookie),
+                         name=f"prepared-import-{job_id}", daemon=True).start()
+    return progress
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ParkerHermesConsole/1"
 
@@ -267,6 +312,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/prepared-jobs":
             self.json(200, {"jobs": prepared_jobs(self.headers.get("Cookie", ""))}); return
+        match = re.fullmatch(r"/api/prepared-jobs/(JOB-[A-Za-z0-9][A-Za-z0-9-]*)/status", path)
+        if match:
+            try:
+                self.json(200, prepared_job_status(match.group(1)))
+            except parker_ingestion_handoff.HandoffError:
+                self.json(404, {"error": "prepared job status is unavailable"})
+            return
         match = re.fullmatch(r"/api/prepared-jobs/(JOB-[A-Za-z0-9][A-Za-z0-9-]*)", path)
         if match:
             try:
@@ -295,8 +347,8 @@ class Handler(BaseHTTPRequestHandler):
                 request = value(body)
                 if not isinstance(request, dict):
                     raise parker_ingestion_handoff.HandoffError("JSON object required")
-                report = import_prepared_job(match.group(1), cookie or "", request.get("confirm") is True)
-                self.json(200, report)
+                progress = start_prepared_import(match.group(1), cookie or "", request.get("confirm") is True)
+                self.json(202, progress)
             except parker_ingestion_handoff.HandoffError as error:
                 self.json(409, {"jobId": match.group(1), "status": "NOT_IMPORTED", "error": str(error)})
             except Exception:

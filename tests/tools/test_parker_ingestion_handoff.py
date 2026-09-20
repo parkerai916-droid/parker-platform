@@ -52,6 +52,8 @@ class ParkerIngestionHandoffTest(unittest.TestCase):
         def fake_process(client, batch_id, path, timeout, original_filename=None):
             digest = sha256_bytes(path.read_bytes())
             client.evidence_by_hash[digest] = "evidence-a"
+            client.source_outcome_by_hash[digest] = "ANALYSIS_READY"
+            client.source_admission_by_hash[digest] = "CREATED"
             return ProcessedFile(original_filename, digest, "PASS", ["DIRECT_TEXT_EXTRACTION"], "RECORDED", "ANALYSIS_READY")
 
         with mock.patch.object(handoff.OwnerParkerClient, "request", side_effect=owner_request), \
@@ -61,6 +63,9 @@ class ParkerIngestionHandoffTest(unittest.TestCase):
         self.assertEqual(report["status"], "COMPLETE")
         self.assertEqual(report["caseId"], "case-a")
         self.assertEqual(report["batchId"], "batch-wrapped")
+        self.assertEqual(report["sourceAdmissionsCreatedCount"], 1)
+        self.assertNotIn("importedNewCount", report)
+        self.assertNotIn("reusedExistingContentCount", report)
 
     def make_job(self):
         (self.source / "a-ready.txt").write_text("ready content", encoding="utf-8")
@@ -110,6 +115,54 @@ class ParkerIngestionHandoffTest(unittest.TestCase):
         self.assertEqual(imported["items"][0]["prepProvenance"]["relativePath"], "a-ready.txt")
         self.assertEqual(imported["items"][0]["prepProvenance"]["caseId"], "case-a")
         self.assertEqual(imported["occurrencesCreatedCount"] + imported["occurrencesAlreadyPresentCount"], 1)
+
+    def test_source_admission_reporting_uses_http_outcomes_not_content_status(self):
+        class SourceClient:
+            def submit_source(self, batch_id, source_hash, data, filename, media):
+                return self.code, {"status": self.status, "evidenceArtifactId": "evidence"}
+
+        client = handoff.RecordingParkerClient(SourceClient())
+        for code, status, expected in ((201, "ANALYSIS_READY", "CREATED"),
+                                       (200, "ANALYSIS_READY", "ALREADY_PRESENT"),
+                                       (202, "REQUIRES_OCR", "REQUIRES_OCR")):
+            client.client.code = code
+            client.client.status = status
+            client.submit_source("batch", str(code), b"content", "file.txt", "text/plain")
+            self.assertEqual(client.source_admission_by_hash[str(code)], expected)
+            self.assertEqual(client.source_outcome_by_hash[str(code)], status)
+
+    def test_import_status_progress_is_durable_and_content_free(self):
+        self.make_job()
+        handoff_path = self.workspace / "jobs/JOB-HANDOFF/reports/handoff.json"
+        status = handoff.claim_import(handoff_path)
+        self.assertEqual(status["state"], "IMPORTING")
+        self.assertEqual(status["readyCount"], 1)
+        with mock.patch.object(handoff, "_hash_file", side_effect=AssertionError("status must not hash")):
+            status = handoff.import_status(handoff_path)
+        self.assertEqual(status["processedCount"], 0)
+        self.assertIsNone(status["latestOccurrenceId"])
+
+    def test_import_status_reports_partial_and_complete_with_exceptions(self):
+        self.make_job()
+        handoff_path = self.workspace / "jobs/JOB-HANDOFF/reports/handoff.json"
+        job_root = self.workspace / "jobs/JOB-HANDOFF"
+        ledger = handoff._open_ledger(job_root)
+        try:
+            ledger.execute("""INSERT INTO handoff_import
+                (occurrence_id, job_id, case_id, sha256, batch_id, status, updated_at)
+                VALUES (?,?,?,?,?,?,?)""",
+                           ("occ-1", "JOB-HANDOFF", "case-a", "a" * 64, "batch-a", "FAILED", handoff.now()))
+            ledger.commit()
+            status = handoff._update_import_state(ledger, "JOB-HANDOFF", 2, "IMPORTING")
+            self.assertEqual(status["state"], "IMPORTING")
+            self.assertEqual(status["processedCount"], 1)
+            self.assertEqual(status["failedCount"], 1)
+            self.assertEqual(status["latestOccurrenceId"], "occ-1")
+            status = handoff._update_import_state(ledger, "JOB-HANDOFF", 2, "COMPLETE_WITH_EXCEPTIONS", handoff.now())
+            self.assertEqual(status["state"], "COMPLETE_WITH_EXCEPTIONS")
+            self.assertIsNotNone(status["completedAt"])
+        finally:
+            ledger.close()
 
     def test_not_ready_is_rejected_before_owner_or_agent_boundary(self):
         result = self.make_job()

@@ -50,8 +50,9 @@ if ($Import) {
     if ($importExit -ne 0) { throw "Parker handoff import did not complete cleanly (exit $importExit)" }
     $import = ($importOutput -join "`n") | ConvertFrom-Json
     Write-Host "Parker import status: $($import.status)"
-    Write-Host ("New evidence: {0}; existing content reused: {1}; associations created: {2}; occurrences recorded: {3}; failed: {4}" -f `
-        $import.importedNewCount, $import.reusedExistingContentCount, $import.associationsCreatedCount,
+    Write-Host ("Imported: {0}; source admissions created: {1}; source admissions already present: {2}; requires OCR: {3}; associations created: {4}; occurrences recorded: {5}; failed: {6}" -f `
+        $import.importedCount, $import.sourceAdmissionsCreatedCount, $import.sourceAdmissionsAlreadyPresentCount,
+        $import.sourceAdmissionsRequiresOcrCount, $import.associationsCreatedCount,
         $import.occurrencesCreatedCount, $import.failedCount)
 } else {
     Write-Host "No Parker import requested. Re-run with -Import after reviewing the handoff."

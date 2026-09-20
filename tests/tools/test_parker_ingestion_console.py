@@ -101,6 +101,36 @@ class ConsoleBoundaryTest(unittest.TestCase):
             self.assertEqual(job["importStatus"], "COMPLETE")
             self.assertEqual(job["importedCount"], 1)
 
+    def test_prepared_status_reports_zero_progress_without_reading_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_prepared_job(root)
+            prep_root = root / "workspace" / "jobs"
+            with patch.object(console, "PREP_ROOT", prep_root), patch.object(
+                console.parker_ingestion_handoff, "_hash_file", side_effect=AssertionError("status must not hash")
+            ):
+                status = console.prepared_job_status("JOB-CONSOLE")
+            self.assertEqual(status["state"], "NOT_IMPORTED")
+            self.assertEqual(status["processedCount"], 0)
+            self.assertEqual(status["readyCount"], 1)
+
+    def test_start_prepared_import_returns_importing_and_prevents_duplicate_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_prepared_job(root)
+            prep_root = root / "workspace" / "jobs"
+            worker = patch.object(console.threading, "Thread")
+            with patch.object(console, "PREP_ROOT", prep_root), worker as thread, patch.object(
+                console, "_gateway_token", return_value="server-only-token"
+            ):
+                first = console.start_prepared_import("JOB-CONSOLE", "owner-cookie", True)
+                second = console.start_prepared_import("JOB-CONSOLE", "owner-cookie", True)
+            self.assertEqual(first["state"], "IMPORTING")
+            self.assertEqual(second["state"], "IMPORTING")
+            self.assertEqual(thread.call_count, 1)
+            self.assertEqual(first["jobId"], "JOB-CONSOLE")
+            console._ACTIVE_PREPARED_IMPORTS.discard("JOB-CONSOLE")
+
     def test_repeated_prepared_listing_does_not_rehash_ready_content(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

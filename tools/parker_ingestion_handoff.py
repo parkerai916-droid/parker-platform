@@ -134,6 +134,7 @@ class RecordingParkerClient:
         self.client = client
         self.evidence_by_hash: dict[str, str] = {}
         self.source_outcome_by_hash: dict[str, str] = {}
+        self.source_admission_by_hash: dict[str, str] = {}
 
     def __getattr__(self, name):
         return getattr(self.client, name)
@@ -142,6 +143,11 @@ class RecordingParkerClient:
         code, payload = self.client.submit_source(batch_id, source_hash, data, filename, media)
         if isinstance(payload, dict) and isinstance(payload.get("status"), str):
             self.source_outcome_by_hash[source_hash] = payload["status"]
+        self.source_admission_by_hash[source_hash] = {
+            201: "CREATED",
+            200: "ALREADY_PRESENT",
+            202: "REQUIRES_OCR",
+        }.get(code)
         if isinstance(payload, dict) and isinstance(payload.get("evidenceArtifactId"), str):
             self.evidence_by_hash[source_hash] = payload["evidenceArtifactId"]
         return code, payload
@@ -239,12 +245,135 @@ def _open_ledger(job_root: Path) -> sqlite3.Connection:
           updated_at TEXT NOT NULL
         )
     """)
+    database.execute("""
+        CREATE TABLE IF NOT EXISTS handoff_import_state (
+          job_id TEXT PRIMARY KEY, state TEXT NOT NULL, ready_count INTEGER NOT NULL,
+          processed_count INTEGER NOT NULL, imported_count INTEGER NOT NULL,
+          failed_count INTEGER NOT NULL, latest_occurrence_id TEXT,
+          latest_status TEXT, completed_at TEXT, updated_at TEXT NOT NULL
+        )
+    """)
     columns = {row[1] for row in database.execute("PRAGMA table_info(handoff_import)")}
     for name, definition in (("association_id", "TEXT"), ("registered_occurrence_id", "TEXT")):
         if name not in columns:
             database.execute(f"ALTER TABLE handoff_import ADD COLUMN {name} {definition}")
     database.commit()
     return database
+
+
+def _update_import_state(database: sqlite3.Connection, job_id: str, ready_count: int,
+                         state: str | None = None, completed_at: str | None = None) -> dict:
+    row = database.execute(
+        "SELECT state, completed_at FROM handoff_import_state WHERE job_id=?", (job_id,)
+    ).fetchone()
+    current_state = state or (row[0] if row else "NOT_IMPORTED")
+    processed, imported, failed = database.execute(
+        "SELECT COUNT(*), COALESCE(SUM(status IN ('IMPORTED','ALREADY_IMPORTED')),0), "
+        "COALESCE(SUM(status='FAILED'),0) FROM handoff_import WHERE job_id=?", (job_id,)
+    ).fetchone()
+    latest = database.execute(
+        "SELECT occurrence_id, status FROM handoff_import WHERE job_id=? ORDER BY updated_at DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    database.execute("""
+        INSERT INTO handoff_import_state
+          (job_id, state, ready_count, processed_count, imported_count, failed_count,
+           latest_occurrence_id, latest_status, completed_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(job_id) DO UPDATE SET
+          state=excluded.state, ready_count=excluded.ready_count,
+          processed_count=excluded.processed_count, imported_count=excluded.imported_count,
+          failed_count=excluded.failed_count, latest_occurrence_id=excluded.latest_occurrence_id,
+          latest_status=excluded.latest_status, completed_at=excluded.completed_at,
+          updated_at=excluded.updated_at
+    """, (job_id, current_state, ready_count, processed, imported, failed,
+          latest[0] if latest else None, latest[1] if latest else None,
+          completed_at if completed_at is not None else (row[1] if row else None), now()))
+    database.commit()
+    return import_status_from_database(database, job_id, ready_count)
+
+
+def import_status_from_database(database: sqlite3.Connection, job_id: str, ready_count: int) -> dict:
+    row = database.execute("""
+        SELECT state, ready_count, processed_count, imported_count, failed_count,
+               latest_occurrence_id, latest_status, completed_at
+        FROM handoff_import_state WHERE job_id=?
+    """, (job_id,)).fetchone()
+    if not row:
+        return {"jobId": job_id, "state": "NOT_IMPORTED", "readyCount": ready_count,
+                "processedCount": 0, "importedCount": 0, "failedCount": 0,
+                "latestOccurrenceId": None, "latestStatus": None, "completedAt": None}
+    return {"jobId": job_id, "state": row[0], "readyCount": row[1],
+            "processedCount": row[2], "importedCount": row[3], "failedCount": row[4],
+            "latestOccurrenceId": row[5], "latestStatus": row[6], "completedAt": row[7]}
+
+
+def _job_metadata(handoff_path: Path) -> tuple[Path, str, int]:
+    handoff_path = handoff_path.expanduser().resolve(strict=True)
+    if handoff_path.is_dir():
+        handoff_path = (handoff_path / "reports" / "handoff.json").resolve(strict=True)
+    metadata = read_json(handoff_path)
+    job_id = metadata.get("jobId")
+    ready_count = metadata.get("readyItemCount")
+    job_root = Path(metadata.get("jobRoot", "")).expanduser().resolve()
+    if not isinstance(job_id, str) or not re.fullmatch(r"JOB-[A-Za-z0-9][A-Za-z0-9-]*", job_id):
+        raise HandoffError("invalid prepared job ID")
+    if not isinstance(ready_count, int) or ready_count < 0:
+        raise HandoffError("invalid prepared ready count")
+    return job_root, job_id, ready_count
+
+
+def claim_import(handoff_path: Path) -> dict:
+    """Claim a durable import without reading or hashing prepared evidence."""
+    job_root, job_id, ready_count = _job_metadata(handoff_path)
+    ledger = _open_ledger(job_root)
+    try:
+        ledger.execute("BEGIN IMMEDIATE")
+        row = ledger.execute("SELECT state FROM handoff_import_state WHERE job_id=?", (job_id,)).fetchone()
+        if row and row[0] in {"COMPLETE", "COMPLETE_WITH_EXCEPTIONS"}:
+            ledger.rollback()
+            return import_status_from_database(ledger, job_id, ready_count)
+        ledger.execute("""
+            INSERT INTO handoff_import_state
+              (job_id, state, ready_count, processed_count, imported_count, failed_count,
+               latest_occurrence_id, latest_status, completed_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(job_id) DO UPDATE SET state='IMPORTING', ready_count=excluded.ready_count,
+              completed_at=NULL, updated_at=excluded.updated_at
+        """, (job_id, "IMPORTING", ready_count, 0, 0, 0, None, None, None, now()))
+        ledger.commit()
+        return import_status_from_database(ledger, job_id, ready_count)
+    finally:
+        ledger.close()
+
+
+def import_status(handoff_path: Path) -> dict:
+    """Read only durable import state and metadata; never validates or hashes content."""
+    job_root, job_id, ready_count = _job_metadata(handoff_path)
+    ledger = _open_ledger(job_root)
+    try:
+        status = import_status_from_database(ledger, job_id, ready_count)
+        report_path = job_root / "reports" / "handoff-import.json"
+        if status["state"] == "NOT_IMPORTED" and report_path.is_file():
+            report = read_json(report_path)
+            status.update({"state": report.get("status", "COMPLETE_WITH_EXCEPTIONS"),
+                           "readyCount": report.get("readyCount", ready_count),
+                           "processedCount": report.get("readyCount", ready_count),
+                           "importedCount": report.get("importedCount", 0),
+                           "failedCount": report.get("failedCount", 0),
+                           "completedAt": report.get("completedAt")})
+        return status
+    finally:
+        ledger.close()
+
+
+def mark_import_failed(handoff_path: Path) -> dict:
+    job_root, job_id, ready_count = _job_metadata(handoff_path)
+    ledger = _open_ledger(job_root)
+    try:
+        return _update_import_state(ledger, job_id, ready_count, "COMPLETE_WITH_EXCEPTIONS", now())
+    finally:
+        ledger.close()
 
 
 def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gateway_url: str,
@@ -257,6 +386,7 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
     ledger = _open_ledger(job_root)
     report_items = []
     try:
+        _update_import_state(ledger, handoff["jobId"], len(items), "IMPORTING", None)
         row = ledger.execute("SELECT batch_id, case_id FROM handoff_import WHERE job_id=? LIMIT 1", (handoff["jobId"],)).fetchone()
         if row and row[1] != case_id:
             raise HandoffError("existing import ledger is bound to a different case")
@@ -273,11 +403,13 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
                                      "associationId": existing[4], "registeredOccurrenceId": existing[5],
                                      "associationStatus": "ALREADY_PRESENT", "occurrenceStatus": "ALREADY_PRESENT",
                                      "contentStatus": "ALREADY_REGISTERED",
+                                     "sourceAdmissionOutcome": "ALREADY_IMPORTED",
                                      "governedIngestion": existing[6],
                                      "prepProvenance": {"jobId": handoff["jobId"], "relativePath": occurrence["relative_path"],
                                                         "sha256": item["handoff"]["sha256"], "caseId": case_id,
                                                         "parentOccurrenceId": occurrence.get("parent_occurrence_id"),
                                                         "archiveMemberPath": occurrence.get("archive_member_path")}})
+                _update_import_state(ledger, handoff["jobId"], len(items))
                 continue
             filename = occurrence["filename"]
             try:
@@ -289,6 +421,7 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
                 association_status = None
                 occurrence_status = None
                 content_status = client.source_outcome_by_hash.get(result.source_sha256)
+                source_admission = client.source_admission_by_hash.get(result.source_sha256)
                 detail = result.reason
                 if imported and evidence_id:
                     provenance = {
@@ -329,12 +462,14 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
                                      "associationId": association_id, "registeredOccurrenceId": registered_occurrence_id,
                                      "associationStatus": association_status, "occurrenceStatus": occurrence_status,
                                      "contentStatus": content_status,
+                                     "sourceAdmissionOutcome": source_admission,
                                      "governedIngestion": result.governed_ingestion, "result": result.json(),
                                      "prepProvenance": {"jobId": handoff["jobId"], "relativePath": occurrence["relative_path"],
                                                         "sha256": result.source_sha256, "caseId": case_id,
                                                         "parentOccurrenceId": occurrence.get("parent_occurrence_id"),
                                                         "archiveMemberPath": occurrence.get("archive_member_path")},
                                      "detail": detail})
+                _update_import_state(ledger, handoff["jobId"], len(items))
             except Exception as error:
                 ledger.execute("""INSERT OR REPLACE INTO handoff_import
                     (occurrence_id, job_id, case_id, sha256, batch_id, status,
@@ -345,10 +480,12 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
                                 None, None, str(error), None, None, now()))
                 ledger.commit()
                 report_items.append({"occurrenceId": occurrence_id, "status": "FAILED", "detail": str(error)})
+                _update_import_state(ledger, handoff["jobId"], len(items))
         imported = sum(item["status"] in {"IMPORTED", "ALREADY_IMPORTED"} for item in report_items)
         failed = len(report_items) - imported
-        newly_imported = sum(item.get("contentStatus") == "REGISTERED" for item in report_items)
-        reused_existing = sum(item.get("contentStatus") == "ALREADY_REGISTERED" for item in report_items)
+        source_admissions_created = sum(item.get("sourceAdmissionOutcome") == "CREATED" for item in report_items)
+        source_admissions_existing = sum(item.get("sourceAdmissionOutcome") == "ALREADY_PRESENT" for item in report_items)
+        source_admissions_requires_ocr = sum(item.get("sourceAdmissionOutcome") == "REQUIRES_OCR" for item in report_items)
         associations_created = sum(item.get("associationStatus") == "CREATED" for item in report_items)
         associations_existing = sum(item.get("associationStatus") == "ALREADY_PRESENT" for item in report_items)
         occurrences_created = sum(item.get("occurrenceStatus") == "CREATED" for item in report_items)
@@ -357,8 +494,10 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
                   "caseName": case.get("caseName"), "batchId": batch_id, "handoffPath": str(resolved_handoff),
                   "handoffStatus": handoff["handoffStatus"],
                   "status": "COMPLETE" if failed == 0 else "COMPLETE_WITH_EXCEPTIONS", "readyCount": len(items),
-                  "importedCount": imported, "importedNewCount": newly_imported,
-                  "reusedExistingContentCount": reused_existing, "associationsCreatedCount": associations_created,
+                  "importedCount": imported, "sourceAdmissionsCreatedCount": source_admissions_created,
+                  "sourceAdmissionsAlreadyPresentCount": source_admissions_existing,
+                  "sourceAdmissionsRequiresOcrCount": source_admissions_requires_ocr,
+                  "associationsCreatedCount": associations_created,
                   "associationsAlreadyPresentCount": associations_existing, "occurrencesCreatedCount": occurrences_created,
                   "occurrencesAlreadyPresentCount": occurrences_existing,
                   "withheldReviewCount": handoff.get("reviewRequiredCount", 0), "withheldFailedCount": handoff.get("failedCount", 0),
@@ -367,6 +506,8 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
         temporary = output.with_suffix(".json.part")
         temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, output)
+        _update_import_state(ledger, handoff["jobId"], len(items),
+                             "COMPLETE" if failed == 0 else "COMPLETE_WITH_EXCEPTIONS", report["completedAt"])
         return report
     finally:
         ledger.close()
@@ -394,7 +535,8 @@ def main(argv: list[str] | None = None) -> int:
         report = import_handoff(args.handoff, args.owner_url, args.owner_cookie, args.gateway_url, token, args.timeout, args.processor_timeout)
         print(json.dumps({key: report[key] for key in (
             "jobId", "caseName", "caseId", "batchId", "status", "handoffStatus", "readyCount",
-            "importedCount", "importedNewCount", "reusedExistingContentCount", "associationsCreatedCount",
+            "importedCount", "sourceAdmissionsCreatedCount", "sourceAdmissionsAlreadyPresentCount",
+            "sourceAdmissionsRequiresOcrCount", "associationsCreatedCount",
             "associationsAlreadyPresentCount", "occurrencesCreatedCount", "occurrencesAlreadyPresentCount",
             "withheldReviewCount", "withheldFailedCount", "failedCount",
         )}, indent=2, sort_keys=True))
