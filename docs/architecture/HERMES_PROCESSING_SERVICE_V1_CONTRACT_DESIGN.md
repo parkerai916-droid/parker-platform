@@ -104,11 +104,22 @@ dereference, mount location, or authorization token. It identifies the Parker
 source for correlation and returned provenance only. The byte stream is the
 source of processing truth for this invocation.
 
-The concrete framing must be canonical and bounded before implementation is
-approved. It must carry the JSON metadata and exact byte length, followed by
-exactly `sizeBytes` bytes. Extra bytes, truncated input, malformed framing,
-or a mismatched end marker are failures. JSON metadata must be parsed as data,
-never interpolated into a command.
+The frozen request framing is:
+
+```text
+[4-byte unsigned big-endian metadata length]
+[exact metadataLength bytes of UTF-8 JSON metadata]
+[exact source.sizeBytes raw source bytes]
+[EOF]
+```
+
+The metadata length field is exactly four bytes in unsigned network byte order
+and is limited to 64 KiB. Zero, invalid, short, or over-limit metadata lengths
+are failures. Metadata is parsed only after the exact declared byte count is
+received. The source length is defined by `source.sizeBytes`; short source
+reads and trailing bytes are failures. No delimiter characters or EOF-based
+source sizing are used, and input is never silently truncated. JSON metadata
+is parsed as data, never interpolated into a command.
 
 Hermes independently computes SHA-256 over the received bytes and compares it
 with `source.sha256` before format processing. A mismatch is a non-retryable
@@ -157,6 +168,18 @@ this document.
   }
 }
 ```
+
+The response wire framing is:
+
+```text
+[4-byte unsigned big-endian response body length]
+[exact responseLength bytes of canonical UTF-8 JSON response]
+[EOF]
+```
+
+The response body length uses the same four-byte unsigned network byte order.
+The canonical JSON response body is limited to 8 MiB and is never silently
+truncated.
 
 `sourceSha256` must be the digest Hermes computed from received bytes, not
 merely an echo of the request. `methods` is the ordered set of methods actually
@@ -519,8 +542,8 @@ evidence identity, analysis eligibility, or final state by itself.
 
 ## 13. Open questions / decisions requiring owner approval
 
-1. Approve authenticated byte upload over the existing SSH/forced-command
-   boundary as the v1 transport, including the exact canonical framing.
+1. Finalize the production dedicated-principal and forced-command deployment
+   mapping for the already-frozen authenticated byte-upload transport.
 2. Set production source, output, archive-expansion, page/pixel, audio-duration,
    timeout, CPU, memory, and concurrency limits.
 3. Approve the exact Hermes principal-to-capability authorization mapping and

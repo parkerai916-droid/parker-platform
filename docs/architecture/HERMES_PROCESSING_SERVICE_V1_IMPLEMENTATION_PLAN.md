@@ -66,8 +66,8 @@ large-artifact references, and production endpoint wiring.
 ## Unit 2 — SSH forced-command framing/parser
 
 **Objective.** Implement and test the fixed forced-command boundary that reads
-a length-delimited UTF-8 JSON metadata envelope with explicit metadata and
-source lengths, followed by exactly `sizeBytes` raw bytes.
+a four-byte unsigned big-endian metadata length, the exact UTF-8 JSON metadata
+bytes, and exactly `sizeBytes` raw bytes, followed by EOF.
 
 **Files/components likely affected:** the established Hermes SSH
 forced-command wrapper location; framing/codec component; candidate deployment
@@ -78,9 +78,12 @@ metadata/source; malformed JSON; invalid UTF-8; unexpected EOF; shell/path/
 provider injection; duplicate/ambiguous fields; unsupported protocol version;
 slow sender; timeout; disconnect; bounded parser memory.
 
-**Success criteria:** only the canonical operation is accepted; framing
-failures map to `MALFORMED` or `RESOURCE_LIMIT`; no arbitrary command or path is
-interpreted.
+**Success criteria:** only the canonical operation is accepted; the four-byte
+unsigned network-order metadata prefix, 64 KiB metadata ceiling, exact source
+length, 16 KiB bounded source chunks, 500 MiB source ceiling, trailing-byte
+rejection, and fail-closed framing errors are enforced; response JSON uses the
+same four-byte unsigned network-order length prefix and the 8 MiB inline
+response ceiling; no arbitrary command or path is interpreted.
 
 **Explicit non-goals:** processor invocation, HTTP transport, shared mounts,
 TLS endpoint, and source admission.

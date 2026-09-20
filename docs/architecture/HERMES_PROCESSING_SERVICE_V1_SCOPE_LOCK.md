@@ -74,9 +74,18 @@ V1 uses authenticated byte upload over the existing SSH/forced-command
 boundary. The wire shape is:
 
 ```text
-canonical length-delimited metadata envelope
-  followed by exactly source.sizeBytes source bytes
+[4-byte unsigned big-endian metadata length]
+[exact metadataLength bytes of UTF-8 JSON metadata]
+[exact source.sizeBytes raw source bytes]
+[EOF]
 ```
+
+The metadata length field is exactly four bytes in unsigned network byte order
+and is limited to 64 KiB. Zero, invalid, short, or over-limit metadata lengths
+are rejected. Metadata is decoded only after the exact declared byte count has
+been received. The source byte count is defined by `source.sizeBytes`; short
+reads and trailing bytes are rejected. There are no delimiter characters or
+EOF-based source sizing, and no silent truncation.
 
 The forced command is fixed. No caller-controlled shell command, path,
 provider, or executable is accepted. No shared source mount is used.
@@ -109,11 +118,21 @@ initial ceilings are recorded in `HERMES_PROCESSING_SERVICE_V1_NUMERIC_LIMIT_PRO
 
 ## 6. Frozen protocol and response responsibilities
 
-The metadata envelope is UTF-8 JSON with an explicit metadata length and
-explicit source byte length. Canonical serialization is used wherever identity
-or a digest depends on serialized data. Hermes rejects malformed framing,
-excess bytes, short reads, invalid lengths, duplicate or ambiguous fields,
-unsupported protocol versions, and non-UTF-8 input.
+The metadata envelope is UTF-8 JSON with the wire framing above, an explicit
+metadata length, and explicit source byte length. Canonical serialization is
+used wherever identity or a digest depends on serialized data. Hermes rejects
+malformed framing, excess bytes, short reads, invalid lengths, duplicate or
+ambiguous fields, unsupported protocol versions, and non-UTF-8 input.
+
+Response framing uses the same convention:
+
+```text
+[4-byte unsigned big-endian response body length]
+[exact responseLength bytes of canonical UTF-8 JSON response]
+[EOF]
+```
+
+The response body is limited to 8 MiB and is never silently truncated.
 
 The service envelope wraps the existing `HermesProcessingResult` model. The
 existing model's established semantics are preserved; the envelope owns
