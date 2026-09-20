@@ -31,7 +31,11 @@ object HermesProcessingServiceV1Framing {
         }
 
     /** Reads metadata, copies exactly source.sizeBytes to [sourceSink], then rejects trailing data. */
-    fun readRequestFrame(input: InputStream, sourceSink: OutputStream): HermesProcessingServiceV1Request {
+    fun readRequestFrame(
+        input: InputStream,
+        sourceSink: OutputStream,
+        onSourceChunk: (ByteArray, Int, Int) -> Unit = { _, _, _ -> },
+    ): HermesProcessingServiceV1Request {
         val lengthBytes = readExactly(input, METADATA_LENGTH_BYTES, HermesV1FailureDetailCode.SHORT_METADATA_LENGTH_READ)
         val metadataLength = ByteBuffer.wrap(lengthBytes).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
         if (metadataLength == 0L) {
@@ -43,7 +47,7 @@ object HermesProcessingServiceV1Framing {
 
         val metadata = readExactly(input, metadataLength.toInt(), HermesV1FailureDetailCode.SHORT_METADATA_READ)
         val request = decodeMetadata(metadata)
-        copyExactSource(input, sourceSink, request.source.sizeBytes.value)
+        copyExactSource(input, sourceSink, request.source.sizeBytes.value, onSourceChunk)
         if (input.read() != -1) {
             throw framingFailure(HermesV1FailureDetailCode.TRAILING_DATA, "bytes remain after the declared source")
         }
@@ -155,7 +159,12 @@ object HermesProcessingServiceV1Framing {
         }
     }
 
-    private fun copyExactSource(input: InputStream, output: OutputStream, size: Long) {
+    private fun copyExactSource(
+        input: InputStream,
+        output: OutputStream,
+        size: Long,
+        onSourceChunk: (ByteArray, Int, Int) -> Unit = { _, _, _ -> },
+    ) {
         if (size < 0L || size > HermesProcessingServiceV1Limits.MAX_SOURCE_BYTES) {
             throw framingFailure(HermesV1FailureDetailCode.INVALID_SOURCE_LENGTH, "source length is outside the v1 bounds")
         }
@@ -167,6 +176,7 @@ object HermesProcessingServiceV1Framing {
             if (read < 0) throw framingFailure(HermesV1FailureDetailCode.SHORT_SOURCE_READ, "source ended before its declared length")
             if (read == 0) continue
             output.write(buffer, 0, read)
+            onSourceChunk(buffer, 0, read)
             remaining -= read.toLong()
         }
     }
