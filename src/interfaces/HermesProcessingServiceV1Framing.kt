@@ -7,9 +7,6 @@ import java.nio.ByteOrder
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
-import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatterBuilder
 
 /**
  * Pure wire codec for the v1 forced-command boundary.
@@ -135,7 +132,7 @@ object HermesProcessingServiceV1Framing {
     }
 
     fun encodeResponseFrame(response: HermesProcessingServiceV1Response): ByteArray =
-        frameResponseBody(HermesV1CanonicalJson.response(response).toByteArray(StandardCharsets.UTF_8))
+        frameResponseBody(HermesProcessingServiceV1ResponseSerializer.canonicalJsonUtf8(response))
 
     private fun decodeSource(source: JsonObject): HermesProcessingServiceV1Source {
         rejectUnknown(source, setOf("reference", "sha256", "sizeBytes", "originalFilename", "mediaType"))
@@ -251,73 +248,8 @@ private object HermesV1CanonicalJson {
         append('}')
     }
 
-    fun response(response: HermesProcessingServiceV1Response): String = buildString {
-        append('{')
-        appendQuoted("protocolVersion")
-        append(':')
-        appendQuoted(response.protocolVersion.value)
-        field("requestId", response.requestId.value)
-        field("jobId", response.jobId.value)
-        field("occurrenceId", response.occurrenceId.value)
-        field("batchId", response.batchId.value)
-        field("sourceSha256", response.sourceSha256.value)
-        field("status", response.establishedResult.status.name)
-        append(",\"methods\":[")
-        response.establishedResult.methods.map { established ->
-            HermesV1ProcessingMethod.entries.firstOrNull { it.establishedMethod == established }
-                ?: throw framingFailure(HermesV1FailureDetailCode.UNSUPPORTED_METHOD, "response contains a method unavailable in v1")
-        }.sortedBy { it.wireValue }.forEachIndexed { index, method ->
-            if (index > 0) append(',')
-            appendQuoted(method.wireValue)
-        }
-        append(']')
-        append(",\"representations\":[")
-        response.representations.sortedBy { it.representationId.value }.forEachIndexed { index, representation ->
-            if (index > 0) append(',')
-            append("{\"representationId\":")
-            appendQuoted(representation.representationId.value)
-            field("type", representation.type.wireValue)
-            field("method", representation.method.wireValue)
-            append('}')
-        }
-        append(']')
-        append(",\"issues\":[")
-        response.issues.forEachIndexed { index, issue ->
-            if (index > 0) append(',')
-            append("{\"code\":")
-            appendQuoted(issue.code.wireValue)
-            field("explanation", issue.explanation)
-            append('}')
-        }
-        append(']')
-        append(",\"failure\":")
-        if (response.failure == null) append("null") else {
-            append("{\"category\":")
-            appendQuoted(response.failure.category.wireValue)
-            field("detailCode", response.failure.detailCode.wireValue)
-            append(",\"retryable\":").append(response.failure.retryable)
-            field("detail", response.failure.detail)
-            append('}')
-        }
-        append(",\"provenance\":{")
-        append("\"sourceSha256\":")
-        appendQuoted(response.provenance.sourceSha256.value)
-        field("processor", response.provenance.processor.name)
-        field("processorVersion", response.provenance.processor.version)
-        append(",\"operations\":[")
-        response.provenance.operations.forEachIndexed { index, operation ->
-            if (index > 0) append(',')
-            append("{\"method\":")
-            appendQuoted(operation.method.wireValue)
-            field("startedAt", timestamp(operation.startedAt))
-            field("completedAt", timestamp(operation.completedAt))
-            if (operation.configurationDigest != null) field("configurationDigest", operation.configurationDigest.value)
-            append('}')
-        }
-        append(']')
-        if (response.provenance.provenanceDigest != null) field("provenanceDigest", response.provenance.provenanceDigest.value)
-        append("}}")
-    }
+    fun response(response: HermesProcessingServiceV1Response): String =
+        HermesProcessingServiceV1ResponseSerializer.canonicalJson(response)
 
     private fun StringBuilder.field(name: String, value: String) {
         append(',')
@@ -342,13 +274,6 @@ private object HermesV1CanonicalJson {
             }
         }
         append('"')
-    }
-
-    private fun timestamp(value: Instant): String {
-        if (value.nano % 1_000_000 != 0) {
-            throw framingFailure(HermesV1FailureDetailCode.INVALID_FIELD, "provenance timestamps must have millisecond precision")
-        }
-        return DateTimeFormatterBuilder().appendInstant(3).toFormatter().withZone(ZoneOffset.UTC).format(value)
     }
 }
 

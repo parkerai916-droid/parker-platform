@@ -18,6 +18,7 @@ import parker.core.interfaces.HermesProcessingServiceV1Framing
 import parker.core.interfaces.HermesProcessingServiceV1Limits
 import parker.core.interfaces.HermesProcessingServiceV1Request
 import parker.core.interfaces.HermesProcessingServiceV1Response
+import parker.core.interfaces.HermesProcessingServiceV1ResponseSerializer
 import parker.core.interfaces.HermesStructuredRepresentation
 import parker.core.interfaces.HermesV1AuthorizationResult
 import parker.core.interfaces.HermesV1Failure
@@ -115,6 +116,7 @@ class HermesProcessingServiceV1NativeProcessorAdapter(
                         HermesV1RepresentationId("representation-${representations.size + 1}"),
                         mapped.type,
                         method,
+                        mapped.content,
                     )
                     issues += mapped.issues
                     processor = mapped.processor
@@ -252,7 +254,9 @@ class HermesProcessingServiceV1NativeProcessorAdapter(
 
     private fun failure(code: HermesV1FailureDetailCode, retryable: Boolean) = HermesV1Failure(code.category, code, retryable, "Hermes native processing failed")
     private fun issuesFrom(warnings: List<String>) = warnings.take(HermesProcessingServiceV1Limits.MAX_ISSUES).map { HermesV1Issue(parker.core.interfaces.HermesV1IssueCode.PROCESSING_QUALIFICATION, it.take(HermesProcessingServiceV1Limits.MAX_FAILURE_DETAIL_CHARACTERS)) }
-    private fun configurationDigest(method: HermesV1ProcessingMethod, media: String) = HermesV1Sha256(sha256("${method.wireValue}|$media"))
+    private fun configurationDigest(method: HermesV1ProcessingMethod, media: String) = HermesProcessingServiceV1ResponseSerializer.configurationDigest(
+        mapOf("mediaType" to media, "method" to method.wireValue),
+    )
 
     private fun spreadsheet(sheets: List<parker.core.interfaces.StructuredSpreadsheetSheet>) = HermesStructuredRepresentation.Spreadsheet("workbook", sheets.map { sheet -> HermesStructuredRepresentation.Spreadsheet.Sheet(sheet.name, sheet.cells.map { HermesStructuredRepresentation.Spreadsheet.Cell(it.coordinate, it.rawValue, it.formula, it.displayedValue) }) })
     private fun email(r: parker.core.interfaces.StructuredDocumentRepresentation) = HermesStructuredRepresentation.Email(r.sender, r.recipients.joinToString(","), r.cc.joinToString(","), r.bcc.joinToString(","), r.subject, r.timestamp, r.text, r.bodyFormat, r.attachments.map { HermesStructuredRepresentation.Email.Attachment(it.filename, it.mediaType) })

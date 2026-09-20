@@ -338,6 +338,7 @@ data class HermesV1RepresentationDescriptor(
     val representationId: HermesV1RepresentationId,
     val type: HermesV1RepresentationType,
     val method: HermesV1ProcessingMethod,
+    val content: HermesStructuredRepresentation? = null,
 )
 
 /**
