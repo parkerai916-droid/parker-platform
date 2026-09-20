@@ -64,3 +64,42 @@ the Windows folder path. Hermes sends each supported file to
 `POST /agent/evidence` with `X-Parker-Ingestion-Batch-Id`, then requests
 `POST /agent/evidence/{evidenceArtifactId}/assign` with that same batch header.
 It never sends a CaseId, and no provider processing starts automatically.
+
+## Canonical prepared-handoff workflow
+
+For prepared Windows evidence, the canonical operational path is:
+
+```text
+local evidence
+  → Windows prep launcher
+  → Parker staging
+  → governed prep job
+  → prepared handoff
+  → 8088 owner import action
+  → Hermes
+  → Parker governed ingestion
+```
+
+Open the combined Parker + Hermes console on port 8088 and use **Prepared
+jobs**. The console discovers only validated handoffs below
+`PARKER_INGESTION_PREP_ROOT` (default:
+`/mnt/parker-data/ingestion-prep/jobs`). Review the exact job, Parker case,
+READY, REVIEW_REQUIRED, FAILED, reconciliation, and unaccounted counts, then
+explicitly confirm **Import prepared job**. The prepared handoff's verified
+`readyContent` population is the import population; the console does not ask
+the browser to re-upload the Windows files. Originals remain untouched.
+
+The browser's existing Parker Owner Cookie is forwarded only for this
+owner-authorised request; no manual cookie extraction is required. The console
+reads the Agent Gateway credential server-side from the protected file named by
+`PARKER_CONSOLE_GATEWAY_TOKEN_FILE` (default:
+`/mnt/parker-secrets/parker/parker-agent-gateway-token`, mode 0600). No manual
+token copying is required, and the token is never returned to the browser.
+
+The importer remains the existing `parker_ingestion_handoff.py` implementation:
+it validates the complete, reconciled handoff, uses a Parker-authorised batch,
+and sends READY content through Hermes. REVIEW_REQUIRED and FAILED material is
+withheld. Hermes processes content but does not become evidence authority;
+Parker remains authoritative for cases, batches, evidence, associations, and
+occurrences. The durable ledger and `reports/handoff-import.json` retain
+provenance, make retries safe, and mark an imported job as used.

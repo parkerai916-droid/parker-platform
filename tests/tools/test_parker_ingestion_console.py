@@ -5,9 +5,12 @@ import json
 import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+
+from tools.parker_ingestion_prep import PrepJob
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "parker_ingestion_console.py"
@@ -19,6 +22,87 @@ spec.loader.exec_module(console)
 
 
 class ConsoleBoundaryTest(unittest.TestCase):
+    def make_prepared_job(self, root, job_id="JOB-CONSOLE"):
+        source = root / "source"
+        source.mkdir()
+        (source / "ready.txt").write_text("prepared", encoding="utf-8")
+        workspace = root / "workspace"
+        job = PrepJob(source, workspace, job_id, "case-console")
+        job.run()
+        job.close()
+        return workspace / "jobs" / job_id
+
+    def test_discovers_only_valid_prepared_jobs_and_exposes_no_secret(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_root = self.make_prepared_job(root)
+            prep_root = root / "workspace" / "jobs"
+            (prep_root / "JOB-bad" / "reports").mkdir(parents=True)
+            (prep_root / "JOB-bad" / "reports" / "handoff.json").write_text("{}", encoding="utf-8")
+            with patch.object(console, "PREP_ROOT", prep_root), patch.object(console, "owner", return_value=(200, b'{"cases":[{"caseId":"case-console","caseName":"Console Case"}]}')):
+                jobs = console.prepared_jobs("owner-cookie")
+            self.assertEqual([job["jobId"] for job in jobs], ["JOB-CONSOLE"])
+            self.assertEqual(jobs[0]["caseName"], "Console Case")
+            self.assertEqual(jobs[0]["readyItemCount"], 1)
+            self.assertNotIn("owner-cookie", json.dumps(jobs))
+            self.assertNotIn("token", json.dumps(jobs).lower())
+
+    def test_prepared_job_identifier_and_validation_fail_closed(self):
+        with self.assertRaises(console.parker_ingestion_handoff.HandoffError):
+            console._prep_job_path("../JOB-CONSOLE")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_root = self.make_prepared_job(root)
+            handoff_path = job_root / "reports" / "handoff.json"
+            handoff = json.loads(handoff_path.read_text())
+            handoff["handoffStatus"] = "NOT_READY"
+            handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+            with patch.object(console, "PREP_ROOT", root / "workspace" / "jobs"):
+                self.assertEqual(console.prepared_jobs(), [])
+
+    def test_prepared_import_requires_explicit_confirmation_and_reuses_importer(self):
+        with patch.object(console, "_gateway_token", return_value="server-only-token"), \
+             patch.object(console.parker_ingestion_handoff, "import_handoff", return_value={"jobId": "JOB-CONSOLE", "status": "COMPLETE"}) as importer:
+            with self.assertRaises(console.parker_ingestion_handoff.HandoffError):
+                console.import_prepared_job("JOB-CONSOLE", "owner-cookie", False)
+            with patch.object(console, "_prep_job_path", return_value=Path("/tmp/job-console")):
+                report = console.import_prepared_job("JOB-CONSOLE", "owner-cookie", True)
+        self.assertEqual(report["jobId"], "JOB-CONSOLE")
+        self.assertEqual(importer.call_args.args[1:4], (console.OWNER, "owner-cookie", console.GATEWAY))
+        self.assertEqual(importer.call_args.args[4], "server-only-token")
+
+    def test_prepared_workflow_is_separate_from_browser_upload(self):
+        source = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
+        self.assertIn("Prepared jobs", source)
+        self.assertIn("Import prepared job", source)
+        self.assertIn("webkitdirectory", source)  # legacy/direct workflow remains available
+        self.assertIn("confirm(message)", source)
+
+    def test_imported_prepared_job_is_reported_as_used(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_root = self.make_prepared_job(root)
+            (job_root / "reports" / "handoff-import.json").write_text(
+                json.dumps({"status": "COMPLETE", "importedCount": 1}), encoding="utf-8"
+            )
+            with patch.object(console, "PREP_ROOT", root / "workspace" / "jobs"), patch.object(console, "owner", return_value=(200, b'{"cases":[]}')):
+                job = console._prepared_job("JOB-CONSOLE")
+            self.assertTrue(job["handoffImportExists"])
+            self.assertEqual(job["importStatus"], "COMPLETE")
+            self.assertEqual(job["importedCount"], 1)
+
+    def test_repeated_prepared_listing_does_not_rehash_ready_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_prepared_job(root)
+            prep_root = root / "workspace" / "jobs"
+            with patch.object(console, "PREP_ROOT", prep_root), patch.object(console, "owner", return_value=(200, b'{"cases":[]}')), \
+                 patch.object(console.parker_ingestion_handoff, "validate_handoff", side_effect=AssertionError("listing must not full-validate or hash")):
+                first = console.prepared_jobs()
+                second = console.prepared_jobs()
+            self.assertEqual(first, second)
+            self.assertEqual(first[0]["readyItemCount"], 1)
+
     def test_console_renders_parker_analysis_link_in_new_tab(self):
         page = (ROOT / "tools" / "parker_ingestion_console" / "index.html").read_text()
         link = '<a class="nav-link" href="https://parker.home.arpa" target="_blank" rel="noopener noreferrer">Open Parker Analysis ↗</a>'

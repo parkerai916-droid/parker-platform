@@ -117,6 +117,26 @@ class ParkerIngestionHandoffTest(unittest.TestCase):
         with self.assertRaises(handoff.HandoffError):
             handoff.validate_handoff(handoff_path)
 
+    def test_incomplete_reconciliation_is_rejected(self):
+        self.make_job()
+        handoff_path = self.workspace / "jobs/JOB-HANDOFF/reports/handoff.json"
+        value = json.loads(handoff_path.read_text())
+        value["reconciliationStatus"] = "INCOMPLETE"
+        handoff_path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaises(handoff.HandoffError):
+            handoff.validate_handoff(handoff_path)
+
+    def test_case_mismatch_in_occurrence_provenance_is_rejected(self):
+        self.make_job()
+        handoff_path = self.workspace / "jobs/JOB-HANDOFF/reports/handoff.json"
+        value = json.loads(handoff_path.read_text())
+        manifest_path = Path(value["manifestPath"])
+        manifest = json.loads(manifest_path.read_text())
+        manifest["occurrences"][0]["case_id"] = "different-case"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaises(handoff.HandoffError):
+            handoff.validate_handoff(handoff_path)
+
 
 if __name__ == "__main__":
     unittest.main()
