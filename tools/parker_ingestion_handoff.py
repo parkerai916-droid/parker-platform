@@ -34,11 +34,23 @@ except ModuleNotFoundError:  # direct import from repository-root tests
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+CASE_ID = re.compile(r"^case-[A-Za-z0-9][A-Za-z0-9-]*$")
+CASE_ID_WRAPPER = re.compile(r"^CaseId\(value=(case-[A-Za-z0-9][A-Za-z0-9-]*)\)$")
 SUCCESSFUL_GOVERNED_STATES = {"ANALYSIS_READY", "REGISTERED", "REQUIRES_OCR", "CAPABILITY_UNAVAILABLE", "REVIEW_REQUIRED", "FAILED"}
 
 
 class HandoffError(RuntimeError):
     pass
+
+
+def canonical_case_id(value: object) -> str | None:
+    """Return the raw Parker case ID for the two supported serializations."""
+    if not isinstance(value, str):
+        return None
+    if CASE_ID.fullmatch(value):
+        return value
+    wrapped = CASE_ID_WRAPPER.fullmatch(value)
+    return wrapped.group(1) if wrapped else None
 
 
 def now() -> str:
@@ -83,6 +95,9 @@ class OwnerParkerClient:
             return error.code, payload
 
     def validate_case(self, case_id: str) -> dict:
+        expected_case_id = canonical_case_id(case_id)
+        if expected_case_id is None:
+            raise HandoffError("invalid Parker case ID")
         code, payload = self.request("/owner/cases")
         if code != 200 or not isinstance(payload, dict):
             raise HandoffError(f"case registry unavailable: HTTP_{code}")
@@ -90,8 +105,10 @@ class OwnerParkerClient:
         if not isinstance(cases, list):
             raise HandoffError("case registry response is malformed")
         for case in cases:
-            if isinstance(case, dict) and case.get("caseId") == case_id:
-                return case
+            if isinstance(case, dict) and canonical_case_id(case.get("caseId")) == expected_case_id:
+                result = dict(case)
+                result["caseId"] = expected_case_id
+                return result
         raise HandoffError(f"unknown Parker case: {case_id}")
 
     def authorise_batch(self, case_id: str) -> str:

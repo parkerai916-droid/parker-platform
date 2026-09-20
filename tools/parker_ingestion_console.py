@@ -156,7 +156,7 @@ def _prepared_job_projection(job_id: str, cookie: str = ""):
         payload = value(raw)
         if code == 200 and isinstance(payload, dict):
             case_name = next((c.get("caseName") for c in payload.get("cases", [])
-                              if isinstance(c, dict) and c.get("caseId") == case_id), None)
+                              if isinstance(c, dict) and parker_ingestion_handoff.canonical_case_id(c.get("caseId")) == case_id), None)
     except Exception:
         pass
     imported = _read_import_report(job_root)

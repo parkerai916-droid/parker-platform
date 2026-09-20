@@ -47,6 +47,16 @@ class ConsoleBoundaryTest(unittest.TestCase):
             self.assertNotIn("owner-cookie", json.dumps(jobs))
             self.assertNotIn("token", json.dumps(jobs).lower())
 
+    def test_prepared_projection_resolves_case_name_from_serialized_owner_case_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_prepared_job(root)
+            with patch.object(console, "PREP_ROOT", root / "workspace" / "jobs"), patch.object(
+                console, "owner", return_value=(200, b'{"cases":[{"caseId":"CaseId(value=case-console)","caseName":"Console Case"}]}')
+            ):
+                job = console._prepared_job("JOB-CONSOLE")
+            self.assertEqual(job["caseName"], "Console Case")
+
     def test_prepared_job_identifier_and_validation_fail_closed(self):
         with self.assertRaises(console.parker_ingestion_handoff.HandoffError):
             console._prep_job_path("../JOB-CONSOLE")

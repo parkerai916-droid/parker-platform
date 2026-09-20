@@ -20,6 +20,48 @@ class ParkerIngestionHandoffTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_case_id_normalizer_accepts_raw_and_exact_owner_wrapper(self):
+        self.assertEqual(handoff.canonical_case_id("case-alpha-1"), "case-alpha-1")
+        self.assertEqual(handoff.canonical_case_id("CaseId(value=case-alpha-1)"), "case-alpha-1")
+
+    def test_case_id_normalizer_rejects_different_or_malformed_values(self):
+        self.assertNotEqual(handoff.canonical_case_id("CaseId(value=case-alpha-1)"), "case-beta-1")
+        for value in ("CaseId(value=case-alpha-1", "CaseId(value=other-1)", " case-alpha-1", "case-"):
+            self.assertIsNone(handoff.canonical_case_id(value))
+
+    def test_validate_case_accepts_serialized_owner_case_id_and_returns_raw_id(self):
+        client = handoff.OwnerParkerClient("http://owner", "cookie", 1)
+        with mock.patch.object(client, "request", return_value=(200, {
+            "cases": [{"caseId": "CaseId(value=case-alpha-1)", "caseName": "Case Alpha"}]
+        })):
+            case = client.validate_case("case-alpha-1")
+        self.assertEqual(case["caseId"], "case-alpha-1")
+        self.assertEqual(case["caseName"], "Case Alpha")
+
+    def test_import_accepts_wrapped_owner_case_id_representation(self):
+        self.make_job()
+        handoff_path = self.workspace / "jobs/JOB-HANDOFF/reports/handoff.json"
+
+        def owner_request(path, method="GET", body=None):
+            if path == "/owner/cases":
+                return 200, {"cases": [{"caseId": "CaseId(value=case-a)", "caseName": "Case A"}]}
+            if path == "/owner/ingestion-batches":
+                return 201, {"batchId": "batch-wrapped"}
+            return 201, {"status": "CREATED", "associationId": "association-a", "occurrenceId": "occurrence-a"}
+
+        def fake_process(client, batch_id, path, timeout, original_filename=None):
+            digest = sha256_bytes(path.read_bytes())
+            client.evidence_by_hash[digest] = "evidence-a"
+            return ProcessedFile(original_filename, digest, "PASS", ["DIRECT_TEXT_EXTRACTION"], "RECORDED", "ANALYSIS_READY")
+
+        with mock.patch.object(handoff.OwnerParkerClient, "request", side_effect=owner_request), \
+             mock.patch.object(handoff, "ParkerClient"), \
+             mock.patch.object(handoff, "process_one", side_effect=fake_process):
+            report = handoff.import_handoff(handoff_path, "http://owner", "cookie", "http://agent", "token")
+        self.assertEqual(report["status"], "COMPLETE")
+        self.assertEqual(report["caseId"], "case-a")
+        self.assertEqual(report["batchId"], "batch-wrapped")
+
     def make_job(self):
         (self.source / "a-ready.txt").write_text("ready content", encoding="utf-8")
         (self.source / "z-duplicate.txt").write_text("ready content", encoding="utf-8")
