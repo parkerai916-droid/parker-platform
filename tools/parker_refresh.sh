@@ -147,6 +147,7 @@ require_read_only_mount "$ANALYSIS_KEY_SOURCE" "$ANALYSIS_KEY_TARGET"
 require_read_only_mount "$STT_KEY_SOURCE" "$STT_KEY_TARGET"
 require_read_only_mount "$KNOWN_HOSTS_SOURCE" "$KNOWN_HOSTS_TARGET"
 
+set +e
 stt_result="$(/usr/bin/docker exec "$PARKER_CONTAINER" /bin/sh -c '
     printf "{}\n" | /usr/bin/ssh -T \
       -i /home/steve/.ssh/parker_hermes_stt_ed25519 \
@@ -155,7 +156,11 @@ stt_result="$(/usr/bin/docker exec "$PARKER_CONTAINER" /bin/sh -c '
       -o StrictHostKeyChecking=yes \
       -o UserKnownHostsFile=/home/steve/.ssh/parker_hermes_analysis_known_hosts \
       steve@192.168.178.45
-' 2>/dev/null)" || fail "Parker to Hermes STT transport failed"
+' 2>/dev/null)"
+stt_exit=$?
+set -e
+[[ "$stt_exit" -eq 1 ]] ||
+    fail "Parker to Hermes STT transport returned unexpected exit status $stt_exit"
 [[ "$stt_result" == '{"status":"INVALID_REQUEST"}' ]] ||
     fail "Parker to Hermes STT transport returned an unexpected result"
 

@@ -27,7 +27,10 @@ class ParkerRefreshScriptTest(unittest.TestCase):
         self.assertIn('[[ "$actual" == "$source|false" ]]', self.source)
 
     def test_restarts_user_service_without_touching_the_unit(self):
-        self.assertIn('runuser -u steve -- env', self.source)
+        self.assertIn('RUNUSER_BIN="$(command -v runuser || true)"', self.source)
+        self.assertIn('[[ -n "$RUNUSER_BIN" ]] || fail "runuser command not found"', self.source)
+        self.assertIn('"$RUNUSER_BIN" -u steve -- env', self.source)
+        self.assertNotIn('/usr/bin/runuser', self.source)
         self.assertIn('/usr/bin/systemctl --user "$@"', self.source)
         self.assertIn('restart "$CONSOLE_SERVICE"', self.source)
         self.assertIn('is-active --quiet "$CONSOLE_SERVICE"', self.source)
@@ -36,7 +39,11 @@ class ParkerRefreshScriptTest(unittest.TestCase):
         self.assertIn('printf "{}\\n" | /usr/bin/ssh -T', self.source)
         self.assertIn('parker_hermes_stt_ed25519', self.source)
         self.assertIn('parker_hermes_analysis_known_hosts', self.source)
+        self.assertIn('set +e', self.source)
+        self.assertIn('stt_exit=$?', self.source)
+        self.assertIn('[[ "$stt_exit" -eq 1 ]]', self.source)
         self.assertIn('[[ "$stt_result" == \'{"status":"INVALID_REQUEST"}\' ]]', self.source)
+        self.assertNotIn('2>/dev/null)" || true', self.source)
         self.assertNotIn('ssh -n', self.source)
 
     def test_startup_readiness_retries_until_all_signals_are_present(self):
