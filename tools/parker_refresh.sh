@@ -13,6 +13,8 @@ AGENT_PORT=8090
 CONSOLE_URL="http://192.168.178.44:8088/"
 STARTUP_TIMEOUT_SECONDS=30
 STARTUP_POLL_SECONDS=1
+CONSOLE_STARTUP_TIMEOUT_SECONDS=60
+CONSOLE_STARTUP_POLL_SECONDS=1
 
 ANALYSIS_KEY_SOURCE="/mnt/parker-secrets/parker/parker_hermes_analysis_ed25519"
 ANALYSIS_KEY_TARGET="/home/steve/.ssh/parker_hermes_analysis_ed25519"
@@ -109,9 +111,28 @@ as_steve_systemctl() {
 as_steve_systemctl restart "$CONSOLE_SERVICE" || fail "Dual Ingestion service restart failed"
 as_steve_systemctl is-active --quiet "$CONSOLE_SERVICE" || fail "Dual Ingestion service is not active"
 
-console_status="$(/usr/bin/curl --fail --silent --show-error --max-time 15 -o /dev/null -w '%{http_code}' "$CONSOLE_URL")" ||
-    fail "Dual Ingestion GET health check failed"
-[[ "$console_status" == "200" ]] || fail "Dual Ingestion GET returned HTTP $console_status"
+console_deadline=$((SECONDS + CONSOLE_STARTUP_TIMEOUT_SECONDS))
+console_ready=false
+while (( SECONDS < console_deadline )); do
+    console_status="$(
+        /usr/bin/curl \
+            --silent \
+            --max-time 5 \
+            -o /dev/null \
+            -w '%{http_code}' \
+            "$CONSOLE_URL" 2>/dev/null || true
+    )"
+
+    if [[ "$console_status" == "200" ]]; then
+        console_ready=true
+        break
+    fi
+
+    /usr/bin/sleep "$CONSOLE_STARTUP_POLL_SECONDS"
+done
+
+[[ "$console_ready" == true ]] ||
+    fail "Dual Ingestion console was not ready within ${CONSOLE_STARTUP_TIMEOUT_SECONDS}s"
 
 require_read_only_mount() {
     local source="$1"
