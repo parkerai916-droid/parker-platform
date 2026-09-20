@@ -95,9 +95,12 @@ if [[ "$pre_deploy_healthy" != true || "$container_id" != "$pre_deploy_container
         fail "Parker startup readiness was not observed within ${STARTUP_TIMEOUT_SECONDS}s"
 fi
 
+RUNUSER_BIN="$(command -v runuser || true)"
+[[ -n "$RUNUSER_BIN" ]] || fail "runuser command not found"
+
 steve_uid="$(/usr/bin/id -u steve)" || fail "Steve user is unavailable"
 as_steve_systemctl() {
-    /usr/bin/runuser -u steve -- env \
+    "$RUNUSER_BIN" -u steve -- env \
         XDG_RUNTIME_DIR="/run/user/$steve_uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$steve_uid/bus" \
         /usr/bin/systemctl --user "$@"
