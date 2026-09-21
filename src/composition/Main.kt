@@ -296,6 +296,7 @@ fun main(args: Array<String>) = runBlocking {
             submitPendingReviewSourceAsAgent = runtime::submitPendingReviewSourceAsAgent,
             listProcessingResultsForBatchAsAgent = runtime::listProcessingResultsForBatchAsAgent,
             submitGovernedIngestionAsAgent = runtime::submitGovernedIngestionAsAgent,
+            processHermesV1AsAgent = runtime::processHermesV1AsAgent,
             submitAnalysisRequestAsAgent = runtime::submitAnalysisRequestAsAgent,
             steveReviewQueueProjection = runtime.steveReviewQueueProjectionAsAgent(),
             audit = parker.core.runtime.FileSystemAgentGatewayAccessAudit(

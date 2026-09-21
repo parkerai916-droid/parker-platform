@@ -465,6 +465,19 @@ class ParkerClient:
         body = json.dumps(result, separators=(",", ":")).encode()
         return self.request(f"/agent/ingestion-batches/{batch_id}/processing-results", "POST", body, {"Content-Type": "application/json"})
 
+    def process_hermes_v1(self, batch_id: str, request_id: str, job_id: str, occurrence_id: str,
+                          source_hash: str, data: bytes, filename: str, media: str) -> tuple[int, object]:
+        """Use Parker's authenticated Hermes v1 seam; Python never owns SSH transport."""
+        headers = {
+            "Content-Type": media,
+            "X-Parker-Original-Filename": filename,
+            "X-Parker-Hermes-Request-Id": request_id,
+            "X-Parker-Hermes-Job-Id": job_id,
+            "X-Parker-Hermes-Occurrence-Id": occurrence_id,
+            "X-Parker-Hermes-Source-Sha256": source_hash,
+        }
+        return self.request(f"/agent/ingestion-batches/{batch_id}/hermes-v1", "POST", data, headers)
+
     def submit_pending_review_source(self, batch_id: str, source_hash: str, data: bytes, filename: str, media: str | None) -> tuple[int, object]:
         headers = {"Content-Type": media or "application/octet-stream", "X-Parker-Original-Filename": filename}
         return self.request(f"/agent/ingestion-batches/{batch_id}/pending-review-sources/{source_hash}", "POST", data, headers)
@@ -482,20 +495,54 @@ class ParkerClient:
         return self.request(acquisition_endpoint(evidence_artifact_id), "POST")
 
 
-def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float, original_filename: str | None = None) -> ProcessedFile:
+def _unsupported_routing_result(source_hash: str, media: str | None) -> dict:
+    method = "TRANSCRIPTION" if media in ("audio/wav", "audio/x-wav", "audio/m4a", "audio/mp4") else ("TIFF_FRAME_INSPECTION" if media == "image/tiff" else "OCR")
+    return {"sourceSha256": source_hash, "status": "FAILED", "methods": [method], "issues": [],
+            "failure": {"kind": "UNSUPPORTED_FILE_FORMAT", "detail": "Hermes v1 route does not support this capability"}}
+
+
+def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float, original_filename: str | None = None,
+                route_context: tuple[str, str, str] | None = None) -> ProcessedFile:
     data = path.read_bytes()
     digest = sha256_bytes(data)
     display_name = original_filename or path.name
-    result, representation = make_result_and_representation(batch_id, digest, path, data, timeout, display_name)
-    code, payload = client.submit_result(batch_id, result)
-    if code == 201:
-        submission = "RECORDED"
-    elif code == 200 and isinstance(payload, dict) and payload.get("status") == "ALREADY_RECORDED":
-        submission = "ALREADY_RECORDED"
-    elif code == 409:
-        return ProcessedFile(display_name, digest, result["status"], result["methods"], "CONFLICT", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
-    else:
-        return ProcessedFile(display_name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
+    representation = None
+    submission = None
+    if route_context is not None:
+        request_id, job_id, occurrence_id = route_context
+        media = media_type_for(path)
+        if media is None:
+            result = _unsupported_routing_result(digest, media)
+            code, payload = client.submit_result(batch_id, result)
+            submission = "RECORDED" if code == 201 else "ALREADY_RECORDED" if code == 200 and isinstance(payload, dict) and payload.get("status") == "ALREADY_RECORDED" else f"HTTP_{code}"
+            return ProcessedFile(display_name, digest, result["status"], result["methods"], submission, "BLOCKED", result["failure"]["detail"])
+        code, payload = client.process_hermes_v1(batch_id, request_id, job_id, occurrence_id, digest, data, display_name, media)
+        if code == 409 and isinstance(payload, dict) and payload.get("status") == "ROUTING_DISABLED":
+            route_context = None
+        elif code == 200 and isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+            result = payload["result"]
+            submission = payload.get("resultSubmission", "RECORDED")
+        elif code == 422 and isinstance(payload, dict) and payload.get("status") == "UNSUPPORTED":
+            result = _unsupported_routing_result(digest, media)
+            result["failure"]["detail"] = str(payload.get("detail") or result["failure"]["detail"])
+            submit_code, submit_payload = client.submit_result(batch_id, result)
+            submission = "RECORDED" if submit_code == 201 else "ALREADY_RECORDED" if submit_code == 200 and isinstance(submit_payload, dict) and submit_payload.get("status") == "ALREADY_RECORDED" else f"HTTP_{submit_code}"
+            return ProcessedFile(display_name, digest, result["status"], result["methods"], submission, "BLOCKED", result["failure"]["detail"])
+        else:
+            detail = payload.get("detail") if isinstance(payload, dict) else str(payload)
+            return ProcessedFile(display_name, digest, "FAILED", [], "HERMES_V1_FAILED", "NOT_ATTEMPTED", str(detail), False,
+                                 processing_result_submission_error(batch_id, digest, code, payload))
+    if route_context is None and submission is None:
+        result, representation = make_result_and_representation(batch_id, digest, path, data, timeout, display_name)
+        code, payload = client.submit_result(batch_id, result)
+        if code == 201:
+            submission = "RECORDED"
+        elif code == 200 and isinstance(payload, dict) and payload.get("status") == "ALREADY_RECORDED":
+            submission = "ALREADY_RECORDED"
+        elif code == 409:
+            return ProcessedFile(display_name, digest, result["status"], result["methods"], "CONFLICT", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
+        else:
+            return ProcessedFile(display_name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
     if result["status"] != "PASS":
         if result["status"] == "REVIEW_REQUIRED":
             custody_code, custody_payload = client.submit_pending_review_source(batch_id, digest, data, display_name, media_type_for(path))

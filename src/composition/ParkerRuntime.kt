@@ -404,6 +404,7 @@ class ParkerRuntime(
     // never a caller-supplied identity. Only this class's own retrieveEvidenceAsAgent/
     // retrieveEvidenceManifestAsAgent methods below ever read it.
     private lateinit var agentGatewayEvidenceProjection: parker.core.runtime.AgentGatewayEvidenceProjection
+    private var hermesProcessingV1Client: parker.core.runtime.HermesProcessingServiceV1Client? = null
     private lateinit var postAdmissionProcessingCoordinator: parker.core.runtime.PostAdmissionProcessingCoordinator
     private lateinit var parkerAnalysisRequestCoordinator: parker.core.runtime.ParkerAnalysisRequestCoordinator
     private lateinit var ownerAnalysisInvocationCoordinator: parker.core.runtime.OwnerAnalysisInvocationCoordinator
@@ -664,6 +665,11 @@ class ParkerRuntime(
 
     @Suppress("LongMethod")
     private suspend fun buildAndRegisterRuntimeGraph() {
+        hermesProcessingV1Client = if (config.hermesProcessingV1RoutingConfig.enabled) {
+            parker.core.runtime.HermesProcessingServiceV1Client(
+                parker.core.runtime.HermesV1SshRequestTransport.fromRoutingConfig(config.hermesProcessingV1RoutingConfig),
+            )
+        } else null
         openAiExternalTranscriptionReadiness = stage("OpenAI external transcription provider profile readiness") {
             OpenAiExternalTranscriptionProviderReadinessEvaluator { clock().atZone(java.time.ZoneOffset.UTC).toLocalDate() }
                 .evaluate(
@@ -3338,6 +3344,81 @@ class ParkerRuntime(
         }
         logger.info("Agent Gateway candidate-source submission requested")
         return agentGatewayEvidenceProjection.submitSource(candidate, advisorySha256, batchId)
+    }
+
+    /**
+     * Authenticated prepared-handoff processing seam. The caller supplies bytes, never a path;
+     * Parker verifies the prepared identity, invokes the already-composed Hermes v1 client, and
+     * records only the validated processing result through the existing Agent Gateway projection.
+     * This method never admits evidence and never receives a case identity.
+     */
+    internal suspend fun processHermesV1AsAgent(
+        batchId: String,
+        requestId: String,
+        jobId: String,
+        occurrenceId: String,
+        sourceSha256: String,
+        sourceBytes: ByteArray,
+        originalFilename: String,
+        mediaType: String,
+    ): parker.core.runtime.HermesProcessingV1AgentOutcome {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val routing = config.hermesProcessingV1RoutingConfig
+        when (routing.decide(mediaType)) {
+            parker.core.runtime.HermesProcessingV1RouteDecision.DISABLED ->
+                return parker.core.runtime.HermesProcessingV1AgentOutcome.Disabled()
+            parker.core.runtime.HermesProcessingV1RouteDecision.UNSUPPORTED ->
+                return parker.core.runtime.HermesProcessingV1AgentOutcome.Unsupported("media type is not enabled for Hermes v1")
+            parker.core.runtime.HermesProcessingV1RouteDecision.REMOTE_NATIVE_OR_STRUCTURED -> Unit
+        }
+        if (sourceBytes.size.toLong() > parker.core.interfaces.HermesProcessingServiceV1Limits.MAX_SOURCE_BYTES) {
+            return parker.core.runtime.HermesProcessingV1AgentOutcome.Failed("VALIDATION", "SOURCE_TOO_LARGE", "prepared source exceeds Hermes v1 size limit")
+        }
+        if (bulkIngestionBindingCoordinator?.isAuthorised(batchId) != true) {
+            return parker.core.runtime.HermesProcessingV1AgentOutcome.Failed("AUTHORIZATION", "UNKNOWN_BATCH", "batch is not authorised for prepared processing")
+        }
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(sourceBytes)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        if (digest != sourceSha256) {
+            return parker.core.runtime.HermesProcessingV1AgentOutcome.Failed("VALIDATION", "SOURCE_HASH_MISMATCH", "prepared source hash does not match bytes")
+        }
+        val methods = parker.core.runtime.HermesV1ClientMethodSelection.forMediaType(mediaType)?.toList()
+            ?: return parker.core.runtime.HermesProcessingV1AgentOutcome.Unsupported("media type is not enabled for Hermes v1")
+        val temp = java.nio.file.Files.createTempFile("parker-hermes-v1-", ".source")
+        return try {
+            java.nio.file.Files.write(temp, sourceBytes)
+            when (val outcome = requireNotNull(hermesProcessingV1Client).process(
+                parker.core.runtime.HermesV1PreparedSource(
+                    parker.core.interfaces.HermesV1RequestId(requestId),
+                    parker.core.interfaces.HermesV1JobId(jobId),
+                    parker.core.interfaces.HermesV1OccurrenceId(occurrenceId),
+                    parker.core.interfaces.HermesV1BatchId(batchId),
+                    parker.core.interfaces.HermesV1SourceReference("prepared-$sourceSha256"),
+                    temp,
+                    parker.core.interfaces.HermesV1Sha256(sourceSha256),
+                    parker.core.interfaces.HermesV1SourceSize(sourceBytes.size.toLong()),
+                    parker.core.interfaces.HermesV1OriginalFilename(originalFilename),
+                    parker.core.interfaces.HermesV1MediaType(mediaType),
+                    methods,
+                ),
+            )) {
+                is parker.core.runtime.HermesV1ClientOutcome.Rejected ->
+                    parker.core.runtime.HermesProcessingV1AgentOutcome.Failed(
+                        outcome.failure.category.name, outcome.failure.detailCode.name, outcome.failure.detail,
+                    )
+                is parker.core.runtime.HermesV1ClientOutcome.Accepted -> {
+                    when (val recorded = agentGatewayEvidenceProjection.submitProcessingResult(batchId, outcome.response.establishedResult)) {
+                        is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Recorded ->
+                            parker.core.runtime.HermesProcessingV1AgentOutcome.Accepted(recorded.result, "RECORDED")
+                        is parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.AlreadyRecorded ->
+                            parker.core.runtime.HermesProcessingV1AgentOutcome.Accepted(recorded.result, "ALREADY_RECORDED")
+                        else -> parker.core.runtime.HermesProcessingV1AgentOutcome.Failed("ADMISSION", "PROCESSING_RESULT_NOT_RECORDED", "Parker could not record the Hermes result")
+                    }
+                }
+            }
+        } finally {
+            runCatching { java.nio.file.Files.deleteIfExists(temp) }
+        }
     }
 
     /**

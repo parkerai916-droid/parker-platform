@@ -477,6 +477,7 @@ class AgentGatewayHttpServerTest {
         // Result Intake, Task 2, adds submitProcessingResultAsAgent/listProcessingResultsForBatchAsAgent
         // -- both still narrow, explicitly injected delegates, never a generic invocation surface.
         // Hermes Governed Ingestion, Task 3, adds submitGovernedIngestionAsAgent -- same shape.
+        // Prepared-handoff routing adds one fixed, authenticated Hermes v1 processing delegate.
         assertEquals(
             setOf(
                 "retrieveEvidenceAsAgent", "retrieveEvidenceManifestAsAgent", "submitSourceAsAgent", "requestAcquisitionAsAgent",
@@ -484,6 +485,7 @@ class AgentGatewayHttpServerTest {
                 "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent",
                 "submitProcessingResultAsAgent", "submitPendingReviewSourceAsAgent", "listProcessingResultsForBatchAsAgent", "submitGovernedIngestionAsAgent",
                 "submitOcrRepresentationAsAgent",
+                "processHermesV1AsAgent",
                 "submitAnalysisRequestAsAgent",
             ),
             functionTypedFields.map { it.name }.toSet(),

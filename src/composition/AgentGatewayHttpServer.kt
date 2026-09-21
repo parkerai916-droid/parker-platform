@@ -111,8 +111,11 @@ class AgentGatewayHttpServer(
     private val listProcessingResultsForBatchAsAgent: suspend (String) -> parker.core.runtime.AgentGatewayProcessingResultListResult =
         { parker.core.runtime.AgentGatewayProcessingResultListResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
     /** Hermes Governed Ingestion, Task 3. See [handleSubmitGovernedIngestion]. */
-        private val submitGovernedIngestionAsAgent: suspend (String, String, CandidateEvidenceArtifact) -> parker.core.runtime.AgentGatewayGovernedIngestionResult =
+    private val submitGovernedIngestionAsAgent: suspend (String, String, CandidateEvidenceArtifact) -> parker.core.runtime.AgentGatewayGovernedIngestionResult =
         { _, _, _ -> parker.core.runtime.AgentGatewayGovernedIngestionResult.Denied(parker.core.interfaces.PermissionDecisionOutcome.DENIED) },
+    /** Authenticated prepared-handoff processing; never admits evidence. */
+    private val processHermesV1AsAgent: suspend (String, String, String, String, String, ByteArray, String, String) -> parker.core.runtime.HermesProcessingV1AgentOutcome =
+        { _, _, _, _, _, _, _, _ -> parker.core.runtime.HermesProcessingV1AgentOutcome.Failed("CONFIGURATION", "UNAVAILABLE", "Hermes v1 processing boundary unavailable") },
     /** GA-4 retrieval-only text analysis request boundary. */
     private val submitAnalysisRequestAsAgent: (suspend (parker.core.interfaces.AnalysisRequest) -> parker.core.runtime.AnalysisRequestResult)? = null,
     private val audit: AgentGatewayAccessAudit,
@@ -310,6 +313,10 @@ class AgentGatewayHttpServer(
                     handleSubmitGovernedIngestion(exchange, correlationId, principalId, segments[0], segments[2])
                     return
                 }
+                if (segments.size == 2 && segments[1] == "hermes-v1" && exchange.requestMethod == "POST") {
+                    handleHermesV1Processing(exchange, correlationId, principalId, segments[0])
+                    return
+                }
                 if (segments.size == 3 && segments[1] == "pending-review-sources" && exchange.requestMethod == "POST") {
                     handleSubmitPendingReviewSource(exchange, correlationId, principalId, segments[0], segments[2])
                     return
@@ -354,6 +361,54 @@ class AgentGatewayHttpServer(
             } catch (_: IllegalArgumentException) {
                 recordAudit(correlationId, principalId, PENDING_REVIEW_SOURCE_SUBMIT_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
                 writeJson(exchange, 400, jsonObject("error" to "pending-review source hash mismatch or invalid metadata"))
+            }
+        }
+
+        private fun handleHermesV1Processing(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, batchId: String) {
+            if (!SAFE_ROUTE_ID.matches(batchId)) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                writeJson(exchange, 400, jsonObject("error" to "invalid batch identity")); return
+            }
+            val requestId = exchange.requestHeaders.getFirst("X-Parker-Hermes-Request-Id")
+            val jobId = exchange.requestHeaders.getFirst("X-Parker-Hermes-Job-Id")
+            val occurrenceId = exchange.requestHeaders.getFirst("X-Parker-Hermes-Occurrence-Id")
+            val sourceSha256 = exchange.requestHeaders.getFirst("X-Parker-Hermes-Source-Sha256")
+            val originalFilename = exchange.requestHeaders.getFirst(ORIGINAL_FILENAME_HEADER)
+            val mediaType = exchange.requestHeaders.getFirst("Content-Type")
+            if (listOf(requestId, jobId, occurrenceId, sourceSha256, originalFilename, mediaType).any { it.isNullOrBlank() }) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                writeJson(exchange, 400, jsonObject("error" to "required prepared-source metadata is missing")); return
+            }
+            val body = try { readBounded(exchange.requestBody, MAX_SUBMISSION_BYTES) } catch (_: RequestBodyTooLargeException) {
+                writeJson(exchange, 413, jsonObject("error" to "prepared source too large")); return
+            }
+            try {
+                when (val outcome = runBlocking {
+                    processHermesV1AsAgent(
+                        batchId, requestId!!, jobId!!, occurrenceId!!, sourceSha256!!, body,
+                        originalFilename!!, mediaType!!,
+                    )
+                }) {
+                    is parker.core.runtime.HermesProcessingV1AgentOutcome.Accepted -> {
+                        recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.REGISTERED)
+                        writeJson(exchange, 200, jsonObject("status" to "PROCESSED", "resultSubmission" to outcome.resultSubmission, "result" to hermesProcessingResultJson(outcome.result)))
+                    }
+                    is parker.core.runtime.HermesProcessingV1AgentOutcome.Disabled -> {
+                        recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.DENIED)
+                        writeJson(exchange, 409, jsonObject("status" to "ROUTING_DISABLED", "detail" to outcome.reason))
+                    }
+                    is parker.core.runtime.HermesProcessingV1AgentOutcome.Unsupported -> {
+                        recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                        writeJson(exchange, 422, jsonObject("status" to "UNSUPPORTED", "detail" to outcome.reason))
+                    }
+                    is parker.core.runtime.HermesProcessingV1AgentOutcome.Failed -> {
+                        recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                        writeJson(exchange, 502, jsonObject("status" to "FAILED", "category" to outcome.category, "detailCode" to outcome.detailCode, "detail" to outcome.detail))
+                    }
+                }
+            } catch (e: IllegalArgumentException) {
+                recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid prepared-source metadata"))
             }
         }
 

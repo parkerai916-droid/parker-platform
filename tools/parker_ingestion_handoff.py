@@ -413,7 +413,16 @@ def import_handoff(handoff_path: Path, owner_url: str, owner_cookie: str, gatewa
                 continue
             filename = occurrence["filename"]
             try:
-                result = process_one(client, batch_id, item["path"], processor_timeout, original_filename=filename)
+                routing_context = None
+                if os.environ.get("HERMES_PROCESSING_V1_ENABLED", "false").strip().lower() == "true":
+                    request_id = "prep-" + hashlib.sha256(
+                        f"{handoff['jobId']}|{occurrence_id}|{batch_id}|{item['handoff']['sha256']}".encode("utf-8")
+                    ).hexdigest()
+                    routing_context = (request_id, handoff["jobId"], occurrence_id)
+                if routing_context is None:
+                    result = process_one(client, batch_id, item["path"], processor_timeout, original_filename=filename)
+                else:
+                    result = process_one(client, batch_id, item["path"], processor_timeout, original_filename=filename, route_context=routing_context)
                 evidence_id = client.evidence_by_hash.get(result.source_sha256)
                 imported = result.result_submission in {"RECORDED", "ALREADY_RECORDED"} and result.governed_ingestion in SUCCESSFUL_GOVERNED_STATES
                 association_id = None

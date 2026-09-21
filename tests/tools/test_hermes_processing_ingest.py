@@ -285,10 +285,22 @@ class FakeParker:
         self.source_response = (201, {"status": "INGESTED", "evidenceArtifactId": "evidence-test"})
         self.representation_response = (201, {"status": "ADMITTED", "derivativeGenerationId": "generation-test"})
         self.acquire_response = (200, {"status": "COMPLETED", "evidenceArtifactId": "evidence-test", "derivativeGenerationId": "external-generation"})
+        self.hermes_response = (200, {"status": "PROCESSED", "resultSubmission": "RECORDED", "result": {
+            "sourceSha256": "", "batchId": "bulk-test", "status": "PASS",
+            "methods": ["DIRECT_TEXT_EXTRACTION"], "issues": []
+        }})
 
     def submit_result(self, batch_id, result):
         self.results.append((batch_id, result))
         return 201, {"status": "RECORDED"}
+
+    def process_hermes_v1(self, batch_id, request_id, job_id, occurrence_id, source_hash, data, filename, media):
+        self.hermes_request = (batch_id, request_id, job_id, occurrence_id, source_hash, data, filename, media)
+        payload = dict(self.hermes_response[1])
+        if isinstance(payload.get("result"), dict):
+            payload["result"] = dict(payload["result"])
+            payload["result"]["sourceSha256"] = source_hash
+        return self.hermes_response[0], payload
 
     def submit_source(self, batch_id, source_hash, data, filename, media):
         self.sources.append((batch_id, source_hash, data, filename, media))
@@ -314,6 +326,40 @@ class RejectingParker(FakeParker):
 
 
 class SubmissionBoundaryTest(unittest.TestCase):
+    def test_prepared_route_uses_hermes_and_never_runs_local_processor(self):
+        fake = FakeParker()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prepared.txt"
+            path.write_bytes(b"prepared bytes\n")
+            with patch.object(hermes, "make_result_and_representation", side_effect=AssertionError("local processor must not run")):
+                item = hermes.process_one(fake, "bulk-test", path, 1, "prepared.txt", ("request-1", "job-1", "occurrence-1"))
+        self.assertEqual(item.result_submission, "RECORDED")
+        self.assertEqual(item.governed_ingestion, "REGISTERED")
+        self.assertEqual(fake.hermes_request[1:4], ("request-1", "job-1", "occurrence-1"))
+        self.assertEqual(fake.sources[0][2], b"prepared bytes\n")
+
+    def test_disabled_prepared_route_falls_back_to_existing_local_processor(self):
+        fake = FakeParker()
+        fake.hermes_response = (409, {"status": "ROUTING_DISABLED"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prepared.txt"
+            path.write_bytes(b"prepared bytes\n")
+            item = hermes.process_one(fake, "bulk-test", path, 1, "prepared.txt", ("request-1", "job-1", "occurrence-1"))
+        self.assertEqual(item.result_submission, "RECORDED")
+        self.assertEqual(len(fake.results), 1)
+
+    def test_unsupported_prepared_route_does_not_fall_back_to_local_processor(self):
+        fake = FakeParker()
+        fake.hermes_response = (422, {"status": "UNSUPPORTED", "detail": "OCR disabled"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.jpg"
+            path.write_bytes(b"image bytes")
+            with patch.object(hermes, "make_result_and_representation", side_effect=AssertionError("unsupported route must not use local processor")):
+                item = hermes.process_one(fake, "bulk-test", path, 1, "scan.jpg", ("request-1", "job-1", "occurrence-1"))
+        self.assertEqual(item.status, "FAILED")
+        self.assertEqual(item.governed_ingestion, "BLOCKED")
+        self.assertEqual(len(fake.results), 1)
+
     def test_failed_processing_result_submission_preserves_safe_downstream_diagnostic(self):
         fake = RejectingParker()
         with tempfile.TemporaryDirectory() as directory:
