@@ -3761,9 +3761,13 @@ function render() {
       process.onclick = () => processRow(index);
       actions.appendChild(process);
       const acquire = document.createElement('button');
+      acquire.type = 'button';
       acquire.textContent = 'View acquisition decision';
       acquire.title = 'Show Parker’s governed acquisition selection; this does not execute acquisition.';
-      acquire.onclick = () => loadAcquisitionDecision(index);
+      // Bind the action to the immutable Parker evidence identity, not the mutable
+      // array index captured by a row render. Background readiness/derivative loads
+      // rebuild tbody and can otherwise leave a visible button with a stale index.
+      acquire.onclick = () => loadAcquisitionDecisionForEvidenceId(row.evidenceArtifactId);
       actions.appendChild(acquire);
     }
     if (row.status === 'REQUIRES_OCR') {
@@ -5308,6 +5312,12 @@ async function viewDiscoveredGeneration(index, derivativeGenerationId) {
   }
   row.discoveredExpandedGenerationId = derivativeGenerationId;
   render();
+}
+
+async function loadAcquisitionDecisionForEvidenceId(evidenceArtifactId, preserveExecutionError = false) {
+  const index = rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId && !candidate.externalResultRow);
+  if (index < 0) return;
+  await loadAcquisitionDecision(index, preserveExecutionError);
 }
 
 async function loadAcquisitionDecision(index, preserveExecutionError = false) {
