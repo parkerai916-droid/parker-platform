@@ -31,6 +31,8 @@ class HermesProcessingV1DeploymentTopologyTest(unittest.TestCase):
         )
         self.assertIn('[ "$status" -eq 0 ] || exit "$status"', self.refresh)
         self.assertIn('[ "$bytes" -ge 5 ] && [ "$bytes" -le 8388612 ] || exit 70', self.refresh)
+        self.assertIn('declared="$(/usr/bin/printf "%d" "0x$prefix")"', self.refresh)
+        self.assertIn('[ "$declared" -gt 0 ] && [ "$declared" -eq $((bytes - 4)) ] || exit 70', self.refresh)
         self.assertNotIn('[[ "$status"', self.refresh)
 
     def test_processing_credentials_are_distinct_and_read_only(self):

@@ -197,12 +197,16 @@ if [[ "$HERMES_PROCESSING_V1_VERIFY" == true ]]; then
         [ "$status" -eq 0 ] || exit "$status"
         bytes="$(/usr/bin/wc -c <"$output")"
         [ "$bytes" -ge 5 ] && [ "$bytes" -le 8388612 ] || exit 70
-        [ "$(/usr/bin/od -An -tx1 -N4 "$output" | tr -d " \\n")" = "00000151" ] || exit 70
+        prefix="$(/usr/bin/od -An -tx1 -N4 "$output" | tr -d " \\n")"
+        [ "${#prefix}" -eq 8 ] || exit 70
+        declared="$(/usr/bin/printf "%d" "0x$prefix")" || exit 70
+        [ "$declared" -gt 0 ] && [ "$declared" -eq $((bytes - 4)) ] || exit 70
     ' sh "$processing_readiness_file" "$readiness_frame"
     processing_readiness_exit=$?
     set -e
     [[ "$processing_readiness_exit" -eq 0 ]] ||
         fail "Hermes Processing Service v1 SSH readiness failed"
+    echo "HERMES_PROCESSING_V1_READY"
     echo "Hermes Processing Service v1: readiness verified"
 else
     echo "Hermes Processing Service v1: verification disabled (routing remains unchanged)"
