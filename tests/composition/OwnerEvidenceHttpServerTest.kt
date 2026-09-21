@@ -515,6 +515,7 @@ class OwnerEvidenceHttpServerTest {
             val page = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/" )).header("Cookie", pairedCookie(harness)).GET().build()).body()
             assertTrue(page.contains("loadExistingEvidence();"))
             assertTrue(page.contains("loadEnhancedReadiness();"))
+            assertTrue(page.contains("merged.externalResultRow = false;"))
             assertTrue(page.contains("Refresh existing evidence"))
             assertTrue(page.contains("Durably registered evidence"))
         } finally { harness.shutdown() }

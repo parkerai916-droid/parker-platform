@@ -5028,6 +5028,11 @@ async function loadExistingEvidence(successMessage) {
         mediaType: item.mediaType,
         registeredAt: item.registeredAt,
       }, existingById.get(item.evidenceArtifactId) || {});
+      // The server response is the canonical evidence row.  Never inherit the browser-only
+      // externalResultRow marker from a cached enhanced-transcription result with the same source
+      // identity: that marker suppresses governed acquisition controls and can make an existing
+      // REQUIRES_OCR evidence item appear to have no "View acquisition decision" action.
+      merged.externalResultRow = false;
       // CASE-1: the case classification can change between refreshes (reassignment) -- unlike the
       // other fields above, it must always come from this exact fresh response, never from a
       // possibly-stale cached row.
