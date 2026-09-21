@@ -5916,6 +5916,10 @@ async function viewSavedAnalysis(savedAnalysisId) {
 document.getElementById('refreshSavedAnalysesButton').onclick = refreshSavedAnalyses;
 loadExistingEvidence();
 loadCases();
+// Keep the acquisition decision's authorization panel on the same provider-readiness truth as
+// the page-level enhanced-transcription control.  This is a read-only readiness check; it never
+// creates authorization, invokes a provider, or changes evidence state.
+loadEnhancedReadiness();
 refreshSavedAnalyses();
 </script>
 </body>

@@ -244,6 +244,7 @@ class GovernedAcquisitionIntegrationTest {
         val outcome = DeterministicEvidenceAcquisitionRouter().route(source(), registry.capabilities(), NOT_AUTHORISED)
         val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(outcome)
         assertContains(noSelection.reasons, AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED)
+        assertFalse(noSelection.reasons.contains(AcquisitionNoSelectionReason.UNSUPPORTED_SOURCE_OR_MEDIA))
         assertContains(noSelection.reasons, AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)
     }
 

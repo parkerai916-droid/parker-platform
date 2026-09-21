@@ -27,7 +27,7 @@ class DeterministicEvidenceAcquisitionRouter {
             return if (indeterminate.isNotEmpty()) {
                 EvidenceAcquisitionRoutingOutcome.Indeterminate(setOf(AcquisitionNoSelectionReason.UNKNOWN_REQUIRED_CHARACTERISTIC))
             } else {
-                EvidenceAcquisitionRoutingOutcome.NoEligibleCapability(noEligibleReasons(evaluations.map { it.second }))
+                EvidenceAcquisitionRoutingOutcome.NoEligibleCapability(noEligibleReasons(evaluations))
             }
         }
 
@@ -187,9 +187,25 @@ class DeterministicEvidenceAcquisitionRouter {
         setOf(AcquisitionNoSelectionReason.UNKNOWN_REQUIRED_CHARACTERISTIC),
     )
 
-    private fun noEligibleReasons(evaluations: List<AcquisitionEligibility>): Set<AcquisitionNoSelectionReason> = buildSet {
+    private fun noEligibleReasons(
+        evaluations: List<Pair<EvidenceAcquisitionCapability, AcquisitionEligibility>>,
+    ): Set<AcquisitionNoSelectionReason> = buildSet {
         add(AcquisitionNoSelectionReason.NO_ELIGIBLE_CAPABILITY)
-        evaluations.filterIsInstance<AcquisitionEligibility.Ineligible>().flatMap { it.reasons }.forEach { reason ->
+        val ineligible = evaluations.filter { it.second is AcquisitionEligibility.Ineligible }
+        // If any registered capability is source-compatible but blocked by readiness, custody,
+        // authorization, or an operational limit, unsupported-media/form diagnostics from other
+        // capabilities are not the governing reason.  Otherwise the Owner UI falsely reports a
+        // supported OCR source as unsupported while external authorization is the actual blocker.
+        val sourceCompatible = ineligible.any { (_, eligibility) ->
+            val reasons = (eligibility as AcquisitionEligibility.Ineligible).reasons
+            reasons.none {
+                it == AcquisitionEligibilityReason.UNSUPPORTED_MEDIA_TYPE ||
+                    it == AcquisitionEligibilityReason.UNSUPPORTED_SOURCE_FORM ||
+                    it == AcquisitionEligibilityReason.NATIVE_TEXT_REQUIRED
+            }
+        }
+        ineligible.flatMap { it.second.let { eligibility -> (eligibility as AcquisitionEligibility.Ineligible).reasons } }
+            .forEach { reason ->
             when (reason) {
                 AcquisitionEligibilityReason.CAPABILITY_DISABLED,
                 AcquisitionEligibilityReason.CONFIGURATION_NOT_ACCEPTED,
@@ -201,6 +217,10 @@ class DeterministicEvidenceAcquisitionRouter {
                 AcquisitionEligibilityReason.SOURCE_TOO_LARGE,
                 AcquisitionEligibilityReason.PAGE_LIMIT_EXCEEDED,
                 -> add(AcquisitionNoSelectionReason.OPERATIONAL_LIMIT_EXCEEDED)
+                AcquisitionEligibilityReason.UNSUPPORTED_MEDIA_TYPE,
+                AcquisitionEligibilityReason.UNSUPPORTED_SOURCE_FORM,
+                AcquisitionEligibilityReason.NATIVE_TEXT_REQUIRED,
+                -> if (!sourceCompatible) add(AcquisitionNoSelectionReason.UNSUPPORTED_SOURCE_OR_MEDIA)
                 else -> add(AcquisitionNoSelectionReason.UNSUPPORTED_SOURCE_OR_MEDIA)
             }
         }
