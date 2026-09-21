@@ -4315,7 +4315,15 @@ class ParkerRuntime(
     /** CASE-1. The current case assignment for one exact [evidenceArtifactId], or `null` if Unassigned or if case classification is not configured. */
     suspend fun currentCaseAssignmentAsOwner(evidenceArtifactId: EvidenceArtifactId): CaseId? {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
-        return caseAssignmentCoordinator?.currentAssignment(evidenceArtifactId)
+        // Prepared-handoff imports establish the governed case-evidence association, not the
+        // legacy single-assignment record.  The Owner Evidence Library still consumes this
+        // projection to populate its case filter, so prefer the association-backed authority and
+        // retain the legacy assignment as a compatibility fallback for older evidence.
+        val associatedCase = caseEvidenceAssociationStorageForProjection
+            ?.listForEvidence(evidenceArtifactId)
+            ?.firstOrNull()
+            ?.caseId
+        return associatedCase ?: caseAssignmentCoordinator?.currentAssignment(evidenceArtifactId)
     }
 
     /**

@@ -1729,6 +1729,11 @@ class AgentGatewayHttpServerTest {
             val second = harness.runtime.registerPrepOccurrenceAsOwner(batchId, EvidenceArtifactId(evidenceId), request)
             assertIs<parker.core.runtime.BulkIngestionOccurrenceRegistration.Created>(first)
             assertIs<parker.core.runtime.BulkIngestionOccurrenceRegistration.AlreadyPresent>(second)
+            assertEquals(
+                harness.runtime.listCasesAsOwner().single { it.caseName == "Prep Occurrence Case" }.caseId,
+                harness.runtime.currentCaseAssignmentAsOwner(EvidenceArtifactId(evidenceId)),
+                "Owner Evidence Library case projection must resolve prepared-handoff associations",
+            )
         }
     }
 
