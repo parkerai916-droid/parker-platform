@@ -360,6 +360,20 @@ class SubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(item.governed_ingestion, "BLOCKED")
         self.assertEqual(len(fake.results), 1)
 
+    def test_ocr_required_prepared_route_uses_existing_governed_external_acquisition(self):
+        fake = FakeParker()
+        fake.hermes_response = (202, {"status": "OCR_REQUIRED", "detail": "external OCR required"})
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "processingState": "REQUIRES_OCR", "evidenceArtifactId": "evidence-jpg"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.jpg"
+            path.write_bytes(b"synthetic jpeg bytes")
+            with patch.object(hermes, "make_result_and_representation", side_effect=AssertionError("OCR route must not use local OCR")):
+                item = hermes.process_one(fake, "bulk-test", path, 1, "scan.jpg", ("request-1", "job-1", "occurrence-1"))
+        self.assertEqual(item.governed_ingestion, "ANALYSIS_READY")
+        self.assertEqual(item.acquisition_status, "COMPLETED")
+        self.assertEqual(fake.acquisitions, ["evidence-jpg"])
+        self.assertEqual(len(fake.sources), 1)
+
     def test_failed_processing_result_submission_preserves_safe_downstream_diagnostic(self):
         fake = RejectingParker()
         with tempfile.TemporaryDirectory() as directory:

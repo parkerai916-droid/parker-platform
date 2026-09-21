@@ -4,6 +4,7 @@ package parker.core.runtime
 enum class HermesProcessingV1RouteDecision {
     DISABLED,
     REMOTE_NATIVE_OR_STRUCTURED,
+    OCR_REQUIRED,
     UNSUPPORTED,
 }
 
@@ -22,6 +23,9 @@ data class HermesProcessingV1RoutingConfig(
 
     fun decide(mediaType: String): HermesProcessingV1RouteDecision {
         if (!enabled) return HermesProcessingV1RouteDecision.DISABLED
+        if (mediaType.lowercase() in setOf("image/jpeg", "image/png", "image/webp")) {
+            return HermesProcessingV1RouteDecision.OCR_REQUIRED
+        }
         return if (HermesV1ClientMethodSelection.forMediaType(mediaType) == null) {
             HermesProcessingV1RouteDecision.UNSUPPORTED
         } else {

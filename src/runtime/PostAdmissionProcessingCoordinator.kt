@@ -33,6 +33,12 @@ internal class PostAdmissionProcessingCoordinator(
                 is AgentGatewayAcquisitionResult.ProviderNotReady -> PostAdmissionProcessingOutcome.CapabilityUnavailable(
                     "The authoritative OCR capability is not ready",
                 )
+                is AgentGatewayAcquisitionResult.ConfigurationNotAccepted -> PostAdmissionProcessingOutcome.CapabilityUnavailable(
+                    "The authoritative OCR provider configuration is not accepted",
+                )
+                is AgentGatewayAcquisitionResult.CredentialUnavailable -> PostAdmissionProcessingOutcome.CapabilityUnavailable(
+                    "The authoritative OCR provider credential is unavailable",
+                )
                 is AgentGatewayAcquisitionResult.NotFound -> PostAdmissionProcessingOutcome.Failed("SOURCE_NOT_FOUND", "Admitted evidence was not available for governed acquisition")
                 is AgentGatewayAcquisitionResult.Denied -> PostAdmissionProcessingOutcome.CapabilityUnavailable("Governed acquisition was not authorised")
                 is AgentGatewayAcquisitionResult.Failed -> PostAdmissionProcessingOutcome.CapabilityUnavailable(acquisition.reason)
@@ -68,6 +74,12 @@ internal class PostAdmissionProcessingCoordinator(
             )
             is AgentGatewayAcquisitionResult.ProviderNotReady -> PostAdmissionProcessingOutcome.CapabilityUnavailable(
                 "The authoritative external OCR capability is not ready",
+            )
+            is AgentGatewayAcquisitionResult.ConfigurationNotAccepted -> PostAdmissionProcessingOutcome.CapabilityUnavailable(
+                "The authoritative external OCR provider configuration is not accepted",
+            )
+            is AgentGatewayAcquisitionResult.CredentialUnavailable -> PostAdmissionProcessingOutcome.CapabilityUnavailable(
+                "The authoritative external OCR provider credential is unavailable",
             )
             is AgentGatewayAcquisitionResult.NotFound -> PostAdmissionProcessingOutcome.Failed("SOURCE_NOT_FOUND", "Admitted evidence was not available for governed acquisition")
             is AgentGatewayAcquisitionResult.Denied -> PostAdmissionProcessingOutcome.CapabilityUnavailable("Governed acquisition was not authorised")

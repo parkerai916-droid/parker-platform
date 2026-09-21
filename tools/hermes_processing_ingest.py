@@ -508,6 +508,7 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
     display_name = original_filename or path.name
     representation = None
     submission = None
+    source_already_submitted = False
     if route_context is not None:
         request_id, job_id, occurrence_id = route_context
         media = media_type_for(path)
@@ -528,6 +529,22 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
             submit_code, submit_payload = client.submit_result(batch_id, result)
             submission = "RECORDED" if submit_code == 201 else "ALREADY_RECORDED" if submit_code == 200 and isinstance(submit_payload, dict) and submit_payload.get("status") == "ALREADY_RECORDED" else f"HTTP_{submit_code}"
             return ProcessedFile(display_name, digest, result["status"], result["methods"], submission, "BLOCKED", result["failure"]["detail"])
+        elif code == 202 and isinstance(payload, dict) and payload.get("status") == "OCR_REQUIRED":
+            # Hermes classified the prepared source after validating its bytes. Parker
+            # now performs the existing governed source admission and external-OCR
+            # authorization flow; Python never selects a provider or carries credentials.
+            result = {"sourceSha256": digest, "status": "PASS", "methods": ["OCR"], "issues": [],
+                      "processingWarnings": ["Hermes v1 classified source as requiring authoritative external OCR"]}
+            code, payload = client.submit_source(batch_id, digest, data, display_name, media)
+            if code not in (201, 202, 200) or not isinstance(payload, dict) or payload.get("status") not in {
+                "ANALYSIS_READY", "REQUIRES_OCR", "CAPABILITY_UNAVAILABLE", "REVIEW_REQUIRED", "FAILED",
+                "INGESTED", "ALREADY_INGESTED",
+            }:
+                return ProcessedFile(display_name, digest, "FAILED", result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED",
+                                     f"Parker source admission failed: {payload}", False,
+                                     processing_result_submission_error(batch_id, digest, code, payload))
+            submission = "RECORDED" if code in (201, 202) else "ALREADY_RECORDED"
+            source_already_submitted = True
         else:
             detail = payload.get("detail") if isinstance(payload, dict) else str(payload)
             return ProcessedFile(display_name, digest, "FAILED", [], "HERMES_V1_FAILED", "NOT_ATTEMPTED", str(detail), False,
@@ -549,7 +566,8 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
             if custody_code not in (200, 201) or not isinstance(custody_payload, dict) or custody_payload.get("status") not in ("STORED", "ALREADY_STORED"):
                 return ProcessedFile(display_name, digest, result["status"], result["methods"], submission, "BLOCKED", f"pending review custody failed: HTTP_{custody_code} {custody_payload}", True)
         return ProcessedFile(display_name, digest, result["status"], result["methods"], submission, "BLOCKED", result.get("failure", {}).get("detail") if result.get("failure") else (result.get("issues") or [{}])[0].get("explanation"))
-    code, payload = client.submit_source(batch_id, digest, data, display_name, media_type_for(path))
+    if not source_already_submitted:
+        code, payload = client.submit_source(batch_id, digest, data, display_name, media_type_for(path))
     authoritative_statuses = {"ANALYSIS_READY", "REQUIRES_OCR", "CAPABILITY_UNAVAILABLE", "REVIEW_REQUIRED", "FAILED", "INGESTED", "ALREADY_INGESTED"}
     if code in (201, 202, 200) and isinstance(payload, dict) and payload.get("status") in authoritative_statuses:
         # Parker's post-admission result is authoritative for completion. Hermes' local
@@ -601,7 +619,7 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
                                  None, False, None, True, "COMPLETED", None)
         if acquire_status == "AUTHORIZATION_REQUIRED":
             final_status = "REQUIRES_OCR"
-        elif acquire_status == "PROVIDER_NOT_READY":
+        elif acquire_status in ("PROVIDER_NOT_READY", "CONFIG_NOT_ACCEPTED", "CREDENTIAL_UNAVAILABLE"):
             final_status = "CAPABILITY_UNAVAILABLE"
         elif acquire_status == "FAILED":
             final_status = "FAILED"

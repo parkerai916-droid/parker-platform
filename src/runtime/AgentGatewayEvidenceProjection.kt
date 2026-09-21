@@ -100,6 +100,7 @@ internal class AgentGatewayEvidenceProjection(
      * rather than throwing if absent.
      */
     private val governedAcquisitionWorkflow: GovernedAcquisitionOwnerWorkflow? = null,
+    private val externalProviderReadiness: () -> String? = { null },
     private val clock: () -> Instant = Instant::now,
     private val bulkIngestionBindingCoordinator: BulkIngestionBindingCoordinator? = null,
     private val deriveBatchExternalTranscriptionAuthorization: (suspend (String, EvidenceArtifactId) -> Boolean)? = null,
@@ -647,7 +648,7 @@ internal class AgentGatewayEvidenceProjection(
             parker.core.interfaces.AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED in meaningful ->
                 AgentGatewayAcquisitionResult.AuthorizationRequired(evidenceArtifactId)
             meaningful.isNotEmpty() && meaningful == setOf(parker.core.interfaces.AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY) ->
-                AgentGatewayAcquisitionResult.ProviderNotReady(evidenceArtifactId)
+                readinessOutcome(evidenceArtifactId)
             else -> AgentGatewayAcquisitionResult.Failed(evidenceArtifactId, reasons.joinToString(",") { it.name }.ifEmpty { "NO_ELIGIBLE_CAPABILITY" })
         }
     }
@@ -673,11 +674,17 @@ internal class AgentGatewayEvidenceProjection(
             if (parker.core.interfaces.AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED in meaningful) {
                 AgentGatewayAcquisitionResult.AuthorizationRequired(evidenceArtifactId)
             } else if (meaningful.isNotEmpty() && meaningful == setOf(parker.core.interfaces.AcquisitionNoSelectionReason.CAPABILITY_DISABLED_OR_NOT_READY)) {
-                AgentGatewayAcquisitionResult.ProviderNotReady(evidenceArtifactId)
+                readinessOutcome(evidenceArtifactId)
             } else {
                 AgentGatewayAcquisitionResult.Failed(evidenceArtifactId, result.reason.name)
             }
         }
+    }
+
+    private fun readinessOutcome(evidenceArtifactId: EvidenceArtifactId): AgentGatewayAcquisitionResult = when (externalProviderReadiness()) {
+        "CONFIG_NOT_ACCEPTED" -> AgentGatewayAcquisitionResult.ConfigurationNotAccepted(evidenceArtifactId)
+        "CREDENTIAL_UNAVAILABLE" -> AgentGatewayAcquisitionResult.CredentialUnavailable(evidenceArtifactId)
+        else -> AgentGatewayAcquisitionResult.ProviderNotReady(evidenceArtifactId)
     }
 
     private fun projectionOf(evidenceArtifactId: EvidenceArtifactId, manifest: parker.core.interfaces.EvidenceSourceManifest) =
@@ -984,6 +991,8 @@ sealed class AgentGatewayAcquisitionResult {
 
     /** Governed routing determined every otherwise-eligible capability is disabled or not yet ready (e.g. unaccepted provider configuration). */
     data class ProviderNotReady(val evidenceArtifactId: EvidenceArtifactId) : AgentGatewayAcquisitionResult()
+    data class ConfigurationNotAccepted(val evidenceArtifactId: EvidenceArtifactId) : AgentGatewayAcquisitionResult()
+    data class CredentialUnavailable(val evidenceArtifactId: EvidenceArtifactId) : AgentGatewayAcquisitionResult()
 
     /** No source manifest exists under this exact identity -- distinct from a routing/execution failure. */
     data class NotFound(val evidenceArtifactId: EvidenceArtifactId) : AgentGatewayAcquisitionResult()

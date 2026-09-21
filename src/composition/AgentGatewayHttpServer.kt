@@ -397,6 +397,10 @@ class AgentGatewayHttpServer(
                         recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.DENIED)
                         writeJson(exchange, 409, jsonObject("status" to "ROUTING_DISABLED", "detail" to outcome.reason))
                     }
+                    is parker.core.runtime.HermesProcessingV1AgentOutcome.OcrRequired -> {
+                        recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.REGISTERED)
+                        writeJson(exchange, 202, jsonObject("status" to "OCR_REQUIRED", "detail" to outcome.reason))
+                    }
                     is parker.core.runtime.HermesProcessingV1AgentOutcome.Unsupported -> {
                         recordAudit(correlationId, principalId, "agent.hermes-v1.process", batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
                         writeJson(exchange, 422, jsonObject("status" to "UNSUPPORTED", "detail" to outcome.reason))
@@ -1181,6 +1185,14 @@ class AgentGatewayHttpServer(
                 is AgentGatewayAcquisitionResult.ProviderNotReady -> {
                     recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.ACQUISITION_PROVIDER_NOT_READY)
                     writeJson(exchange, 409, jsonObject("status" to "PROVIDER_NOT_READY", "evidenceArtifactId" to id.value))
+                }
+                is AgentGatewayAcquisitionResult.ConfigurationNotAccepted -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.ACQUISITION_PROVIDER_NOT_READY)
+                    writeJson(exchange, 409, jsonObject("status" to "CONFIG_NOT_ACCEPTED", "evidenceArtifactId" to id.value))
+                }
+                is AgentGatewayAcquisitionResult.CredentialUnavailable -> {
+                    recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.ACQUISITION_PROVIDER_NOT_READY)
+                    writeJson(exchange, 409, jsonObject("status" to "CREDENTIAL_UNAVAILABLE", "evidenceArtifactId" to id.value))
                 }
                 is AgentGatewayAcquisitionResult.NotFound -> {
                     recordAudit(correlationId, principalId, ACQUIRE_ACTION_NAME, id.value, AgentGatewayAccessOutcome.NOT_FOUND)

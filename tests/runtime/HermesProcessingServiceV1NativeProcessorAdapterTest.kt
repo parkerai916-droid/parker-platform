@@ -101,7 +101,7 @@ class HermesProcessingServiceV1NativeProcessorAdapterTest {
         assertFailsWith<IllegalArgumentException> { HermesV1ProcessingMethod.fromWireValue("TRANSCRIPTION") }
         val scannedPdf = source("%PDF-scanned", "application/pdf", "scan.pdf")
         val rejected = assertIs<HermesV1NativeProcessingOutcome.Rejected>(adapter(processorReturnsTierB = true).process(HermesV1ProcessingPrincipal.PARKER_PROCESSING, scannedPdf))
-        assertEquals(HermesV1FailureDetailCode.UNSUPPORTED_MEDIA_TYPE, rejected.response.failure?.detailCode)
+        assertEquals(HermesV1FailureDetailCode.OCR_REQUIRED, rejected.response.failure?.detailCode)
     }
 
     @Test

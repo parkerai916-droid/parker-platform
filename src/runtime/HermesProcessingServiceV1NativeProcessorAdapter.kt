@@ -193,7 +193,7 @@ class HermesProcessingServiceV1NativeProcessorAdapter(
         is parker.core.interfaces.PdfStructuralExtractionOutcome.Extracted -> DispatchResult.Success(
             HermesStructuredRepresentation.Text(outcome.result.documentText), outcome.result.producerIdentity.pluginIdentity, outcome.result.producerIdentity.pluginVersion, HermesV1RepresentationType.TEXT, emptyList(), method,
         )
-        is parker.core.interfaces.PdfStructuralExtractionOutcome.RequiresTierB -> DispatchResult.Failure(failure(HermesV1FailureDetailCode.UNSUPPORTED_MEDIA_TYPE, false))
+        is parker.core.interfaces.PdfStructuralExtractionOutcome.RequiresTierB -> DispatchResult.Failure(failure(HermesV1FailureDetailCode.OCR_REQUIRED, false))
         is parker.core.interfaces.PdfStructuralExtractionOutcome.Unsupported -> DispatchResult.Failure(failure(HermesV1FailureDetailCode.UNSUPPORTED_MEDIA_TYPE, false))
         is parker.core.interfaces.PdfStructuralExtractionOutcome.Malformed -> DispatchResult.Failure(failure(HermesV1FailureDetailCode.MALFORMED_PROCESSOR_RESULT, false))
     }

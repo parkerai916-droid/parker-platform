@@ -26,7 +26,9 @@ class HermesProcessingV1RoutingGateTest {
             ),
         )
         assertEquals(HermesProcessingV1RouteDecision.REMOTE_NATIVE_OR_STRUCTURED, config.decide("text/plain"))
-        assertEquals(HermesProcessingV1RouteDecision.UNSUPPORTED, config.decide("image/png"))
+        assertEquals(HermesProcessingV1RouteDecision.OCR_REQUIRED, config.decide("image/png"))
+        assertEquals(HermesProcessingV1RouteDecision.OCR_REQUIRED, config.decide("image/jpeg"))
+        assertEquals(HermesProcessingV1RouteDecision.UNSUPPORTED, config.decide("audio/wav"))
     }
 
     @Test

@@ -2677,6 +2677,14 @@ class ParkerRuntime(
             permissionEngine = permissionEngine,
             evidenceCustodian = defaultEvidenceCustodian,
             governedAcquisitionWorkflow = hermesGovernedAcquisitionWorkflow,
+            externalProviderReadiness = {
+                when (openAiExternalTranscriptionBackendReadiness) {
+                    OpenAiExternalTranscriptionBackendReadiness.MissingCredential -> "CREDENTIAL_UNAVAILABLE"
+                    is OpenAiExternalTranscriptionBackendReadiness.ConfigurationNotAccepted,
+                    is OpenAiExternalTranscriptionBackendReadiness.ProfileNotReady -> "CONFIG_NOT_ACCEPTED"
+                    else -> null
+                }
+            },
             bulkIngestionBindingCoordinator = batchCoordinatorForProjection,
             deriveBatchExternalTranscriptionAuthorization = { batchId, evidenceId ->
                 val coordinator = batchCoordinatorForProjection
@@ -3367,6 +3375,10 @@ class ParkerRuntime(
         when (routing.decide(mediaType)) {
             parker.core.runtime.HermesProcessingV1RouteDecision.DISABLED ->
                 return parker.core.runtime.HermesProcessingV1AgentOutcome.Disabled()
+            parker.core.runtime.HermesProcessingV1RouteDecision.OCR_REQUIRED -> {
+                // Validate batch and source integrity below before returning the typed
+                // handoff outcome. Parker, not Hermes, performs governed external OCR.
+            }
             parker.core.runtime.HermesProcessingV1RouteDecision.UNSUPPORTED ->
                 return parker.core.runtime.HermesProcessingV1AgentOutcome.Unsupported("media type is not enabled for Hermes v1")
             parker.core.runtime.HermesProcessingV1RouteDecision.REMOTE_NATIVE_OR_STRUCTURED -> Unit
@@ -3381,6 +3393,9 @@ class ParkerRuntime(
             .joinToString("") { "%02x".format(it.toInt() and 0xff) }
         if (digest != sourceSha256) {
             return parker.core.runtime.HermesProcessingV1AgentOutcome.Failed("VALIDATION", "SOURCE_HASH_MISMATCH", "prepared source hash does not match bytes")
+        }
+        if (routing.decide(mediaType) == parker.core.runtime.HermesProcessingV1RouteDecision.OCR_REQUIRED) {
+            return parker.core.runtime.HermesProcessingV1AgentOutcome.OcrRequired()
         }
         val methods = parker.core.runtime.HermesV1ClientMethodSelection.forMediaType(mediaType)?.toList()
             ?: return parker.core.runtime.HermesProcessingV1AgentOutcome.Unsupported("media type is not enabled for Hermes v1")
@@ -3403,7 +3418,9 @@ class ParkerRuntime(
                 ),
             )) {
                 is parker.core.runtime.HermesV1ClientOutcome.Rejected ->
-                    parker.core.runtime.HermesProcessingV1AgentOutcome.Failed(
+                    if (outcome.failure.detailCode == parker.core.interfaces.HermesV1FailureDetailCode.OCR_REQUIRED)
+                        parker.core.runtime.HermesProcessingV1AgentOutcome.OcrRequired()
+                    else parker.core.runtime.HermesProcessingV1AgentOutcome.Failed(
                         outcome.failure.category.name, outcome.failure.detailCode.name, outcome.failure.detail,
                     )
                 is parker.core.runtime.HermesV1ClientOutcome.Accepted -> {
