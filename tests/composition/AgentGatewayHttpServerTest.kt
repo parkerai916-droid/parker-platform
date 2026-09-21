@@ -72,6 +72,7 @@ class AgentGatewayHttpServerTest {
         val submitProcessingResultCalls: MutableList<Pair<String, parker.core.interfaces.HermesProcessingResult>> = mutableListOf(),
         val listProcessingResultCalls: MutableList<String> = mutableListOf(),
         val submitGovernedIngestionCalls: MutableList<Triple<String, String, parker.core.interfaces.CandidateEvidenceArtifact>> = mutableListOf(),
+        val submitOcrRequiredSourceCalls: MutableList<Triple<String, String, parker.core.interfaces.CandidateEvidenceArtifact>> = mutableListOf(),
         var retrieveResult: AgentGatewayEvidenceRetrievalResult = AgentGatewayEvidenceRetrievalResult.NotFound(EvidenceArtifactId("unset")),
         var manifestResult: AgentGatewayEvidenceManifestResult = AgentGatewayEvidenceManifestResult.NotFound(EvidenceArtifactId("unset")),
         var submitResult: parker.core.runtime.AgentGatewaySourceSubmissionResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
@@ -79,6 +80,7 @@ class AgentGatewayHttpServerTest {
         var submitProcessingResultResult: parker.core.runtime.AgentGatewayProcessingResultSubmissionResult = parker.core.runtime.AgentGatewayProcessingResultSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
         var listProcessingResultsResult: parker.core.runtime.AgentGatewayProcessingResultListResult = parker.core.runtime.AgentGatewayProcessingResultListResult.Denied(PermissionDecisionOutcome.DENIED),
         var submitGovernedIngestionResult: parker.core.runtime.AgentGatewayGovernedIngestionResult = parker.core.runtime.AgentGatewayGovernedIngestionResult.Denied(PermissionDecisionOutcome.DENIED),
+        var submitOcrRequiredSourceResult: parker.core.runtime.AgentGatewaySourceSubmissionResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED),
         val readyBatches: List<parker.core.runtime.ReadyBulkIngestionBatch> = emptyList(),
     ) {
         val auditLogFile = Files.createTempDirectory("agent-gateway-http-test-audit").resolve("audit.log")
@@ -95,6 +97,7 @@ class AgentGatewayHttpServerTest {
             submitOcrRepresentationAsAgent = { batchId, representation -> ocrRepresentationCalls.add(batchId to representation); parker.core.runtime.AgentGatewayOcrRepresentationSubmissionResult.AlreadyAdmitted },
             listProcessingResultsForBatchAsAgent = { batchId -> listProcessingResultCalls.add(batchId); listProcessingResultsResult },
             submitGovernedIngestionAsAgent = { batchId, sha, candidate -> submitGovernedIngestionCalls.add(Triple(batchId, sha, candidate)); submitGovernedIngestionResult },
+            submitOcrRequiredSourceAsAgent = { batchId, sha, candidate -> submitOcrRequiredSourceCalls.add(Triple(batchId, sha, candidate)); submitOcrRequiredSourceResult },
             audit = FileSystemAgentGatewayAccessAudit(auditLogFile),
             logger = RecordingParkerLogger(),
         ).also { it.start() }
@@ -102,6 +105,24 @@ class AgentGatewayHttpServerTest {
         fun baseUri(): String = "http://127.0.0.1:${server.boundPort}"
         fun stop() = server.stop()
         fun auditLines(): List<String> = Files.readAllLines(auditLogFile)
+    }
+
+    @Test
+    fun `OCR-required custody route returns Parker identity without pretending processing completed`() = withFakeHarness { fake ->
+        fake.submitOcrRequiredSourceResult = parker.core.runtime.AgentGatewaySourceSubmissionResult.Registered(
+            parker.core.runtime.AgentGatewayEvidenceManifestProjection(EvidenceArtifactId("evidence-ocr"), "a".repeat(64), 7L, "image/jpeg", "synthetic.jpg")
+        )
+        val response = send(
+            HttpRequest.newBuilder(URI.create("${fake.baseUri()}/agent/ingestion-batches/bulk-ocr/ocr-required-sources/${"a".repeat(64)}"))
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "image/jpeg")
+                .POST(HttpRequest.BodyPublishers.ofByteArray("bytes".toByteArray())).build(),
+        )
+        assertEquals(201, response.statusCode())
+        assertTrue(response.body().contains("\"status\":\"REQUIRES_OCR\""))
+        assertTrue(response.body().contains("evidence-ocr"))
+        assertEquals(1, fake.submitOcrRequiredSourceCalls.size)
+        assertTrue(fake.submitGovernedIngestionCalls.isEmpty())
     }
 
     private fun withFakeHarness(block: (FakeHarness) -> Unit) {
@@ -212,6 +233,7 @@ class AgentGatewayHttpServerTest {
             retrieveEvidenceAsAgent = { id -> runtime.retrieveEvidenceAsAgent(id) },
             retrieveEvidenceManifestAsAgent = { id -> runtime.retrieveEvidenceManifestAsAgent(id) },
             submitSourceAsAgent = { candidate, advisory -> runtime.submitSourceAsAgent(candidate, advisory) },
+            submitOcrRequiredSourceAsAgent = { batchId, sha, candidate -> runtime.submitOcrRequiredSourceAsAgent(batchId, sha, candidate) },
             requestAcquisitionAsAgent = { id -> runtime.requestAcquisitionAsAgent(id) },
             submitProcessingResultAsAgent = { batchId, result -> runtime.submitProcessingResultAsAgent(batchId, result) },
             submitOcrRepresentationAsAgent = { batchId, representation -> runtime.submitOcrRepresentationAsAgent(batchId, representation) },
@@ -484,7 +506,7 @@ class AgentGatewayHttpServerTest {
                 "retrieveEvidenceAsAnalysisAgent", "retrieveEvidenceManifestAsAnalysisAgent",
                 "bindIngestionEvidenceAsAgent", "submitSourceWithBatchAsAgent", "listReadyIngestionBatchesAsAgent",
                 "submitProcessingResultAsAgent", "submitPendingReviewSourceAsAgent", "listProcessingResultsForBatchAsAgent", "submitGovernedIngestionAsAgent",
-                "submitOcrRepresentationAsAgent",
+                "submitOcrRepresentationAsAgent", "submitOcrRequiredSourceAsAgent",
                 "processHermesV1AsAgent",
                 "submitAnalysisRequestAsAgent",
             ),
@@ -1369,6 +1391,23 @@ class AgentGatewayHttpServerTest {
             .header("Content-Type", contentType)
             .apply { if (filename != null) header("X-Original-Filename", filename) }
             .POST(HttpRequest.BodyPublishers.ofByteArray(bytes))
+        .build(),
+    )
+
+    private fun postOcrRequiredSource(
+        baseUri: String,
+        batchId: String,
+        sha256: String,
+        bytes: ByteArray = "synthetic image bytes".toByteArray(),
+        bearer: String = token,
+        contentType: String = "image/jpeg",
+        filename: String = "synthetic.jpg",
+    ): HttpResponse<String> = send(
+        HttpRequest.newBuilder(URI.create("$baseUri/agent/ingestion-batches/$batchId/ocr-required-sources/$sha256"))
+            .header("Authorization", "Bearer $bearer")
+            .header("Content-Type", contentType)
+            .header("X-Original-Filename", filename)
+            .POST(HttpRequest.BodyPublishers.ofByteArray(bytes))
             .build(),
     )
 
@@ -1528,6 +1567,26 @@ class AgentGatewayHttpServerTest {
         val created = runtime.createCaseAsOwner(caseName) as parker.core.runtime.CaseCreationOutcome.Created
         val authorised = runtime.authoriseBulkIngestionAsOwner(created.case.caseId) as parker.core.runtime.BulkIngestionAuthorisation.Authorised
         return authorised.binding.batchId
+    }
+
+    @Test
+    fun `real OCR-required custody registration creates and reuses one Parker identity without processing admission`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("Real OCR Required Custody Case")
+            val bytes = "synthetic image bytes".toByteArray()
+            val sha = sha256Of(bytes)
+            val first = postOcrRequiredSource(harness.baseUri(), batchId, sha, bytes)
+            val second = postOcrRequiredSource(harness.baseUri(), batchId, sha, bytes)
+            assertEquals(201, first.statusCode(), first.body())
+            assertEquals(200, second.statusCode(), second.body())
+            assertTrue(first.body().contains("\"status\":\"REQUIRES_OCR\""), first.body())
+            assertTrue(second.body().contains("\"status\":\"REQUIRES_OCR\""), second.body())
+            val firstEvidence = assertNotNull(jsonStringField(first.body(), "evidenceArtifactId"))
+            val secondEvidence = assertNotNull(jsonStringField(second.body(), "evidenceArtifactId"))
+            assertEquals(firstEvidence, secondEvidence)
+            assertFalse(first.body().contains("\"derivativeGenerationId\":\""))
+            assertFalse(second.body().contains("\"derivativeGenerationId\":\""))
+        }
     }
 
     @Test

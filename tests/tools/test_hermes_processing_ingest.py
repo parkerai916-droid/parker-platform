@@ -279,6 +279,7 @@ class FakeParker:
     def __init__(self):
         self.results = []
         self.sources = []
+        self.ocr_sources = []
         self.pending = []
         self.representations = []
         self.acquisitions = []
@@ -304,6 +305,10 @@ class FakeParker:
 
     def submit_source(self, batch_id, source_hash, data, filename, media):
         self.sources.append((batch_id, source_hash, data, filename, media))
+        return self.source_response
+
+    def submit_ocr_required_source(self, batch_id, source_hash, data, filename, media):
+        self.ocr_sources.append((batch_id, source_hash, data, filename, media))
         return self.source_response
 
     def acquire(self, evidence_artifact_id):
@@ -372,7 +377,21 @@ class SubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(item.governed_ingestion, "ANALYSIS_READY")
         self.assertEqual(item.acquisition_status, "COMPLETED")
         self.assertEqual(fake.acquisitions, ["evidence-jpg"])
-        self.assertEqual(len(fake.sources), 1)
+        self.assertEqual(len(fake.ocr_sources), 1)
+
+    def test_unauthorized_ocr_required_source_registration_reaches_acquisition_gate(self):
+        fake = FakeParker()
+        fake.hermes_response = (202, {"status": "OCR_REQUIRED", "detail": "external OCR required"})
+        fake.source_response = (202, {"status": "REQUIRES_OCR", "processingState": "REQUIRES_OCR", "evidenceArtifactId": "evidence-jpg"})
+        fake.acquire_response = (409, {"status": "AUTHORIZATION_REQUIRED", "evidenceArtifactId": "evidence-jpg"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.jpg"
+            path.write_bytes(b"synthetic jpeg bytes")
+            item = hermes.process_one(fake, "bulk-test", path, 1, "scan.jpg", ("request-1", "job-1", "occurrence-1"))
+        self.assertEqual(item.governed_ingestion, "REQUIRES_OCR")
+        self.assertEqual(item.acquisition_status, "AUTHORIZATION_REQUIRED")
+        self.assertEqual(len(fake.ocr_sources), 1)
+        self.assertEqual(len(fake.sources), 0)
 
     def test_failed_processing_result_submission_preserves_safe_downstream_diagnostic(self):
         fake = RejectingParker()

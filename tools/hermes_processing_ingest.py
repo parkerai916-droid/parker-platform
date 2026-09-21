@@ -486,6 +486,10 @@ class ParkerClient:
         headers = {"Content-Type": media or "application/octet-stream", "X-Parker-Original-Filename": filename}
         return self.request(f"/agent/ingestion-batches/{batch_id}/sources/{source_hash}", "POST", data, headers)
 
+    def submit_ocr_required_source(self, batch_id: str, source_hash: str, data: bytes, filename: str, media: str | None) -> tuple[int, object]:
+        headers = {"Content-Type": media or "application/octet-stream", "X-Parker-Original-Filename": filename}
+        return self.request(f"/agent/ingestion-batches/{batch_id}/ocr-required-sources/{source_hash}", "POST", data, headers)
+
     def submit_ocr_representation(self, batch_id: str, source_hash: str, representation: dict) -> tuple[int, object]:
         body = json.dumps({"sourceSha256": source_hash, **representation}, separators=(",", ":")).encode()
         return self.request(f"/agent/ingestion-batches/{batch_id}/ocr-representations/{source_hash}", "POST", body, {"Content-Type": "application/json"})
@@ -535,7 +539,7 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
             # authorization flow; Python never selects a provider or carries credentials.
             result = {"sourceSha256": digest, "status": "PASS", "methods": ["OCR"], "issues": [],
                       "processingWarnings": ["Hermes v1 classified source as requiring authoritative external OCR"]}
-            code, payload = client.submit_source(batch_id, digest, data, display_name, media)
+            code, payload = client.submit_ocr_required_source(batch_id, digest, data, display_name, media)
             if code not in (201, 202, 200) or not isinstance(payload, dict) or payload.get("status") not in {
                 "ANALYSIS_READY", "REQUIRES_OCR", "CAPABILITY_UNAVAILABLE", "REVIEW_REQUIRED", "FAILED",
                 "INGESTED", "ALREADY_INGESTED",

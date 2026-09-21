@@ -105,6 +105,18 @@ class HermesProcessingServiceV1NativeProcessorAdapterTest {
     }
 
     @Test
+    fun `the accepted image-only PDF fixture reaches OCR_REQUIRED through the real native classifier`() = runBlocking {
+        val fixture = Files.readAllBytes(Path.of("tests/fixtures/document-ingestion-bakeoff/fixtures/03-scanned.pdf"))
+        val rejected = assertIs<HermesV1NativeProcessingOutcome.Rejected>(
+            HermesProcessingServiceV1NativeProcessorAdapter().process(
+                HermesV1ProcessingPrincipal.PARKER_PROCESSING,
+                source(fixture, "application/pdf", "03-scanned.pdf"),
+            ),
+        )
+        assertEquals(HermesV1FailureDetailCode.OCR_REQUIRED, rejected.response.failure?.detailCode)
+    }
+
+    @Test
     fun `only verified source is accepted and no arbitrary path API exists`() {
         assertTrue(HermesProcessingServiceV1NativeProcessorAdapter::class.java.methods.none { it.parameterTypes.any { type -> type == Path::class.java } })
         assertTrue(HermesProcessingServiceV1NativeProcessorAdapter::class.java.methods.none { it.name.contains("ocr", ignoreCase = true) || it.name.contains("transcrib", ignoreCase = true) })

@@ -234,6 +234,44 @@ internal class AgentGatewayEvidenceProjection(
         }
     }
 
+    /**
+     * Registers custody for a source that Hermes has explicitly classified as requiring
+     * authoritative external OCR.  This is deliberately separate from
+     * [submitGovernedIngestion]: that path requires a completed stored processing result
+     * before it may admit ordinary processed evidence.  OCR_REQUIRED is not a completed
+     * result, but Parker must still mint/reuse its own source identity so the existing
+     * authorization and acquisition machinery can evaluate the exact evidence later.
+     */
+    suspend fun submitOcrRequiredSource(
+        batchId: String,
+        expectedSha256: String,
+        candidate: CandidateEvidenceArtifact,
+    ): AgentGatewaySourceSubmissionResult {
+        val submission = submitSource(candidate, expectedSha256, batchId)
+        when (submission) {
+            is AgentGatewaySourceSubmissionResult.Registered ->
+                processingStateStore?.record(EvidenceProcessingStateRecord(
+                    submission.projection.evidenceArtifactId,
+                    EvidenceProcessingState.REQUIRES_OCR,
+                    "Hermes v1 classified the source as requiring authoritative external OCR",
+                    updatedAt = clock(),
+                ))
+            is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> {
+                val existing = processingStateStore?.find(submission.projection.evidenceArtifactId)
+                if (existing == null || existing.state == EvidenceProcessingState.REGISTERED || existing.state == EvidenceProcessingState.REQUIRES_OCR) {
+                    processingStateStore?.record(EvidenceProcessingStateRecord(
+                        submission.projection.evidenceArtifactId,
+                        EvidenceProcessingState.REQUIRES_OCR,
+                        "Hermes v1 classified the source as requiring authoritative external OCR",
+                        updatedAt = clock(),
+                    ))
+                }
+            }
+            else -> Unit
+        }
+        return submission
+    }
+
     suspend fun bindIngestionEvidence(batchId: String, evidenceArtifactId: EvidenceArtifactId): AgentGatewayBulkBindingResult {
         val decision = permissionEngine.evaluate(buildRequest(
             resourceId = AGENT_GATEWAY_INGESTION_BIND_RESOURCE_ID,

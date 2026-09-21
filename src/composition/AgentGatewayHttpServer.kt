@@ -52,7 +52,7 @@ import parker.core.runtime.SteveReviewQueueItem
  * This class holds no reference to `ParkerRuntime`, `PermissionEngine`, or
  * any coordinator/storage type. [retrieveEvidenceAsAgent]/
  * [retrieveEvidenceManifestAsAgent]/[submitSourceAsAgent]/[requestAcquisitionAsAgent] are the
- * *only* four capabilities it can ever invoke -- all supplied as individually
+ * only narrowly scoped capabilities it can ever invoke -- all supplied as individually
  * bound functions at construction (mirroring [OwnerEvidenceHttpServer]'s
  * own established "individually bound lambda parameters, never the raw
  * runtime object" construction pattern), each already performing its own
@@ -77,6 +77,9 @@ import parker.core.runtime.SteveReviewQueueItem
  *   no request body of any kind is read as input; `evidenceArtifactId` is the only
  *   caller-supplied fact. Fully synchronous: the response is the final governed acquisition
  *   result, never a "started"/"accepted" placeholder requiring a separate poll.
+ * - `POST /agent/ingestion-batches/{batchId}/ocr-required-sources/{sha256}` → the narrow,
+ *   authenticated custody-registration seam for a source Hermes classified as OCR_REQUIRED;
+ *   it creates/reuses Parker's source identity but never admits a processed representation.
  *
  * No other method or path is recognised. No transcription, HFR, case, or deletion route exists
  * anywhere in this class, and no acquisition, provider, or egress-authorisation *logic* exists
@@ -97,6 +100,8 @@ class AgentGatewayHttpServer(
     private val requestAcquisitionAsAgent: suspend (EvidenceArtifactId) -> AgentGatewayAcquisitionResult,
     private val bindIngestionEvidenceAsAgent: suspend (String, EvidenceArtifactId) -> AgentGatewayBulkBindingResult = { _, _ -> AgentGatewayBulkBindingResult.Denied },
     private val submitSourceWithBatchAsAgent: (suspend (CandidateEvidenceArtifact, String?, String?) -> AgentGatewaySourceSubmissionResult)? = null,
+    /** Narrow custody-only continuation for a source Hermes classified as OCR_REQUIRED. */
+    private val submitOcrRequiredSourceAsAgent: (suspend (String, String, CandidateEvidenceArtifact) -> AgentGatewaySourceSubmissionResult)? = null,
     private val listReadyIngestionBatchesAsAgent: suspend () -> List<parker.core.runtime.ReadyBulkIngestionBatch> = { emptyList() },
     private val steveReviewQueueProjection: parker.core.runtime.SteveReviewQueueProjection? = null,
     /** Hermes Processing Result Intake, Task 2. See [handleSubmitProcessingResult]. */
@@ -311,6 +316,10 @@ class AgentGatewayHttpServer(
                 }
                 if (segments.size == 3 && segments[1] == "sources" && exchange.requestMethod == "POST") {
                     handleSubmitGovernedIngestion(exchange, correlationId, principalId, segments[0], segments[2])
+                    return
+                }
+                if (segments.size == 3 && segments[1] == "ocr-required-sources" && exchange.requestMethod == "POST") {
+                    handleSubmitOcrRequiredSource(exchange, correlationId, principalId, segments[0], segments[2])
                     return
                 }
                 if (segments.size == 2 && segments[1] == "hermes-v1" && exchange.requestMethod == "POST") {
@@ -633,6 +642,44 @@ class AgentGatewayHttpServer(
                     recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.DENIED)
                     writeJson(exchange, 409, jsonObject("status" to "CASE_BINDING_REJECTED", "reason" to outcome.reason))
                 }
+            }
+        }
+
+        private fun handleSubmitOcrRequiredSource(exchange: HttpExchange, correlationId: String, principalId: PrincipalId, batchId: String, expectedSha256: String) {
+            if (!SHA256_PATTERN.matches(expectedSha256)) {
+                runCatching { exchange.requestBody.use { it.readBytes() } }
+                recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid source sha256")); return
+            }
+            val content = try {
+                readBounded(exchange.requestBody, MAX_SUBMISSION_BYTES)
+            } catch (_: RequestBodyTooLargeException) {
+                recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 413, jsonObject("error" to "request body too large")); return
+            }
+            if (content.isEmpty()) {
+                recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, batchId, AgentGatewayAccessOutcome.INVALID_SOURCE)
+                writeJson(exchange, 400, jsonObject("error" to "invalid source")); return
+            }
+            val mediaType = exchange.requestHeaders.getFirst("Content-Type")?.trim()?.takeIf { it.isNotEmpty() }
+            val filename = exchange.requestHeaders.getFirst(ORIGINAL_FILENAME_HEADER)?.trim()?.takeIf { it.isNotEmpty() }
+            val submission = submitOcrRequiredSourceAsAgent?.let { handler ->
+                runBlocking { handler(batchId, expectedSha256, CandidateEvidenceArtifact(content, mediaType, filename)) }
+            } ?: run {
+                writeJson(exchange, 503, jsonObject("status" to "OCR_REQUIRED_SOURCE_REGISTRATION_UNAVAILABLE")); return
+            }
+            when (submission) {
+                is AgentGatewaySourceSubmissionResult.Registered -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, submission.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.REGISTERED)
+                    writeJson(exchange, 201, governedIngestionJson("REQUIRES_OCR", submission.projection, detail = "Hermes v1 classified the source as requiring authoritative external OCR"))
+                }
+                is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> {
+                    recordAudit(correlationId, principalId, GOVERNED_INGESTION_ACTION_NAME, submission.projection.evidenceArtifactId.value, AgentGatewayAccessOutcome.ALREADY_REGISTERED)
+                    writeJson(exchange, 200, governedIngestionJson("REQUIRES_OCR", submission.projection, detail = "Hermes v1 classified the source as requiring authoritative external OCR"))
+                }
+                is AgentGatewaySourceSubmissionResult.HashMismatch -> writeJson(exchange, 409, jsonObject("status" to "HASH_MISMATCH", "computedSha256" to submission.computedSha256, "expectedSha256" to submission.advisorySha256))
+                is AgentGatewaySourceSubmissionResult.Conflict -> writeJson(exchange, 409, jsonObject("status" to "CONFLICT", "evidenceArtifactId" to submission.evidenceArtifactId.value, "detail" to submission.reason))
+                is AgentGatewaySourceSubmissionResult.Denied -> writeJson(exchange, 403, jsonObject("status" to "DENIED"))
             }
         }
     }

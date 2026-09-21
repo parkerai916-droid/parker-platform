@@ -287,6 +287,7 @@ fun main(args: Array<String>) = runBlocking {
             retrieveEvidenceAsAnalysisAgent = runtime::retrieveEvidenceAsAnalysisAgent,
             retrieveEvidenceManifestAsAnalysisAgent = runtime::retrieveEvidenceManifestAsAnalysisAgent,
             submitSourceAsAgent = runtime::submitSourceAsAgent,
+            submitOcrRequiredSourceAsAgent = runtime::submitOcrRequiredSourceAsAgent,
             requestAcquisitionAsAgent = runtime::requestAcquisitionAsAgent,
             bindIngestionEvidenceAsAgent = runtime::bindIngestionEvidenceAsAgent,
             submitSourceWithBatchAsAgent = runtime::submitSourceAsAgent,

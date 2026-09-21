@@ -3354,6 +3354,18 @@ class ParkerRuntime(
         return agentGatewayEvidenceProjection.submitSource(candidate, advisorySha256, batchId)
     }
 
+    /** Registers Parker custody for a Hermes OCR_REQUIRED source without admitting processing. */
+    internal suspend fun submitOcrRequiredSourceAsAgent(
+        batchId: String,
+        expectedSha256: String,
+        candidate: CandidateEvidenceArtifact,
+    ): parker.core.runtime.AgentGatewaySourceSubmissionResult {
+        if (state != RuntimeLifecycleState.RUNNING) {
+            throw ParkerRuntimeException.NotRunning(state)
+        }
+        return agentGatewayEvidenceProjection.submitOcrRequiredSource(batchId, expectedSha256, candidate)
+    }
+
     /**
      * Authenticated prepared-handoff processing seam. The caller supplies bytes, never a path;
      * Parker verifies the prepared identity, invokes the already-composed Hermes v1 client, and
