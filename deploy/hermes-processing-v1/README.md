@@ -9,6 +9,17 @@ Stage A later installs the fixed entrypoint at:
 /usr/local/libexec/hermes-processing-v1-entrypoint
 ```
 
+The fixed launcher reads the root-owned, non-secret service configuration at:
+
+```text
+/etc/hermes-processing-v1/hermes-processing-v1.env
+```
+
+That file contains only the fixed principal `parker-hermes-processing` and the
+two service-owned storage paths. The launcher replaces the inherited process
+environment before starting the v1 composition, so SSH or request data cannot
+select a principal, command, or filesystem path.
+
 The service is invoked by a dedicated `authorized_keys` forced command. The
 Parker private key is expected only in Parker secret storage; no private key is
 generated or copied by these templates.

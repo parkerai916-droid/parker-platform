@@ -2,7 +2,34 @@
 set -euo pipefail
 
 # Installed by an owner-approved Stage A deployment at the fixed path named by
-# authorized_keys. The classpath is deployment-owned; callers cannot replace it.
+# authorized_keys. The classpath and configuration are deployment-owned;
+# callers cannot replace either one.
+CONFIG="/etc/hermes-processing-v1/hermes-processing-v1.env"
 JAR="/opt/parker/hermes-processing-v1/lib/parker-platform.jar"
+[[ -r "$CONFIG" ]] || { echo "Hermes v1 service configuration is unavailable" >&2; exit 70; }
 [[ -r "$JAR" ]] || { echo "Hermes v1 service artifact is unavailable" >&2; exit 70; }
-exec /usr/bin/java -cp "$JAR" parker.composition.HermesProcessingServiceV1EntrypointMainKt "$@"
+
+# The file is installed root-owned and immutable to the service account. Use
+# an empty environment so SSH-injected variables cannot override the fixed
+# service-owned paths or principal configuration. The application itself also
+# enforces the principal allowlist; the config value is an auditable deployment
+# assertion, not request input.
+set -a
+# shellcheck disable=SC1091
+. "$CONFIG"
+set +a
+[[ "${HERMES_PROCESSING_V1_PRINCIPAL:-}" == "parker-hermes-processing" ]] || {
+    echo "Hermes v1 principal configuration is invalid" >&2
+    exit 70
+}
+[[ "${HERMES_PROCESSING_V1_LEDGER_ROOT:-}" == "/var/lib/hermes-processing-v1/ledger" &&
+   "${HERMES_PROCESSING_V1_WORKSPACE_ROOT:-}" == "/var/lib/hermes-processing-v1/workspace" ]] || {
+    echo "Hermes v1 service paths are invalid" >&2
+    exit 70
+}
+
+exec /usr/bin/env -i \
+    PATH=/usr/bin:/bin \
+    HERMES_PROCESSING_V1_LEDGER_ROOT="$HERMES_PROCESSING_V1_LEDGER_ROOT" \
+    HERMES_PROCESSING_V1_WORKSPACE_ROOT="$HERMES_PROCESSING_V1_WORKSPACE_ROOT" \
+    /usr/bin/java -cp "$JAR" parker.composition.HermesProcessingServiceV1EntrypointMainKt "$@"

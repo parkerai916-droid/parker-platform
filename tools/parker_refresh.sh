@@ -172,25 +172,37 @@ set -e
 if [[ "$HERMES_PROCESSING_V1_VERIFY" == true ]]; then
     require_read_only_mount "$HERMES_PROCESSING_KEY_SOURCE" "$HERMES_PROCESSING_KEY_TARGET"
     require_read_only_mount "$HERMES_PROCESSING_KNOWN_HOSTS_SOURCE" "$HERMES_PROCESSING_KNOWN_HOSTS_TARGET"
-    processing_readiness="$(/usr/bin/docker exec "$PARKER_CONTAINER" /usr/local/libexec/hermes-processing-v1-entrypoint --readiness 2>/dev/null)" ||
-        fail "Hermes Processing Service v1 readiness failed"
-    [[ "$processing_readiness" == "HERMES_PROCESSING_V1_READY" ]] ||
-        fail "Hermes Processing Service v1 returned an unexpected readiness result"
+    # Readiness crosses the same production boundary as processing. The frame
+    # is the deterministic Unit 2 harmless request used by the reviewed
+    # Hermes entrypoint; it has no source bytes and cannot admit evidence.
+    readiness_frame='{"protocolVersion":"1","requestId":"readiness-request","jobId":"readiness-job","occurrenceId":"readiness-occurrence","batchId":"readiness-batch","source":{"reference":"readiness-source","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","sizeBytes":0,"originalFilename":"readiness.txt","mediaType":"text/plain"}}'
+    processing_readiness_file="$(/usr/bin/docker exec "$PARKER_CONTAINER" /bin/sh -c 'mktemp /tmp/hermes-processing-v1-readiness.XXXXXX')" ||
+        fail "could not allocate bounded Hermes v1 readiness output"
     set +e
-    /usr/bin/docker exec "$PARKER_CONTAINER" /bin/sh -c '
-        /usr/bin/ssh -T \
+    /usr/bin/docker exec -i "$PARKER_CONTAINER" /bin/sh -c '
+        output="$1"
+        trap "rm -f -- \"$output\"" EXIT
+        frame="$2"
+        printf "\\000\\000\\001\\121%s" "$frame" | /usr/bin/ssh -T \
           -i /home/steve/.ssh/parker_hermes_processing_ed25519 \
           -o IdentitiesOnly=yes \
           -o BatchMode=yes \
           -o StrictHostKeyChecking=yes \
           -o UserKnownHostsFile=/home/steve/.ssh/parker_hermes_processing_known_hosts \
           -o ConnectTimeout=10 \
-          steve@192.168.178.45 </dev/null
-    ' >/dev/null 2>/dev/null
-    processing_ssh_exit=$?
+          -o ServerAliveInterval=5 \
+          -o ServerAliveCountMax=2 \
+          steve@192.168.178.45 >"$output" 2>/dev/null
+        status=$?
+        [[ "$status" -eq 0 ]] || exit "$status"
+        bytes="$(/usr/bin/wc -c <"$output")"
+        [[ "$bytes" -ge 5 && "$bytes" -le 8388612 ]] || exit 70
+        [[ "$(/usr/bin/od -An -tx1 -N4 "$output" | tr -d " \\n")" == "00000151" ]] || exit 70
+    ' sh "$processing_readiness_file" "$readiness_frame"
+    processing_readiness_exit=$?
     set -e
-    [[ "$processing_ssh_exit" -eq 75 ]] ||
-        fail "Hermes Processing Service v1 SSH forced-command authentication returned unexpected exit status $processing_ssh_exit"
+    [[ "$processing_readiness_exit" -eq 0 ]] ||
+        fail "Hermes Processing Service v1 SSH readiness failed"
     echo "Hermes Processing Service v1: readiness verified"
 else
     echo "Hermes Processing Service v1: verification disabled (routing remains unchanged)"

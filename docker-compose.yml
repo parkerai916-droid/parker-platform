@@ -40,6 +40,13 @@ services:
       # this root on the Parker data volume preserves the (batchId, sourceSha256) idempotency
       # key across runtime restarts instead of silently reverting to an in-memory registry.
       PARKER_HERMES_PROCESSING_STORAGE_ROOT: /data/hermes-processing
+      # Hermes Processing Service v1 remains disabled by default. These client
+      # settings are safe to provision ahead of Stage B; availability never
+      # enables routing.
+      HERMES_PROCESSING_V1_ENABLED: "${HERMES_PROCESSING_V1_ENABLED:-false}"
+      HERMES_PROCESSING_V1_ENDPOINT_HOST: "${HERMES_PROCESSING_V1_ENDPOINT_HOST:-192.168.178.45}"
+      HERMES_PROCESSING_V1_KEY_PATH: /home/steve/.ssh/parker_hermes_processing_ed25519
+      HERMES_PROCESSING_V1_KNOWN_HOSTS_PATH: /home/steve/.ssh/parker_hermes_processing_known_hosts
       PARKER_CASE_GOVERNANCE_AUDIT_LOG_PATH: /data/case-governance-audit/case-audit.log
       PARKER_DERIVATIVE_GENERATION_STORAGE_ROOT: /data/derivative-generations
       PARKER_DERIVATIVE_CONTENT_STORAGE_ROOT: /data/derivative-content
@@ -272,6 +279,11 @@ services:
       - /mnt/parker-secrets/parker/parker_hermes_analysis_ed25519:/home/steve/.ssh/parker_hermes_analysis_ed25519:ro
       - /mnt/parker-secrets/parker/parker_hermes_stt_ed25519:/home/steve/.ssh/parker_hermes_stt_ed25519:ro
       - /mnt/parker-secrets/parker/parker_hermes_analysis_known_hosts:/home/steve/.ssh/parker_hermes_analysis_known_hosts:ro
+      # Parker -> Hermes Processing Service v1 identity and host verification.
+      # These are distinct from the Analysis/STT credentials above and remain
+      # read-only inside the Parker runtime.
+      - /mnt/parker-secrets/parker/parker_hermes_processing_ed25519:/home/steve/.ssh/parker_hermes_processing_ed25519:ro
+      - /mnt/parker-secrets/parker/parker_hermes_processing_known_hosts:/home/steve/.ssh/parker_hermes_processing_known_hosts:ro
       # Docling Production Runtime Enablement. The Parker host's own
       # already-populated Hugging Face cache (the document-layout model
       # Docling itself fetches on first use, docling-project/docling-layout-heron
