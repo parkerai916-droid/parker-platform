@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Installed by an owner-approved Stage A deployment at the fixed path named by
+# authorized_keys. The classpath is deployment-owned; callers cannot replace it.
+JAR="/opt/parker/hermes-processing-v1/lib/parker-platform.jar"
+[[ -r "$JAR" ]] || { echo "Hermes v1 service artifact is unavailable" >&2; exit 70; }
+exec /usr/bin/java -cp "$JAR" parker.composition.HermesProcessingServiceV1EntrypointMainKt "$@"

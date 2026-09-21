@@ -1,0 +1,3 @@
+# Template only. Replace the public key placeholder during an approved Stage A
+# installation. Do not paste private key material here.
+command="/usr/local/libexec/hermes-processing-v1-entrypoint",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 <PARKER_HERMES_PROCESSING_PUBLIC_KEY> parker-hermes-processing

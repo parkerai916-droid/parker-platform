@@ -23,7 +23,7 @@ class ParkerRefreshScriptTest(unittest.TestCase):
     def test_keeps_deployment_identity_and_mounts_fail_closed(self):
         self.assertIn('printenv PARKER_PRODUCTION_COMMIT', self.source)
         self.assertIn('[[ "$deployed_commit" == "$production_commit" ]]', self.source)
-        self.assertEqual(self.source.count("require_read_only_mount"), 4)
+        self.assertEqual(self.source.count("require_read_only_mount"), 6)
         self.assertIn('[[ "$actual" == "$source|false" ]]', self.source)
 
     def test_restarts_user_service_without_touching_the_unit(self):

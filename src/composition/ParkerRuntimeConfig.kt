@@ -1,6 +1,7 @@
 package parker.composition
 
 import java.nio.file.Path
+import parker.core.runtime.HermesProcessingV1RoutingConfig
 
 /**
  * Sprint 10, Unit 4 (Production Composition Root). The runtime's own
@@ -369,6 +370,8 @@ data class ParkerRuntimeConfig(
     val agentGatewayAnalysisActive: Boolean = false,
     /** Optional Parker-controlled root for durable Hermes processing results and Owner decisions. */
     val hermesProcessingStorageRootPath: String? = null,
+    /** Explicitly disabled Hermes v1 remote route; reachability never changes this value. */
+    val hermesProcessingV1RoutingConfig: HermesProcessingV1RoutingConfig = HermesProcessingV1RoutingConfig(),
 )
 
 /**
@@ -451,6 +454,10 @@ object ParkerRuntimeConfigLoader {
     const val KEY_AGENT_GATEWAY_HERMES_ACTIVE = "PARKER_AGENT_GATEWAY_HERMES_ACTIVE"
     const val KEY_AGENT_GATEWAY_ANALYSIS_ACTIVE = "PARKER_AGENT_GATEWAY_ANALYSIS_ACTIVE"
     const val KEY_HERMES_PROCESSING_STORAGE_ROOT = "PARKER_HERMES_PROCESSING_STORAGE_ROOT"
+    const val KEY_HERMES_PROCESSING_V1_ENABLED = "HERMES_PROCESSING_V1_ENABLED"
+    const val KEY_HERMES_PROCESSING_V1_ENDPOINT_HOST = "HERMES_PROCESSING_V1_ENDPOINT_HOST"
+    const val KEY_HERMES_PROCESSING_V1_KEY_PATH = "HERMES_PROCESSING_V1_KEY_PATH"
+    const val KEY_HERMES_PROCESSING_V1_KNOWN_HOSTS_PATH = "HERMES_PROCESSING_V1_KNOWN_HOSTS_PATH"
 
     fun load(environment: Map<String, String>): ParkerRuntimeConfig {
         val modelTimeoutMsRaw = environment[KEY_MODEL_TIMEOUT_MS]?.takeIf { it.isNotBlank() }
@@ -793,6 +800,7 @@ object ParkerRuntimeConfigLoader {
             agentGatewayHermesActive = agentGatewayHermesActive,
             agentGatewayAnalysisActive = agentGatewayAnalysisActive,
             hermesProcessingStorageRootPath = environment[KEY_HERMES_PROCESSING_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
+            hermesProcessingV1RoutingConfig = HermesProcessingV1RoutingConfig.fromEnvironment(environment),
         )
     }
 

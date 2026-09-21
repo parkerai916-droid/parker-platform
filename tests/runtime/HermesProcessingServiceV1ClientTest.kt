@@ -160,6 +160,19 @@ class HermesProcessingServiceV1ClientTest {
         assertFalse(command!!.any { it.contains("caseId") || it.contains("record.txt") })
     }
 
+    @Test
+    fun `routing config constructs the fixed SSH client without enabling routing`() {
+        val transport = HermesV1SshRequestTransport.fromRoutingConfig(
+            HermesProcessingV1RoutingConfig(
+                enabled = true,
+                endpointHost = "192.168.178.45",
+                keyPath = "/service/processing-key",
+                knownHostsPath = "/service/known_hosts",
+            ),
+        )
+        assertTrue(transport is HermesV1SshRequestTransport)
+    }
+
     private fun requestFor(prepared: HermesV1PreparedSource) = HermesProcessingServiceV1Request(
         parker.core.interfaces.HermesV1ProtocolVersion.CURRENT, prepared.requestId, prepared.jobId, prepared.occurrenceId, prepared.batchId,
         parker.core.interfaces.HermesProcessingServiceV1Source(prepared.sourceReference, prepared.sourceSha256, prepared.sizeBytes, prepared.originalFilename, prepared.mediaType), prepared.requestedMethods,

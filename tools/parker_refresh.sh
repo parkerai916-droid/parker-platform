@@ -22,6 +22,11 @@ STT_KEY_SOURCE="/mnt/parker-secrets/parker/parker_hermes_stt_ed25519"
 STT_KEY_TARGET="/home/steve/.ssh/parker_hermes_stt_ed25519"
 KNOWN_HOSTS_SOURCE="/mnt/parker-secrets/parker/parker_hermes_analysis_known_hosts"
 KNOWN_HOSTS_TARGET="/home/steve/.ssh/parker_hermes_analysis_known_hosts"
+HERMES_PROCESSING_V1_VERIFY="${HERMES_PROCESSING_V1_VERIFY:-false}"
+HERMES_PROCESSING_KEY_SOURCE="/mnt/parker-secrets/parker/parker_hermes_processing_ed25519"
+HERMES_PROCESSING_KEY_TARGET="/home/steve/.ssh/parker_hermes_processing_ed25519"
+HERMES_PROCESSING_KNOWN_HOSTS_SOURCE="/mnt/parker-secrets/parker/parker_hermes_processing_known_hosts"
+HERMES_PROCESSING_KNOWN_HOSTS_TARGET="/home/steve/.ssh/parker_hermes_processing_known_hosts"
 
 fail() {
     echo "PARKER REFRESH FAILED: $1" >&2
@@ -163,6 +168,33 @@ set -e
     fail "Parker to Hermes STT transport returned unexpected exit status $stt_exit"
 [[ "$stt_result" == '{"status":"INVALID_REQUEST"}' ]] ||
     fail "Parker to Hermes STT transport returned an unexpected result"
+
+if [[ "$HERMES_PROCESSING_V1_VERIFY" == true ]]; then
+    require_read_only_mount "$HERMES_PROCESSING_KEY_SOURCE" "$HERMES_PROCESSING_KEY_TARGET"
+    require_read_only_mount "$HERMES_PROCESSING_KNOWN_HOSTS_SOURCE" "$HERMES_PROCESSING_KNOWN_HOSTS_TARGET"
+    processing_readiness="$(/usr/bin/docker exec "$PARKER_CONTAINER" /usr/local/libexec/hermes-processing-v1-entrypoint --readiness 2>/dev/null)" ||
+        fail "Hermes Processing Service v1 readiness failed"
+    [[ "$processing_readiness" == "HERMES_PROCESSING_V1_READY" ]] ||
+        fail "Hermes Processing Service v1 returned an unexpected readiness result"
+    set +e
+    /usr/bin/docker exec "$PARKER_CONTAINER" /bin/sh -c '
+        /usr/bin/ssh -T \
+          -i /home/steve/.ssh/parker_hermes_processing_ed25519 \
+          -o IdentitiesOnly=yes \
+          -o BatchMode=yes \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile=/home/steve/.ssh/parker_hermes_processing_known_hosts \
+          -o ConnectTimeout=10 \
+          steve@192.168.178.45 </dev/null
+    ' >/dev/null 2>/dev/null
+    processing_ssh_exit=$?
+    set -e
+    [[ "$processing_ssh_exit" -eq 75 ]] ||
+        fail "Hermes Processing Service v1 SSH forced-command authentication returned unexpected exit status $processing_ssh_exit"
+    echo "Hermes Processing Service v1: readiness verified"
+else
+    echo "Hermes Processing Service v1: verification disabled (routing remains unchanged)"
+fi
 
 echo "Production commit: $production_commit"
 echo "Parker runtime: healthy ($PARKER_CONTAINER, $container_id)"

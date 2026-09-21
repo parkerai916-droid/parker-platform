@@ -184,6 +184,7 @@ class HermesV1SshRequestTransport(
             "ssh", "-T", "-i", keyPath.toString(),
             "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=${knownHostsPath}",
+            "-o", "ConnectTimeout=10",
             "$user@$host",
         )
         val process = try { processFactory(command) } catch (_: Exception) {
@@ -226,7 +227,19 @@ class HermesV1SshRequestTransport(
         }
     }
 
-    companion object { const val MAX_STDERR_BYTES: Long = 64L * 1024L }
+    companion object {
+        const val MAX_STDERR_BYTES: Long = 64L * 1024L
+
+        /** Production construction from the governed Parker routing seam. */
+        fun fromRoutingConfig(config: HermesProcessingV1RoutingConfig): HermesV1SshRequestTransport {
+            config.validateForEnabledRoute()
+            return HermesV1SshRequestTransport(
+                keyPath = Path.of(requireNotNull(config.keyPath)),
+                knownHostsPath = Path.of(requireNotNull(config.knownHostsPath)),
+                host = requireNotNull(config.endpointHost),
+            )
+        }
+    }
 }
 
 private class ClientValidationFailure(val failure: HermesV1Failure) : IllegalArgumentException()
