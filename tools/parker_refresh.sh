@@ -194,10 +194,10 @@ if [[ "$HERMES_PROCESSING_V1_VERIFY" == true ]]; then
           -o ServerAliveCountMax=2 \
           steve@192.168.178.45 >"$output" 2>/dev/null
         status=$?
-        [[ "$status" -eq 0 ]] || exit "$status"
+        [ "$status" -eq 0 ] || exit "$status"
         bytes="$(/usr/bin/wc -c <"$output")"
-        [[ "$bytes" -ge 5 && "$bytes" -le 8388612 ]] || exit 70
-        [[ "$(/usr/bin/od -An -tx1 -N4 "$output" | tr -d " \\n")" == "00000151" ]] || exit 70
+        [ "$bytes" -ge 5 ] && [ "$bytes" -le 8388612 ] || exit 70
+        [ "$(/usr/bin/od -An -tx1 -N4 "$output" | tr -d " \\n")" = "00000151" ] || exit 70
     ' sh "$processing_readiness_file" "$readiness_frame"
     processing_readiness_exit=$?
     set -e

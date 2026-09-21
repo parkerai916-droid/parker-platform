@@ -29,6 +29,9 @@ class HermesProcessingV1DeploymentTopologyTest(unittest.TestCase):
             'docker exec "$PARKER_CONTAINER" /usr/local/libexec/hermes-processing-v1-entrypoint',
             self.refresh,
         )
+        self.assertIn('[ "$status" -eq 0 ] || exit "$status"', self.refresh)
+        self.assertIn('[ "$bytes" -ge 5 ] && [ "$bytes" -le 8388612 ] || exit 70', self.refresh)
+        self.assertNotIn('[[ "$status"', self.refresh)
 
     def test_processing_credentials_are_distinct_and_read_only(self):
         self.assertIn(
