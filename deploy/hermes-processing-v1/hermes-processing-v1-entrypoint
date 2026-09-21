@@ -32,4 +32,4 @@ exec /usr/bin/env -i \
     PATH=/usr/bin:/bin \
     HERMES_PROCESSING_V1_LEDGER_ROOT="$HERMES_PROCESSING_V1_LEDGER_ROOT" \
     HERMES_PROCESSING_V1_WORKSPACE_ROOT="$HERMES_PROCESSING_V1_WORKSPACE_ROOT" \
-    /usr/bin/java -cp "$JAR" parker.composition.HermesProcessingServiceV1EntrypointMainKt "$@"
+    /usr/bin/java -Dlog4j2.statusLoggerLevel=OFF -cp "$JAR" parker.composition.HermesProcessingServiceV1EntrypointMainKt "$@"

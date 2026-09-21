@@ -59,6 +59,7 @@ class HermesProcessingV1DeploymentTopologyTest(unittest.TestCase):
         self.assertIn('/var/lib/hermes-processing-v1/ledger', self.env)
         self.assertIn('/var/lib/hermes-processing-v1/workspace', self.env)
         self.assertIn('env -i', self.launcher)
+        self.assertIn('-Dlog4j2.statusLoggerLevel=OFF', self.launcher)
 
     def test_authorized_key_stays_fixed_and_restricted(self):
         self.assertIn('command="/usr/local/libexec/hermes-processing-v1-entrypoint"', self.authorized_keys)
