@@ -163,7 +163,13 @@ internal class GovernedAcquisitionOwnerWorkflow(
                     it.derivativeKind in setOf("External transcription recognised text", "OCR recognised text") &&
                     it.operationalOutcome == DerivativeOperationalOutcome.USABLE &&
                     it.contentAvailable &&
-                    it.authority in setOf(OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE, OcrAuthorityClassification.LOCAL_PRELIMINARY) &&
+                    // A local-preliminary OCR derivative is diagnostic material only.  It must
+                    // never satisfy this production projection: doing so exposes the synthetic
+                    // persisted capability (whose historical retrieval executor is local-only)
+                    // as the selected mechanism for an OCR-required source.  Only a derivative
+                    // already admitted as externally authoritative may suppress a fresh
+                    // external-OCR decision.
+                    it.authority == OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE &&
                     DerivativeTransformation.OCR in it.transformationHistory &&
                     it.completenessState in setOf(
                         DerivativeCompletenessState.ACCOUNTED_FOR,

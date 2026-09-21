@@ -20,6 +20,61 @@ class GovernedAcquisitionIntegrationTest {
         assertEquals("EXTERNAL", OcrAuthorityPolicy.AUTHORITATIVE_PROVIDER_CLASS)
     }
 
+    @Test fun `local preliminary OCR derivative cannot become the selected production acquisition mechanism`() = runTest {
+        val imageId = EvidenceArtifactId("synthetic-image")
+        val imageBytes = "synthetic-image".toByteArray()
+        val imageSha = digest(imageBytes)
+        val generation = DerivativeGenerationRecord(
+            DerivativeGenerationId("local-preliminary-ocr"), imageId,
+            listOf(DerivativeParentReference.RootEvidenceArtifact(imageId)), "OCR recognised text",
+            DerivativeProducerIdentity("docling", "1", "local-diagnostic", modelIdentity = "rapidocr", modelVersion = "test"),
+            listOf(DerivativeTransformation.OCR), java.time.Instant.EPOCH,
+            DerivativeContentIdentity.NoCanonicalSerialization,
+            DerivativeCompletenessState.ACCOUNTED_FOR, DerivativeOperationalOutcome.USABLE,
+        )
+        val localPayload = TierADerivativePayload.Ocr(OcrDerivativeExtractedResult(
+            recognisedText = "diagnostic only",
+            fidelity = TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            outcomeKind = OcrDerivativeOutcomeKind.RECOGNISED,
+            degradationReason = null,
+            warnings = emptyList(), segments = emptyList(),
+            producerIdentity = DerivativeProducerIdentity("docling", "1", "local-diagnostic", modelIdentity = "rapidocr", modelVersion = "test"),
+            transformationHistory = listOf(DerivativeTransformation.OCR),
+            completenessState = DerivativeCompletenessState.ACCOUNTED_FOR,
+        ))
+        val projection = DerivativeGenerationDiscoveryProjection(
+            DerivativeGenerationDiscovery { listOf(generation) },
+            object : DerivativeContentStorage {
+                override suspend fun prepare(entry: DerivativeContentEntry) = Unit
+                override suspend fun publishPrepared(derivativeGenerationId: DerivativeGenerationId) = Unit
+                override suspend fun retrieve(derivativeGenerationId: DerivativeGenerationId) =
+                    DerivativeContentEntry(derivativeGenerationId, imageId, localPayload)
+            },
+        )
+        val custodian = object : EvidenceCustodian {
+            override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact) = EvidenceAcceptanceResult.Rejected("unused")
+            override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) = EvidenceRetrievalResult.Found(imageId, imageBytes)
+            override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId) =
+                EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(imageId, imageSha, imageBytes.size.toLong(), "image/jpeg"))
+            override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?) =
+                throw UnsupportedOperationException("unused")
+        }
+        val acceptedExternal = acceptedFidelityFirstExternal()
+        val registry = ProductionAcquisitionCapabilityCatalogue.create(
+            externalCapabilityProjection = acceptedExternal,
+            localOcrAvailability = AcquisitionAvailability.Available,
+        )
+        val workflow = GovernedAcquisitionOwnerWorkflow(
+            owner, custodian, registry, DeterministicEvidenceAcquisitionRouter(),
+            GovernedAcquisitionExecutionCoordinator(registry, DeterministicEvidenceAcquisitionRouter(), custodian, emptyList()),
+            externalEgressAuthorised = { false }, derivativeDiscoveryProjection = projection,
+        )
+        val evaluated = assertIs<GovernedAcquisitionOwnerEvaluation.Evaluated>(workflow.evaluate(imageId))
+        val noSelection = assertIs<EvidenceAcquisitionRoutingOutcome.NoEligibleCapability>(evaluated.routing)
+        assertContains(noSelection.reasons, AcquisitionNoSelectionReason.EXTERNAL_EGRESS_NOT_AUTHORISED)
+        assertFalse(noSelection.toString().contains(ProductionAcquisitionCapabilityCatalogue.PERSISTED_EXTERNAL_OCR_REPRESENTATION_CAPABILITY_ID))
+    }
+
     @Test fun `local and external OCR authority classifications remain distinct`() {
         val local = OcrRecognitionResult(
             "local", TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
