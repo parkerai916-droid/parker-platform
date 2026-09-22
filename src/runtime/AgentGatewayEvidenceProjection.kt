@@ -249,6 +249,30 @@ internal class AgentGatewayEvidenceProjection(
     ): AgentGatewaySourceSubmissionResult {
         val submission = submitSource(candidate, expectedSha256, batchId)
         when (submission) {
+            is AgentGatewaySourceSubmissionResult.Registered,
+            is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> {
+                val evidenceArtifactId = when (submission) {
+                    is AgentGatewaySourceSubmissionResult.Registered -> submission.projection.evidenceArtifactId
+                    is AgentGatewaySourceSubmissionResult.AlreadyRegistered -> submission.projection.evidenceArtifactId
+                    else -> error("unreachable")
+                }
+                when (val binding = bindIngestionEvidence(batchId, evidenceArtifactId)) {
+                    is AgentGatewayBulkBindingResult.Assigned -> Unit
+                    AgentGatewayBulkBindingResult.Denied ->
+                        return AgentGatewaySourceSubmissionResult.Denied(PermissionDecisionOutcome.DENIED)
+                    AgentGatewayBulkBindingResult.UnknownBatch ->
+                        return AgentGatewaySourceSubmissionResult.CaseBindingRejected("UNKNOWN_BATCH")
+                    AgentGatewayBulkBindingResult.EvidenceNotSubmitted ->
+                        return AgentGatewaySourceSubmissionResult.CaseBindingRejected("EVIDENCE_NOT_SUBMITTED_UNDER_BATCH")
+                    is AgentGatewayBulkBindingResult.Rejected ->
+                        return AgentGatewaySourceSubmissionResult.CaseBindingRejected(binding.reason)
+                    is AgentGatewayBulkBindingResult.Failed ->
+                        return AgentGatewaySourceSubmissionResult.CaseBindingRejected(binding.reason)
+                }
+            }
+            else -> return submission
+        }
+        when (submission) {
             is AgentGatewaySourceSubmissionResult.Registered ->
                 processingStateStore?.record(EvidenceProcessingStateRecord(
                     submission.projection.evidenceArtifactId,
@@ -517,6 +541,7 @@ internal class AgentGatewayEvidenceProjection(
             is AgentGatewaySourceSubmissionResult.HashMismatch -> AgentGatewayGovernedIngestionResult.HashMismatch(submission.computedSha256, submission.advisorySha256)
             is AgentGatewaySourceSubmissionResult.Denied -> AgentGatewayGovernedIngestionResult.Denied(submission.decision)
             is AgentGatewaySourceSubmissionResult.Conflict -> AgentGatewayGovernedIngestionResult.Conflict(submission.evidenceArtifactId, submission.computedSha256, submission.reason)
+            is AgentGatewaySourceSubmissionResult.CaseBindingRejected -> AgentGatewayGovernedIngestionResult.CaseBindingRejected(submission.reason)
         }
     }
 
@@ -978,6 +1003,9 @@ sealed class AgentGatewaySourceSubmissionResult {
     data class AlreadyRegistered(val projection: AgentGatewayEvidenceManifestProjection) : AgentGatewaySourceSubmissionResult()
     data class HashMismatch(val computedSha256: String, val advisorySha256: String) : AgentGatewaySourceSubmissionResult()
     data class Denied(val decision: PermissionDecisionOutcome) : AgentGatewaySourceSubmissionResult()
+
+    /** The source identity was admitted, but the governed batch-to-case association could not be created or reused. */
+    data class CaseBindingRejected(val reason: String) : AgentGatewaySourceSubmissionResult()
 
     /**
      * Crash-safe idempotency review correction. Mirrors [EvidenceSourceSubmissionResult.Conflict]

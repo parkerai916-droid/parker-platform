@@ -679,6 +679,7 @@ class AgentGatewayHttpServer(
                 }
                 is AgentGatewaySourceSubmissionResult.HashMismatch -> writeJson(exchange, 409, jsonObject("status" to "HASH_MISMATCH", "computedSha256" to submission.computedSha256, "expectedSha256" to submission.advisorySha256))
                 is AgentGatewaySourceSubmissionResult.Conflict -> writeJson(exchange, 409, jsonObject("status" to "CONFLICT", "evidenceArtifactId" to submission.evidenceArtifactId.value, "detail" to submission.reason))
+                is AgentGatewaySourceSubmissionResult.CaseBindingRejected -> writeJson(exchange, 409, jsonObject("status" to "CASE_BINDING_REJECTED", "reason" to submission.reason))
                 is AgentGatewaySourceSubmissionResult.Denied -> writeJson(exchange, 403, jsonObject("status" to "DENIED"))
             }
         }
@@ -1180,6 +1181,10 @@ class AgentGatewayHttpServer(
                 is AgentGatewaySourceSubmissionResult.Conflict -> {
                     recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, result.evidenceArtifactId.value, AgentGatewayAccessOutcome.SOURCE_IDENTITY_CONFLICT)
                     writeJson(exchange, 500, jsonObject("error" to "source identity conflict"))
+                }
+                is AgentGatewaySourceSubmissionResult.CaseBindingRejected -> {
+                    recordAudit(correlationId, principalId, SUBMIT_ACTION_NAME, null, AgentGatewayAccessOutcome.DENIED)
+                    writeJson(exchange, 409, jsonObject("error" to "case binding rejected", "reason" to result.reason))
                 }
             }
         }

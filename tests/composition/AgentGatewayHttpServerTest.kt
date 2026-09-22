@@ -1738,6 +1738,31 @@ class AgentGatewayHttpServerTest {
     }
 
     @Test
+    fun `real OCR-required admission creates the case association before occurrence registration`() = runTest {
+        withRealHarness(token, enableCaseClassification = true) { harness ->
+            val batchId = harness.activateHermesAndMintBatch("OCR Required Association Case")
+            val bytes = "image-only docx source requiring external OCR".toByteArray()
+            val sha256 = sha256Of(bytes)
+
+            val admission = postOcrRequiredSource(harness.baseUri(), batchId, sha256, bytes, filename = "synthetic-image-only.docx", contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+            assertEquals(201, admission.statusCode(), admission.body())
+            assertTrue(admission.body().contains("\"status\":\"REQUIRES_OCR\""))
+            val evidenceId = assertNotNull(jsonStringField(admission.body(), "evidenceArtifactId"))
+            val request = parker.core.runtime.BulkIngestionOccurrenceRequest(sha256, "JOB-OCR-REQUIRED", "prep-occ-ocr-required", "docs/synthetic-image-only.docx", null, null)
+
+            val first = harness.runtime.registerPrepOccurrenceAsOwner(batchId, EvidenceArtifactId(evidenceId), request)
+            val second = harness.runtime.registerPrepOccurrenceAsOwner(batchId, EvidenceArtifactId(evidenceId), request)
+
+            assertIs<parker.core.runtime.BulkIngestionOccurrenceRegistration.Created>(first)
+            assertIs<parker.core.runtime.BulkIngestionOccurrenceRegistration.AlreadyPresent>(second)
+            val case = harness.runtime.listCasesAsOwner().single { it.caseName == "OCR Required Association Case" }
+            val listing = assertIs<parker.ui.OwnerCaseEvidenceDiscoveryOutcome.Found>(harness.runtime.listEvidenceForCaseAsOwner(case.caseId.value))
+            assertEquals(1, listing.evidence.count { it.evidenceArtifactId == evidenceId })
+        }
+    }
+
+    @Test
     fun `real HTTP RTF ingestion persists native text and reaches analysis ready without OCR`() = runTest {
         withRealHarness(token, enableCaseClassification = true) { harness ->
             val batchId = harness.activateHermesAndMintBatch("Real RTF Ingestion Case")
