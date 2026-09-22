@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -126,20 +127,91 @@ def direct_text(data: bytes) -> tuple[str, str | None]:
     return text, None
 
 
-def docx_text(data: bytes) -> tuple[str, str | None]:
-    """Extract paragraphs and table cells without adding a DOCX dependency."""
+DOCX_RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+DOCX_IMAGE_RELATIONSHIP = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+DOCX_SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png"}
+
+
+def docx_inspect(data: bytes) -> tuple[dict | None, str | None]:
+    """Classify DOCX text and referenced images without extracting or OCRing them."""
     try:
         with zipfile.ZipFile(__import__("io").BytesIO(data)) as archive:
-            xml = archive.read("word/document.xml")
-        root = ElementTree.fromstring(xml)
+            document_root = ElementTree.fromstring(archive.read("word/document.xml"))
+            rels_root = ElementTree.fromstring(archive.read("word/_rels/document.xml.rels"))
+            content_types_root = ElementTree.fromstring(archive.read("[Content_Types].xml"))
     except (KeyError, OSError, ElementTree.ParseError, zipfile.BadZipFile) as error:
-        return "", f"DOCX package is corrupt: {error}"
+        return None, f"DOCX package is corrupt: {error}"
+
     texts = []
-    for node in root.iter():
+    for node in document_root.iter():
         if node.tag.rsplit("}", 1)[-1] == "t" and node.text:
             texts.append(node.text)
     text = " ".join(texts).strip()
-    return (text, None) if text else ("", "DOCX contains no readable text")
+
+    relationships = {}
+    for relationship in rels_root:
+        if relationship.tag.rsplit("}", 1)[-1] != "Relationship":
+            continue
+        relationship_id = relationship.attrib.get("Id")
+        target = relationship.attrib.get("Target")
+        relationship_type = relationship.attrib.get("Type")
+        if not relationship_id or not target or not relationship_type:
+            return None, "DOCX image relationship is incomplete"
+        relationships[relationship_id] = (target, relationship_type)
+
+    defaults = {}
+    overrides = {}
+    for content_type in content_types_root:
+        kind = content_type.tag.rsplit("}", 1)[-1]
+        if kind == "Default":
+            defaults[content_type.attrib.get("Extension", "").lower()] = content_type.attrib.get("ContentType")
+        elif kind == "Override":
+            part_name = content_type.attrib.get("PartName", "").lstrip("/")
+            overrides[part_name] = content_type.attrib.get("ContentType")
+
+    embedded = []
+    referenced_ids = []
+    for node in document_root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "blip":
+            continue
+        relationship_id = node.attrib.get("{" + DOCX_RELATIONSHIP_NS + "}embed")
+        if not relationship_id:
+            return None, "DOCX embedded image has no relationship identity"
+        if relationship_id in referenced_ids:
+            return None, "DOCX embedded image relationship is duplicated"
+        referenced_ids.append(relationship_id)
+        relationship = relationships.get(relationship_id)
+        if relationship is None or relationship[1] != DOCX_IMAGE_RELATIONSHIP:
+            return None, "DOCX embedded image relationship is missing or invalid"
+        target = posixpath.normpath(posixpath.join("word", relationship[0]))
+        if target.startswith("../") or target == ".." or not target.startswith("word/"):
+            return None, "DOCX embedded image relationship escapes the word package"
+        media_type = overrides.get(target) or defaults.get(target.rsplit(".", 1)[-1].lower())
+        if not media_type:
+            return None, "DOCX embedded image media type is missing"
+        embedded.append({
+            "ordinal": len(embedded) + 1,
+            "relationshipId": relationship_id,
+            "partPath": target,
+            "mediaType": media_type,
+            "supported": media_type in DOCX_SUPPORTED_IMAGE_TYPES,
+        })
+
+    image_relationship_ids = {
+        relationship_id for relationship_id, (_, relationship_type) in relationships.items()
+        if relationship_type == DOCX_IMAGE_RELATIONSHIP
+    }
+    if image_relationship_ids != set(referenced_ids):
+        return None, "DOCX image relationships cannot be mapped to document order"
+
+    return {"text": text, "embeddedImages": embedded}, None
+
+
+def docx_text(data: bytes) -> tuple[str, str | None]:
+    inspection, error = docx_inspect(data)
+    if error:
+        return "", error
+    return inspection["text"], None
 
 
 def xlsx_structure(data: bytes) -> tuple[dict | None, str | None]:
@@ -350,11 +422,26 @@ def make_result_and_representation(batch_id: str, source_hash: str, path: Path, 
         # it never invents a text derivative or submits one as authoritative.
         return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "processingCompleteness": "COMPLETE"}, None)
     if media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        text, error = docx_text(data)
+        inspection, error = docx_inspect(data)
         if error:
             kind = "CORRUPT_SOURCE" if "corrupt" in error else "NO_READABLE_CONTENT"
             return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": {"kind": kind, "detail": error}}, None)
-        return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": []}, None)
+        text = inspection["text"]
+        images = inspection["embeddedImages"]
+        if text:
+            return ({"sourceSha256": source_hash, "status": "PASS", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": []}, None)
+        if images and all(image["supported"] for image in images):
+            return ({
+                "sourceSha256": source_hash,
+                "status": "REQUIRES_OCR",
+                "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"],
+                "issues": [{"kind": "AUTHORITATIVE_OCR_REQUIRED", "explanation": "DOCX contains no readable native text and has supported embedded image(s)"}],
+                "embeddedImages": images,
+            }, None)
+        detail = "DOCX contains no readable text and no supported embedded images"
+        if images:
+            detail = "DOCX contains embedded media outside the supported JPEG/PNG fallback"
+        return ({"sourceSha256": source_hash, "status": "FAILED", "methods": ["STRUCTURED_DOCUMENT_EXTRACTION"], "issues": [], "failure": {"kind": "NO_READABLE_CONTENT", "detail": detail}}, None)
     if media == "application/pdf" and native_pdf_text_available(path, timeout):
         return ({
             "sourceSha256": source_hash,
@@ -555,16 +642,28 @@ def process_one(client: ParkerClient, batch_id: str, path: Path, timeout: float,
                                  processing_result_submission_error(batch_id, digest, code, payload))
     if route_context is None and submission is None:
         result, representation = make_result_and_representation(batch_id, digest, path, data, timeout, display_name)
-        code, payload = client.submit_result(batch_id, result)
-        if code == 201:
-            submission = "RECORDED"
-        elif code == 200 and isinstance(payload, dict) and payload.get("status") == "ALREADY_RECORDED":
-            submission = "ALREADY_RECORDED"
-        elif code == 409:
-            return ProcessedFile(display_name, digest, result["status"], result["methods"], "CONFLICT", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
+        if result["status"] == "REQUIRES_OCR":
+            code, payload = client.submit_ocr_required_source(batch_id, digest, data, display_name, media_type_for(path))
+            if code not in (200, 201, 202) or not isinstance(payload, dict) or payload.get("status") not in {
+                "ANALYSIS_READY", "REQUIRES_OCR", "CAPABILITY_UNAVAILABLE", "REVIEW_REQUIRED", "FAILED",
+                "INGESTED", "ALREADY_INGESTED",
+            }:
+                return ProcessedFile(display_name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED",
+                                     f"Parker OCR-required source admission failed: {payload}", False,
+                                     processing_result_submission_error(batch_id, digest, code, payload))
+            submission = "RECORDED" if code in (201, 202) else "ALREADY_RECORDED"
+            source_already_submitted = True
         else:
-            return ProcessedFile(display_name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
-    if result["status"] != "PASS":
+            code, payload = client.submit_result(batch_id, result)
+            if code == 201:
+                submission = "RECORDED"
+            elif code == 200 and isinstance(payload, dict) and payload.get("status") == "ALREADY_RECORDED":
+                submission = "ALREADY_RECORDED"
+            elif code == 409:
+                return ProcessedFile(display_name, digest, result["status"], result["methods"], "CONFLICT", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
+            else:
+                return ProcessedFile(display_name, digest, result["status"], result["methods"], f"HTTP_{code}", "NOT_ATTEMPTED", str(payload), False, processing_result_submission_error(batch_id, digest, code, payload))
+    if result["status"] not in ("PASS", "REQUIRES_OCR"):
         if result["status"] == "REVIEW_REQUIRED":
             custody_code, custody_payload = client.submit_pending_review_source(batch_id, digest, data, display_name, media_type_for(path))
             if custody_code not in (200, 201) or not isinstance(custody_payload, dict) or custody_payload.get("status") not in ("STORED", "ALREADY_STORED"):

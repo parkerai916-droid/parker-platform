@@ -20,6 +20,51 @@ sys.modules["hermes_processing_ingest"] = hermes
 spec.loader.exec_module(hermes)
 
 
+def image_only_docx(text: str = "", media=("image/jpeg", "image/png")) -> bytes:
+    relationships = []
+    blips = []
+    defaults = ['<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+                '<Default Extension="xml" ContentType="application/xml"/>']
+    for index, media_type in enumerate(media, start=1):
+        extension = media_type.split("/", 1)[1]
+        relationship_id = f"rId{index + 1}"
+        relationships.append(
+            f'<Relationship Id="{relationship_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image{index}.{extension}"/>'
+        )
+        blips.append(
+            f'<w:p><w:r><w:drawing><a:blip r:embed="{relationship_id}"/></w:drawing></w:r></w:p>'
+        )
+        defaults.append(f'<Default Extension="{extension}" ContentType="{media_type}"/>')
+    text_xml = f"<w:t>{text}</w:t>" if text else ""
+    document = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f"<w:body><w:p>{text_xml}</w:p>{''.join(blips)}<w:sectPr/></w:body></w:document>"
+    )
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + "".join(relationships)
+        + "</Relationships>"
+    )
+    content_types = (
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        + "".join(defaults)
+        + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        + "</Types>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>')
+        archive.writestr("word/document.xml", document)
+        archive.writestr("word/_rels/document.xml.rels", rels)
+        for index, media_type in enumerate(media, start=1):
+            archive.writestr(f"word/media/image{index}.{media_type.split('/', 1)[1]}", b"synthetic-image")
+    return buffer.getvalue()
+
+
 class ProcessingDecisionTest(unittest.TestCase):
     SEARCHABLE_FIXTURE = ROOT / "tests" / "fixtures" / "document-ingestion-bakeoff" / "fixtures" / "01-searchable-simple.pdf"
     SCANNED_FIXTURE = ROOT / "tests" / "fixtures" / "document-ingestion-bakeoff" / "fixtures" / "03-scanned.pdf"
@@ -50,6 +95,35 @@ class ProcessingDecisionTest(unittest.TestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertEqual(result["methods"], ["STRUCTURED_DOCUMENT_EXTRACTION"])
         self.assertEqual(result["failure"]["kind"], "CORRUPT_SOURCE")
+
+    def test_image_only_docx_is_classified_for_governed_ocr(self):
+        data = image_only_docx()
+        result = hermes.make_result("bulk-test", hermes.sha256_bytes(data), Path("image-only.docx"), data, 1)
+        self.assertEqual(result["status"], "REQUIRES_OCR")
+        self.assertEqual(result["methods"], ["STRUCTURED_DOCUMENT_EXTRACTION"])
+        self.assertEqual([(image["partPath"], image["relationshipId"], image["mediaType"]) for image in result["embeddedImages"]], [
+            ("word/media/image1.jpeg", "rId2", "image/jpeg"),
+            ("word/media/image2.png", "rId3", "image/png"),
+        ])
+
+    def test_readable_docx_remains_native_and_does_not_require_ocr(self):
+        data = image_only_docx(text="native DOCX text")
+        result = hermes.make_result("bulk-test", hermes.sha256_bytes(data), Path("native.docx"), data, 1)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["methods"], ["STRUCTURED_DOCUMENT_EXTRACTION"])
+
+    def test_unsupported_only_docx_fails_closed(self):
+        data = image_only_docx(media=("image/gif",))
+        result = hermes.make_result("bulk-test", hermes.sha256_bytes(data), Path("unsupported.docx"), data, 1)
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["failure"]["kind"], "NO_READABLE_CONTENT")
+        self.assertIn("supported JPEG/PNG", result["failure"]["detail"])
+
+    def test_no_text_no_media_docx_fails_closed(self):
+        data = image_only_docx(media=())
+        result = hermes.make_result("bulk-test", hermes.sha256_bytes(data), Path("empty.docx"), data, 1)
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["failure"]["kind"], "NO_READABLE_CONTENT")
 
     def test_unknown_extension_is_unsupported(self):
         result = hermes.make_result("bulk-test", "a" * 64, Path("source.bin"), b"bytes", 1)
@@ -331,6 +405,21 @@ class RejectingParker(FakeParker):
 
 
 class SubmissionBoundaryTest(unittest.TestCase):
+    def test_image_only_docx_uses_existing_ocr_required_admission_and_stays_unauthorised(self):
+        fake = FakeParker()
+        fake.source_response = (201, {"status": "REQUIRES_OCR", "processingState": "REQUIRES_OCR", "evidenceArtifactId": "evidence-docx"})
+        fake.acquire_response = (409, {"status": "AUTHORIZATION_REQUIRED", "evidenceArtifactId": "evidence-docx"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image-only.docx"
+            path.write_bytes(image_only_docx())
+            item = hermes.process_one(fake, "bulk-test", path, 1)
+        self.assertEqual(item.status, "PASS")
+        self.assertEqual(item.governed_ingestion, "REQUIRES_OCR")
+        self.assertEqual(item.acquisition_status, "AUTHORIZATION_REQUIRED")
+        self.assertEqual(len(fake.ocr_sources), 1)
+        self.assertEqual(fake.sources, [])
+        self.assertEqual(fake.acquisitions, ["evidence-docx"])
+
     def test_prepared_route_uses_hermes_and_never_runs_local_processor(self):
         fake = FakeParker()
         with tempfile.TemporaryDirectory() as directory:
