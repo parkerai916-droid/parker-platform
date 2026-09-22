@@ -91,12 +91,34 @@ class DerivativeGenerationDiscoveryProjectionTest {
     }
 
     @Test
-    fun `authority difference remains non-equivalent even when text matches`() {
+    fun `authoritative external OCR wins even when text matches local preliminary OCR`() {
         val local = record("generation-local", evidenceA, "OCR recognised text")
         val external = record("generation-external", evidenceA, "OCR recognised text")
         val localCandidate = candidate(local, equivalenceKey = "local-text")
         val externalCandidate = candidate(external, equivalenceKey = "external-text").copy(authority = OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE)
-        assertIs<PreferredDerivativeResolution.Ambiguous>(resolver().resolve(evidenceA, listOf(localCandidate, externalCandidate)))
+        val result = resolver().resolve(evidenceA, listOf(localCandidate, externalCandidate))
+        assertIs<PreferredDerivativeResolution.Preferred>(result)
+        assertEquals(external.derivativeGenerationId, result.derivative.derivativeGenerationId)
+    }
+
+    @Test
+    fun `authoritative external OCR outranks local preliminary OCR across producer kind labels`() {
+        val local = record("generation-local", evidenceA, "OCR recognised text")
+        val external = record("generation-external", evidenceA, "External transcription recognised text")
+        val result = resolver().resolve(evidenceA, listOf(
+            candidate(local, equivalenceKey = "local"),
+            candidate(external, equivalenceKey = "external").copy(authority = OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE),
+        ))
+        assertIs<PreferredDerivativeResolution.Preferred>(result)
+        assertEquals(external.derivativeGenerationId, result.derivative.derivativeGenerationId)
+    }
+
+    @Test
+    fun `local OCR remains selectable when no authoritative external OCR exists`() {
+        val local = record("generation-local", evidenceA, "OCR recognised text")
+        val result = resolver().resolve(evidenceA, listOf(candidate(local)))
+        assertIs<PreferredDerivativeResolution.Preferred>(result)
+        assertEquals(local.derivativeGenerationId, result.derivative.derivativeGenerationId)
     }
 
     @Test

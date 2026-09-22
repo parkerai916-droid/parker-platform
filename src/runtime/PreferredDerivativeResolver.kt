@@ -5,6 +5,7 @@ import parker.core.interfaces.DerivativeOperationalOutcome
 import parker.core.interfaces.EvidenceArtifactId
 import parker.core.interfaces.DerivativeGenerationId
 import parker.core.interfaces.StructuredDocumentKind
+import parker.core.interfaces.OcrAuthorityClassification
 
 sealed interface PreferredDerivativeResolution {
     val evidenceArtifactId: EvidenceArtifactId
@@ -52,11 +53,20 @@ class PreferredDerivativeResolver(
         // Collapse only candidates whose complete equivalence key was established from the
         // durable payload. Missing keys remain one-candidate classes, preserving fail-closed
         // ambiguity for legacy or incomplete provenance.
-        val logicalCandidates = eligible
+        // External OCR is the governed authority for OCR text.  Local OCR remains useful
+        // history/diagnostic material, but must not compete with an admitted external result.
+        // The two producers use different derivative-kind labels, so normalize both to one
+        // representation family before applying the ordinary deterministic selection rules.
+        val ocrCandidates = eligible.filter { it.derivativeKind in OCR_DOCUMENT_KINDS }
+        val authoritativeOcr = ocrCandidates.filter { it.authority == OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE }
+        val authorityFiltered = if (authoritativeOcr.isNotEmpty()) {
+            eligible.filterNot { it.derivativeKind in OCR_DOCUMENT_KINDS } + authoritativeOcr
+        } else eligible
+        val logicalCandidates = authorityFiltered
             .groupBy { it.equivalenceKey ?: "generation:${it.derivativeGenerationId.value}" }
             .values
             .map { equivalent -> equivalent.minWith(compareBy({ it.generatedAt }, { it.derivativeGenerationId.value })) }
-        val representationKinds = logicalCandidates.groupBy { it.derivativeKind }
+        val representationKinds = logicalCandidates.groupBy { representationFamily(it) }
         if (representationKinds.size > 1) {
             return PreferredDerivativeResolution.Ambiguous(
                 evidenceArtifactId, eligible,
@@ -90,13 +100,18 @@ class PreferredDerivativeResolver(
         // These are the current document-level payload kinds emitted by DerivativeGenerationCoordinator.
         // Region transcriptions and verification receipts are intentionally excluded as overlays or
         // specialized representations, not discarded from discovery.
+        val OCR_DOCUMENT_KINDS = setOf("OCR recognised text", "External transcription recognised text")
         val GENERAL_DOCUMENT_KINDS = setOf(
-            "PDF structure", "Searchable PDF literal text", "CSV structure", "EML MIME structure", "OCR recognised text",
+            "PDF structure", "Searchable PDF literal text", "CSV structure", "EML MIME structure",
+            "OCR recognised text", "External transcription recognised text",
         ) + StructuredDocumentKind.entries.mapTo(linkedSetOf()) { "${it.name} structured representation" } + setOf("DOCX OOXML structure")
         val COMPARABLE_COMPLETENESS = setOf(
             DerivativeCompletenessState.ACCOUNTED_FOR,
             DerivativeCompletenessState.ACCOUNTED_FOR_WITH_QUALIFICATIONS,
             DerivativeCompletenessState.KNOWN_INCOMPLETE,
         )
+
+        fun representationFamily(candidate: DerivativeCandidateSummary): String =
+            if (candidate.derivativeKind in OCR_DOCUMENT_KINDS) "OCR recognised text" else candidate.derivativeKind
     }
 }

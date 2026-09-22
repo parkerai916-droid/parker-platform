@@ -3650,10 +3650,15 @@ class ParkerRuntime(
     suspend fun listRegisteredEvidenceAsOwner(): List<parker.core.runtime.OwnerRegisteredEvidence> {
         if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
         return ownerEvidenceListing.listRegistered().map { evidence ->
-            if (evidence.processingState != parker.core.runtime.EvidenceProcessingState.REGISTERED) return@map evidence
-            // Reconcile legacy evidence that predates the projection. This is read-side only:
-            // it promotes to ANALYSIS_READY only when the existing durable derivative and the
-            // current governed resolver both prove the same evidence is usable.
+            // Reconcile sources whose durable projection predates a later admitted authoritative
+            // derivative. This is read-side only: it promotes to ANALYSIS_READY only when the
+            // existing durable derivative and the current governed resolver both prove the same
+            // evidence is usable. In particular, an external OCR result can arrive after the
+            // source was truthfully recorded as REQUIRES_OCR.
+            if (evidence.processingState !in setOf(
+                    parker.core.runtime.EvidenceProcessingState.REGISTERED,
+                    parker.core.runtime.EvidenceProcessingState.REQUIRES_OCR,
+                )) return@map evidence
             val preferred = preferredDerivativeResolver.resolve(evidence.evidenceArtifactId)
             val selected = preferred as? parker.core.runtime.PreferredDerivativeResolution.Preferred
             if (selected != null) {
