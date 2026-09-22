@@ -1838,14 +1838,46 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("process.onclick = () => processRow(index)"))
             assertTrue(body.contains("acquire.textContent = 'View acquisition decision'"))
             assertTrue(body.contains("acquire.type = 'button'"))
-            assertTrue(body.contains("acquire.onclick = () => loadAcquisitionDecisionForEvidenceId(row.evidenceArtifactId)"))
+            assertTrue(body.contains("acquire.dataset.action = 'view-acquisition-decision'"))
+            assertTrue(body.contains("acquire.dataset.evidenceArtifactId = row.evidenceArtifactId"))
+            assertTrue(body.contains("loadAcquisitionDecisionForEvidenceId(event.currentTarget.dataset.evidenceArtifactId)"))
+            assertTrue(body.contains("event.preventDefault();"))
+            assertTrue(body.contains("event.stopPropagation();"))
             assertTrue(body.contains("function loadAcquisitionDecisionForEvidenceId(evidenceArtifactId"))
-            assertTrue(body.contains("candidate.evidenceArtifactId === evidenceArtifactId && !candidate.externalResultRow"))
+            assertTrue(body.contains("function findCanonicalEvidenceRowIndex(evidenceArtifactId)"))
+            assertTrue(body.contains("candidate.externalResultRow !== true"))
+            assertTrue(body.contains("await loadExistingEvidence();"))
             assertTrue(body.contains("credentials: 'same-origin'"))
+            assertTrue(body.contains("tr.dataset.canonicalEvidence = row.externalResultRow ? 'false' : 'true';"))
+            assertTrue(body.contains("tr.dataset.mediaType = row.mediaType || '';"))
             assertTrue(body.contains("details.textContent"))
             assertTrue(body.contains("Content SHA-256"))
             assertTrue(body.contains("Select ' + documentName(row) + ' for analysis"))
             assertTrue(body.contains("toLocaleLowerCase().includes(query)"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `JPEG PNG and scanned PDF rows share the canonical stable acquisition action contract`() = runTest {
+        val harness = startHarness("")
+        try {
+            val body = getPaired(harness, "/").body()
+            val renderStart = body.indexOf("function render()")
+            val renderEnd = body.indexOf("\nfunction ", renderStart + 1)
+            val renderBody = body.substring(renderStart, renderEnd)
+            val actionIndex = renderBody.indexOf("acquire.dataset.action = 'view-acquisition-decision'")
+            val imageBranchIndex = renderBody.indexOf("row.mediaType === 'image/jpeg' || row.mediaType === 'image/png'")
+            val pdfMarkerIndex = renderBody.indexOf("tr.dataset.mediaType = row.mediaType || '';")
+            val requiresOcrIndex = renderBody.indexOf("if (row.status === 'REQUIRES_OCR')")
+            assertTrue(actionIndex > imageBranchIndex, "JPEG/PNG-specific image controls must not own the acquisition action")
+            assertTrue(actionIndex > pdfMarkerIndex, "PDF rows must receive the same canonical action marker")
+            assertTrue(actionIndex < requiresOcrIndex, "the action must be created before REQUIRES_OCR specialist controls")
+            listOf("image/jpeg", "image/png", "application/pdf").forEach { mediaType ->
+                assertTrue(body.contains(mediaType), "served Owner UI must know media type $mediaType")
+            }
+            assertTrue(body.contains("event.currentTarget.dataset.evidenceArtifactId"))
+            assertTrue(body.contains("event.preventDefault();"))
+            assertTrue(body.contains("event.stopPropagation();"))
         } finally { harness.shutdown() }
     }
 

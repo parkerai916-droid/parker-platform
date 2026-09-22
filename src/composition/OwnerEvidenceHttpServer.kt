@@ -3746,6 +3746,11 @@ function render() {
   tbody.innerHTML = '';
   visibleRows().forEach(({row, index}) => {
     const tr = document.createElement('tr');
+    if (row.evidenceArtifactId) {
+      tr.dataset.evidenceArtifactId = row.evidenceArtifactId;
+      tr.dataset.canonicalEvidence = row.externalResultRow ? 'false' : 'true';
+      tr.dataset.mediaType = row.mediaType || '';
+    }
     const actions = document.createElement('td');
     actions.className = 'row-actions';
     if (row.evidenceArtifactId && !row.externalResultRow) {
@@ -3762,12 +3767,18 @@ function render() {
       actions.appendChild(process);
       const acquire = document.createElement('button');
       acquire.type = 'button';
+      acquire.dataset.action = 'view-acquisition-decision';
+      acquire.dataset.evidenceArtifactId = row.evidenceArtifactId;
       acquire.textContent = 'View acquisition decision';
       acquire.title = 'Show Parker’s governed acquisition selection; this does not execute acquisition.';
       // Bind the action to the immutable Parker evidence identity, not the mutable
       // array index captured by a row render. Background readiness/derivative loads
       // rebuild tbody and can otherwise leave a visible button with a stale index.
-      acquire.onclick = () => loadAcquisitionDecisionForEvidenceId(row.evidenceArtifactId);
+      acquire.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        loadAcquisitionDecisionForEvidenceId(event.currentTarget.dataset.evidenceArtifactId);
+      };
       actions.appendChild(acquire);
     }
     if (row.status === 'REQUIRES_OCR') {
@@ -5314,9 +5325,24 @@ async function viewDiscoveredGeneration(index, derivativeGenerationId) {
   render();
 }
 
+function findCanonicalEvidenceRowIndex(evidenceArtifactId) {
+  const canonical = rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId && candidate.externalResultRow !== true);
+  return canonical >= 0 ? canonical : rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId);
+}
+
 async function loadAcquisitionDecisionForEvidenceId(evidenceArtifactId, preserveExecutionError = false) {
-  const index = rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId && !candidate.externalResultRow);
-  if (index < 0) return;
+  let index = findCanonicalEvidenceRowIndex(evidenceArtifactId);
+  if (index < 0 && evidenceArtifactId) {
+    // A background refresh can replace the array between DOM creation and the click. Re-read the
+    // authoritative Owner list once, then resolve the same exact identity again; never fall back
+    // to a positional row or guess another document.
+    await loadExistingEvidence();
+    index = findCanonicalEvidenceRowIndex(evidenceArtifactId);
+  }
+  if (index < 0) {
+    document.getElementById('status').textContent = 'Acquisition decision unavailable for this evidence row.';
+    return;
+  }
   await loadAcquisitionDecision(index, preserveExecutionError);
 }
 
@@ -5346,7 +5372,7 @@ async function loadAcquisitionDecision(index, preserveExecutionError = false) {
 }
 
 async function loadExternalTranscriptionAuthorizationForEvidenceId(evidenceArtifactId) {
-  const index = rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId && !candidate.externalResultRow);
+  const index = findCanonicalEvidenceRowIndex(evidenceArtifactId);
   if (index < 0) return;
   await loadExternalTranscriptionAuthorization(index);
 }
