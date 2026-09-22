@@ -139,8 +139,7 @@ class RecordingParkerClient:
     def __getattr__(self, name):
         return getattr(self.client, name)
 
-    def submit_source(self, batch_id, source_hash, data, filename, media):
-        code, payload = self.client.submit_source(batch_id, source_hash, data, filename, media)
+    def _record_source_admission(self, source_hash, code, payload):
         if isinstance(payload, dict) and isinstance(payload.get("status"), str):
             self.source_outcome_by_hash[source_hash] = payload["status"]
         self.source_admission_by_hash[source_hash] = {
@@ -151,6 +150,14 @@ class RecordingParkerClient:
         if isinstance(payload, dict) and isinstance(payload.get("evidenceArtifactId"), str):
             self.evidence_by_hash[source_hash] = payload["evidenceArtifactId"]
         return code, payload
+
+    def submit_source(self, batch_id, source_hash, data, filename, media):
+        code, payload = self.client.submit_source(batch_id, source_hash, data, filename, media)
+        return self._record_source_admission(source_hash, code, payload)
+
+    def submit_ocr_required_source(self, batch_id, source_hash, data, filename, media):
+        code, payload = self.client.submit_ocr_required_source(batch_id, source_hash, data, filename, media)
+        return self._record_source_admission(source_hash, code, payload)
 
 
 def _under(path: Path, root: Path) -> bool:

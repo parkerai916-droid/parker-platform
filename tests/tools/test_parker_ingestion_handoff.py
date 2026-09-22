@@ -131,6 +131,17 @@ class ParkerIngestionHandoffTest(unittest.TestCase):
             self.assertEqual(client.source_admission_by_hash[str(code)], expected)
             self.assertEqual(client.source_outcome_by_hash[str(code)], status)
 
+    def test_ocr_required_admission_records_evidence_identity_for_occurrence_registration(self):
+        class SourceClient:
+            def submit_ocr_required_source(self, batch_id, source_hash, data, filename, media):
+                return 202, {"status": "REQUIRES_OCR", "evidenceArtifactId": "evidence-docx"}
+
+        client = handoff.RecordingParkerClient(SourceClient())
+        client.submit_ocr_required_source("batch", "d" * 64, b"docx", "image-only.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        self.assertEqual(client.evidence_by_hash["d" * 64], "evidence-docx")
+        self.assertEqual(client.source_outcome_by_hash["d" * 64], "REQUIRES_OCR")
+        self.assertEqual(client.source_admission_by_hash["d" * 64], "REQUIRES_OCR")
+
     def test_import_status_progress_is_durable_and_content_free(self):
         self.make_job()
         handoff_path = self.workspace / "jobs/JOB-HANDOFF/reports/handoff.json"
