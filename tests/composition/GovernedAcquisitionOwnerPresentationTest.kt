@@ -15,6 +15,19 @@ class GovernedAcquisitionOwnerPresentationTest {
         HumanAuthorisedCustody.CONFIRMED,
     )
 
+    @Test fun `admitted external OCR capability projects external mechanism and provider`() {
+        val capability = ProductionAcquisitionCapabilityCatalogue.persistedExternalOcrRepresentationCapability()
+        assertEquals(EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION, capability.mechanism)
+        assertEquals(AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED, capability.egress)
+        assertEquals("OpenAI", capability.providerConfiguration?.providerIdentity)
+        assertEquals("gpt-5.6-sol", capability.providerConfiguration?.modelSelectionRule)
+        assertEquals("openai-responses-adapter", capability.providerConfiguration?.adapterIdentity)
+        val view = selectedView(sourceFacts, listOf(capability))
+        assertEquals("External transcription", view.capability.mechanismLabel)
+        assertEquals("EXTERNAL", view.capability.executionLocation)
+        assertEquals("OpenAI", view.capability.provider)
+    }
+
     @Test fun `B clean scan presents local OCR and technical selection without quality claim`() {
         val view = selectedView(sourceFacts, listOf(local(), external()))
         assertEquals("Local OCR", view.capability.mechanismLabel)

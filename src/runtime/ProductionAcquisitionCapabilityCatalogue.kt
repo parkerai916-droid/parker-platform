@@ -84,13 +84,15 @@ object ProductionAcquisitionCapabilityCatalogue {
 
     /** Retrieval of an already-admitted authoritative external OCR derivative. */
     fun persistedExternalOcrRepresentationCapability() = EvidenceAcquisitionCapability(
-        PERSISTED_EXTERNAL_OCR_REPRESENTATION_CAPABILITY_ID, EvidenceAcquisitionMechanism.LOCAL_OCR,
+        PERSISTED_EXTERNAL_OCR_REPRESENTATION_CAPABILITY_ID, EvidenceAcquisitionMechanism.EXTERNAL_TRANSCRIPTION,
         setOf("application/pdf", "image/jpeg", "image/png", "image/webp"),
         setOf(AcquisitionSourceForm.IMAGE_ONLY_OR_SCANNED, AcquisitionSourceForm.MIXED_TEXT_AND_IMAGE),
         AcquisitionFidelityCapabilities(true, false, true, false, false, false,
             pageAssociation = true, regionAssociation = false, uncertaintyReporting = true, structuredOutput = false),
         setOf(AcquisitionRepresentationClass.DIRECTLY_DERIVED_TRANSFORMED_REPRESENTATION),
-        AcquisitionEgress.LOCAL_ONLY, null, AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
+        AcquisitionEgress.EXTERNAL_EGRESS_REQUIRED,
+        fidelityFirstExternalCapability().providerConfiguration,
+        AcquisitionAvailability.Available, AcquisitionOperationalLimits(),
     )
 
     fun fidelityFirstExternalCapability() = EvidenceAcquisitionCapability(
