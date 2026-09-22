@@ -5325,7 +5325,9 @@ async function loadAcquisitionDecision(index, preserveExecutionError = false) {
   if (!preserveExecutionError) row.acquisitionError = null;
   row.acquisitionResult = null;
   try {
-    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, { method: 'GET', headers: authHeaders() });
+    const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, {
+      method: 'GET', headers: authHeaders(), credentials: 'same-origin',
+    });
     const result = await resp.json();
     if (!resp.ok) row.acquisitionError = result.error || 'Acquisition decision unavailable.';
     else {
@@ -5339,8 +5341,14 @@ async function loadAcquisitionDecision(index, preserveExecutionError = false) {
       }
     }
   } catch (e) { row.acquisitionError = 'Acquisition decision request failed safely.'; }
-  await loadExternalTranscriptionAuthorization(index);
+  await loadExternalTranscriptionAuthorizationForEvidenceId(row.evidenceArtifactId);
   render();
+}
+
+async function loadExternalTranscriptionAuthorizationForEvidenceId(evidenceArtifactId) {
+  const index = rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId && !candidate.externalResultRow);
+  if (index < 0) return;
+  await loadExternalTranscriptionAuthorization(index);
 }
 
 async function loadExternalTranscriptionAuthorization(index) {

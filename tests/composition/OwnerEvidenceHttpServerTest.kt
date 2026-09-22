@@ -1841,6 +1841,7 @@ class OwnerEvidenceHttpServerTest {
             assertTrue(body.contains("acquire.onclick = () => loadAcquisitionDecisionForEvidenceId(row.evidenceArtifactId)"))
             assertTrue(body.contains("function loadAcquisitionDecisionForEvidenceId(evidenceArtifactId"))
             assertTrue(body.contains("candidate.evidenceArtifactId === evidenceArtifactId && !candidate.externalResultRow"))
+            assertTrue(body.contains("credentials: 'same-origin'"))
             assertTrue(body.contains("details.textContent"))
             assertTrue(body.contains("Content SHA-256"))
             assertTrue(body.contains("Select ' + documentName(row) + ' for analysis"))
