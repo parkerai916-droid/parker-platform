@@ -76,6 +76,49 @@ class OcrProcessingRepresentationFactory(
         }
     }
 
+    /** Builds a source-bound representation for one deterministically extracted DOCX image. */
+    internal fun createDocxEmbeddedImage(
+        authoritativeSource: AuthoritativeAcquisitionInput,
+        image: DocxEmbeddedImage,
+    ): OcrProcessingRepresentationOutcome {
+        if (authoritativeSource.mediaType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+            return OcrProcessingRepresentationOutcome.UnsupportedMedia
+        }
+        if (image.mediaType != "image/jpeg" && image.mediaType != "image/png") {
+            return OcrProcessingRepresentationOutcome.UnsupportedMedia
+        }
+        if (image.bytes.isEmpty() || image.bytes.size.toLong() > minOf(limits.maximumImageBytes, ExternalTranscriptionRequest.MAX_SOURCE_BYTES)) {
+            return OcrProcessingRepresentationOutcome.BoundsExceeded
+        }
+        return try {
+            val representationDigest = sha256(image.bytes)
+            if (representationDigest.value != image.sha256) return OcrProcessingRepresentationOutcome.DigestMismatch
+            val provenance = OcrProcessingProvenance(
+                sourceEvidenceArtifactId = authoritativeSource.evidenceArtifactId,
+                sourceManifestSha256 = OcrSha256Digest(authoritativeSource.sha256),
+                sourceMediaType = requireNotNull(authoritativeSource.mediaType),
+                sourceByteLength = authoritativeSource.byteLength,
+                requestedPageScope = OcrPageScope(listOf(image.ordinal)),
+                submittedPageScope = OcrPageScope(listOf(image.ordinal)),
+                representationMediaType = image.mediaType,
+                representationByteLength = image.bytes.size.toLong(),
+                representationSha256 = representationDigest,
+                byteExactCopy = false,
+                processingProfileIdentity = DOCX_EMBEDDED_IMAGE_PROFILE_IDENTITY,
+                createdAt = now(),
+                materialTransformation = OcrMaterialTransformation(
+                    mechanismIdentity = "parker.docx-embedded-image-extractor",
+                    mechanismVersion = "1",
+                    sourcePageScope = OcrPageScope(listOf(image.ordinal)),
+                    compression = "DOCX_PART_EXTRACTION:${image.partName}:${image.relationshipId ?: "NO_RELATIONSHIP_ID"}",
+                ),
+            )
+            OcrProcessingRepresentationOutcome.Created(OcrProcessingRepresentation(image.bytes, provenance))
+        } catch (_: Exception) {
+            OcrProcessingRepresentationOutcome.ImplementationFailure
+        }
+    }
+
     private fun sha256(bytes: ByteArray) = OcrSha256Digest(
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) },
     )
@@ -103,5 +146,6 @@ class OcrProcessingRepresentationFactory(
 
     companion object {
         const val PROCESSING_PROFILE_IDENTITY = "external-transcription.direct-byte-exact-v1"
+        const val DOCX_EMBEDDED_IMAGE_PROFILE_IDENTITY = "external-transcription.docx-embedded-image-v1"
     }
 }

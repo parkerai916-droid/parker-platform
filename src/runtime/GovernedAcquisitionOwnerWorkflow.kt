@@ -126,13 +126,21 @@ internal class GovernedAcquisitionOwnerWorkflow(
     private suspend fun projectTechnicalFacts(manifest: EvidenceSourceManifest): AcquisitionSource? {
         val media = manifest.receivedMediaType?.lowercase() ?: return null
         val nativeStructured = media == "text/csv" || media == "message/rfc822" ||
-            media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
             media == "text/plain" || media == "application/msword" ||
             media == "application/vnd.ms-excel" ||
             media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
             media == "application/vnd.ms-outlook" || media == "application/x-ole-storage" ||
             media == "application/rtf" || media == "text/rtf" || media == "application/x-rtf"
         val image = media.startsWith("image/")
+        val docxInspection = if (media == "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+            when (val resolved = authoritativeSourceResolver.resolve(ownerPrincipalId, manifest.evidenceArtifactId)) {
+                is AuthoritativeAcquisitionResolution.Verified -> DocxEmbeddedImageExtractor.inspect(resolved.input.bytes())
+                else -> null
+            }
+        } else null
+        val docxReady = docxInspection as? DocxEmbeddedImageInspection.Ready
+        val docxNative = docxReady?.readableNativeText == true
+        val docxImageOnly = docxReady != null && !docxReady.readableNativeText && docxReady.images.isNotEmpty()
         val pdfInspection = if (media == "application/pdf") {
             when (val resolved = authoritativeSourceResolver.resolve(ownerPrincipalId, manifest.evidenceArtifactId)) {
                 is AuthoritativeAcquisitionResolution.Verified -> pdfCharacteristicsInspector.inspect(resolved.input)
@@ -149,10 +157,18 @@ internal class GovernedAcquisitionOwnerWorkflow(
             // reports as Indeterminate rather than Selected -- CSV would never actually reach the
             // external mechanism despite being an otherwise-eligible, accepted media type.
             pageCount = establishedPdf?.pageCount
-                ?: if (image || nativeStructured) AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
-            nativeSearchableText = establishedPdf?.nativeSearchableText ?: when { nativeStructured -> AcquisitionCharacteristicState.PRESENT; image -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
-            imageOnlyOrScanned = establishedPdf?.imageOnlyOrScanned ?: when { image -> AcquisitionCharacteristicState.PRESENT; nativeStructured -> AcquisitionCharacteristicState.ABSENT; else -> AcquisitionCharacteristicState.UNKNOWN },
-            mixedTextAndImage = establishedPdf?.mixedTextAndImage ?: if (nativeStructured || image) AcquisitionCharacteristicState.ABSENT else AcquisitionCharacteristicState.UNKNOWN,
+                ?: if (image || nativeStructured || docxReady != null) AcquisitionPageCount.Known(1) else AcquisitionPageCount.Unknown,
+            nativeSearchableText = establishedPdf?.nativeSearchableText ?: when {
+                docxNative || nativeStructured -> AcquisitionCharacteristicState.PRESENT
+                image || docxImageOnly -> AcquisitionCharacteristicState.ABSENT
+                else -> AcquisitionCharacteristicState.UNKNOWN
+            },
+            imageOnlyOrScanned = establishedPdf?.imageOnlyOrScanned ?: when {
+                image || docxImageOnly -> AcquisitionCharacteristicState.PRESENT
+                docxNative || nativeStructured -> AcquisitionCharacteristicState.ABSENT
+                else -> AcquisitionCharacteristicState.UNKNOWN
+            },
+            mixedTextAndImage = establishedPdf?.mixedTextAndImage ?: if (nativeStructured || image || docxReady != null) AcquisitionCharacteristicState.ABSENT else AcquisitionCharacteristicState.UNKNOWN,
         )
     }
 

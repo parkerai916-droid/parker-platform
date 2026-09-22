@@ -13,6 +13,7 @@ import kotlin.test.*
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.apache.poi.xwpf.usermodel.XWPFDocument
 import parker.core.interfaces.*
 
 class GovernedTierADocumentIngestionRouterTest {
@@ -122,6 +123,23 @@ class GovernedTierADocumentIngestionRouterTest {
         )
         assertEquals("image/jpeg", jpegResult.mediaFacts.receivedMediaType)
         assertEquals("image/png", pngResult.mediaFacts.receivedMediaType)
+    }
+
+    @Test fun `image-only DOCX requires Tier B while native-text DOCX remains Tier A`() = runTest {
+        val jpeg = ByteArrayOutputStream().also { out -> check(ImageIO.write(BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB), "jpeg", out)) }.toByteArray()
+        val png = Files.readAllBytes(FIXTURE_ROOT.resolve("07-text-image.png"))
+        val imageOnly = ByteArrayOutputStream().also { out ->
+            XWPFDocument().use { document ->
+                document.createParagraph().createRun().addPicture(java.io.ByteArrayInputStream(jpeg), org.apache.poi.common.usermodel.PictureType.JPEG, "first.jpg", 100, 100)
+                document.createParagraph().createRun().addPicture(java.io.ByteArrayInputStream(png), org.apache.poi.common.usermodel.PictureType.PNG, "second.png", 100, 100)
+                document.write(out)
+            }
+        }.toByteArray()
+        assertIs<TierADocumentRoutingResult.RequiresTierB>(router(RecordingStorage(), RecordingAudit()).ingest(context("image-only.docx", imageOnly, GovernedTierADocumentIngestionRouter.DOCX, sha256(imageOnly))))
+        val native = ByteArrayOutputStream().also { out ->
+            XWPFDocument().use { document -> document.createParagraph().createRun().setText("native text"); document.write(out) }
+        }.toByteArray()
+        assertIs<TierADocumentRoutingResult.Admitted>(router(RecordingStorage(), RecordingAudit()).ingest(context("native.docx", native, GovernedTierADocumentIngestionRouter.DOCX, sha256(native))))
     }
 
     @Test fun `each route invokes exactly one specialist and non routes invoke none`() = runTest {

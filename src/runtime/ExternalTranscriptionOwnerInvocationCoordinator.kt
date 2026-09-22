@@ -1,26 +1,6 @@
 package parker.core.runtime
 
-import parker.core.interfaces.EmlDerivedRepresentationOutcome
-import parker.core.interfaces.EmlExternalVerificationAdmissionOutcome
-import parker.core.interfaces.EmlExternalVerificationReceipt
-import parker.core.interfaces.EmlStructuralExtractionOutcome
-import parker.core.interfaces.EmlStructuralExtractor
-import parker.core.interfaces.EmlStructuredTranscriptionCandidate
-import parker.core.interfaces.EmlStructuredValidationOutcome
-import parker.core.interfaces.EmlValidatedExternalVerificationAdmission
-import parker.core.interfaces.EvidenceArtifactId
-import parker.core.interfaces.EvidenceCustodian
-import parker.core.interfaces.ExternalTranscriptionMechanism
-import parker.core.interfaces.ExternalTranscriptionMechanismOutcome
-import parker.core.interfaces.ExternalTranscriptionOwnerInvocationOutcome
-import parker.core.interfaces.ExternalTranscriptionRequest
-import parker.core.interfaces.ExternalTranscriptionExecutionBinding
-import parker.core.interfaces.OcrProcessingRepresentationOutcome
-import parker.core.interfaces.OcrStructuredTranscriptionCandidate
-import parker.core.interfaces.OcrStructuredValidationOutcome
-import parker.core.interfaces.PermissionDecisionOutcome
-import parker.core.interfaces.PermissionEngine
-import parker.core.interfaces.PrincipalId
+import parker.core.interfaces.*
 import java.util.UUID
 
 interface ExternalTranscriptionInvocationObserver {
@@ -103,6 +83,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         if (trusted.byteLength <= 0 || trusted.byteLength > ExternalTranscriptionRequest.MAX_SOURCE_BYTES ||
             mediaType == null || (
                 mediaType != "application/pdf" && mediaType != "text/csv" && mediaType != "message/rfc822" &&
+                    mediaType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" &&
                     !mediaType.startsWith("image/", ignoreCase = true)
                 )
         ) return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
@@ -110,9 +91,114 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
 
         return if (mediaType == "message/rfc822") {
             invokeEml(requestingPrincipalId, evidenceArtifactId, trusted)
+        } else if (mediaType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+            invokeDocx(requestingPrincipalId, evidenceArtifactId, trusted)
         } else {
             invokeOcr(requestingPrincipalId, evidenceArtifactId, trusted, mediaType)
         }
+    }
+
+    private suspend fun invokeDocx(
+        requestingPrincipalId: PrincipalId,
+        evidenceArtifactId: EvidenceArtifactId,
+        trusted: AuthoritativeAcquisitionInput,
+    ): ExternalTranscriptionOwnerInvocationOutcome {
+        val inspection = when (val value = DocxEmbeddedImageExtractor.inspect(trusted.bytes())) {
+            is DocxEmbeddedImageInspection.Ready -> value
+            is DocxEmbeddedImageInspection.Malformed -> return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(value.reason)
+        }
+        if (inspection.readableNativeText || inspection.images.isEmpty() || inspection.unsupportedMediaCount > 0) {
+            return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
+        }
+        val candidates = mutableListOf<OcrStructuredTranscriptionCandidate>()
+        for (image in inspection.images) {
+            val representation = when (val outcome = representationFactory.createDocxEmbeddedImage(trusted, image)) {
+                is OcrProcessingRepresentationOutcome.Created -> outcome.representation
+                else -> return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Embedded DOCX image failed bounded representation validation")
+            }
+            val request = ExternalTranscriptionRequest(
+                representation = representation,
+                maximumPageCount = ExternalTranscriptionRequest.MAX_PAGE_COUNT,
+                expectedPageCount = 1,
+                executionBinding = executionBinding,
+            )
+            invocationObserver.representationBuilt()
+            invocationObserver.requestPrepared()
+            val candidate = when (val mechanismOutcome = externalMechanism.transcribe(request)) {
+                is ExternalTranscriptionMechanismOutcome.Candidate -> mechanismOutcome.candidate
+                is ExternalTranscriptionMechanismOutcome.Failure -> return ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure(mechanismOutcome.reason)
+            } as? OcrStructuredTranscriptionCandidate
+                ?: return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Mechanism returned a non-OCR-shaped candidate for an embedded DOCX image")
+            if (!candidate.processingProvenance.byteExactCopy && candidate.processingProvenance.sourceEvidenceArtifactId == evidenceArtifactId &&
+                candidate.processingProvenance.sourceManifestSha256.value == trusted.sha256 &&
+                candidate.processingProvenance.sourceMediaType == trusted.mediaType &&
+                candidate.processingProvenance.sourceByteLength == trusted.byteLength &&
+                candidate.processingProvenance.representationMediaType == image.mediaType &&
+                candidate.processingProvenance.representationSha256.value == image.sha256
+            ) candidates += candidate else return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Candidate provenance contradicts the verified DOCX source or embedded image")
+        }
+        val first = candidates.first()
+        val scope = OcrPageScope((1..candidates.size).toList())
+        val compositeProvenance = OcrProcessingProvenance(
+            sourceEvidenceArtifactId = evidenceArtifactId,
+            sourceManifestSha256 = OcrSha256Digest(trusted.sha256),
+            sourceMediaType = requireNotNull(trusted.mediaType),
+            sourceByteLength = trusted.byteLength,
+            requestedPageScope = scope,
+            submittedPageScope = scope,
+            representationMediaType = requireNotNull(trusted.mediaType),
+            representationByteLength = trusted.byteLength,
+            representationSha256 = OcrSha256Digest(trusted.sha256),
+            byteExactCopy = false,
+            processingProfileIdentity = OcrProcessingRepresentationFactory.DOCX_EMBEDDED_IMAGE_PROFILE_IDENTITY,
+            createdAt = candidates.maxOf { it.recognisedAt },
+            materialTransformation = OcrMaterialTransformation(
+                mechanismIdentity = "parker.docx-embedded-image-composite",
+                mechanismVersion = "1",
+                sourcePageScope = scope,
+                compression = "DOCX_IMAGE_ORDINALS:${inspection.images.joinToString(",") { it.ordinal.toString() }}",
+            ),
+        )
+        val pages = candidates.flatMapIndexed { index, candidate ->
+            candidate.pages.map { page -> page.copy(pageNumber = index + 1) }
+        }
+        val combined = OcrStructuredTranscriptionCandidate(
+            requestedPageScope = scope,
+            submittedPageScope = scope,
+            declaredReturnedPageScope = OcrPageScope(pages.filter { it.outcome != OcrPageOutcomeKind.NOT_RETURNED }.map { it.pageNumber }),
+            pages = pages,
+            fidelity = first.fidelity,
+            recognitionIdentity = first.recognitionIdentity,
+            providerProvenance = first.providerProvenance,
+            processingProvenance = compositeProvenance,
+            recognisedAt = candidates.maxOf { it.recognisedAt },
+            warnings = candidates.flatMapIndexed { index, candidate ->
+                val image = inspection.images[index]
+                candidate.warnings + "DOCX_EMBEDDED_IMAGE ordinal=${image.ordinal};part=${image.partName};media=${image.mediaType};sha256=${image.sha256};relationship=${image.relationshipId ?: "none"}"
+            },
+        )
+        return when (val validated = validator.validate(combined)) {
+            is OcrStructuredValidationOutcome.Validated -> admitValidated(evidenceArtifactId, validated, requestingPrincipalId)
+            is OcrStructuredValidationOutcome.Rejected -> ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected(validated.outcome.reason)
+        }
+    }
+
+    private suspend fun admitValidated(
+        evidenceArtifactId: EvidenceArtifactId,
+        validated: OcrStructuredValidationOutcome.Validated,
+        requestingPrincipalId: PrincipalId,
+    ): ExternalTranscriptionOwnerInvocationOutcome = when (val admission = durableAdmission.admit(
+        evidenceArtifactId, validated, requestingPrincipalId, correlationFactory(),
+    )) {
+        is OcrDerivativeGenerationCoordinationOutcome.Admitted -> {
+            invocationObserver.generationAdmitted()
+            ExternalTranscriptionOwnerInvocationOutcome.Admitted(evidenceArtifactId, admission.record, admission.extracted)
+        }
+        is OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed -> ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired(evidenceArtifactId, admission.record, admission.extracted, admission.reason)
+        is OcrDerivativeGenerationCoordinationOutcome.MandatoryProvenanceUnavailable -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+        is OcrDerivativeGenerationCoordinationOutcome.PreparationFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+        is OcrDerivativeGenerationCoordinationOutcome.AuthorisationAuditFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
+        is OcrDerivativeGenerationCoordinationOutcome.PublicationFailed -> ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed(admission.reason)
     }
 
     private suspend fun invokeOcr(

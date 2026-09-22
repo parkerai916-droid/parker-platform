@@ -97,6 +97,8 @@ class GovernedTierADocumentIngestionRouter internal constructor(
     }
     private fun mapDocx(o: DocxDerivativeGenerationCoordinationOutcome, f: TierAMediaFacts) = when (o) {
         is DocxDerivativeGenerationCoordinationOutcome.Admitted -> TierADocumentRoutingResult.Admitted(TierADocumentFormat.DOCX, o.record, TierADerivativePayload.Docx(o.docxStructure), f)
+        is DocxDerivativeGenerationCoordinationOutcome.RequiresTierB -> TierADocumentRoutingResult.RequiresTierB(o.reason, f)
+        is DocxDerivativeGenerationCoordinationOutcome.ReviewRequired -> TierADocumentRoutingResult.Unsupported("REVIEW_REQUIRED: ${o.reason}", f)
         is DocxDerivativeGenerationCoordinationOutcome.ExtractionFailed -> TierADocumentRoutingResult.ExtractionFailed(TierADocumentFormat.DOCX, o.reason, f)
         is DocxDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed -> TierADocumentRoutingResult.SourceIntegrityFailed(o.reason, f)
         is DocxDerivativeGenerationCoordinationOutcome.PreparationFailed -> failed(TierADocumentFormat.DOCX, "PREPARE", o.derivativeGenerationId, o.reason, f)

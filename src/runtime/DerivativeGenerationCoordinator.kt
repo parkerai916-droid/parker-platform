@@ -106,6 +106,8 @@ sealed class PdfDerivativeGenerationCoordinationOutcome {
 
 sealed class DocxDerivativeGenerationCoordinationOutcome {
     data class Admitted(val record: DerivativeGenerationRecord, val docxStructure: DocxStructuralResult) : DocxDerivativeGenerationCoordinationOutcome()
+    data class RequiresTierB(val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
+    data class ReviewRequired(val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
     data class ExtractionFailed(val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
     data class SourceIntegrityFailed(val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
     data class PreparationFailed(val derivativeGenerationId: DerivativeGenerationId, val reason: String) : DocxDerivativeGenerationCoordinationOutcome()
@@ -372,6 +374,15 @@ class DerivativeGenerationCoordinator(
             is DocxStructuralExtractionOutcome.Extracted -> outcome.result
         }
         if (sha256(source.content) != source.expectedSha256) return DocxDerivativeGenerationCoordinationOutcome.SourceIntegrityFailed("Source SHA-256 changed during DOCX extraction")
+        when (val inspection = DocxEmbeddedImageExtractor.inspect(source.content.copyOf())) {
+            is DocxEmbeddedImageInspection.Malformed -> return DocxDerivativeGenerationCoordinationOutcome.ReviewRequired(inspection.reason)
+            is DocxEmbeddedImageInspection.Ready -> when {
+                !inspection.readableNativeText && inspection.images.isNotEmpty() && inspection.unsupportedMediaCount == 0 ->
+                    return DocxDerivativeGenerationCoordinationOutcome.RequiresTierB("DOCX contains no readable native text and has ${inspection.images.size} supported embedded image(s); separately authorized external OCR is required")
+                !inspection.readableNativeText && inspection.unsupportedMediaCount > 0 ->
+                    return DocxDerivativeGenerationCoordinationOutcome.ReviewRequired("DOCX contains embedded media outside the narrow JPEG/PNG fallback; document order cannot be claimed for a partial selection")
+            }
+        }
         val id = idFactory()
         val record = DerivativeGenerationRecord(
             id, source.evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(source.evidenceArtifactId)),

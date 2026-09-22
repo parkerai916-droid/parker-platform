@@ -91,6 +91,46 @@ class ApachePoiXwpfExtractorTest {
         assertIs<DocxStructuralExtractionOutcome.Malformed>(ApachePoiXwpfExtractor().extract(output.toByteArray()))
     }
 
+    @Test fun `image-only DOCX extracts supported images in document order with stable hashes`() = runTest {
+        val jpeg = image("jpeg", 0x22)
+        val png = image("png", 0x77)
+        val bytes = imageOnlyDocx(jpeg, png)
+        val inspection = assertIs<DocxEmbeddedImageInspection.Ready>(DocxEmbeddedImageExtractor.inspect(bytes))
+        assertFalse(inspection.readableNativeText)
+        assertEquals(listOf("image/jpeg", "image/png"), inspection.images.map { it.mediaType })
+        assertEquals(listOf(1, 2), inspection.images.map { it.ordinal })
+        assertEquals(listOf(sha256(jpeg), sha256(png)), inspection.images.map { it.sha256 })
+        assertTrue(inspection.images.all { it.partName.startsWith("word/media/") })
+        assertTrue(inspection.images.all { it.relationshipId?.startsWith("rId") == true })
+    }
+
+    @Test fun `native-text DOCX is not classified as image-only fallback`() = runTest {
+        val output = ByteArrayOutputStream()
+        XWPFDocument().use { document ->
+            document.createParagraph().createRun().setText("native DOCX text")
+            document.createParagraph().createRun().addPicture(java.io.ByteArrayInputStream(image("png", 0x33)), org.apache.poi.common.usermodel.PictureType.PNG, "image.png", 100, 100)
+            document.write(output)
+        }
+        val inspection = assertIs<DocxEmbeddedImageInspection.Ready>(DocxEmbeddedImageExtractor.inspect(output.toByteArray()))
+        assertTrue(inspection.readableNativeText)
+        assertEquals(1, inspection.images.size)
+    }
+
+    private fun image(format: String, value: Int): ByteArray = ByteArrayOutputStream().also { out ->
+        val image = java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (x in 0 until 2) for (y in 0 until 2) image.setRGB(x, y, value shl 16 or value)
+        val graphics = image.createGraphics(); graphics.drawString("DOCX-$value", 0, 1); graphics.dispose()
+        check(javax.imageio.ImageIO.write(image, format, out))
+    }.toByteArray()
+
+    private fun imageOnlyDocx(jpeg: ByteArray, png: ByteArray): ByteArray = ByteArrayOutputStream().also { out ->
+        XWPFDocument().use { document ->
+            document.createParagraph().createRun().addPicture(java.io.ByteArrayInputStream(jpeg), org.apache.poi.common.usermodel.PictureType.JPEG, "first.jpg", 100, 100)
+            document.createParagraph().createRun().addPicture(java.io.ByteArrayInputStream(png), org.apache.poi.common.usermodel.PictureType.PNG, "second.png", 100, 100)
+            document.write(out)
+        }
+    }.toByteArray()
+
     private suspend fun extracted(bytes: ByteArray): DocxStructuralResult {
         val outcome = ApachePoiXwpfExtractor().extract(bytes)
         return assertIs<DocxStructuralExtractionOutcome.Extracted>(outcome, (outcome as? DocxStructuralExtractionOutcome.Malformed)?.reason).result

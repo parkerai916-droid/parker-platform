@@ -2,6 +2,12 @@ package parker.core.runtime
 
 import java.security.MessageDigest
 import java.time.Instant
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.awt.image.BufferedImage
+import javax.imageio.ImageIO
+import org.apache.poi.common.usermodel.PictureType
+import org.apache.poi.xwpf.usermodel.XWPFDocument
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -132,10 +138,8 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
             FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(byteLength = bytes.size.toLong() + 1))) to ExternalTranscriptionOwnerInvocationOutcome.ByteLengthMismatch::class,
             FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(sha = "0".repeat(64)))) to ExternalTranscriptionOwnerInvocationOutcome.DigestMismatch::class,
             FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(media = "text/plain"))) to ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds::class,
-            // STEP 3 -- text/csv is the only newly-supported media type. message/rfc822 (EML) and
-            // DOCX remain fail-closed, exactly as before this unit.
+            // EML remains on its separate structured-verification path.
             FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(media = "message/rfc822"))) to ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds::class,
-            FakeCustodian(manifest = EvidenceManifestRetrievalResult.Found(manifest(media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))) to ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds::class,
         )
         cases.forEach { (custodian, expected) ->
             events.clear()
@@ -242,6 +246,42 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         val forbidden = listOf("Docling", "RapidOCR", "OpenAI", "Http", "Network", "Storage", "OwnerUi", "Analysis", "Memory", "Knowledge")
         types.forEach { type -> forbidden.forEach { assertTrue(!type.contains(it), "$type contains $it") } }
         assertTrue(ExternalTranscriptionOwnerInvocationCoordinator::class.java.declaredMethods.none { it.name.contains("retry", true) })
+    }
+
+    @Test
+    fun `authorized image-only DOCX invokes the existing mechanism once per ordered image and admits one source-bound derivative`() = runTest {
+        val jpeg = image("jpeg", 0x22)
+        val png = image("png", 0x77)
+        val docx = ByteArrayOutputStream().also { out -> XWPFDocument().use { document ->
+            document.createParagraph().createRun().addPicture(ByteArrayInputStream(jpeg), PictureType.JPEG, "first.jpg", 100, 100)
+            document.createParagraph().createRun().addPicture(ByteArrayInputStream(png), PictureType.PNG, "second.png", 100, 100)
+            document.write(out)
+        } }.toByteArray()
+        val docxDigest = sha256(docx)
+        val custodian = FakeCustodian(
+            source = EvidenceRetrievalResult.Found(evidenceId, docx),
+            manifest = EvidenceManifestRetrievalResult.Found(EvidenceSourceManifest(evidenceId, docxDigest, docx.size.toLong(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
+        )
+        val mechanism = FakeMechanism(events) { request ->
+            val provenance = requireNotNull(request.ocrProcessingProvenance)
+            val scope = OcrPageScope(listOf(1))
+            ExternalTranscriptionMechanismOutcome.Candidate(OcrStructuredTranscriptionCandidate(
+                scope, scope, scope,
+                listOf(OcrStructuredPageCandidate(1, "image ${request.mediaType}", OcrPageOutcomeKind.TRANSCRIBED)),
+                TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+                OcrRecognitionIdentity("external", "literal-v1", "1.0.0"),
+                OcrProviderProvenance("provider", "adapter", "1.0.0", "literal-v1", "model", OcrModelSnapshot.NotExposed, "provider-correlation-${request.mediaType}"),
+                provenance, Instant.EPOCH,
+            ))
+        }
+        val outcome = coordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), custodian, mechanism).invoke(owner, evidenceId)
+        val admitted = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(outcome)
+        val processing = requireNotNull(admitted.extracted.processingProvenance)
+        assertEquals(2, mechanism.calls)
+        assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document", processing.sourceMediaType)
+        assertFalse(processing.byteExactCopy)
+        assertEquals(listOf(1, 2), admitted.extracted.pageAccounting!!.returnedScope.pageNumbers)
+        assertEquals(listOf(1, 2), admitted.extracted.segments.mapNotNull { it.pageNumber })
     }
 
     // REAL-DOCUMENT-2F -- Wire Accepted External Transcription into Governed Acquisition. Proves,
@@ -602,4 +642,11 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
     }
 
     private fun sha256(value: ByteArray) = MessageDigest.getInstance("SHA-256").digest(value).joinToString("") { "%02x".format(it) }
+
+    private fun image(format: String, value: Int): ByteArray = ByteArrayOutputStream().also { out ->
+        val image = BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB)
+        for (x in 0 until 2) for (y in 0 until 2) image.setRGB(x, y, value shl 16 or value)
+        val graphics = image.createGraphics(); graphics.drawString("DOCX-$value", 0, 1); graphics.dispose()
+        check(ImageIO.write(image, format, out))
+    }.toByteArray()
 }
