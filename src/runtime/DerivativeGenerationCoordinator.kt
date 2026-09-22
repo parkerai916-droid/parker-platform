@@ -184,6 +184,12 @@ fun interface ValidatedExternalTranscriptionAdmission {
         requestingPrincipalId: PrincipalId,
         correlationValue: String,
     ): OcrDerivativeGenerationCoordinationOutcome
+
+    /** Durable replay lookup; the default keeps lightweight test seams fail-closed. */
+    suspend fun findEquivalentDocxOcr(
+        evidenceArtifactId: EvidenceArtifactId,
+        operationKey: String,
+    ): OcrDerivativeGenerationCoordinationOutcome.Admitted? = null
 }
 
 class DerivativeGenerationCoordinator(
@@ -739,7 +745,9 @@ class DerivativeGenerationCoordinator(
             producer, transformations, validation.completenessState, accounting, processing, provider, result.recognisedAt,
             OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE,
         )
-        val id = idFactory()
+        val operationKey = DocxExternalOcrOperationIdentity.keyFromWarnings(result.warnings)
+        operationKey?.let { findEquivalentDocxOcr(evidenceArtifactId, it) }?.let { return it }
+        val id = operationKey?.let { stableDocxOcrGenerationId(evidenceArtifactId, it) } ?: idFactory()
         val recordWarnings = if (degradationReason == null) result.warnings else result.warnings + degradationReason
         val record = DerivativeGenerationRecord(
             id, evidenceArtifactId, listOf(DerivativeParentReference.RootEvidenceArtifact(evidenceArtifactId)),
@@ -747,7 +755,9 @@ class DerivativeGenerationCoordinator(
             DerivativeContentIdentity.NoCanonicalSerialization, validation.completenessState,
             DerivativeOperationalOutcome.USABLE, recordWarnings,
         )
-        publishContentFirst(id, evidenceArtifactId, TierADerivativePayload.Ocr(extracted))?.let {
+        val payload = TierADerivativePayload.Ocr(extracted)
+        publishContentFirst(id, evidenceArtifactId, payload)?.let {
+            if (operationKey != null) existingDocxOcrById(id, evidenceArtifactId, payload)?.let { existing -> return existing }
             return OcrDerivativeGenerationCoordinationOutcome.PreparationFailed(id, it)
         }
         try { storage.prepare(record) } catch (e: DerivativeGenerationStorageException) {
@@ -761,6 +771,51 @@ class DerivativeGenerationCoordinator(
         try { audit.record(auditRecord(correlationValue, evidenceArtifactId, requestingPrincipalId, id, DocumentIngestionAuditStage.ADMITTED)) }
         catch (e: DocumentIngestionAuditException) { return OcrDerivativeGenerationCoordinationOutcome.AdmittedAuditFailed(record, extracted, e.message ?: e::class.simpleName.orEmpty()) }
         return OcrDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+    }
+
+    override suspend fun findEquivalentDocxOcr(
+        evidenceArtifactId: EvidenceArtifactId,
+        operationKey: String,
+    ): OcrDerivativeGenerationCoordinationOutcome.Admitted? {
+        val discovery = storage as? DerivativeGenerationDiscovery ?: return null
+        val contents = contentStorage ?: return null
+        val candidates = mutableListOf<Pair<DerivativeGenerationRecord, OcrDerivativeExtractedResult>>()
+        for (record in discovery.findGenerationsForEvidence(evidenceArtifactId)) {
+            if (record.rootSourceEvidenceArtifactId != evidenceArtifactId ||
+                record.derivativeKind != "External transcription recognised text" ||
+                record.operationalOutcome != DerivativeOperationalOutcome.USABLE
+            ) continue
+            val entry = try { contents.retrieve(record.derivativeGenerationId) } catch (_: DerivativeContentStorageException) { null } ?: continue
+            if (entry.rootSourceEvidenceArtifactId != evidenceArtifactId) continue
+            val extracted = (entry.payload as? TierADerivativePayload.Ocr)?.value ?: continue
+            if (extracted.authority != OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE ||
+                DocxExternalOcrOperationIdentity.keyFromWarnings(extracted.warnings) != operationKey ||
+                extracted.processingProvenance?.sourceEvidenceArtifactId != evidenceArtifactId
+            ) continue
+            candidates += record to extracted
+        }
+        val existing = candidates.sortedWith(compareBy({ it.first.generatedAt }, { it.first.derivativeGenerationId.value })).firstOrNull() ?: return null
+        return OcrDerivativeGenerationCoordinationOutcome.Admitted(existing.first, existing.second)
+    }
+
+    private suspend fun existingDocxOcrById(
+        id: DerivativeGenerationId,
+        evidenceArtifactId: EvidenceArtifactId,
+        expectedPayload: TierADerivativePayload,
+    ): OcrDerivativeGenerationCoordinationOutcome.Admitted? {
+        val record = storage.retrieve(id) ?: return null
+        if (record.rootSourceEvidenceArtifactId != evidenceArtifactId || record.derivativeKind != "External transcription recognised text") return null
+        val entry = contentStorage?.retrieve(id) ?: return null
+        if (entry.rootSourceEvidenceArtifactId != evidenceArtifactId || entry.payload != expectedPayload) return null
+        val extracted = (entry.payload as? TierADerivativePayload.Ocr)?.value ?: return null
+        return OcrDerivativeGenerationCoordinationOutcome.Admitted(record, extracted)
+    }
+
+    private fun stableDocxOcrGenerationId(evidenceArtifactId: EvidenceArtifactId, operationKey: String): DerivativeGenerationId {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$evidenceArtifactId|$operationKey".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return DerivativeGenerationId("ocr-docx-$digest")
     }
 
     /**

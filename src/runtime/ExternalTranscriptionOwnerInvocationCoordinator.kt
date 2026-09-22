@@ -110,6 +110,17 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         if (inspection.readableNativeText || inspection.images.isEmpty() || inspection.unsupportedMediaCount > 0) {
             return ExternalTranscriptionOwnerInvocationOutcome.UnsupportedOrOutOfBounds(evidenceArtifactId)
         }
+        val operationKey = DocxExternalOcrOperationIdentity.key(
+            evidenceArtifactId = evidenceArtifactId,
+            sourceSha256 = trusted.sha256,
+            images = inspection.images,
+            providerProfileIdentity = executionBinding?.profileId ?: "UNBOUND_TEST_PROFILE",
+            instructionSha256 = executionBinding?.instructionSha256,
+            schemaSha256 = executionBinding?.schemaSha256,
+        )
+        durableAdmission.findEquivalentDocxOcr(evidenceArtifactId, operationKey)?.let { existing ->
+            return ExternalTranscriptionOwnerInvocationOutcome.Admitted(evidenceArtifactId, existing.record, existing.extracted)
+        }
         val candidates = mutableListOf<OcrStructuredTranscriptionCandidate>()
         for (image in inspection.images) {
             val representation = when (val outcome = representationFactory.createDocxEmbeddedImage(trusted, image)) {
@@ -172,7 +183,7 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             providerProvenance = first.providerProvenance,
             processingProvenance = compositeProvenance,
             recognisedAt = candidates.maxOf { it.recognisedAt },
-            warnings = candidates.flatMapIndexed { index, candidate ->
+            warnings = listOf(DocxExternalOcrOperationIdentity.warning(operationKey)) + candidates.flatMapIndexed { index, candidate ->
                 val image = inspection.images[index]
                 candidate.warnings + "DOCX_EMBEDDED_IMAGE ordinal=${image.ordinal};part=${image.partName};media=${image.mediaType};sha256=${image.sha256};relationship=${image.relationshipId ?: "none"}"
             },

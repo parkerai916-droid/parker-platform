@@ -4,6 +4,8 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.nio.file.Files
+import java.nio.file.Path
 import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 import org.apache.poi.common.usermodel.PictureType
@@ -16,9 +18,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.assertNotEquals
+import org.junit.jupiter.api.io.TempDir
 import parker.core.interfaces.*
 
 class ExternalTranscriptionOwnerInvocationCoordinatorTest {
+    @TempDir lateinit var directory: Path
     private val owner = PrincipalId("owner.external-test")
     private val evidenceId = EvidenceArtifactId("evidence-external-1")
     private val bytes = "bounded source".toByteArray()
@@ -282,6 +287,66 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         assertFalse(processing.byteExactCopy)
         assertEquals(listOf(1, 2), admitted.extracted.pageAccounting!!.returnedScope.pageNumbers)
         assertEquals(listOf(1, 2), admitted.extracted.segments.mapNotNull { it.pageNumber })
+    }
+
+    @Test
+    fun `equivalent DOCX replay reuses the durable generation without provider calls`() = runTest {
+        val docx = imageOnlyDocx(image("jpeg", 0x22), image("png", 0x77))
+        val custodian = docxCustodian(docx)
+        val durable = durableAdmission(directory.resolve("replay"))
+        val mechanism = FakeMechanism(events) { request -> imageCandidate(request) }
+        val permission = FakePermission(PermissionDecisionOutcome.APPROVED, events)
+        val first = docxCoordinator(permission, custodian, mechanism, durable).invoke(owner, evidenceId)
+        val firstAdmitted = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(first)
+        val second = docxCoordinator(permission, custodian, mechanism, durable).invoke(owner, evidenceId)
+        val secondAdmitted = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(second)
+        assertEquals(firstAdmitted.record.derivativeGenerationId, secondAdmitted.record.derivativeGenerationId)
+        assertEquals(2, mechanism.calls)
+        assertEquals(1, durable.generations.findGenerationsForEvidence(evidenceId).size)
+        assertEquals(OcrAuthorityClassification.EXTERNAL_AUTHORITATIVE, secondAdmitted.extracted.authority)
+    }
+
+    @Test
+    fun `restart replay discovers the same DOCX generation and non-equivalent image bytes mint a new one`() = runTest {
+        val root = directory.resolve("restart")
+        val firstDocx = imageOnlyDocx(image("jpeg", 0x22), image("png", 0x77))
+        val firstCustodian = docxCustodian(firstDocx)
+        val firstDurable = durableAdmission(root)
+        val firstMechanism = FakeMechanism(events) { request -> imageCandidate(request) }
+        val first = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(
+            docxCoordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), firstCustodian, firstMechanism, firstDurable).invoke(owner, evidenceId),
+        )
+        val restartedDurable = durableAdmission(root)
+        val restartMechanism = FakeMechanism(events) { request -> imageCandidate(request) }
+        val restarted = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(
+            docxCoordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), firstCustodian, restartMechanism, restartedDurable).invoke(owner, evidenceId),
+        )
+        assertEquals(first.record.derivativeGenerationId, restarted.record.derivativeGenerationId)
+        assertEquals(0, restartMechanism.calls)
+
+        val changedDocx = imageOnlyDocx(image("jpeg", 0x23), image("png", 0x77))
+        val changedMechanism = FakeMechanism(events) { request -> imageCandidate(request) }
+        val changed = assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(
+            docxCoordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), docxCustodian(changedDocx), changedMechanism, restartedDurable).invoke(owner, evidenceId),
+        )
+        assertNotEquals(first.record.derivativeGenerationId, changed.record.derivativeGenerationId)
+        assertEquals(2, changedMechanism.calls)
+        assertEquals(2, restartedDurable.generations.findGenerationsForEvidence(evidenceId).size)
+    }
+
+    @Test
+    fun `two-image partial failure admits no authoritative composite`() = runTest {
+        val docx = imageOnlyDocx(image("jpeg", 0x22), image("png", 0x77))
+        val durable = durableAdmission(directory.resolve("partial"))
+        val mechanism = FakeMechanism(events) { request ->
+            if (request.mediaType == "image/png") ExternalTranscriptionMechanismOutcome.Failure("controlled second-image failure")
+            else imageCandidate(request)
+        }
+        val outcome = docxCoordinator(FakePermission(PermissionDecisionOutcome.APPROVED, events), docxCustodian(docx), mechanism, durable).invoke(owner, evidenceId)
+        assertIs<ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure>(outcome)
+        assertEquals(2, mechanism.calls)
+        assertTrue(durable.generations.findGenerationsForEvidence(evidenceId).isEmpty())
+        assertEquals(0, Files.walk(durable.root.resolve("content")).use { paths -> paths.filter { Files.isRegularFile(it) }.count() })
     }
 
     // REAL-DOCUMENT-2F -- Wire Accepted External Transcription into Governed Acquisition. Proves,
@@ -598,6 +663,66 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         mechanism: ExternalTranscriptionMechanism,
         onAdmissionPrincipal: (PrincipalId) -> Unit = {},
     ) = ExternalTranscriptionOwnerInvocationCoordinator(permission, custodian, mechanism, OcrStructuredResultValidator(), admission(onAdmissionPrincipal), correlationFactory = { "correlation-unit-j" })
+
+    private fun docxCoordinator(
+        permission: PermissionEngine,
+        custodian: EvidenceCustodian,
+        mechanism: ExternalTranscriptionMechanism,
+        durable: DurableAdmission,
+    ) = ExternalTranscriptionOwnerInvocationCoordinator(
+        permission, custodian, mechanism, OcrStructuredResultValidator(), durable.admission,
+        correlationFactory = { "correlation-docx-idempotency" },
+    )
+
+    private data class DurableAdmission(
+        val generations: FileSystemDerivativeGenerationStorage,
+        val admission: DerivativeGenerationCoordinator,
+        val root: Path,
+    ) : ValidatedExternalTranscriptionAdmission by admission
+
+    private fun durableAdmission(root: Path): DurableAdmission {
+        Files.createDirectories(root.resolve("generations"))
+        Files.createDirectories(root.resolve("content"))
+        val generations = FileSystemDerivativeGenerationStorage(root.resolve("generations"))
+        val content = FileSystemDerivativeContentStorage(root.resolve("content"))
+        val admission = DerivativeGenerationCoordinator(
+            CsvStructuralExtractor { error("unused") },
+            generations,
+            FileSystemDocumentIngestionAudit(root.resolve("audit.log")),
+            { DerivativeGenerationId("unused-id") },
+            { Instant.EPOCH },
+            contentStorage = content,
+        )
+        return DurableAdmission(generations, admission, root)
+    }
+
+    private fun docxCustodian(docx: ByteArray) = FakeCustodian(
+        source = EvidenceRetrievalResult.Found(evidenceId, docx),
+        manifest = EvidenceManifestRetrievalResult.Found(
+            EvidenceSourceManifest(evidenceId, sha256(docx), docx.size.toLong(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ),
+    )
+
+    private fun imageCandidate(request: ExternalTranscriptionRequest): ExternalTranscriptionMechanismOutcome {
+        val provenance = requireNotNull(request.ocrProcessingProvenance)
+        val scope = OcrPageScope(listOf(1))
+        return ExternalTranscriptionMechanismOutcome.Candidate(OcrStructuredTranscriptionCandidate(
+            scope, scope, scope,
+            listOf(OcrStructuredPageCandidate(1, "image ${request.mediaType}", OcrPageOutcomeKind.TRANSCRIBED)),
+            TranscriptionFidelity.UNVERIFIED_LITERAL_TRANSCRIPTION,
+            OcrRecognitionIdentity("external", "literal-v1", "1.0.0"),
+            OcrProviderProvenance("provider", "adapter", "1.0.0", "literal-v1", "model", OcrModelSnapshot.NotExposed, "provider-correlation-${request.mediaType}"),
+            provenance, Instant.EPOCH,
+        ))
+    }
+
+    private fun imageOnlyDocx(jpeg: ByteArray, png: ByteArray): ByteArray = ByteArrayOutputStream().also { out ->
+        XWPFDocument().use { document ->
+            document.createParagraph().createRun().addPicture(ByteArrayInputStream(jpeg), PictureType.JPEG, "first.jpg", 100, 100)
+            document.createParagraph().createRun().addPicture(ByteArrayInputStream(png), PictureType.PNG, "second.png", 100, 100)
+            document.write(out)
+        }
+    }.toByteArray()
 
     private fun admission(onPrincipal: (PrincipalId) -> Unit = {}) = ValidatedExternalTranscriptionAdmission { id, validation, principal, _ ->
         onPrincipal(principal)

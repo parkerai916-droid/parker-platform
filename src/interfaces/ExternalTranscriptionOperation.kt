@@ -5,12 +5,17 @@ data class ExternalTranscriptionExecutionBinding(
     val requestId: String,
     val attemptId: String,
     val profileId: String,
+    val instructionSha256: String? = null,
+    val schemaSha256: String? = null,
 ) {
     init {
         val bounded = Regex("^[A-Za-z0-9_-]{1,120}$")
         require(bounded.matches(requestId)) { "requestId must be a bounded opaque identifier" }
         require(bounded.matches(attemptId)) { "attemptId must be a bounded opaque identifier" }
         require(profileId.isNotBlank() && profileId.length <= 1_024) { "profileId must be bounded" }
+        listOf(instructionSha256, schemaSha256).forEach { digest ->
+            require(digest == null || digest.matches(Regex("^[0-9a-f]{64}$"))) { "configuration digests must be lowercase SHA-256 when present" }
+        }
     }
 }
 

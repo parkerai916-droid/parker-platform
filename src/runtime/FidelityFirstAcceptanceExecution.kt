@@ -271,4 +271,10 @@ object OrdinaryFidelityFirstExecutionIdentity {
 
 /** The exact governed binding [OpenAiResponsesExternalTranscriptionAdapter] requires -- derived, never invented. */
 fun FidelityFirstExecutionIdentity.toExecutionBinding() =
-    parker.core.interfaces.ExternalTranscriptionExecutionBinding(safeRequestId, safeAttemptId, profileId)
+    parker.core.interfaces.ExternalTranscriptionExecutionBinding(
+        requestId = safeRequestId,
+        attemptId = safeAttemptId,
+        profileId = profileId,
+        instructionSha256 = instructionSha256,
+        schemaSha256 = schemaSha256,
+    )
