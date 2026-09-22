@@ -851,15 +851,26 @@ class OwnerEvidenceHttpServerTest {
     }
 
     @Test
-    fun `transcribeExternalRow, the separate enhanced-external-transcription path, is untouched by the executeAcquisition fix`() {
+    fun `enhanced transcription action uses stable evidence identity across row refreshes`() {
         val harness = startHarness("")
         try {
             val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/")).header("Cookie", pairedCookie(harness)).GET().build()).body()
-            val start = body.indexOf("async function transcribeExternalRow(index)")
+            assertTrue(body.contains("external.type = 'button'"))
+            assertTrue(body.contains("external.dataset.action = 'run-enhanced-transcription'"))
+            assertTrue(body.contains("external.dataset.evidenceArtifactId = row.evidenceArtifactId"))
+            assertTrue(body.contains("event.preventDefault();"))
+            assertTrue(body.contains("event.stopPropagation();"))
+            assertTrue(body.contains("transcribeExternalEvidence(event.currentTarget.dataset.evidenceArtifactId)"))
+            val start = body.indexOf("async function transcribeExternalEvidence(evidenceArtifactId)")
             assertTrue(start >= 0)
             val fn = body.substring(start, body.indexOf("\nasync function ", start + 1))
-            assertFalse(fn.contains("Local OCR"))
-            assertFalse(fn.contains("capability.mechanism"))
+            assertTrue(fn.contains("currentCanonicalExternalEvidence(evidenceArtifactId)"))
+            assertTrue(fn.contains("/owner/evidence/${'$'}{evidenceArtifactId}/transcribe-external"))
+            assertTrue(fn.contains("boundedExternalExecutionMessage"))
+            assertTrue(fn.contains("result.message || result.error || result.status"))
+            assertFalse(fn.contains("rows[index]"), "execution must not derive identity from a stale row index")
+            assertFalse(body.contains("transcribeExternalRow(index)"))
+            assertTrue(body.contains("function findCanonicalEvidenceRowIndex(evidenceArtifactId)"))
         } finally { harness.shutdown() }
     }
 

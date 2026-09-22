@@ -3848,6 +3848,9 @@ function render() {
     }
     if (row.evidenceArtifactId && !row.externalResultRow) {
       const external = document.createElement('button');
+      external.type = 'button';
+      external.dataset.action = 'run-enhanced-transcription';
+      external.dataset.evidenceArtifactId = row.evidenceArtifactId;
       external.textContent = row.externalProcessing ? 'Enhanced transcription processing…' : 'Run enhanced transcription';
       const authorized = row.externalTranscriptionAuthorization && row.externalTranscriptionAuthorization.status === 'AUTHORISED';
       const ready = enhancedReadiness.status === 'READY';
@@ -3855,7 +3858,11 @@ function render() {
       external.title = !ready ? enhancedReadiness.message
         : !authorized ? 'Click "View acquisition decision" and authorize enhanced transcription for this document first.'
         : 'Explicitly submit this evidence for enhanced transcription';
-      external.onclick = () => transcribeExternalRow(index);
+      external.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        transcribeExternalEvidence(event.currentTarget.dataset.evidenceArtifactId);
+      };
       actions.appendChild(external);
     }
     // UI-INGESTION-8B/8E: exact-evidence discovery of admitted Tier B OCR derivative generations
@@ -5696,29 +5703,49 @@ async function loadEnhancedReadiness() {
 }
 document.getElementById('checkEnhancedReadinessButton').onclick = loadEnhancedReadiness;
 
-async function transcribeExternalRow(index) {
-  const source = rows[index];
+function currentCanonicalExternalEvidence(evidenceArtifactId) {
+  const index = findCanonicalEvidenceRowIndex(evidenceArtifactId);
+  return index < 0 ? null : rows[index];
+}
+
+function boundedExternalExecutionMessage(prefix, value) {
+  const detail = value == null ? '' : String(value);
+  return (prefix + (detail ? ': ' + detail : '')).slice(0, 240);
+}
+
+async function transcribeExternalEvidence(evidenceArtifactId) {
+  const source = currentCanonicalExternalEvidence(evidenceArtifactId);
+  if (!source) {
+    document.getElementById('status').textContent = boundedExternalExecutionMessage('Enhanced transcription failed safely', 'Evidence row was not found.');
+    return;
+  }
   const authorized = source.externalTranscriptionAuthorization && source.externalTranscriptionAuthorization.status === 'AUTHORISED';
   if (source.externalProcessing || enhancedReadiness.status !== 'READY' || !authorized) return;
   source.externalProcessing = true;
   render();
   try {
-    const resp = await fetch(`/owner/evidence/${'$'}{source.evidenceArtifactId}/transcribe-external`, { method: 'POST', headers: authHeaders() });
+    const resp = await fetch(`/owner/evidence/${'$'}{evidenceArtifactId}/transcribe-external`, { method: 'POST', headers: authHeaders() });
     const result = await resp.json();
+    const current = currentCanonicalExternalEvidence(evidenceArtifactId) || source;
     if (result.status === 'TIER_B_DURABLE_COMPLETE') {
       rows.push({
-        originalFileName: source.originalFileName + ' — Enhanced transcription', byteLength: source.byteLength,
-        evidenceArtifactId: source.evidenceArtifactId, status: result.status, message: 'Enhanced transcription durably admitted',
+        originalFileName: current.originalFileName + ' — Enhanced transcription', byteLength: current.byteLength,
+        evidenceArtifactId, status: result.status, message: 'Enhanced transcription durably admitted',
         ocrDerivativeGenerationId: result.derivativeGenerationId, ocrContent: result.content,
         externalResultRow: true, selectedForAnalysis: false, acknowledgesUnverifiedExternalTranscription: false,
       });
     } else {
-      source.message = result.message || 'Enhanced transcription failed safely.';
+      current.message = boundedExternalExecutionMessage(
+        'Enhanced transcription failed safely',
+        result.message || result.error || result.status || 'Request was rejected.',
+      );
     }
   } catch (e) {
-    source.message = 'Enhanced transcription request failed safely.';
+    const current = currentCanonicalExternalEvidence(evidenceArtifactId) || source;
+    current.message = boundedExternalExecutionMessage('Enhanced transcription request failed safely', e && e.message);
   } finally {
-    source.externalProcessing = false;
+    const current = currentCanonicalExternalEvidence(evidenceArtifactId) || source;
+    current.externalProcessing = false;
     render();
   }
 }
