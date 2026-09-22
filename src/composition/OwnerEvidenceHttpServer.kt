@@ -3271,6 +3271,14 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 <p>Select Files: <input type="file" id="filePicker" multiple> <button id="uploadButton">Upload</button></p>
 <p><button id="refreshEvidenceButton">Refresh existing evidence</button></p>
 <p id="status"></p>
+<div id="acquisitionDiagnostic" class="content-panel" hidden aria-live="polite">
+  <h3>Acquisition decision diagnostic</h3>
+  <p>Evidence ID: <span id="acquisitionDiagnosticEvidenceId"></span></p>
+  <p>Filename: <span id="acquisitionDiagnosticFilename"></span></p>
+  <p>Stage: <span id="acquisitionDiagnosticStage"></span></p>
+  <p>HTTP status: <span id="acquisitionDiagnosticHttpStatus"></span></p>
+  <p>Safe error: <span id="acquisitionDiagnosticError"></span></p>
+</div>
 <div class="library-controls">
   <label>Case <select id="caseFilter"><option value="all">All cases</option><option value="unassigned">Unassigned</option></select></label>
   <button id="createCaseButton" type="button">Create Case</button>
@@ -3327,6 +3335,39 @@ let analysisSpeechRecorder = null;
 let analysisSpeechChunks = [];
 let analysisSpeechTimer = null;
 const ANALYSIS_MAX_RECORDING_MS = 300000;
+let acquisitionDiagnostic = null;
+
+function boundedDiagnosticError(error) {
+  const text = error && error.message ? String(error.message) : String(error || 'Unknown error');
+  return text.slice(0, 240);
+}
+
+function renderAcquisitionDiagnostic() {
+  const panel = document.getElementById('acquisitionDiagnostic');
+  if (!panel || !acquisitionDiagnostic) return;
+  panel.hidden = false;
+  document.getElementById('acquisitionDiagnosticEvidenceId').textContent = acquisitionDiagnostic.evidenceArtifactId || 'Unavailable';
+  document.getElementById('acquisitionDiagnosticFilename').textContent = acquisitionDiagnostic.filename || 'Unavailable';
+  document.getElementById('acquisitionDiagnosticStage').textContent = acquisitionDiagnostic.stage;
+  document.getElementById('acquisitionDiagnosticHttpStatus').textContent = acquisitionDiagnostic.httpStatus == null ? 'Unavailable' : String(acquisitionDiagnostic.httpStatus);
+  document.getElementById('acquisitionDiagnosticError').textContent = acquisitionDiagnostic.error || 'None';
+}
+
+function setAcquisitionDiagnosticStage(stage, httpStatus, error) {
+  if (!acquisitionDiagnostic) return;
+  acquisitionDiagnostic.stage = stage;
+  acquisitionDiagnostic.httpStatus = httpStatus == null ? acquisitionDiagnostic.httpStatus : httpStatus;
+  acquisitionDiagnostic.error = error ? boundedDiagnosticError(error) : '';
+  renderAcquisitionDiagnostic();
+}
+
+function beginAcquisitionDiagnostic(evidenceArtifactId, filename) {
+  acquisitionDiagnostic = { evidenceArtifactId: evidenceArtifactId || '', filename: filename || '', stage: 'CLICK_RECEIVED', httpStatus: null, error: '' };
+  renderAcquisitionDiagnostic();
+  return {
+    stage: (name, status, error) => setAcquisitionDiagnosticStage(name, status, error),
+  };
+}
 
 async function loadCases(preferredCaseId = null) {
   try {
@@ -3748,6 +3789,7 @@ function render() {
     const tr = document.createElement('tr');
     if (row.evidenceArtifactId) {
       tr.dataset.evidenceArtifactId = row.evidenceArtifactId;
+      tr.dataset.filename = documentName(row);
       tr.dataset.canonicalEvidence = row.externalResultRow ? 'false' : 'true';
       tr.dataset.mediaType = row.mediaType || '';
     }
@@ -3769,6 +3811,7 @@ function render() {
       acquire.type = 'button';
       acquire.dataset.action = 'view-acquisition-decision';
       acquire.dataset.evidenceArtifactId = row.evidenceArtifactId;
+      acquire.dataset.filename = documentName(row);
       acquire.textContent = 'View acquisition decision';
       acquire.title = 'Show Parker’s governed acquisition selection; this does not execute acquisition.';
       // Bind the action to the immutable Parker evidence identity, not the mutable
@@ -3777,7 +3820,11 @@ function render() {
       acquire.onclick = event => {
         event.preventDefault();
         event.stopPropagation();
-        loadAcquisitionDecisionForEvidenceId(event.currentTarget.dataset.evidenceArtifactId);
+        const button = event.currentTarget;
+        const diagnostic = beginAcquisitionDiagnostic(button.dataset.evidenceArtifactId, button.dataset.filename);
+        diagnostic.stage('EVIDENCE_ID_READ');
+        Promise.resolve(loadAcquisitionDecisionForEvidenceId(button.dataset.evidenceArtifactId, false, diagnostic))
+          .catch(e => diagnostic.stage('ERROR', null, e));
       };
       actions.appendChild(acquire);
     }
@@ -5330,7 +5377,7 @@ function findCanonicalEvidenceRowIndex(evidenceArtifactId) {
   return canonical >= 0 ? canonical : rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId);
 }
 
-async function loadAcquisitionDecisionForEvidenceId(evidenceArtifactId, preserveExecutionError = false) {
+async function loadAcquisitionDecisionForEvidenceId(evidenceArtifactId, preserveExecutionError = false, diagnostic = null) {
   let index = findCanonicalEvidenceRowIndex(evidenceArtifactId);
   if (index < 0 && evidenceArtifactId) {
     // A background refresh can replace the array between DOM creation and the click. Re-read the
@@ -5341,20 +5388,25 @@ async function loadAcquisitionDecisionForEvidenceId(evidenceArtifactId, preserve
   }
   if (index < 0) {
     document.getElementById('status').textContent = 'Acquisition decision unavailable for this evidence row.';
+    diagnostic?.stage('ERROR', null, 'Canonical evidence row was not found.');
     return;
   }
-  await loadAcquisitionDecision(index, preserveExecutionError);
+  diagnostic?.stage('ROW_RESOLVED');
+  await loadAcquisitionDecision(index, preserveExecutionError, diagnostic);
 }
 
-async function loadAcquisitionDecision(index, preserveExecutionError = false) {
+async function loadAcquisitionDecision(index, preserveExecutionError = false, diagnostic = null) {
   const row = rows[index];
   if (!preserveExecutionError) row.acquisitionError = null;
   row.acquisitionResult = null;
   try {
+    diagnostic?.stage('REQUEST_STARTED');
     const resp = await fetch(`/owner/evidence/${'$'}{row.evidenceArtifactId}/acquisition`, {
       method: 'GET', headers: authHeaders(), credentials: 'same-origin',
     });
+    diagnostic?.stage('RESPONSE_RECEIVED', resp.status);
     const result = await resp.json();
+    diagnostic?.stage('JSON_PARSED', resp.status);
     if (!resp.ok) row.acquisitionError = result.error || 'Acquisition decision unavailable.';
     else {
       row.acquisitionDecision = result;
@@ -5366,9 +5418,18 @@ async function loadAcquisitionDecision(index, preserveExecutionError = false) {
         row.message = 'Governed transcription available';
       }
     }
-  } catch (e) { row.acquisitionError = 'Acquisition decision request failed safely.'; }
+  } catch (e) {
+    row.acquisitionError = 'Acquisition decision request failed safely.';
+    if (diagnostic) {
+      diagnostic.stage('ERROR', null, e);
+      render();
+      return;
+    }
+  }
   await loadExternalTranscriptionAuthorizationForEvidenceId(row.evidenceArtifactId);
+  diagnostic?.stage('PANEL_RENDER_STARTED');
   render();
+  diagnostic?.stage('PANEL_RENDER_COMPLETE');
 }
 
 async function loadExternalTranscriptionAuthorizationForEvidenceId(evidenceArtifactId) {
