@@ -7,6 +7,8 @@ interface ExternalTranscriptionInvocationObserver {
     fun sourceRetrieved() = Unit
     fun representationBuilt() = Unit
     fun requestPrepared() = Unit
+    fun embeddedImagePrepared(ordinal: Int, partName: String, mediaType: String, sha256: String, relationshipId: String?) = Unit
+    fun embeddedImageResult(ordinal: Int, status: String, responseIdentity: String? = null) = Unit
     fun generationAdmitted() = Unit
     companion object { val NONE = object : ExternalTranscriptionInvocationObserver {} }
 }
@@ -123,9 +125,15 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
         }
         val candidates = mutableListOf<OcrStructuredTranscriptionCandidate>()
         for (image in inspection.images) {
+            invocationObserver.embeddedImagePrepared(
+                image.ordinal, image.partName, image.mediaType, image.sha256, image.relationshipId,
+            )
             val representation = when (val outcome = representationFactory.createDocxEmbeddedImage(trusted, image)) {
                 is OcrProcessingRepresentationOutcome.Created -> outcome.representation
-                else -> return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Embedded DOCX image failed bounded representation validation")
+                else -> {
+                    invocationObserver.embeddedImageResult(image.ordinal, "REPRESENTATION_REJECTED")
+                    return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Embedded DOCX image failed bounded representation validation")
+                }
             }
             val request = ExternalTranscriptionRequest(
                 representation = representation,
@@ -137,16 +145,28 @@ class ExternalTranscriptionOwnerInvocationCoordinator(
             invocationObserver.requestPrepared()
             val candidate = when (val mechanismOutcome = externalMechanism.transcribe(request)) {
                 is ExternalTranscriptionMechanismOutcome.Candidate -> mechanismOutcome.candidate
-                is ExternalTranscriptionMechanismOutcome.Failure -> return ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure(mechanismOutcome.reason)
+                is ExternalTranscriptionMechanismOutcome.Failure -> {
+                    invocationObserver.embeddedImageResult(image.ordinal, "PROVIDER_FAILURE:${mechanismOutcome.reason.take(200)}")
+                    return ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure(mechanismOutcome.reason)
+                }
             } as? OcrStructuredTranscriptionCandidate
-                ?: return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Mechanism returned a non-OCR-shaped candidate for an embedded DOCX image")
+                ?: run {
+                    invocationObserver.embeddedImageResult(image.ordinal, "RESPONSE_SHAPE_REJECTED")
+                    return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Mechanism returned a non-OCR-shaped candidate for an embedded DOCX image")
+                }
             if (!candidate.processingProvenance.byteExactCopy && candidate.processingProvenance.sourceEvidenceArtifactId == evidenceArtifactId &&
                 candidate.processingProvenance.sourceManifestSha256.value == trusted.sha256 &&
                 candidate.processingProvenance.sourceMediaType == trusted.mediaType &&
                 candidate.processingProvenance.sourceByteLength == trusted.byteLength &&
                 candidate.processingProvenance.representationMediaType == image.mediaType &&
                 candidate.processingProvenance.representationSha256.value == image.sha256
-            ) candidates += candidate else return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Candidate provenance contradicts the verified DOCX source or embedded image")
+            ) {
+                candidates += candidate
+                invocationObserver.embeddedImageResult(image.ordinal, "RESPONSE_PARSED", candidate.providerProvenance.providerCorrelationIdentifier)
+            } else {
+                invocationObserver.embeddedImageResult(image.ordinal, "PROVENANCE_REJECTED")
+                return ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected("Candidate provenance contradicts the verified DOCX source or embedded image")
+            }
         }
         val first = candidates.first()
         val scope = OcrPageScope((1..candidates.size).toList())

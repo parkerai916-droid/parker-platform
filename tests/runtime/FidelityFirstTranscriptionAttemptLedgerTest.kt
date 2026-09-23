@@ -10,8 +10,8 @@ import java.util.concurrent.Callable
 
 class FidelityFirstTranscriptionAttemptLedgerTest {
     @TempDir lateinit var root: Path
-    private fun identity(attempt: String = "attempt-1") = FidelityFirstExecutionIdentity(
-        "execution-1", "request-1", attempt, "evidence-1", "a".repeat(64), 10, "application/pdf",
+    private fun identity(attempt: String = "attempt-1", media: String = "application/pdf") = FidelityFirstExecutionIdentity(
+        "execution-1", "request-1", attempt, "evidence-1", "a".repeat(64), 10, media,
         "b".repeat(40), "OpenAI", "gpt-5.6-sol", "openai-fidelity-first-transcription-v1",
         "c".repeat(64), "d".repeat(64), "external-transcription.direct-authoritative-byte-v1", "2.0.0",
     )
@@ -43,6 +43,26 @@ class FidelityFirstTranscriptionAttemptLedgerTest {
         tracker.authorised(); tracker.preflightPassed(); tracker.sourceRetrieved(); tracker.requestPrepared()
         tracker.providerAttemptStarting(); tracker.providerResponseReceived(); tracker.generationAdmitted(); tracker.terminalSuccess()
         assertEquals(1, tracker.snapshot().stages.count { it == FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED })
+    }
+
+    @Test fun `DOCX ledger permits one ordered provider cycle per embedded image and persists image facts`() {
+        val docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        val tracker = FidelityFirstAttemptTracker(FileSystemFidelityFirstAttemptLedger(root) { Instant.EPOCH }, identity(media = docx))
+        tracker.authorised(); tracker.preflightPassed(); tracker.sourceRetrieved()
+        tracker.embeddedImagePrepared(1, "word/media/image1.jpeg", "image/jpeg", "a".repeat(64), "rId2")
+        tracker.requestPrepared(); tracker.providerAttemptStarting(); tracker.providerResponseReceived()
+        tracker.embeddedImageResult(1, "RESPONSE_PARSED", "provider-response-1")
+        tracker.embeddedImagePrepared(2, "word/media/image2.png", "image/png", "b".repeat(64), "rId3")
+        tracker.requestPrepared(); tracker.providerAttemptStarting(); tracker.providerResponseReceived()
+        tracker.embeddedImageResult(2, "RESPONSE_PARSED", "provider-response-2")
+        tracker.generationAdmitted(); tracker.terminalSuccess("generation-1")
+
+        val snapshot = tracker.snapshot()
+        assertEquals(2, snapshot.stages.count { it == FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED })
+        assertEquals(4, snapshot.embeddedImageFacts.size)
+        assertEquals(listOf("1", "1", "2", "2"), snapshot.embeddedImageFacts.map { it.getValue("ordinal") })
+        assertTrue(snapshot.embeddedImageFacts.any { it["responseIdentity"] == "provider-response-2" })
+        assertEquals("generation-1", snapshot.admittedGenerationId)
     }
 
     // ================= Live EML response-parse diagnostics (terminalFailure reason) =================

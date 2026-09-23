@@ -95,6 +95,7 @@ data class FidelityFirstAttemptSnapshot(
     val identity: FidelityFirstExecutionIdentity,
     val stages: List<FidelityFirstAttemptStage>,
     val admittedGenerationId: String? = null,
+    val embeddedImageFacts: List<Map<String, String>> = emptyList(),
 ) {
     val providerAttemptStarted get() = FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED in stages
 }
@@ -143,9 +144,25 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
             if (!Files.exists(file)) create(file, identity)
             val current = decode(file).also { require(it.identity == identity) }
             require(current.stages.last() !in TERMINAL)
-            require(next == FidelityFirstAttemptStage.TERMINAL_FAILURE || next.ordinal == current.stages.last().ordinal + 1)
+            require(validTransition(current.identity, current.stages.last(), next))
             replace(file, checked("STAGE", listOf("stage" to next.name, "timestamp" to now().toString()) + metadata))
             decode(file)
+        }
+
+    /** Persist bounded, non-content metadata for one embedded DOCX image attempt. */
+    fun recordEmbeddedImageFact(identity: FidelityFirstExecutionIdentity, fields: List<Pair<String, String>>) =
+        locked(identity.safeExecutionId) {
+            val file = path(identity.safeExecutionId)
+            require(Files.exists(file))
+            val current = decode(file)
+            require(current.identity == identity && identity.isEmbeddedDocx())
+            require(fields.isNotEmpty())
+            require(fields.map { it.first }.distinct().size == fields.size)
+            require(fields.all { (key, value) ->
+                key.matches(Regex("^[a-zA-Z][a-zA-Z0-9]*$")) && value.isNotBlank() &&
+                    value.length <= 1_024 && value.none { it in "\r\n\t" }
+            })
+            replace(file, checked("IMAGE", fields))
         }
 
     /** Idempotent reconstruction support before consumption; never skips or repeats attempt start. */
@@ -155,7 +172,15 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
             val file = path(identity.safeExecutionId)
             if (!Files.exists(file)) create(file, identity)
             val current = decode(file).also { require(it.identity == identity) }
-            require(!current.providerAttemptStarted && current.stages.last() !in TERMINAL)
+            require(current.stages.last() !in TERMINAL)
+            if (identity.isEmbeddedDocx() &&
+                current.stages.last() == FidelityFirstAttemptStage.PROVIDER_RESPONSE_RECEIVED &&
+                next == FidelityFirstAttemptStage.REQUEST_PREPARED
+            ) {
+                replace(file, checked("STAGE", listOf("stage" to next.name, "timestamp" to now().toString())))
+                return@locked decode(file)
+            }
+            require(!current.providerAttemptStarted)
             if (current.stages.last().ordinal >= next.ordinal) return@locked current
             require(next.ordinal == current.stages.last().ordinal + 1)
             replace(file, checked("STAGE", listOf("stage" to next.name, "timestamp" to now().toString())))
@@ -183,13 +208,19 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
         val text = Files.readString(file); require(text.endsWith('\n'))
         val lines = text.lineSequence().filter(String::isNotEmpty).toList(); require(lines.size >= 2)
         val identity = identity(parse(lines.first(), "IDENTITY"))
-        val stageFields = lines.drop(1).map { parse(it, "STAGE") }
+        val records = lines.drop(1).map { line ->
+            val kind = line.substringBefore('\t').removePrefix("kind=")
+            require(kind in setOf("STAGE", "IMAGE"))
+            kind to line
+        }
+        val stageFields = records.filter { it.first == "STAGE" }.map { parse(it.second, "STAGE") }
+        val imageFacts = records.filter { it.first == "IMAGE" }.map { parse(it.second, "IMAGE") }
         val stages = stageFields.map { FidelityFirstAttemptStage.valueOf(it.getValue("stage")) }
         require(stages.first() == FidelityFirstAttemptStage.AUTHORISED)
-        stages.zipWithNext().forEach { (a, b) -> require(b == FidelityFirstAttemptStage.TERMINAL_FAILURE || b.ordinal == a.ordinal + 1) }
-        require(stages.count { it == FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED } <= 1)
+        stages.zipWithNext().forEach { (a, b) -> require(validTransition(identity, a, b)) }
+        if (!identity.isEmbeddedDocx()) require(stages.count { it == FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED } <= 1)
         val generationId = stageFields.lastOrNull { it["stage"] == FidelityFirstAttemptStage.TERMINAL_SUCCESS.name }?.get("generationId")
-        return FidelityFirstAttemptSnapshot(identity, stages, generationId)
+        return FidelityFirstAttemptSnapshot(identity, stages, generationId, imageFacts)
     }
     private fun identity(f: Map<String, String>) = FidelityFirstExecutionIdentity(
         f.getValue("executionId"), f.getValue("requestId"), f.getValue("attemptId"), f.getValue("evidenceArtifactId"),
@@ -225,7 +256,15 @@ class FileSystemFidelityFirstAttemptLedger(storageRoot: Path, private val now: (
         val TERMINAL = setOf(FidelityFirstAttemptStage.TERMINAL_SUCCESS, FidelityFirstAttemptStage.TERMINAL_FAILURE)
         val PRE_ATTEMPT = setOf(FidelityFirstAttemptStage.PREFLIGHT_PASSED, FidelityFirstAttemptStage.SOURCE_RETRIEVED, FidelityFirstAttemptStage.REQUEST_PREPARED)
     }
+
+    private fun validTransition(identity: FidelityFirstExecutionIdentity, current: FidelityFirstAttemptStage, next: FidelityFirstAttemptStage): Boolean =
+        next == FidelityFirstAttemptStage.TERMINAL_FAILURE ||
+            next.ordinal == current.ordinal + 1 ||
+            (identity.isEmbeddedDocx() && current == FidelityFirstAttemptStage.PROVIDER_RESPONSE_RECEIVED && next == FidelityFirstAttemptStage.REQUEST_PREPARED)
 }
+
+private fun FidelityFirstExecutionIdentity.isEmbeddedDocx() =
+    sourceMediaType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 class FidelityFirstAttemptTracker(
     private val ledger: FileSystemFidelityFirstAttemptLedger,
@@ -236,6 +275,18 @@ class FidelityFirstAttemptTracker(
     override fun sourceRetrieved() { ledger.advancePreAttempt(identity, FidelityFirstAttemptStage.SOURCE_RETRIEVED) }
     override fun representationBuilt() = Unit
     override fun requestPrepared() { ledger.advancePreAttempt(identity, FidelityFirstAttemptStage.REQUEST_PREPARED) }
+    override fun embeddedImagePrepared(ordinal: Int, partName: String, mediaType: String, sha256: String, relationshipId: String?) {
+        ledger.recordEmbeddedImageFact(identity, listOf(
+            "event" to "PREPARED", "ordinal" to ordinal.toString(), "partName" to partName,
+            "mediaType" to mediaType, "sha256" to sha256, "relationshipId" to (relationshipId ?: "none"),
+        ))
+    }
+    override fun embeddedImageResult(ordinal: Int, status: String, responseIdentity: String?) {
+        ledger.recordEmbeddedImageFact(identity, buildList {
+            add("event" to "RESULT"); add("ordinal" to ordinal.toString()); add("status" to status)
+            responseIdentity?.let { add("responseIdentity" to it) }
+        })
+    }
     override fun providerAttemptStarting() { ledger.transition(identity, FidelityFirstAttemptStage.PROVIDER_ATTEMPT_STARTED) }
     override fun providerResponseReceived() { ledger.transition(identity, FidelityFirstAttemptStage.PROVIDER_RESPONSE_RECEIVED) }
     override fun generationAdmitted() { ledger.transition(identity, FidelityFirstAttemptStage.GENERATION_ADMITTED) }

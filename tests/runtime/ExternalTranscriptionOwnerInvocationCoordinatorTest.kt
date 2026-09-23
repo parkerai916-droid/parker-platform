@@ -290,6 +290,30 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
     }
 
     @Test
+    fun `DOCX image attempt diagnostics preserve ordered image identity and provider correlation`() = runTest {
+        val docx = imageOnlyDocx(image("jpeg", 0x22), image("png", 0x77))
+        val prepared = mutableListOf<String>()
+        val results = mutableListOf<String>()
+        val observer = object : ExternalTranscriptionInvocationObserver {
+            override fun embeddedImagePrepared(ordinal: Int, partName: String, mediaType: String, sha256: String, relationshipId: String?) {
+                prepared += "$ordinal|$partName|$mediaType|$relationshipId"
+            }
+            override fun embeddedImageResult(ordinal: Int, status: String, responseIdentity: String?) {
+                results += "$ordinal|$status|$responseIdentity"
+            }
+        }
+        val mechanism = FakeMechanism(events) { request -> imageCandidate(request) }
+        val outcome = docxCoordinator(
+            FakePermission(PermissionDecisionOutcome.APPROVED, events), docxCustodian(docx), mechanism,
+            durableAdmission(directory.resolve("diagnostics")), observer,
+        ).invoke(owner, evidenceId)
+
+        assertIs<ExternalTranscriptionOwnerInvocationOutcome.Admitted>(outcome)
+        assertEquals(listOf("1|word/media/image1.jpeg|image/jpeg|rId2", "2|word/media/image2.png|image/png|rId3"), prepared)
+        assertEquals(listOf("1|RESPONSE_PARSED|provider-correlation-image/jpeg", "2|RESPONSE_PARSED|provider-correlation-image/png"), results)
+    }
+
+    @Test
     fun `equivalent DOCX replay reuses the durable generation without provider calls`() = runTest {
         val docx = imageOnlyDocx(image("jpeg", 0x22), image("png", 0x77))
         val custodian = docxCustodian(docx)
@@ -669,9 +693,10 @@ class ExternalTranscriptionOwnerInvocationCoordinatorTest {
         custodian: EvidenceCustodian,
         mechanism: ExternalTranscriptionMechanism,
         durable: DurableAdmission,
+        observer: ExternalTranscriptionInvocationObserver = ExternalTranscriptionInvocationObserver.NONE,
     ) = ExternalTranscriptionOwnerInvocationCoordinator(
         permission, custodian, mechanism, OcrStructuredResultValidator(), durable.admission,
-        correlationFactory = { "correlation-docx-idempotency" },
+        correlationFactory = { "correlation-docx-idempotency" }, invocationObserver = observer,
     )
 
     private data class DurableAdmission(

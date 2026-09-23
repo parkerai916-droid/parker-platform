@@ -3903,13 +3903,42 @@ class ParkerRuntime(
                 is ExternalTranscriptionOwnerInvocationOutcome.EmlAdmitted -> {
                     tracker.terminalSuccess(outcome.record.derivativeGenerationId.value); outcome
                 }
-                else -> { runCatching { tracker.terminalFailure(responseParseFailureDiagnostic) }; outcome }
+                else -> {
+                    if (responseParseFailureDiagnostic != null) {
+                        runCatching { tracker.terminalFailure(responseParseFailureDiagnostic) }
+                    } else {
+                        runCatching { tracker.terminalFailure(externalTranscriptionFailureReason(outcome, null)) }
+                    }
+                    outcome
+                }
             }
         } catch (e: Exception) {
-            runCatching { tracker.terminalFailure(responseParseFailureDiagnostic) }
+            if (responseParseFailureDiagnostic != null) {
+                runCatching { tracker.terminalFailure(responseParseFailureDiagnostic) }
+            } else {
+                runCatching { tracker.terminalFailure(boundedExecutionFailureReason(e)) }
+            }
             throw e
         }
     }
+
+    private fun externalTranscriptionFailureReason(
+        outcome: ExternalTranscriptionOwnerInvocationOutcome,
+        responseDiagnostic: String?,
+    ): String? = responseDiagnostic ?: when (outcome) {
+        is ExternalTranscriptionOwnerInvocationOutcome.MechanismFailure -> boundedExecutionDiagnostic("MECHANISM_FAILURE", outcome.reason)
+        is ExternalTranscriptionOwnerInvocationOutcome.ValidationRejected -> boundedExecutionDiagnostic("VALIDATION_REJECTED", outcome.reason)
+        is ExternalTranscriptionOwnerInvocationOutcome.AdmissionFailed -> boundedExecutionDiagnostic("ADMISSION_FAILED", outcome.reason)
+        is ExternalTranscriptionOwnerInvocationOutcome.ReconciliationRequired -> boundedExecutionDiagnostic("RECONCILIATION_REQUIRED", outcome.reason)
+        is ExternalTranscriptionOwnerInvocationOutcome.EmlReconciliationRequired -> boundedExecutionDiagnostic("EML_RECONCILIATION_REQUIRED", outcome.reason)
+        else -> "EXECUTION_FAILED:${outcome::class.simpleName ?: "UNKNOWN"}"
+    }
+
+    private fun boundedExecutionFailureReason(error: Exception): String =
+        boundedExecutionDiagnostic("EXECUTION_EXCEPTION", "${error::class.simpleName}:${error.message ?: "no message"}")
+
+    private fun boundedExecutionDiagnostic(prefix: String, detail: String): String =
+        "$prefix:${detail.replace(Regex("[\\r\\n\\t]"), " ").take(460)}".take(500)
 
     /** Read-only, exact-target owner authorization status. Never invokes a provider. */
     suspend fun externalTranscriptionAuthorizationStatusAsOwner(
