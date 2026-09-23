@@ -292,11 +292,11 @@ private class OwnerPinAdminFailure(message: String) : RuntimeException(message)
 fun main(args: Array<String>) {
     val console = System.console() ?: run {
         System.err.println("Owner PIN tooling requires an interactive terminal; input will not be read from a pipe.")
-        return
+        kotlin.system.exitProcess(2)
     }
     if (args.size != 1) {
         System.err.println("usage: owner-pin-admin.sh set|change|reset|verify-status")
-        return
+        kotlin.system.exitProcess(2)
     }
     val operation = when (args.firstOrNull()) {
         "set" -> OwnerPinAdminOperation.SET
@@ -305,7 +305,7 @@ fun main(args: Array<String>) {
         "verify-status" -> OwnerPinAdminOperation.VERIFY_STATUS
         else -> {
             System.err.println("usage: owner-pin-admin.sh set|change|reset|verify-status")
-            return
+            kotlin.system.exitProcess(2)
         }
     }
     val exit = OwnerPinAdmin(io = ConsoleOwnerPinAdminIo(console)).run(operation)
