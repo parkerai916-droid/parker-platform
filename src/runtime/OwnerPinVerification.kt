@@ -85,6 +85,8 @@ class FileSystemOwnerPinSecurityAudit(
     override fun record(record: OwnerPinAuditRecord) {
         require(record.reason.length <= 120) { "Owner PIN audit reason is too long" }
         require(!Files.isSymbolicLink(logFile)) { "Owner PIN audit path may not be a symlink" }
+        val lockPath = logFile.resolveSibling("${logFile.fileName}.lock")
+        require(!Files.isSymbolicLink(lockPath)) { "Owner PIN audit lock path may not be a symlink" }
         val line = listOf(
             "OWNER_PIN_AUDIT_V1",
             record.event.name,
@@ -93,18 +95,22 @@ class FileSystemOwnerPinSecurityAudit(
             record.reason,
         ).joinToString("\t") + "\n"
         val encoded = StandardCharsets.UTF_8.encode(line)
-        if (Files.exists(logFile) && Files.size(logFile) + encoded.remaining() > maximumBytes) {
-            val rotated = logFile.resolveSibling("${logFile.fileName}.1")
-            if (Files.isSymbolicLink(rotated)) throw IllegalStateException("Owner PIN audit rotation path may not be a symlink")
-            Files.move(logFile, rotated, StandardCopyOption.REPLACE_EXISTING)
-        }
-        Files.newByteChannel(
-            logFile,
-            StandardOpenOption.CREATE,
-            StandardOpenOption.WRITE,
-            StandardOpenOption.APPEND,
-        ).use { channel ->
-            while (encoded.hasRemaining()) channel.write(encoded)
+        FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { lockChannel ->
+            lockChannel.lock().use {
+                if (Files.exists(logFile) && Files.size(logFile) + encoded.remaining() > maximumBytes) {
+                    val rotated = logFile.resolveSibling("${logFile.fileName}.1")
+                    if (Files.isSymbolicLink(rotated)) throw IllegalStateException("Owner PIN audit rotation path may not be a symlink")
+                    Files.move(logFile, rotated, StandardCopyOption.REPLACE_EXISTING)
+                }
+                Files.newByteChannel(
+                    logFile,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.APPEND,
+                ).use { channel ->
+                    while (encoded.hasRemaining()) channel.write(encoded)
+                }
+            }
         }
     }
 
