@@ -458,6 +458,9 @@ class ParkerRuntime(
     // PARKER_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT is configured, preserving prior
     // behavior exactly for every deployment that does not yet opt in.
     private var externalTranscriptionAuthorizationCoordinator: parker.core.runtime.ExternalTranscriptionOwnerAuthorizationCoordinator? = null
+    // Owner PIN Unit 3: server-side, restart-invalidating proof store. This is only composed
+    // when the already opt-in PIN configuration is enabled; no browser or HTTP surface exposes it.
+    private var ownerUnlockProofStore: parker.core.runtime.InMemoryOwnerUnlockProofStore? = null
     // UI-INGESTION-6: promoted from a buildAndRegisterRuntimeGraph-local val to a field so
     // invokeExternalTranscriptionAsOwner (a separate, later-invoked method) can reuse the exact
     // same transport instance already shared by the acceptance/region adapters, rather than
@@ -2195,6 +2198,9 @@ class ParkerRuntime(
         // in which case it also requires the already-mandatory high-authority verification
         // credential/principal this deployment already supplies for human correction.
         val externalTranscriptionAuthorizationRoot = config.externalTranscriptionAuthorizationStorageRootPath
+        ownerUnlockProofStore = if (config.ownerHighAuthorityPinEnabled) {
+            parker.core.runtime.InMemoryOwnerUnlockProofStore()
+        } else null
         externalTranscriptionAuthorizationCoordinator = if (
             externalTranscriptionAuthorizationRoot != null &&
             config.ownerHighAuthorityVerificationCredentialFilePath != null &&
@@ -2216,6 +2222,7 @@ class ParkerRuntime(
                     FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath))),
                 ),
                 governanceAudit = FileSystemCaseGovernanceAudit(Path.of(requireNotNull(config.caseGovernanceAuditLogPath))),
+                ownerUnlockProofStore = ownerUnlockProofStore,
             )
         } else null
         // A separately persisted authority is the only bridge from ACCEPTANCE_PENDING to the raw
@@ -3968,6 +3975,25 @@ class ParkerRuntime(
                 detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
             )
         return coordinator.authorize(evidenceArtifactId, OwnerVerificationCredential.presented(credential))
+    }
+
+    /**
+     * Internal server-side bridge for Unit 3. The proof is already issued and held by Parker;
+     * this method does not accept PIN text, proof strings, browser data, or source overrides.
+     * Unit 4 may compose a governed caller around this bridge without creating a second
+     * authorization coordinator.
+     */
+    internal suspend fun authorizeExternalTranscriptionWithOwnerUnlockProof(
+        evidenceArtifactId: EvidenceArtifactId,
+        proofId: parker.core.runtime.OwnerUnlockProofId,
+    ): parker.core.runtime.ExternalTranscriptionAuthorizationView {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val coordinator = externalTranscriptionAuthorizationCoordinator
+            ?: return parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
+                detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+            )
+        return coordinator.authorizeWithUnlockProof(evidenceArtifactId, proofId)
     }
 
     /** Exact-authority administrative acceptance command; never accepts source or configuration overrides. */

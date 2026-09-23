@@ -146,8 +146,49 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
     private val auditReader: CaseGovernanceAuditReader? = null,
     private val standingPolicy: FileSystemStandingExternalTranscriptionPolicyStore? = null,
     private val governanceAudit: CaseGovernanceAudit? = null,
+    private val ownerUnlockProofStore: InMemoryOwnerUnlockProofStore? = null,
 ) {
     private val purpose = ExternalTranscriptionInvocationGate.AUTHORIZATION_PURPOSE
+
+    private sealed interface ExactTargetResolution {
+        data class Ready(val manifest: EvidenceSourceManifest) : ExactTargetResolution
+        data class Rejected(val view: ExternalTranscriptionAuthorizationView) : ExactTargetResolution
+    }
+
+    private suspend fun resolveExactTarget(evidenceArtifactId: EvidenceArtifactId): ExactTargetResolution {
+        if (!purposes.isActive(purpose)) {
+            return ExactTargetResolution.Rejected(
+                ExternalTranscriptionAuthorizationView(
+                    ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
+                    detail = "PURPOSE_NOT_ACTIVE",
+                ),
+            )
+        }
+        val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
+            is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
+            else -> return ExactTargetResolution.Rejected(
+                ExternalTranscriptionAuthorizationView(
+                    ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
+                    detail = "SOURCE_UNAVAILABLE",
+                ),
+            )
+        }
+        if (manifest.evidenceArtifactId != evidenceArtifactId) {
+            return ExactTargetResolution.Rejected(
+                ExternalTranscriptionAuthorizationView(
+                    ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
+                    detail = "SOURCE_IDENTITY_MISMATCH",
+                ),
+            )
+        }
+        return ExactTargetResolution.Ready(manifest)
+    }
+
+    private suspend fun permissionAllows(evidenceArtifactId: EvidenceArtifactId): Boolean {
+        val decision = permissions.evaluate(ExternalTranscriptionInvocationGate.buildExecutionRequest(ownerPrincipalId, evidenceArtifactId))
+        return decision.decision == PermissionDecisionOutcome.APPROVED ||
+            decision.decision == PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION
+    }
 
     /** Explicit Owner-only administrative establishment of the standing policy. */
     suspend fun establishStandingExternalTranscriptionPolicy(presented: OwnerVerificationCredential?): Boolean {
@@ -285,24 +326,10 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
         evidenceArtifactId: EvidenceArtifactId,
         presented: OwnerVerificationCredential?,
     ): ExternalTranscriptionAuthorizationView {
-        if (!purposes.isActive(purpose)) {
-            return ExternalTranscriptionAuthorizationView(
-                ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
-                detail = "PURPOSE_NOT_ACTIVE",
-            )
-        }
-        val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(ownerPrincipalId, evidenceArtifactId)) {
-            is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
-            else -> return ExternalTranscriptionAuthorizationView(
-                ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
-                detail = "SOURCE_UNAVAILABLE",
-            )
-        }
-        if (manifest.evidenceArtifactId != evidenceArtifactId) {
-            return ExternalTranscriptionAuthorizationView(
-                ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
-                detail = "SOURCE_IDENTITY_MISMATCH",
-            )
+        val resolution = resolveExactTarget(evidenceArtifactId)
+        val manifest = when (resolution) {
+            is ExactTargetResolution.Ready -> resolution.manifest
+            is ExactTargetResolution.Rejected -> return resolution.view
         }
         val target = ResourceId("external-transcription-authorization-${manifest.evidenceArtifactId.value}-${manifest.sha256}")
         if (!ownerVerification.verify(ownerPrincipalId, purpose, target, presented)) {
@@ -311,8 +338,7 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
                 detail = "HIGH_AUTHORITY_VERIFICATION_FAILED",
             )
         }
-        val decision = permissions.evaluate(ExternalTranscriptionInvocationGate.buildExecutionRequest(ownerPrincipalId, evidenceArtifactId))
-        if (decision.decision != PermissionDecisionOutcome.APPROVED && decision.decision != PermissionDecisionOutcome.APPROVED_WITH_CONFIRMATION) {
+        if (!permissionAllows(evidenceArtifactId)) {
             return ExternalTranscriptionAuthorizationView(
                 ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, evidenceArtifactId.value,
                 detail = "PERMISSION_POLICY_DENIED",
@@ -333,4 +359,87 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
                 )
         }
     }
+
+    /**
+     * Consumes a server-side Owner PIN unlock proof and then enters the same exact-source
+     * authorization store used by [authorize]. The proof is consumed only after the current
+     * manifest, purpose, and permission policy have been revalidated. Consumption is never
+     * refunded if durable authorization persistence subsequently fails.
+     */
+    suspend fun authorizeWithUnlockProof(
+        evidenceArtifactId: EvidenceArtifactId,
+        proofId: OwnerUnlockProofId,
+    ): ExternalTranscriptionAuthorizationView {
+        val proofStore = ownerUnlockProofStore
+            ?: return ExternalTranscriptionAuthorizationView(
+                ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, evidenceArtifactId.value,
+                detail = "OWNER_UNLOCK_PROOF_UNAVAILABLE",
+            )
+        val resolution = resolveExactTarget(evidenceArtifactId)
+        val manifest = when (resolution) {
+            is ExactTargetResolution.Ready -> resolution.manifest
+            is ExactTargetResolution.Rejected -> return resolution.view
+        }
+        if (!permissionAllows(evidenceArtifactId)) {
+            return ExternalTranscriptionAuthorizationView(
+                ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, evidenceArtifactId.value,
+                detail = "PERMISSION_POLICY_DENIED",
+            )
+        }
+
+        val requestedScope = OwnerUnlockProofScope(
+            principalId = ownerPrincipalId,
+            evidenceArtifactId = evidenceArtifactId,
+            sourceSha256 = parker.core.interfaces.OcrSha256Digest(manifest.sha256),
+            authorizationPurpose = purpose,
+            operation = OwnerUnlockProofOperation.EXTERNAL_TRANSCRIPTION_AUTHORIZATION,
+        )
+        return when (proofStore.consume(proofId, requestedScope)) {
+            OwnerUnlockProofConsumeResult.CONSUMED -> {
+                val grant = ExternalTranscriptionOwnerAuthorization(
+                    evidenceArtifactId.value, manifest.sha256, ownerPrincipalId.value, purpose.value, clock.instant(),
+                )
+                try {
+                    when (val outcome = store.createOrGet(grant)) {
+                        is ExternalTranscriptionOwnerAuthorizationStoreOutcome.Created ->
+                            ExternalTranscriptionAuthorizationView(
+                                ExternalTranscriptionAuthorizationDisposition.AUTHORISED,
+                                evidenceArtifactId.value,
+                                approvedAt = outcome.grant.approvedAt,
+                            )
+                        is ExternalTranscriptionOwnerAuthorizationStoreOutcome.AlreadyExisted ->
+                            ExternalTranscriptionAuthorizationView(
+                                ExternalTranscriptionAuthorizationDisposition.AUTHORISED,
+                                evidenceArtifactId.value,
+                                approvedAt = outcome.grant.approvedAt,
+                            )
+                        is ExternalTranscriptionOwnerAuthorizationStoreOutcome.Conflict ->
+                            ExternalTranscriptionAuthorizationView(
+                                ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                                evidenceArtifactId.value,
+                                detail = "CONFLICTING_PRIOR_AUTHORIZATION",
+                            )
+                    }
+                } catch (_: RuntimeException) {
+                    ExternalTranscriptionAuthorizationView(
+                        ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                        evidenceArtifactId.value,
+                        detail = "AUTHORIZATION_STORE_UNAVAILABLE",
+                    )
+                }
+            }
+            OwnerUnlockProofConsumeResult.EXPIRED -> proofFailure(evidenceArtifactId, "PROOF_EXPIRED")
+            OwnerUnlockProofConsumeResult.REPLAY_REJECTED -> proofFailure(evidenceArtifactId, "PROOF_REPLAYED")
+            OwnerUnlockProofConsumeResult.SCOPE_MISMATCH,
+            OwnerUnlockProofConsumeResult.NOT_FOUND -> proofFailure(evidenceArtifactId, "PROOF_INVALID")
+            OwnerUnlockProofConsumeResult.UNAVAILABLE -> proofFailure(evidenceArtifactId, "OWNER_UNLOCK_PROOF_UNAVAILABLE")
+        }
+    }
+
+    private fun proofFailure(evidenceArtifactId: EvidenceArtifactId, detail: String) =
+        ExternalTranscriptionAuthorizationView(
+            ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED,
+            evidenceArtifactId.value,
+            detail = detail,
+        )
 }

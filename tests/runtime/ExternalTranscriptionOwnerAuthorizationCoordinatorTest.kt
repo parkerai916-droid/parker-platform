@@ -46,6 +46,16 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
             throw UnsupportedOperationException("submitSource not supported by this fake")
     }
 
+    private class SwitchingCustodian(var current: EvidenceSourceManifest) : EvidenceCustodian {
+        override suspend fun accept(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact): EvidenceAcceptanceResult = error("not used")
+        override suspend fun retrieve(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceRetrievalResult = error("not used")
+        override suspend fun retrieveManifest(requestingPrincipalId: PrincipalId, evidenceArtifactId: EvidenceArtifactId): EvidenceManifestRetrievalResult =
+            if (current.evidenceArtifactId == evidenceArtifactId) EvidenceManifestRetrievalResult.Found(current)
+            else EvidenceManifestRetrievalResult.NotFound(evidenceArtifactId)
+        override suspend fun submitSource(requestingPrincipalId: PrincipalId, candidate: CandidateEvidenceArtifact, advisorySha256: String?): EvidenceSourceSubmissionResult =
+            throw UnsupportedOperationException("submitSource not supported by this fake")
+    }
+
     private class ThrowingStore : ExternalTranscriptionOwnerAuthorizationStore {
         override fun loadIfPresent(evidenceArtifactId: String): ExternalTranscriptionOwnerAuthorization? = null
         override fun createOrGet(grant: ExternalTranscriptionOwnerAuthorization): ExternalTranscriptionOwnerAuthorizationStoreOutcome =
@@ -63,6 +73,7 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
         auditReader: CaseGovernanceAuditReader? = null,
         standingPolicy: FileSystemStandingExternalTranscriptionPolicyStore? = null,
         governanceAudit: CaseGovernanceAudit? = null,
+        proofStore: InMemoryOwnerUnlockProofStore? = null,
     ): ExternalTranscriptionOwnerAuthorizationCoordinator {
         return ExternalTranscriptionOwnerAuthorizationCoordinator(
             ownerPrincipalId = owner,
@@ -79,7 +90,22 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
             auditReader = auditReader,
             standingPolicy = standingPolicy,
             governanceAudit = governanceAudit,
+            ownerUnlockProofStore = proofStore,
         )
+    }
+
+    private fun proofScope(principalId: PrincipalId = owner, id: EvidenceArtifactId = evidenceId, sourceSha: String = sha) =
+        OwnerUnlockProofScope(
+            principalId = principalId,
+            evidenceArtifactId = id,
+            sourceSha256 = OcrSha256Digest(sourceSha),
+            authorizationPurpose = OWNER_UNLOCK_EXTERNAL_TRANSCRIPTION_PURPOSE,
+            operation = OwnerUnlockProofOperation.EXTERNAL_TRANSCRIPTION_AUTHORIZATION,
+        )
+
+    private fun issuedProof(store: InMemoryOwnerUnlockProofStore, scope: OwnerUnlockProofScope = proofScope()): OwnerUnlockProofId {
+        val result = store.issue(OwnerPinVerificationResult.VERIFIED, scope)
+        return (result as OwnerUnlockProofIssueResult.Issued).proof.id
     }
 
     @Test
@@ -135,6 +161,103 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
         assertEquals(true, c.isAuthorized(evidenceId))
         // No provider/mechanism dependency exists anywhere on this coordinator or its store --
         // structurally, "authorize" cannot invoke a provider.
+    }
+
+    @Test
+    fun `verified Owner PIN proof converges on the exact authorization coordinator`() = runTest {
+        val proofStore = InMemoryOwnerUnlockProofStore()
+        val c = coordinator(proofStore = proofStore)
+        val proofId = issuedProof(proofStore)
+
+        val view = c.authorizeWithUnlockProof(evidenceId, proofId)
+
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.AUTHORISED, view.disposition)
+        assertEquals(true, c.isAuthorized(evidenceId))
+        assertEquals(OwnerUnlockProofConsumeResult.REPLAY_REJECTED, proofStore.consume(proofId, proofScope()))
+    }
+
+    @Test
+    fun `proof-backed authorization consumes before createOrGet failure and cannot be retried`() = runTest {
+        val proofStore = InMemoryOwnerUnlockProofStore()
+        val c = coordinator(store = ThrowingStore(), proofStore = proofStore)
+        val proofId = issuedProof(proofStore)
+
+        val failed = c.authorizeWithUnlockProof(evidenceId, proofId)
+
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, failed.disposition)
+        assertEquals("AUTHORIZATION_STORE_UNAVAILABLE", failed.detail)
+        assertEquals(OwnerUnlockProofConsumeResult.REPLAY_REJECTED, proofStore.consume(proofId, proofScope()))
+        assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `proof is bound to the current trusted source SHA and burns when source changes`() = runTest {
+        val proofStore = InMemoryOwnerUnlockProofStore()
+        val custodian = SwitchingCustodian(manifest(evidenceId, sha))
+        val c = coordinator(custodian = custodian, proofStore = proofStore)
+        val proofId = issuedProof(proofStore)
+        custodian.current = manifest(evidenceId, "b".repeat(64))
+
+        val view = c.authorizeWithUnlockProof(evidenceId, proofId)
+
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, view.disposition)
+        assertEquals("PROOF_INVALID", view.detail)
+        assertEquals(OwnerUnlockProofConsumeResult.REPLAY_REJECTED, proofStore.consume(proofId, proofScope()))
+        assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `proof rejects wrong evidence and principal without creating authorization`() = runTest {
+        val proofStore = InMemoryOwnerUnlockProofStore()
+        val c = coordinator(proofStore = proofStore)
+        val wrongEvidence = issuedProof(proofStore, proofScope(id = otherEvidenceId))
+
+        val evidenceView = c.authorizeWithUnlockProof(evidenceId, wrongEvidence)
+
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, evidenceView.disposition)
+        assertEquals("PROOF_INVALID", evidenceView.detail)
+        assertEquals(false, c.isAuthorized(evidenceId))
+
+        val wrongPrincipal = issuedProof(proofStore, proofScope(principalId = PrincipalId("another-owner")))
+        val principalView = c.authorizeWithUnlockProof(evidenceId, wrongPrincipal)
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, principalView.disposition)
+        assertEquals("PROOF_INVALID", principalView.detail)
+        assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `permission denial happens before proof consumption and does not create authorization`() = runTest {
+        val proofStore = InMemoryOwnerUnlockProofStore()
+        val c = coordinator(
+            permission = FakePermission(PermissionDecisionOutcome.DENIED),
+            proofStore = proofStore,
+        )
+        val proofId = issuedProof(proofStore)
+
+        val view = c.authorizeWithUnlockProof(evidenceId, proofId)
+
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, view.disposition)
+        assertEquals("PERMISSION_POLICY_DENIED", view.detail)
+        assertEquals(OwnerUnlockProofConsumeResult.CONSUMED, proofStore.consume(proofId, proofScope()))
+        assertEquals(false, c.isAuthorized(evidenceId))
+    }
+
+    @Test
+    fun `expired and replayed proofs fail closed while exact existing authorization remains idempotent`() = runTest {
+        val proofStore = InMemoryOwnerUnlockProofStore()
+        val c = coordinator(proofStore = proofStore)
+        val firstProof = issuedProof(proofStore)
+        val first = c.authorizeWithUnlockProof(evidenceId, firstProof)
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.AUTHORISED, first.disposition)
+
+        val replay = c.authorizeWithUnlockProof(evidenceId, firstProof)
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED, replay.disposition)
+        assertEquals("PROOF_REPLAYED", replay.detail)
+
+        val secondProof = issuedProof(proofStore)
+        val second = c.authorizeWithUnlockProof(evidenceId, secondProof)
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.AUTHORISED, second.disposition)
+        assertEquals(first.approvedAt, second.approvedAt)
     }
 
     @Test
