@@ -13,6 +13,7 @@ WRAPPER = ROOT / "tools" / "owner-pin-admin.sh"
 class OwnerPinAdminScriptPathTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="owner-pin-admin-wrapper-")
+        self.caller_dir = tempfile.TemporaryDirectory(prefix="owner-pin-admin-caller-")
         self.root = Path(self.temp_dir.name)
         tools = self.root / "tools"
         tools.mkdir()
@@ -28,6 +29,7 @@ class OwnerPinAdminScriptPathTest(unittest.TestCase):
         (self.root / "nested").mkdir()
 
     def tearDown(self):
+        self.caller_dir.cleanup()
         self.temp_dir.cleanup()
 
     def run_wrapper(self, invocation, cwd):
@@ -49,7 +51,7 @@ class OwnerPinAdminScriptPathTest(unittest.TestCase):
 
     def test_absolute_and_relative_invocations_resolve_wrapper_root(self):
         absolute = str(self.root / "tools" / WRAPPER.name)
-        self.run_wrapper(absolute, self.root / "nested")
+        self.run_wrapper(absolute, self.caller_dir.name)
         self.run_wrapper("tools/owner-pin-admin.sh", self.root)
         self.run_wrapper("../tools/owner-pin-admin.sh", self.root / "nested")
 
