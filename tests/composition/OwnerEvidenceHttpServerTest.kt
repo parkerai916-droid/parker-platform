@@ -159,6 +159,14 @@ class OwnerEvidenceHttpServerTest {
         },
         ordinaryExecute: suspend (EvidenceArtifactId, String, String, String) -> OrdinaryRegionOwnerResult =
             { _, _, _, _ -> OrdinaryRegionOwnerResult(OrdinaryRegionDisposition.CAPABILITY_NOT_ACCEPTED, "disabled") },
+        ownerPinEnabled: () -> Boolean = { false },
+        ownerPinAvailable: () -> Boolean = { false },
+        authorizeExternalTranscriptionWithPin: suspend (EvidenceArtifactId, String) -> parker.core.runtime.ExternalTranscriptionAuthorizationView = { id, _ ->
+            parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, id.value,
+                detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+            )
+        },
         retrieveTierA: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierAContentRetrievalOutcome)? = null,
         retrieveTierB: (suspend (EvidenceArtifactId, DerivativeGenerationId) -> TierBOcrContentRetrievalOutcome)? = null,
         discoverOcrDerivativeGenerations: (suspend (EvidenceArtifactId) -> List<DerivativeGenerationRecord>)? = null,
@@ -243,6 +251,9 @@ class OwnerEvidenceHttpServerTest {
             authentication = authentication,
             operations = adapter,
             logger = serverLogger,
+            ownerPinEnabled = ownerPinEnabled,
+            ownerPinAvailable = ownerPinAvailable,
+            authorizeExternalTranscriptionWithPin = authorizeExternalTranscriptionWithPin,
             invokeFidelityFirstAcceptance = invokeAcceptance,
             createOrdinaryRegionCapabilityAcceptance = invokePromotion,
             evaluateOrdinaryRegionCapability = evaluateRegionCapability,
@@ -1139,6 +1150,83 @@ class OwnerEvidenceHttpServerTest {
     }
 
     // ================= Authentication =================
+
+    @Test
+    fun `authenticated PIN authorization accepts strict JSON and never exposes PIN or proof`() = runTest {
+        var receivedPin: String? = null
+        val evidenceId = EvidenceArtifactId("evidence-pin-http")
+        val harness = startHarness(
+            "",
+            ownerPinEnabled = { true },
+            ownerPinAvailable = { true },
+            authorizeExternalTranscriptionWithPin = { id, pin ->
+                receivedPin = pin
+                assertEquals(evidenceId, id)
+                parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                    parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.AUTHORISED,
+                    id.value,
+                    approvedAt = Instant.parse("2026-09-23T00:00:00Z"),
+                )
+            },
+        )
+        try {
+            val request = HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/evidence/${evidenceId.value}/authorize-enhanced-transcription-pin"))
+                .header("Cookie", pairedCookie(harness))
+                .header("Origin", harness.baseUri())
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"pin\":\"012345\"}"))
+                .build()
+            val response = send(request)
+            assertEquals(200, response.statusCode(), response.body())
+            assertEquals("012345", receivedPin)
+            assertTrue(!response.body().contains("012345"), response.body())
+            assertTrue(!response.body().contains("proof".uppercase()), response.body())
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `enabled PIN capability serves PIN authorization UI and keeps execution separate`() = runTest {
+        val harness = startHarness("", ownerPinEnabled = { true }, ownerPinAvailable = { true })
+        try {
+            val body = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/"))
+                .header("Cookie", pairedCookie(harness)).GET().build()).body()
+            assertTrue(body.contains("const ownerPinEnabled = true;"))
+            assertTrue(body.contains("placeholder = 'Owner PIN'"))
+            assertTrue(body.contains("authorize-enhanced-transcription-pin"))
+            assertTrue(body.contains("Authorization does not execute or transmit transcription."))
+            assertTrue(body.contains("type = 'password'"))
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `PIN authorization rejects malformed JSON unknown fields unauthenticated and cross-origin requests`() = runTest {
+        var calls = 0
+        val harness = startHarness(
+            "",
+            ownerPinEnabled = { true },
+            ownerPinAvailable = { true },
+            authorizeExternalTranscriptionWithPin = { id, _ ->
+                calls++
+                parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                    parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.AUTHORISED, id.value,
+                )
+            },
+        )
+        try {
+            val path = harness.baseUri() + "/owner/evidence/evidence-pin-http/authorize-enhanced-transcription-pin"
+            fun post(body: String, cookie: String? = pairedCookie(harness), origin: String? = harness.baseUri()): HttpResponse<String> {
+                val builder = HttpRequest.newBuilder(URI.create(path)).header("Content-Type", "application/json")
+                cookie?.let { builder.header("Cookie", it) }
+                origin?.let { builder.header("Origin", it) }
+                return send(builder.POST(HttpRequest.BodyPublishers.ofString(body)).build())
+            }
+            assertEquals(400, post("{\"pin\":\"12345\"}").statusCode())
+            assertEquals(400, post("{\"pin\":\"123456\",\"extra\":true}").statusCode())
+            assertEquals(401, post("{\"pin\":\"123456\"}", cookie = null).statusCode())
+            assertEquals(403, post("{\"pin\":\"123456\"}", origin = "https://attacker.invalid").statusCode())
+            assertEquals(0, calls)
+        } finally { harness.shutdown() }
+    }
 
     @Test
     fun `an upload request with no Owner session is rejected and nothing is imported`() = runTest {

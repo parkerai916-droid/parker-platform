@@ -101,6 +101,7 @@ fun createOwnerUiRuntimeSession(environment: Map<String, String>): OwnerUiRuntim
         },
         externalTranscriptionAuthorizationStatusAsOwner = runtime::externalTranscriptionAuthorizationStatusAsOwner,
         authorizeExternalTranscriptionAsOwner = runtime::authorizeExternalTranscriptionAsOwner,
+        authorizeExternalTranscriptionWithPinAsOwner = runtime::authorizeExternalTranscriptionAsOwnerWithPin,
         discoverOcrDerivativeGenerationsAsOwner = runtime::discoverOcrDerivativeGenerationsAsOwner,
         recordHumanFidelityReviewAsOwner = runtime::recordHumanFidelityReviewAsOwner,
         projectEffectiveHumanFidelityReviewAsOwner = runtime::projectEffectiveHumanFidelityReviewAsOwner,

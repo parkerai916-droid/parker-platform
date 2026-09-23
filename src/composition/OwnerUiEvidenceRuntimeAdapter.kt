@@ -264,6 +264,12 @@ class OwnerUiEvidenceRuntimeAdapter(
             detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
         )
     },
+    private val authorizeExternalTranscriptionWithPinAsOwner: suspend (EvidenceArtifactId, String) -> parker.core.runtime.ExternalTranscriptionAuthorizationView = { id, _ ->
+        parker.core.runtime.ExternalTranscriptionAuthorizationView(
+            parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, id.value,
+            detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+        )
+    },
     // HFR Owner UI exposure scope lock amendment: null default preserves "not configured" for
     // every existing caller unless explicitly wired -- mirroring every other optional collaborator
     // in this constructor.
@@ -492,6 +498,12 @@ class OwnerUiEvidenceRuntimeAdapter(
         verificationCredential: String?,
     ): OwnerExternalTranscriptionAuthorizationView =
         toOwnerExternalTranscriptionAuthorizationView(authorizeExternalTranscriptionAsOwner(evidenceArtifactId, verificationCredential))
+
+    override suspend fun authorizeExternalTranscriptionWithPin(
+        evidenceArtifactId: EvidenceArtifactId,
+        pin: String,
+    ): OwnerExternalTranscriptionAuthorizationView =
+        toOwnerExternalTranscriptionAuthorizationView(authorizeExternalTranscriptionWithPinAsOwner(evidenceArtifactId, pin))
 
     private fun toOwnerExternalTranscriptionAuthorizationView(
         view: parker.core.runtime.ExternalTranscriptionAuthorizationView,

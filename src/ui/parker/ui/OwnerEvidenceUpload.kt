@@ -111,6 +111,16 @@ interface OwnerEvidenceOperations {
             "evidence-intelligence.external-transcription", "", null, "AUTHORIZATION_LANE_NOT_CONFIGURED",
         )
 
+    /** Explicit Owner PIN authorization; the PIN is transport input only and never returns proof material. */
+    suspend fun authorizeExternalTranscriptionWithPin(
+        evidenceArtifactId: EvidenceArtifactId,
+        pin: String,
+    ): OwnerExternalTranscriptionAuthorizationView =
+        OwnerExternalTranscriptionAuthorizationView(
+            "UNAVAILABLE", evidenceArtifactId.value, "OpenAI",
+            "evidence-intelligence.external-transcription", "", null, "AUTHORIZATION_LANE_NOT_CONFIGURED",
+        )
+
     /**
      * Imports one already-local file (an absolute path the owner's own
      * client resolved -- a native file-picker dialog result, never a string

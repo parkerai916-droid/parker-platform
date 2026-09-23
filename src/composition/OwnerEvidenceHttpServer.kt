@@ -133,6 +133,14 @@ class OwnerEvidenceHttpServer(
     private val authentication: OwnerUiAuthentication,
     private val operations: OwnerEvidenceOperations,
     private val logger: ParkerLogger,
+    private val ownerPinEnabled: () -> Boolean = { false },
+    private val ownerPinAvailable: () -> Boolean = { false },
+    private val authorizeExternalTranscriptionWithPin: suspend (EvidenceArtifactId, String) -> parker.core.runtime.ExternalTranscriptionAuthorizationView = { id, _ ->
+        parker.core.runtime.ExternalTranscriptionAuthorizationView(
+            parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE, id.value,
+            detail = "AUTHORIZATION_LANE_NOT_CONFIGURED",
+        )
+    },
     private val invokeFidelityFirstAcceptance: suspend (String) -> FidelityFirstAcceptanceOutcome = {
         FidelityFirstAcceptanceOutcome.Blocked("ACCEPTANCE_LANE_NOT_CONFIGURED")
     },
@@ -459,6 +467,17 @@ class OwnerEvidenceHttpServer(
         setCookie(exchange, SESSION_COOKIE, session, 8 * 60 * 60)
         return authentication.authenticate(session) != null
     }
+
+    /** Same-origin enforcement for the new sensitive JSON authorization action. */
+    private fun sameOriginRequest(exchange: HttpExchange): Boolean {
+        val origin = exchange.requestHeaders.getFirst("Origin") ?: return true
+        val host = exchange.requestHeaders.getFirst("Host") ?: return false
+        return origin == "http://$host" || origin == "https://$host"
+    }
+
+    private fun ownerEvidencePageHtml(): String = OWNER_EVIDENCE_PAGE_HTML
+        .replace("__PARKER_OWNER_PIN_ENABLED__", ownerPinEnabled().toString())
+        .replace("__PARKER_OWNER_PIN_AVAILABLE__", ownerPinAvailable().toString())
 
     private fun cookies(exchange: HttpExchange): Map<String, String> = exchange.requestHeaders["Cookie"].orEmpty()
         .flatMap { it.split(';') }.mapNotNull { part -> part.trim().split('=', limit=2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }.toMap()
@@ -808,7 +827,7 @@ class OwnerEvidenceHttpServer(
                     writeJson(exchange, 404, jsonObject("error" to "not found"))
                     return
                 }
-                val bytes = (if (isAuthorised(exchange)) OWNER_EVIDENCE_PAGE_HTML else OWNER_PAIRING_PAGE_HTML)
+                val bytes = (if (isAuthorised(exchange)) ownerEvidencePageHtml() else OWNER_PAIRING_PAGE_HTML)
                     .toByteArray(StandardCharsets.UTF_8)
                 exchange.responseHeaders.set("Content-Type", "text/html; charset=utf-8")
                 exchange.sendResponseHeaders(200, bytes.size.toLong())
@@ -886,6 +905,8 @@ class OwnerEvidenceHttpServer(
                         handleExternalTranscriptionAuthorizationStatus(exchange, segments[0])
                     segments.size == 2 && segments[1] == "authorize-enhanced-transcription" && method == "POST" ->
                         handleExternalTranscriptionAuthorization(exchange, segments[0])
+                    segments.size == 2 && segments[1] == "authorize-enhanced-transcription-pin" && method == "POST" ->
+                        handleExternalTranscriptionAuthorizationWithPin(exchange, segments[0])
                     segments.size == 2 && segments[0] == "acceptance-executions" && method == "POST" ->
                         handleAcceptanceExecution(exchange, segments[1])
                     segments.size == 3 && segments[1] == "content" && method == "GET" ->
@@ -1294,6 +1315,30 @@ class OwnerEvidenceHttpServer(
             val view = runBlocking { operations.authorizeExternalTranscription(id, credential) }
             val status = if (view.status == "AUTHORISED") 200 else if (view.status == "UNAVAILABLE") 409 else 403
             writeJson(exchange, status, externalTranscriptionAuthorizationJson(view))
+        }
+
+        private fun handleExternalTranscriptionAuthorizationWithPin(exchange: HttpExchange, rawId: String) {
+            if (!sameOriginRequest(exchange)) {
+                writeJson(exchange, 403, jsonObject("status" to "PIN_REJECTED", "message" to "Authorization request denied.")); return
+            }
+            val id = parseEvidenceId(exchange, rawId) ?: return
+            val contentType = exchange.requestHeaders.getFirst("Content-Type")?.lowercase()?.substringBefore(';')
+            if (contentType != "application/json") {
+                writeJson(exchange, 400, jsonObject("status" to "PIN_REJECTED", "message" to "Invalid authorization request.")); return
+            }
+            val body = try { readBounded(exchange.requestBody, 256) } catch (_: RequestBodyTooLargeException) {
+                writeJson(exchange, 413, jsonObject("status" to "PIN_REJECTED", "message" to "Invalid authorization request.")); return
+            }
+            val pin = try { parseOwnerPinAuthorizationRequest(body) } catch (_: Exception) {
+                writeJson(exchange, 400, jsonObject("status" to "PIN_REJECTED", "message" to "Invalid authorization request.")); return
+            }
+            val view = runBlocking { authorizeExternalTranscriptionWithPin(id, pin) }
+            val status = when (view.detail) {
+                "PIN_REJECTED", "PIN_TEMPORARILY_LOCKED" -> 403
+                "AUTHORIZATION_UNAVAILABLE", "SOURCE_UNAVAILABLE" -> 409
+                else -> if (view.disposition == parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.AUTHORISED) 200 else 403
+            }
+            writeJson(exchange, status, ownerPinAuthorizationJson(view))
         }
 
         private fun handleAcceptanceExecution(exchange: HttpExchange, authorityId: String) {
@@ -2118,6 +2163,29 @@ class OwnerEvidenceHttpServer(
         "purpose" to view.purpose, "disclosure" to view.disclosure, "approvedAt" to view.approvedAt, "detail" to view.detail,
     )
 
+    private fun ownerPinAuthorizationJson(view: parker.core.runtime.ExternalTranscriptionAuthorizationView): JsonObject {
+        val userStatus = when (view.detail) {
+            "PIN_REJECTED" -> "PIN_REJECTED"
+            "PIN_TEMPORARILY_LOCKED" -> "PIN_TEMPORARILY_LOCKED"
+            "AUTHORIZATION_UNAVAILABLE", "SOURCE_UNAVAILABLE" -> "AUTHORIZATION_UNAVAILABLE"
+            else -> if (view.disposition == parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.AUTHORISED) "AUTHORISED" else "AUTHORIZATION_UNAVAILABLE"
+        }
+        return jsonObject(
+            "status" to userStatus,
+            "evidenceArtifactId" to view.evidenceArtifactId,
+            "provider" to view.provider,
+            "purpose" to view.purpose,
+            "disclosure" to view.disclosure,
+            "approvedAt" to view.approvedAt,
+            "message" to when (userStatus) {
+                "AUTHORISED" -> "Enhanced transcription authorized."
+                "PIN_REJECTED" -> "PIN rejected."
+                "PIN_TEMPORARILY_LOCKED" -> "PIN verification is temporarily unavailable. Try again later."
+                else -> "Enhanced transcription authorization is unavailable."
+            },
+        )
+    }
+
     private fun acquisitionDecisionJson(decision: OwnerAcquisitionDecisionView): JsonObject = when (decision) {
         is OwnerAcquisitionDecisionView.Selected -> jsonObject(
             "status" to "SELECTED", "source" to acquisitionSourceJson(decision.source),
@@ -2545,6 +2613,15 @@ private fun parseOwnerAnalysisInvocationRequest(bodyBytes: ByteArray): OwnerAnal
     val caseId = (root["caseId"] as? String)?.let { parker.core.interfaces.CaseId(it) }
         ?: throw JsonParseException("caseId required")
     return OwnerAnalysisInvocationRequest(question, ids.map { parker.core.interfaces.EvidenceArtifactId(it as? String ?: throw JsonParseException("invalid evidence id")) }, type, caseId)
+}
+
+private fun parseOwnerPinAuthorizationRequest(bodyBytes: ByteArray): String {
+    val root = SimpleJsonReader(String(bodyBytes, StandardCharsets.UTF_8)).parseRootValue()
+    val obj = root as? Map<*, *> ?: throw JsonParseException("expected an object")
+    if (obj.keys != setOf("pin")) throw JsonParseException("unexpected authorization fields")
+    val pin = obj["pin"] as? String ?: throw JsonParseException("pin required")
+    if (!Regex("^[0-9]{6}$").matches(pin)) throw JsonParseException("invalid pin")
+    return pin
 }
 
 private data class OwnerAnalysisWorkspaceRequest(
@@ -3316,6 +3393,8 @@ private val OWNER_EVIDENCE_PAGE_HTML = """
 let rows = [];
 let expandedIndex = null;
 const detailsExpanded = new Set();
+const ownerPinEnabled = __PARKER_OWNER_PIN_ENABLED__;
+const ownerPinAvailable = __PARKER_OWNER_PIN_AVAILABLE__;
 let enhancedReadiness = { status: 'DISABLED', message: 'Enhanced transcription readiness has not been loaded.' };
 // CASE-1: every defined case, for the case filter and the per-row assign/change-case panel.
 let casesList = [];
@@ -5476,6 +5555,44 @@ function appendEnhancedTranscriptionAuthorizationSection(panel, row, index, deci
     appendField(panel, 'Authorization', 'Enhanced transcription is not yet available in this runtime: ' + enhancedReadiness.message);
     return;
   }
+  if (ownerPinEnabled) {
+    if (!ownerPinAvailable) {
+      appendField(panel, 'Authorization', 'Enhanced transcription authorization is unavailable.');
+      return;
+    }
+    if (!row.showAuthorizeForm) {
+      const authorize = document.createElement('button');
+      authorize.type = 'button';
+      authorize.textContent = 'Authorize enhanced transcription';
+      authorize.onclick = () => { row.showAuthorizeForm = true; render(); };
+      panel.appendChild(authorize);
+      return;
+    }
+    appendField(panel, 'Document', row.name || documentName(row));
+    appendField(panel, 'Evidence ID', row.evidenceArtifactId);
+    appendField(panel, 'Provider / purpose', 'OpenAI / evidence-intelligence.external-transcription');
+    appendField(panel, 'Disclosure', 'Authorization does not execute or transmit transcription. Run enhanced transcription remains a separate action.');
+    const pinInput = document.createElement('input');
+    pinInput.type = 'password';
+    pinInput.inputMode = 'numeric';
+    pinInput.maxLength = 6;
+    pinInput.autocomplete = 'off';
+    pinInput.placeholder = 'Owner PIN';
+    pinInput.setAttribute('aria-label', 'Owner PIN');
+    panel.appendChild(pinInput);
+    const confirmPin = document.createElement('button');
+    confirmPin.type = 'button';
+    confirmPin.textContent = 'Confirm authorization';
+    const stableEvidenceArtifactId = row.evidenceArtifactId;
+    confirmPin.onclick = () => { const submittedPin = pinInput.value; pinInput.value = ''; authorizePinEnhancedTranscription(stableEvidenceArtifactId, submittedPin); };
+    panel.appendChild(confirmPin);
+    const cancelPin = document.createElement('button');
+    cancelPin.type = 'button';
+    cancelPin.textContent = 'Cancel';
+    cancelPin.onclick = () => { row.showAuthorizeForm = false; render(); };
+    panel.appendChild(cancelPin);
+    return;
+  }
   if (!row.showAuthorizeForm) {
     const authorize = document.createElement('button');
     authorize.textContent = 'Authorize enhanced transcription';
@@ -5501,6 +5618,30 @@ function appendEnhancedTranscriptionAuthorizationSection(panel, row, index, deci
   cancelBtn.textContent = 'Cancel';
   cancelBtn.onclick = () => { row.showAuthorizeForm = false; render(); };
   panel.appendChild(cancelBtn);
+}
+
+async function authorizePinEnhancedTranscription(evidenceArtifactId, pin) {
+  const index = rows.findIndex(candidate => candidate.evidenceArtifactId === evidenceArtifactId && !candidate.externalResultRow);
+  if (index < 0) return;
+  const row = rows[index];
+  row.showAuthorizeForm = false;
+  try {
+    const resp = await fetch(`/owner/evidence/${'$'}{encodeURIComponent(evidenceArtifactId)}/authorize-enhanced-transcription-pin`, {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      credentials: 'same-origin',
+      body: JSON.stringify({ pin: pin }),
+    });
+    const result = await resp.json();
+    row.externalTranscriptionAuthorization = result;
+    row.authorizationError = resp.ok ? null : (result.message || 'Enhanced transcription authorization is unavailable.');
+    await loadAcquisitionDecision(index);
+  } catch (e) {
+    row.authorizationError = 'Enhanced transcription authorization is unavailable.';
+    render();
+  } finally {
+    pin = '';
+  }
 }
 
 async function authorizeEnhancedTranscription(index, credential) {

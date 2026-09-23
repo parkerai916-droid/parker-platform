@@ -345,7 +345,7 @@ data class ParkerRuntimeConfig(
     val humanCorrectionAuditStorageRootPath: String? = null,
     val ownerHighAuthorityVerificationCredentialFilePath: String? = null,
     val ownerHighAuthorityPrincipalId: String? = null,
-    /** Unit 1 only: opt-in protected Owner PIN verifier configuration; not yet wired to UI/auth. */
+    /** Opt-in protected Owner PIN verifier configuration; the browser flow remains disabled unless explicitly enabled. */
     val ownerHighAuthorityPinEnabled: Boolean = false,
     val ownerHighAuthorityPinHashFilePath: String? = null,
     val ownerHighAuthorityPinAttemptStateStorageRootPath: String? = null,

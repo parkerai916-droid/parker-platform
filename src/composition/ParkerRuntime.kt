@@ -461,6 +461,7 @@ class ParkerRuntime(
     // Owner PIN Unit 3: server-side, restart-invalidating proof store. This is only composed
     // when the already opt-in PIN configuration is enabled; no browser or HTTP surface exposes it.
     private var ownerUnlockProofStore: parker.core.runtime.InMemoryOwnerUnlockProofStore? = null
+    private var ownerPinVerifier: parker.core.runtime.OwnerPinVerifier? = null
     // UI-INGESTION-6: promoted from a buildAndRegisterRuntimeGraph-local val to a field so
     // invokeExternalTranscriptionAsOwner (a separate, later-invoked method) can reuse the exact
     // same transport instance already shared by the acceptance/region adapters, rather than
@@ -2200,6 +2201,18 @@ class ParkerRuntime(
         val externalTranscriptionAuthorizationRoot = config.externalTranscriptionAuthorizationStorageRootPath
         ownerUnlockProofStore = if (config.ownerHighAuthorityPinEnabled) {
             parker.core.runtime.InMemoryOwnerUnlockProofStore()
+        } else null
+        ownerPinVerifier = if (config.ownerHighAuthorityPinEnabled) {
+            parker.core.runtime.OwnerPinVerifier(
+                principalId = PrincipalId(config.ownerPrincipalId),
+                hashFile = Path.of(requireNotNull(config.ownerHighAuthorityPinHashFilePath)),
+                stateStore = parker.core.runtime.FileSystemOwnerPinAttemptStateStore(
+                    Path.of(requireNotNull(config.ownerHighAuthorityPinAttemptStateStorageRootPath)),
+                ),
+                audit = parker.core.runtime.FileSystemOwnerPinSecurityAudit(
+                    Path.of(requireNotNull(config.ownerHighAuthorityPinAuditLogPath)),
+                ),
+            )
         } else null
         externalTranscriptionAuthorizationCoordinator = if (
             externalTranscriptionAuthorizationRoot != null &&
@@ -3995,6 +4008,84 @@ class ParkerRuntime(
             )
         return coordinator.authorizeWithUnlockProof(evidenceArtifactId, proofId)
     }
+
+    /** Owner PIN Unit 4: authenticated transport callers supply only PIN text and route-bound ID. */
+    suspend fun authorizeExternalTranscriptionAsOwnerWithPin(
+        evidenceArtifactId: EvidenceArtifactId,
+        pinText: String,
+    ): parker.core.runtime.ExternalTranscriptionAuthorizationView {
+        if (state != RuntimeLifecycleState.RUNNING) throw ParkerRuntimeException.NotRunning(state)
+        val verifier = ownerPinVerifier
+            ?: return parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                evidenceArtifactId.value,
+                detail = "AUTHORIZATION_UNAVAILABLE",
+            )
+        val proofStore = ownerUnlockProofStore
+            ?: return parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                evidenceArtifactId.value,
+                detail = "AUTHORIZATION_UNAVAILABLE",
+            )
+        val coordinator = externalTranscriptionAuthorizationCoordinator
+            ?: return parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                evidenceArtifactId.value,
+                detail = "AUTHORIZATION_UNAVAILABLE",
+            )
+        val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)) {
+            is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
+            else -> return parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                evidenceArtifactId.value,
+                detail = "SOURCE_UNAVAILABLE",
+            )
+        }
+        if (manifest.evidenceArtifactId != evidenceArtifactId) {
+            return parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                evidenceArtifactId.value,
+                detail = "SOURCE_UNAVAILABLE",
+            )
+        }
+        val verification = verifier.verify(parker.core.runtime.OwnerPinInput.parse(pinText))
+        return when (verification) {
+            parker.core.runtime.OwnerPinVerificationResult.VERIFIED -> {
+                val scope = parker.core.runtime.OwnerUnlockProofScope(
+                    principalId = PrincipalId(config.ownerPrincipalId),
+                    evidenceArtifactId = evidenceArtifactId,
+                    sourceSha256 = parker.core.interfaces.OcrSha256Digest(manifest.sha256),
+                    authorizationPurpose = parker.core.runtime.OWNER_UNLOCK_EXTERNAL_TRANSCRIPTION_PURPOSE,
+                    operation = parker.core.runtime.OwnerUnlockProofOperation.EXTERNAL_TRANSCRIPTION_AUTHORIZATION,
+                )
+                when (val issued = proofStore.issue(verification, scope)) {
+                    is parker.core.runtime.OwnerUnlockProofIssueResult.Issued ->
+                        coordinator.authorizeWithUnlockProof(evidenceArtifactId, issued.proof.id)
+                    parker.core.runtime.OwnerUnlockProofIssueResult.Rejected,
+                    parker.core.runtime.OwnerUnlockProofIssueResult.CapacityExceeded,
+                    parker.core.runtime.OwnerUnlockProofIssueResult.Unavailable ->
+                        parker.core.runtime.ExternalTranscriptionAuthorizationView(
+                            parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.UNAVAILABLE,
+                            evidenceArtifactId.value,
+                            detail = "AUTHORIZATION_UNAVAILABLE",
+                        )
+                }
+            }
+            parker.core.runtime.OwnerPinVerificationResult.REJECTED -> pinFailure(evidenceArtifactId, "PIN_REJECTED")
+            parker.core.runtime.OwnerPinVerificationResult.TEMPORARILY_LOCKED -> pinFailure(evidenceArtifactId, "PIN_TEMPORARILY_LOCKED")
+            parker.core.runtime.OwnerPinVerificationResult.UNAVAILABLE -> pinFailure(evidenceArtifactId, "AUTHORIZATION_UNAVAILABLE")
+        }
+    }
+
+    fun ownerPinAuthorizationEnabled(): Boolean = config.ownerHighAuthorityPinEnabled
+    fun ownerPinAuthorizationAvailable(): Boolean = ownerPinVerifier?.isAvailable() == true
+
+    private fun pinFailure(evidenceArtifactId: EvidenceArtifactId, detail: String) =
+        parker.core.runtime.ExternalTranscriptionAuthorizationView(
+            parker.core.runtime.ExternalTranscriptionAuthorizationDisposition.NOT_AUTHORISED,
+            evidenceArtifactId.value,
+            detail = detail,
+        )
 
     /** Exact-authority administrative acceptance command; never accepts source or configuration overrides. */
     suspend fun invokeFidelityFirstAcceptanceAsOwner(authorityId: String): FidelityFirstAcceptanceOutcome {

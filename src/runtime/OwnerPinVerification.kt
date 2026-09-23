@@ -281,6 +281,9 @@ class OwnerPinVerifier(
 ) {
     private val loadedHash = OwnerPinHashFileLoader.load(hashFile)
 
+    /** Bounded readiness fact; never exposes the loaded PHC record. */
+    fun isAvailable(): Boolean = loadedHash is OwnerPinHashLoad.Loaded
+
     fun verify(input: OwnerPinInput): OwnerPinVerificationResult = when (input) {
         OwnerPinInput.Invalid -> {
             audit.record(OwnerPinAuditRecord(OwnerPinAuditEvent.PIN_VERIFICATION_REJECTED, principalId, clock.instant(), "INVALID_FORMAT"))
