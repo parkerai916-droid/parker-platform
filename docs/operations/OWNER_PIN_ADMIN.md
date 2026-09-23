@@ -29,9 +29,13 @@ from a pipe.
 The tool writes only an Argon2id PHC record using 32 MiB memory, three
 iterations, one lane, a 16-byte random salt, and a 32-byte derived hash. It
 writes a same-directory temporary file, sets the effective runtime-readable
-root:root 0440 policy, preserves an existing POSIX ACL when available, fsyncs,
-atomically replaces the target, and attempts to fsync the directory. It rejects
-symlink targets and does not create backups or modify the long recovery secret.
+root:root 0440 policy, copies an existing access ACL when replacing a hash,
+and explicitly grants Parker UID 999 read-only access through the host POSIX
+ACL (`u:999:r--`) before the atomic replacement. The required host tools are
+`/usr/bin/getfacl` and `/usr/bin/setfacl`; if the access model cannot be
+established, the old target is preserved and the operation fails closed. The
+tool fsyncs the file and attempts to fsync the directory. It rejects symlink
+targets and does not create backups or modify the long recovery secret.
 
 verify-status reports only whether the target is configured and whether its
 Argon2id record is valid. It never prints the hash or any credential value.

@@ -14,7 +14,6 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.GroupPrincipal
-import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.UserPrincipal
 import java.security.MessageDigest
@@ -34,6 +33,45 @@ interface OwnerPinAdminIo {
     fun readHidden(prompt: String): CharArray
     fun println(line: String)
     fun error(line: String)
+}
+
+fun interface OwnerPinRuntimeAclProvisioner {
+    fun provision(source: Path?, target: Path)
+}
+
+private object PosixOwnerPinRuntimeAclProvisioner : OwnerPinRuntimeAclProvisioner {
+    private val getfacl = Path.of("/usr/bin/getfacl")
+    private val setfacl = Path.of("/usr/bin/setfacl")
+
+    override fun provision(source: Path?, target: Path) {
+        require(Files.isExecutable(setfacl)) { "required POSIX ACL tooling is unavailable" }
+        if (source != null && Files.exists(source, LinkOption.NOFOLLOW_LINKS)) {
+            require(Files.isExecutable(getfacl)) { "required POSIX ACL tooling is unavailable" }
+            val acl = runCapture(
+                getfacl.toString(), "--access", "--absolute-names", source.toAbsolutePath().normalize().toString(),
+            )
+            runWithInput(acl, setfacl.toString(), "--set-file=-", target.toAbsolutePath().normalize().toString())
+        }
+        runWithInput(null, setfacl.toString(), "-m", "u:999:r--", target.toAbsolutePath().normalize().toString())
+    }
+
+    private fun runCapture(vararg command: String): ByteArray {
+        val process = ProcessBuilder(*command).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val output = process.inputStream.use { it.readNBytes(64 * 1024 + 1) }
+        if (output.size > 64 * 1024 || process.waitFor() != 0) {
+            throw OwnerPinAdminFailure("could not read existing hash access metadata")
+        }
+        return output
+    }
+
+    private fun runWithInput(input: ByteArray?, vararg command: String) {
+        val process = ProcessBuilder(*command)
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        if (input != null) process.outputStream.use { it.write(input) } else process.outputStream.close()
+        if (process.waitFor() != 0) throw OwnerPinAdminFailure("could not establish Parker runtime read access")
+    }
 }
 
 private class ConsoleOwnerPinAdminIo(private val console: Console) : OwnerPinAdminIo {
@@ -71,6 +109,9 @@ class OwnerPinAdmin(
     private val options: OwnerPinAdminOptions = OwnerPinAdminOptions(),
     private val random: SecureRandom = SecureRandom(),
     private val io: OwnerPinAdminIo,
+    private val runtimeAclProvisioner: OwnerPinRuntimeAclProvisioner =
+        if (options.requireRootForCanonicalTarget) PosixOwnerPinRuntimeAclProvisioner
+        else OwnerPinRuntimeAclProvisioner { _, _ -> },
 ) {
     fun run(operation: OwnerPinAdminOperation): Int = try {
         when (operation) {
@@ -213,7 +254,9 @@ class OwnerPinAdmin(
             Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
             java.nio.channels.FileChannel.open(temporary, StandardOpenOption.WRITE).use { it.force(true) }
             setRestrictedPermissions(temporary)
-            copyExistingAcl(target, temporary)
+            runtimeAclProvisioner.provision(
+                target.takeIf { Files.exists(it, LinkOption.NOFOLLOW_LINKS) }, temporary,
+            )
             try {
                 Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: AtomicMoveNotSupportedException) {
@@ -239,15 +282,6 @@ class OwnerPinAdmin(
                 ),
             )
         }.getOrElse { throw OwnerPinAdminFailure("cannot set temporary hash permissions") }
-    }
-
-    private fun copyExistingAcl(source: Path, target: Path) {
-        if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) return
-        val sourceView = Files.getFileAttributeView(source, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
-        val targetView = Files.getFileAttributeView(target, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
-        if (sourceView != null && targetView != null) {
-            targetView.setAcl(sourceView.acl)
-        }
     }
 
     private fun setRestrictedPermissions(path: Path) {
