@@ -292,16 +292,47 @@ class OwnerEvidenceHttpServerTest {
             fun get(path: String) = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + path)).header("Cookie", cookie).GET().build())
             assertEquals(200, get("/owner/cases").statusCode())
             val activeBody = get("/owner/cases").body()
-            assertTrue(activeBody.contains("\"caseId\":\"CaseId(value=case-active-http)\""), activeBody)
+            assertTrue(activeBody.contains("\"caseId\":\"case-active-http\""), activeBody)
             assertTrue(activeBody.contains("\"lifecycleStatus\":\"ACTIVE\""))
             assertTrue(!activeBody.contains("case-archived-http"))
             val archivedBody = get("/owner/cases?status=archived").body()
-            assertTrue(archivedBody.contains("\"caseId\":\"CaseId(value=case-archived-http)\""))
+            assertTrue(archivedBody.contains("\"caseId\":\"case-archived-http\""))
             assertTrue(archivedBody.contains("\"lifecycleStatus\":\"ARCHIVED\""))
             val allBody = get("/owner/cases?status=all").body()
-            assertTrue(allBody.contains("\"caseId\":\"CaseId(value=case-active-http)\""))
-            assertTrue(allBody.contains("\"caseId\":\"CaseId(value=case-archived-http)\""))
+            assertTrue(allBody.contains("\"caseId\":\"case-active-http\""))
+            assertTrue(allBody.contains("\"caseId\":\"case-archived-http\""))
             assertEquals(400, get("/owner/cases?status=invalid").statusCode())
+        } finally { harness.shutdown() }
+    }
+
+    @Test
+    fun `case list raw identifier round trips into ingestion batch authorisation`() {
+        val caseId = CaseId("case-7a5f2b22-7379-4db3-a47c-64b63348c231")
+        var received: CaseId? = null
+        val harness = startHarness(
+            "",
+            listCasesByLifecycle = { listOf(CaseRecord(caseId, "Synthetic Hermes", Instant.parse("2026-09-23T00:00:00Z"))) },
+            authoriseBulkIngestion = {
+                received = it
+                OwnerIngestionBatchAuthorisation.Authorised("bulk-caseid-regression", it.value)
+            },
+        )
+        try {
+            val cookie = pairedCookie(harness)
+            val cases = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/cases"))
+                .header("Cookie", cookie).GET().build())
+            assertEquals(200, cases.statusCode(), cases.body())
+            assertTrue(cases.body().contains("\"caseId\":\"${caseId.value}\""), cases.body())
+            assertFalse(cases.body().contains("CaseId(value="), cases.body())
+
+            val batch = send(HttpRequest.newBuilder(URI.create(harness.baseUri() + "/owner/ingestion-batches"))
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"caseId\":\"${caseId.value}\"}"))
+                .build())
+            assertEquals(201, batch.statusCode(), batch.body())
+            assertEquals(caseId, received)
+            assertTrue(batch.body().contains("\"caseId\":\"${caseId.value}\""), batch.body())
         } finally { harness.shutdown() }
     }
 

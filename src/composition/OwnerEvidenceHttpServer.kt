@@ -1670,7 +1670,7 @@ class OwnerEvidenceHttpServer(
             } else {
                 val records = runBlocking { cases(status) }
                 writeJson(exchange, 200, jsonObject("cases" to jsonArray(records.map {
-                    jsonObject("caseId" to it.caseId, "caseName" to it.caseName, "createdAt" to it.createdAt, "lifecycleStatus" to it.lifecycleStatus.name)
+                    jsonObject("caseId" to it.caseId.value, "caseName" to it.caseName, "createdAt" to it.createdAt, "lifecycleStatus" to it.lifecycleStatus.name)
                 })))
             }
         }
