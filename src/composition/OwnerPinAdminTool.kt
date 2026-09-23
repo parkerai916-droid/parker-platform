@@ -49,6 +49,15 @@ private class ConsoleOwnerPinAdminIo(private val console: Console) : OwnerPinAdm
     }
 }
 
+private object StatusOnlyOwnerPinAdminIo : OwnerPinAdminIo {
+    override fun readHidden(prompt: String): CharArray =
+        kotlin.error("interactive input is not used by verify-status")
+
+    override fun println(line: String) = kotlin.io.println(line)
+
+    override fun error(line: String) = System.err.println(line)
+}
+
 data class OwnerPinAdminOptions(
     val hashFile: Path = Path.of(DEFAULT_HASH_FILE),
     val recoveryFile: Path = Path.of(DEFAULT_RECOVERY_FILE),
@@ -290,10 +299,6 @@ class OwnerPinAdmin(
 private class OwnerPinAdminFailure(message: String) : RuntimeException(message)
 
 fun main(args: Array<String>) {
-    val console = System.console() ?: run {
-        System.err.println("Owner PIN tooling requires an interactive terminal; input will not be read from a pipe.")
-        kotlin.system.exitProcess(2)
-    }
     if (args.size != 1) {
         System.err.println("usage: owner-pin-admin.sh set|change|reset|verify-status")
         kotlin.system.exitProcess(2)
@@ -308,6 +313,15 @@ fun main(args: Array<String>) {
             kotlin.system.exitProcess(2)
         }
     }
-    val exit = OwnerPinAdmin(io = ConsoleOwnerPinAdminIo(console)).run(operation)
+    val io = if (operation == OwnerPinAdminOperation.VERIFY_STATUS) {
+        StatusOnlyOwnerPinAdminIo
+    } else {
+        val console = System.console() ?: run {
+            System.err.println("Owner PIN tooling requires an interactive terminal; input will not be read from a pipe.")
+            kotlin.system.exitProcess(2)
+        }
+        ConsoleOwnerPinAdminIo(console)
+    }
+    val exit = OwnerPinAdmin(io = io).run(operation)
     if (exit != 0) kotlin.system.exitProcess(exit)
 }
