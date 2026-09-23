@@ -49,13 +49,14 @@ class OwnerUnlockProofTest {
             scope(principalA, evidence = "evidence-2"),
             scope(principalA, sha = "b".repeat(64)),
             scope(principalB),
-            scope(principalA, operation = OwnerUnlockProofOperation.CASE_EVIDENCE_MUTATION),
         )
         variants.forEach { variant ->
             val issued = assertIs<OwnerUnlockProofIssueResult.Issued>(store.issue(OwnerPinVerificationResult.VERIFIED, scope))
             assertEquals(OwnerUnlockProofConsumeResult.SCOPE_MISMATCH, store.consume(issued.proof.id, variant))
         }
-        assertEquals(OwnerUnlockProofIssueResult.Rejected, store.issue(OwnerPinVerificationResult.VERIFIED, variants.last()))
+        assertTrue(runCatching {
+            OwnerUnlockProofScope(principalA, EvidenceArtifactId("evidence-1"), OcrSha256Digest("a".repeat(64)), purpose, OwnerUnlockProofOperation.CASE_EVIDENCE_MUTATION)
+        }.isFailure)
     }
 
     @Test
@@ -129,7 +130,35 @@ class OwnerUnlockProofTest {
         store.consume(issued.proof.id, scope)
         assertTrue(audit.records.any { it.event == OwnerUnlockProofAuditEvent.OWNER_UNLOCK_PROOF_ISSUED })
         assertTrue(audit.records.any { it.event == OwnerUnlockProofAuditEvent.OWNER_UNLOCK_PROOF_CONSUMED })
-        assertTrue(audit.records.all { it.reason.length <= 120 && "123456" !in it.reason && "source text" !in it.reason })
+        assertTrue(audit.records.all { it.proofFingerprint.length == 16 && it.reason.length <= 120 && "123456" !in it.reason && "source text" !in it.reason })
+        assertTrue(audit.records.none { it.proofFingerprint == issued.proof.id.value })
+    }
+
+    @Test
+    fun `capacity exhaustion fails closed and cleanup releases bounded tombstones`() {
+        val clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z"))
+        val store = InMemoryOwnerUnlockProofStore(clock, Duration.ofMinutes(2), maximumEntries = 2, maximumOutstandingPerPrincipal = 2)
+        val first = assertIs<OwnerUnlockProofIssueResult.Issued>(store.issue(OwnerPinVerificationResult.VERIFIED, scope))
+        val second = assertIs<OwnerUnlockProofIssueResult.Issued>(store.issue(OwnerPinVerificationResult.VERIFIED, scope(principalB)))
+        assertEquals(OwnerUnlockProofIssueResult.CapacityExceeded, store.issue(OwnerPinVerificationResult.VERIFIED, scope))
+        assertEquals(OwnerUnlockProofConsumeResult.CONSUMED, store.consume(first.proof.id, scope))
+        assertEquals(OwnerUnlockProofIssueResult.CapacityExceeded, store.issue(OwnerPinVerificationResult.VERIFIED, scope))
+        clock.advance(Duration.ofMinutes(4).plusMillis(1))
+        assertEquals(0, store.sizeForTests())
+        assertIs<OwnerUnlockProofIssueResult.Issued>(store.issue(OwnerPinVerificationResult.VERIFIED, scope))
+        assertEquals(OwnerUnlockProofConsumeResult.NOT_FOUND, store.consume(OwnerUnlockProofId.fromTrustedValue(first.proof.id.value), scope))
+        assertEquals(OwnerUnlockProofConsumeResult.NOT_FOUND, store.consume(OwnerUnlockProofId.fromTrustedValue(second.proof.id.value), scope(principalB)))
+    }
+
+    @Test
+    fun `audit failure fails closed and leaves proof unusable`() {
+        val failingAudit = SwitchableAudit()
+        val store = InMemoryOwnerUnlockProofStore(audit = failingAudit)
+        val issued = assertIs<OwnerUnlockProofIssueResult.Issued>(store.issue(OwnerPinVerificationResult.VERIFIED, scope))
+        failingAudit.fail = true
+        assertEquals(OwnerUnlockProofConsumeResult.UNAVAILABLE, store.consume(issued.proof.id, scope))
+        failingAudit.fail = false
+        assertEquals(OwnerUnlockProofConsumeResult.REPLAY_REJECTED, store.consume(issued.proof.id, scope))
     }
 
     private fun scope(
@@ -142,6 +171,11 @@ class OwnerUnlockProofTest {
     private class RecordingAudit : OwnerUnlockProofAudit {
         val records = mutableListOf<OwnerUnlockProofAuditRecord>()
         override fun record(record: OwnerUnlockProofAuditRecord) { synchronized(records) { records += record } }
+    }
+
+    private class SwitchableAudit : OwnerUnlockProofAudit {
+        var fail = false
+        override fun record(record: OwnerUnlockProofAuditRecord) { if (fail) error("audit unavailable") }
     }
 
     private class MutableClock(private var value: Instant) : Clock() {
