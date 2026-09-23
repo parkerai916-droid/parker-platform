@@ -70,6 +70,53 @@ class OwnerPinVerificationTest {
     }
 
     @Test
+    fun `hash loader rejects excessive parameters fields and unsafe content`() {
+        val valid = phc("123456")
+        listOf(
+            valid.replace("m=8192", "m=1048576"),
+            valid.replace("t=1", "t=6"),
+            valid.replace("p=1", "p=3"),
+            valid.replace("argon2id", "argon2i"),
+            valid.replace("$", "!", ignoreCase = false),
+            valid + "\nsecond-record",
+            valid + "\u0000",
+        ).forEachIndexed { index, content ->
+            val path = directory.resolve("bad-$index")
+            Files.writeString(path, content)
+            assertEquals(OwnerPinHashLoad.Unavailable::class, OwnerPinHashFileLoader.load(path)::class)
+        }
+        assertEquals(OwnerPinInput.Invalid, OwnerPinInput.parse("１２３４５６"))
+    }
+
+    @Test
+    fun `hash symlink and corrupt state fail closed`() {
+        val target = directory.resolve("real.hash").also { Files.writeString(it, phc("123456")) }
+        val link = directory.resolve("hash-link")
+        runCatching { Files.createSymbolicLink(link, target) }.getOrNull()?.let {
+            val verifier = OwnerPinVerifier(PrincipalId("owner-test"), link, stateStore(), NoOpOwnerPinSecurityAudit)
+            assertEquals(OwnerPinVerificationResult.UNAVAILABLE, verifier.verify(OwnerPinInput.parse("123456")))
+        }
+        val state = directory.resolve("state")
+        Files.createDirectories(state)
+        val stateName = stateFile()
+        Files.writeString(state.resolve(stateName), "version=1\nfailedCount=not-a-number\n")
+        val verifier = OwnerPinVerifier(PrincipalId("owner-test"), target, stateStore(), NoOpOwnerPinSecurityAudit)
+        assertEquals(OwnerPinVerificationResult.UNAVAILABLE, verifier.verify(OwnerPinInput.parse("123456")))
+    }
+
+    @Test
+    fun `audit log rotates and contains no submitted PIN`() {
+        val log = directory.resolve("pin-audit.log")
+        val audit = FileSystemOwnerPinSecurityAudit(log, maximumBytes = 4096L)
+        repeat(80) {
+            audit.record(OwnerPinAuditRecord(OwnerPinAuditEvent.PIN_VERIFICATION_REJECTED, PrincipalId("owner-test"), Instant.EPOCH, "REJECTED"))
+        }
+        assertTrue(Files.size(log) <= 4096L)
+        assertTrue(Files.exists(log.resolveSibling("pin-audit.log.1")))
+        assertFalse(Files.readString(log).contains("123456"))
+    }
+
+    @Test
     fun `lockout survives verifier reconstruction`() {
         val first = verifier("123456", initialLockoutMillis = 60_000L)
         repeat(5) { first.verify(OwnerPinInput.parse("000000")) }

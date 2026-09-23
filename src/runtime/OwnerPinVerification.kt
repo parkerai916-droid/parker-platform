@@ -2,7 +2,6 @@ package parker.core.runtime
 
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
-import parker.core.interfaces.AuthorizationPurposeId
 import parker.core.interfaces.PrincipalId
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
@@ -75,14 +74,17 @@ object NoOpOwnerPinSecurityAudit : OwnerPinSecurityAudit {
 /** Audit sink with bounded, non-secret tab-separated records. */
 class FileSystemOwnerPinSecurityAudit(
     private val logFile: Path,
-    private val clock: Clock = Clock.systemUTC(),
+    private val maximumBytes: Long = DEFAULT_MAXIMUM_BYTES,
 ) : OwnerPinSecurityAudit {
     init {
+        require(maximumBytes >= 4096L) { "Owner PIN audit limit is too small" }
         logFile.parent?.let(Files::createDirectories)
     }
 
+    @Synchronized
     override fun record(record: OwnerPinAuditRecord) {
         require(record.reason.length <= 120) { "Owner PIN audit reason is too long" }
+        require(!Files.isSymbolicLink(logFile)) { "Owner PIN audit path may not be a symlink" }
         val line = listOf(
             "OWNER_PIN_AUDIT_V1",
             record.event.name,
@@ -90,14 +92,24 @@ class FileSystemOwnerPinSecurityAudit(
             record.occurredAt.toString(),
             record.reason,
         ).joinToString("\t") + "\n"
+        val encoded = StandardCharsets.UTF_8.encode(line)
+        if (Files.exists(logFile) && Files.size(logFile) + encoded.remaining() > maximumBytes) {
+            val rotated = logFile.resolveSibling("${logFile.fileName}.1")
+            if (Files.isSymbolicLink(rotated)) throw IllegalStateException("Owner PIN audit rotation path may not be a symlink")
+            Files.move(logFile, rotated, StandardCopyOption.REPLACE_EXISTING)
+        }
         Files.newByteChannel(
             logFile,
             StandardOpenOption.CREATE,
             StandardOpenOption.WRITE,
             StandardOpenOption.APPEND,
         ).use { channel ->
-            channel.write(StandardCharsets.UTF_8.encode(line))
+            while (encoded.hasRemaining()) channel.write(encoded)
         }
+    }
+
+    companion object {
+        const val DEFAULT_MAXIMUM_BYTES: Long = 1L shl 20
     }
 }
 
@@ -114,6 +126,7 @@ data class OwnerPinAttemptState(
  */
 class FileSystemOwnerPinAttemptStateStore(private val root: Path) {
     init {
+        require(!Files.exists(root) || !Files.isSymbolicLink(root)) { "Owner PIN state root may not be a symlink" }
         Files.createDirectories(root)
     }
 
@@ -121,6 +134,7 @@ class FileSystemOwnerPinAttemptStateStore(private val root: Path) {
         val safeKey = sha256(principalId.value.toByteArray(StandardCharsets.UTF_8))
         synchronized(inProcessLocks.computeIfAbsent(safeKey) { Any() }) {
             val lockPath = root.resolve("$safeKey.lock")
+            require(!Files.isSymbolicLink(lockPath)) { "Owner PIN lock path may not be a symlink" }
             Files.createDirectories(root)
             FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
                 channel.lock().use {
@@ -134,6 +148,7 @@ class FileSystemOwnerPinAttemptStateStore(private val root: Path) {
     }
 
     private fun read(path: Path): OwnerPinAttemptState {
+        require(!Files.isSymbolicLink(path)) { "Owner PIN state path may not be a symlink" }
         if (!Files.isRegularFile(path)) return OwnerPinAttemptState()
         val fields = Files.readAllLines(path, StandardCharsets.UTF_8)
             .flatMap { it.split('=', limit = 2).takeIf { pair -> pair.size == 2 }?.let { pair -> listOf(pair[0], pair[1]) } ?: emptyList() }
@@ -142,14 +157,15 @@ class FileSystemOwnerPinAttemptStateStore(private val root: Path) {
         return OwnerPinAttemptState(
             failedCount = fields["failedCount"]?.toIntOrNull()?.coerceIn(0, MAX_FAILED_COUNT)
                 ?: error("Invalid Owner PIN failed count"),
-            lockoutUntilEpochMillis = fields["lockoutUntil"]?.takeIf { it != "" }?.toLongOrNull(),
+            lockoutUntilEpochMillis = fields["lockoutUntil"]?.takeIf { it != "" }?.toLongOrNull()?.also { require(it >= 0) },
             lockoutCycles = fields["lockoutCycles"]?.toIntOrNull()?.coerceIn(0, MAX_LOCKOUT_CYCLES)
                 ?: error("Invalid Owner PIN lockout cycles"),
-            lastOutcomeEpochMillis = fields["lastOutcome"]?.takeIf { it != "" }?.toLongOrNull(),
+            lastOutcomeEpochMillis = fields["lastOutcome"]?.takeIf { it != "" }?.toLongOrNull()?.also { require(it >= 0) },
         )
     }
 
     private fun write(path: Path, state: OwnerPinAttemptState) {
+        require(!Files.isSymbolicLink(path)) { "Owner PIN state path may not be a symlink" }
         val temporary = Files.createTempFile(root, ".owner-pin-state-", "-${UUID.randomUUID()}.tmp")
         val body = buildString {
             appendLine("version=1")
@@ -178,11 +194,11 @@ class FileSystemOwnerPinAttemptStateStore(private val root: Path) {
 
 data class OwnerPinArgon2Limits(
     val minimumMemoryKiB: Int = 8 * 1024,
-    val maximumMemoryKiB: Int = 1024 * 1024,
+    val maximumMemoryKiB: Int = 64 * 1024,
     val minimumIterations: Int = 1,
-    val maximumIterations: Int = 10,
+    val maximumIterations: Int = 5,
     val minimumParallelism: Int = 1,
-    val maximumParallelism: Int = 4,
+    val maximumParallelism: Int = 2,
 )
 
 /** Strict Argon2id PHC record. The PHC text is never exposed by toString or audit output. */
@@ -221,7 +237,7 @@ class OwnerPinArgon2Hash private constructor(
             require(parallelism in limits.minimumParallelism..limits.maximumParallelism)
             val salt = decode(match.groupValues[4])
             val expected = decode(match.groupValues[5])
-            require(salt.size >= 8 && expected.size >= 16) { "Argon2 record is too short" }
+            require(salt.size in 8..64 && expected.size in 16..64) { "Argon2 record length is unsupported" }
             return OwnerPinArgon2Hash(memory, iterations, parallelism, salt, expected)
         }
 
@@ -238,6 +254,7 @@ sealed interface OwnerPinHashLoad {
 object OwnerPinHashFileLoader {
     fun load(path: Path): OwnerPinHashLoad = runCatching {
         require(Files.isRegularFile(path) && !Files.isSymbolicLink(path)) { "PIN hash file unavailable" }
+        require(Files.size(path) <= 512L) { "PIN hash file too large" }
         val raw = Files.readString(path, StandardCharsets.UTF_8)
         require(raw.length <= 512) { "PIN hash file too large" }
         val record = raw.removeSuffix("\n").removeSuffix("\r")
@@ -272,7 +289,7 @@ class OwnerPinVerifier(
             audit.record(OwnerPinAuditRecord(OwnerPinAuditEvent.PIN_VERIFIER_UNAVAILABLE, principalId, clock.instant(), "PIN_HASH_UNAVAILABLE"))
             return OwnerPinVerificationResult.UNAVAILABLE
         }
-        return stateStore.withLocked(principalId) { current ->
+        return runCatching { stateStore.withLocked(principalId) { current ->
             val now = clock.millis()
             val lockedUntil = current.lockoutUntilEpochMillis
             if (lockedUntil != null && lockedUntil > now) {
@@ -288,11 +305,18 @@ class OwnerPinVerifier(
             val failures = (current.failedCount + 1).coerceAtMost(100)
             val lock = failures >= failedAttemptLockoutThreshold
             val cycles = if (lock) (current.lockoutCycles + 1).coerceAtMost(16) else current.lockoutCycles
-            val lockoutUntil = if (lock) now + initialLockoutMillis * (1L shl min(cycles - 1, 6)) else null
+            val lockoutDuration = initialLockoutMillis * (1L shl min(cycles - 1, 6))
+            val lockoutUntil = if (lock) safeAdd(now, lockoutDuration) else null
             val next = OwnerPinAttemptState(failures, lockoutUntil, cycles, now)
             val event = if (lock) OwnerPinAuditEvent.PIN_VERIFICATION_LOCKED else OwnerPinAuditEvent.PIN_VERIFICATION_REJECTED
             audit.record(OwnerPinAuditRecord(event, principalId, Instant.ofEpochMilli(now), if (lock) "LOCKOUT_THRESHOLD_REACHED" else "REJECTED"))
             next to if (lock) OwnerPinVerificationResult.TEMPORARILY_LOCKED else OwnerPinVerificationResult.REJECTED
+        } }.getOrElse {
+            audit.record(OwnerPinAuditRecord(OwnerPinAuditEvent.PIN_VERIFIER_UNAVAILABLE, principalId, clock.instant(), "PIN_STATE_UNAVAILABLE"))
+            OwnerPinVerificationResult.UNAVAILABLE
         }
     }
+
+    private fun safeAdd(left: Long, right: Long): Long =
+        if (right > 0L && left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
 }
