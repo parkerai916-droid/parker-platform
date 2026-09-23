@@ -200,6 +200,7 @@ class OwnerPinAdmin(
         require(parent.toRealPath() == parent) { "hash parent path may not contain symlinks" }
         val temporary = Files.createTempFile(parent, ".owner-high-authority-pin-", ".tmp")
         try {
+            setPrivateTempPermissions(temporary)
             Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
             java.nio.channels.FileChannel.open(temporary, StandardOpenOption.WRITE).use { it.force(true) }
             setRestrictedPermissions(temporary)
@@ -217,6 +218,18 @@ class OwnerPinAdmin(
         } finally {
             Files.deleteIfExists(temporary)
         }
+    }
+
+    private fun setPrivateTempPermissions(path: Path) {
+        runCatching {
+            Files.setPosixFilePermissions(
+                path,
+                setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                ),
+            )
+        }.getOrElse { throw OwnerPinAdminFailure("cannot set temporary hash permissions") }
     }
 
     private fun copyExistingAcl(source: Path, target: Path) {
