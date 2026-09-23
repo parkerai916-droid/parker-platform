@@ -14,6 +14,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.GroupPrincipal
+import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.UserPrincipal
 import java.security.MessageDigest
@@ -65,7 +66,8 @@ class OwnerPinAdmin(
     fun run(operation: OwnerPinAdminOperation): Int = try {
         when (operation) {
             OwnerPinAdminOperation.SET -> setInitial()
-            OwnerPinAdminOperation.CHANGE, OwnerPinAdminOperation.RESET -> replaceWithRecovery()
+            OwnerPinAdminOperation.CHANGE -> changeWithRecovery()
+            OwnerPinAdminOperation.RESET -> resetWithRecovery()
             OwnerPinAdminOperation.VERIFY_STATUS -> verifyStatus()
         }
         0
@@ -86,14 +88,32 @@ class OwnerPinAdmin(
         io.println("Owner PIN hash provisioned.")
     }
 
-    private fun replaceWithRecovery() {
+    private fun changeWithRecovery() {
         requireAdministrativeTarget()
-        require(Files.exists(options.hashFile, LinkOption.NOFOLLOW_LINKS)) {
-            "Owner PIN hash is not provisioned; use set"
-        }
+        requireValidExistingHash()
         verifyRecovery(readRecovery())
         writeNewHash(readNewPin())
         io.println("Owner PIN hash replaced.")
+    }
+
+    private fun resetWithRecovery() {
+        requireAdministrativeTarget()
+        require(!Files.isSymbolicLink(options.hashFile)) { "hash target may not be a symlink" }
+        verifyRecovery(readRecovery())
+        writeNewHash(readNewPin())
+        io.println("Owner PIN hash reset.")
+    }
+
+    private fun requireValidExistingHash() {
+        require(!Files.isSymbolicLink(options.hashFile) &&
+            Files.isRegularFile(options.hashFile, LinkOption.NOFOLLOW_LINKS)) {
+            "Owner PIN hash is not provisioned; use set or reset"
+        }
+        val bytes = Files.readAllBytes(options.hashFile)
+        require(bytes.size <= 512) { "existing Owner PIN hash is invalid" }
+        val record = String(bytes, StandardCharsets.UTF_8).removeSuffix("\n").removeSuffix("\r")
+        runCatching { OwnerPinArgon2Hash.parse(record) }
+            .getOrElse { throw OwnerPinAdminFailure("existing Owner PIN hash is invalid; use reset") }
     }
 
     private fun verifyStatus() {
@@ -141,7 +161,11 @@ class OwnerPinAdmin(
             require(expected.size in 32..MAX_RECOVERY_BYTES) { "recovery credential unavailable" }
             val normalized = trimSingleLineEnding(expected)
             val actual = String(presented).toByteArray(StandardCharsets.UTF_8)
-            require(MessageDigest.isEqual(normalized, actual)) { "recovery verification failed" }
+            val matches = fixedWidthConstantTimeEquals(normalized, actual)
+            expected.fill(0)
+            normalized.fill(0)
+            actual.fill(0)
+            require(matches) { "recovery verification failed" }
         } finally {
             presented.fill('\u0000')
         }
@@ -162,6 +186,7 @@ class OwnerPinAdmin(
         val saltText = Base64.getEncoder().withoutPadding().encodeToString(salt)
         val hashText = Base64.getEncoder().withoutPadding().encodeToString(output)
         val record = "\$argon2id\$v=19\$m=$ARGON_MEMORY_KIB,t=$ARGON_ITERATIONS,p=$ARGON_PARALLELISM\$$saltText\$$hashText\n"
+        OwnerPinArgon2Hash.parse(record.removeSuffix("\n"))
         atomicReplace(record.toByteArray(StandardCharsets.UTF_8))
         output.fill(0)
         salt.fill(0)
@@ -172,17 +197,18 @@ class OwnerPinAdmin(
         val parent = target.parent ?: throw OwnerPinAdminFailure("hash path has no parent")
         require(!Files.isSymbolicLink(target)) { "hash target may not be a symlink" }
         require(Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) { "hash parent directory unavailable" }
+        require(parent.toRealPath() == parent) { "hash parent path may not contain symlinks" }
         val temporary = Files.createTempFile(parent, ".owner-high-authority-pin-", ".tmp")
         try {
             Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
             java.nio.channels.FileChannel.open(temporary, StandardOpenOption.WRITE).use { it.force(true) }
             setRestrictedPermissions(temporary)
+            copyExistingAcl(target, temporary)
             try {
                 Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: AtomicMoveNotSupportedException) {
                 throw OwnerPinAdminFailure("atomic replacement is unavailable on this filesystem")
             }
-            setRestrictedPermissions(target)
             // Some supported filesystems deny opening a directory as a FileChannel even though
             // the atomic same-directory rename succeeded; the file itself is already forced.
             runCatching {
@@ -190,6 +216,15 @@ class OwnerPinAdmin(
             }
         } finally {
             Files.deleteIfExists(temporary)
+        }
+    }
+
+    private fun copyExistingAcl(source: Path, target: Path) {
+        if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) return
+        val sourceView = Files.getFileAttributeView(source, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
+        val targetView = Files.getFileAttributeView(target, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
+        if (sourceView != null && targetView != null) {
+            targetView.setAcl(sourceView.acl)
         }
     }
 
@@ -217,6 +252,19 @@ class OwnerPinAdmin(
     }
 
     companion object {
+        private fun fixedWidthConstantTimeEquals(left: ByteArray, right: ByteArray): Boolean {
+            val width = MAX_RECOVERY_BYTES.toInt()
+            val paddedLeft = ByteArray(width)
+            val paddedRight = ByteArray(width)
+            left.copyInto(paddedLeft, endIndex = minOf(left.size, width))
+            right.copyInto(paddedRight, endIndex = minOf(right.size, width))
+            var difference = left.size xor right.size
+            for (index in 0 until width) difference = difference or (paddedLeft[index].toInt() xor paddedRight[index].toInt())
+            paddedLeft.fill(0)
+            paddedRight.fill(0)
+            return difference == 0
+        }
+
         private fun trimSingleLineEnding(bytes: ByteArray): ByteArray {
             var end = bytes.size
             if (end > 0 && bytes[end - 1] == '\n'.code.toByte()) end--

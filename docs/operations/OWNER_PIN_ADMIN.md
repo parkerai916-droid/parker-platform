@@ -19,8 +19,9 @@ The existing recovery credential remains at:
 
     /mnt/parker-secrets/parker/owner-high-authority-verification.secret
 
-set is permitted only when no PIN hash exists. change and reset require the
-existing recovery credential before accepting a replacement PIN. Every PIN and
+set is permitted only when no PIN hash exists. change requires a valid current
+hash and reset may repair a missing or invalid hash; both require the existing
+recovery credential before accepting a replacement PIN. Every PIN and
 confirmation is entered through hidden terminal input; values are never
 accepted as command-line arguments, environment variables, or standard input
 from a pipe.
@@ -28,13 +29,16 @@ from a pipe.
 The tool writes only an Argon2id PHC record using 32 MiB memory, three
 iterations, one lane, a 16-byte random salt, and a 32-byte derived hash. It
 writes a same-directory temporary file, sets the effective runtime-readable
-root:root 0440 policy, fsyncs, atomically replaces the target, and fsyncs the
-directory. It rejects symlink targets and does not create backups or modify
-the long recovery secret.
+root:root 0440 policy, preserves an existing POSIX ACL when available, fsyncs,
+atomically replaces the target, and attempts to fsync the directory. It rejects
+symlink targets and does not create backups or modify the long recovery secret.
 
 verify-status reports only whether the target is configured and whether its
 Argon2id record is valid. It never prints the hash or any credential value.
 
-Run canonical operations with the required host administrative privilege so
-the runtime UID/GID 999:999 can read the effective root:root 0440 file through
-the existing secret mount model. Tests use isolated temporary files only.
+Run canonical operations with the required host administrative privilege. The
+host mode alone does not grant UID/GID 999 access on every deployment: Parker's
+runtime must preserve the established Compose UID/GID/mode mapping or the
+deployment's existing ACL grant. Unit 6 must verify the mounted file is
+readable by UID/GID 999 and read-only after restart. Tests use isolated
+temporary files only.

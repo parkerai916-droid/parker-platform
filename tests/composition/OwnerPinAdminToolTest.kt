@@ -10,6 +10,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import parker.core.runtime.OwnerPinArgon2Hash
 import parker.core.runtime.OwnerPinHashFileLoader
+import parker.core.runtime.OwnerPinInput
+import parker.core.runtime.OwnerPinVerificationResult
+import parker.core.runtime.OwnerPinVerifier
+import parker.core.runtime.FileSystemOwnerPinAttemptStateStore
+import parker.core.interfaces.PrincipalId
 
 private class FakePinIo(private val hidden: ArrayDeque<CharArray>) : OwnerPinAdminIo {
     val output = mutableListOf<String>()
@@ -74,6 +79,33 @@ class OwnerPinAdminToolTest {
         assertEquals(0, OwnerPinAdmin(OwnerPinAdminOptions(hash, root.resolve("recovery"), false), io = io).run(OwnerPinAdminOperation.VERIFY_STATUS))
         assertTrue(io.output.single().contains("INVALID_OR_UNAVAILABLE"))
         assertFalse(io.output.single().contains("not-a-hash"))
+    }
+
+    @Test fun reset_repairs_missing_hash_only_after_recovery() {
+        val root = createTempDirectory("owner-pin-admin-")
+        val hash = root.resolve("pin.hash")
+        val recovery = root.resolve("recovery")
+        recovery.writeText("recovery-secret-value-that-is-long-enough-1234567890")
+        val io = FakePinIo(ArrayDeque(listOf(
+            "recovery-secret-value-that-is-long-enough-1234567890".toCharArray(),
+            "012345".toCharArray(), "012345".toCharArray(),
+        )))
+        assertEquals(0, OwnerPinAdmin(OwnerPinAdminOptions(hash, recovery, false), io = io).run(OwnerPinAdminOperation.RESET))
+        assertTrue(hash.exists())
+    }
+
+    @Test fun generated_hash_is_accepted_by_the_real_unit_one_verifier() {
+        val root = createTempDirectory("owner-pin-admin-")
+        val hash = root.resolve("pin.hash")
+        val io = FakePinIo(ArrayDeque(listOf("012345".toCharArray(), "012345".toCharArray())))
+        assertEquals(0, OwnerPinAdmin(OwnerPinAdminOptions(hash, root.resolve("recovery"), false), io = io).run(OwnerPinAdminOperation.SET))
+        val verifier = OwnerPinVerifier(
+            principalId = PrincipalId("owner-pin-admin-test"),
+            hashFile = hash,
+            stateStore = FileSystemOwnerPinAttemptStateStore(root.resolve("attempt-state")),
+        )
+        assertEquals(OwnerPinVerificationResult.VERIFIED, verifier.verify(OwnerPinInput.parse("012345")))
+        assertEquals(OwnerPinVerificationResult.REJECTED, verifier.verify(OwnerPinInput.parse("654321")))
     }
 
     @Test fun isolated_test_target_remains_outside_canonical_production_policy() {
