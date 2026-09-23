@@ -21,6 +21,13 @@ application {
     applicationName = "parker"
 }
 
+tasks.register<JavaExec>("ownerPinAdmin") {
+    group = "owner administration"
+    description = "Interactively provision or verify the protected Owner PIN hash"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("parker.composition.OwnerPinAdminToolKt")
+}
+
 val parkerBuildCommit = providers.environmentVariable("PARKER_BUILD_COMMIT").orElse("UNSET")
 tasks.named<Jar>("jar") {
     manifest { attributes["Parker-Source-Commit"] = parkerBuildCommit.get() }
