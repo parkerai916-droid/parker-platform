@@ -57,6 +57,16 @@ services:
       PARKER_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT: /data/human-correction-audit
       PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE: /run/secrets/parker_owner_high_authority_verification
       PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID: "${PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID:?Set opaque owner high-authority PrincipalId}"
+      # Owner PIN verification is opt-in. The runtime config intentionally rejects
+      # PIN paths while this flag is false, so these three values remain empty until
+      # the operator explicitly enables PIN mode with the reviewed runtime paths.
+      OWNER_HIGH_AUTHORITY_PIN_ENABLED: "${OWNER_HIGH_AUTHORITY_PIN_ENABLED:-false}"
+      OWNER_HIGH_AUTHORITY_PIN_HASH_FILE: "${OWNER_HIGH_AUTHORITY_PIN_HASH_FILE:-}"
+      OWNER_HIGH_AUTHORITY_PIN_ATTEMPT_STATE_ROOT: "${OWNER_HIGH_AUTHORITY_PIN_ATTEMPT_STATE_ROOT:-}"
+      OWNER_HIGH_AUTHORITY_PIN_AUDIT_LOG: "${OWNER_HIGH_AUTHORITY_PIN_AUDIT_LOG:-}"
+      # The PIN hash is a secret mount, not an environment value. The host-side
+      # source is deployment configuration; Parker only receives the fixed runtime
+      # path above when PIN mode is explicitly enabled.
       # UI-INGESTION-5: exact-target external-transcription egress authorization storage --
       # together with the two high-authority values immediately above (both already
       # unconditionally present), this is what ParkerRuntime.kt requires, all three, before it
@@ -261,6 +271,9 @@ services:
       - /mnt/parker-data/parker/human-correction-audit:/data/human-correction-audit
       - /mnt/parker-data/parker/saved-analyses:/data/saved-analyses
       - /mnt/parker-data/parker/document-ingestion-audit:/data/document-ingestion-audit
+      # Owner PIN attempt state and bounded audit records. The PIN hash itself is
+      # never stored in this writable data volume.
+      - /mnt/parker-data/parker/owner-high-authority-pin:/data/owner-high-authority-pin
       # QMD Docker-Runtime Enablement. The Parker host's own
       # already-governed QMD 2.8.3 checkout and local embedding-model
       # cache, mounted read-only -- this compose project never writes
@@ -303,7 +316,14 @@ services:
         uid: "999"
         gid: "999"
         mode: 0400
+      - source: parker_owner_high_authority_pin_hash
+        target: parker_owner_high_authority_pin_hash
+        uid: "999"
+        gid: "999"
+        mode: 0400
 
 secrets:
   parker_owner_high_authority_verification:
     file: "${PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_SECRET_FILE:?Set protected owner verification secret file path}"
+  parker_owner_high_authority_pin_hash:
+    file: "${PARKER_OWNER_HIGH_AUTHORITY_PIN_HASH_SECRET_FILE:-/mnt/parker-secrets/parker/owner-high-authority-pin.hash}"

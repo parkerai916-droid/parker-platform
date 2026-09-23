@@ -27,6 +27,7 @@ HERMES_PROCESSING_KEY_SOURCE="/mnt/parker-secrets/parker/parker_hermes_processin
 HERMES_PROCESSING_KEY_TARGET="/home/steve/.ssh/parker_hermes_processing_ed25519"
 HERMES_PROCESSING_KNOWN_HOSTS_SOURCE="/mnt/parker-secrets/parker/parker_hermes_processing_known_hosts"
 HERMES_PROCESSING_KNOWN_HOSTS_TARGET="/home/steve/.ssh/parker_hermes_processing_known_hosts"
+PIN_STATE_SOURCE="/mnt/parker-data/parker/owner-high-authority-pin"
 
 fail() {
     echo "PARKER REFRESH FAILED: $1" >&2
@@ -36,6 +37,13 @@ fail() {
 [[ "${EUID}" -eq 0 ]] || fail "must run as root (use sudo)"
 [[ -d "$PARKER_DIR" ]] || fail "production checkout is missing: $PARKER_DIR"
 [[ -x "$PARKER_DEPLOY" ]] || fail "authoritative deployment helper is unavailable: $PARKER_DEPLOY"
+
+# The PIN verifier's attempt state and audit log are durable Parker state. Create
+# only the dedicated directory and grant access to the fixed Parker runtime UID;
+# the PIN hash remains in the protected secrets tree and is never written here.
+/usr/bin/mkdir -p "$PIN_STATE_SOURCE" || fail "could not create Owner PIN state directory"
+/usr/bin/chown 999:999 "$PIN_STATE_SOURCE" || fail "could not assign Owner PIN state directory ownership"
+/usr/bin/chmod 700 "$PIN_STATE_SOURCE" || fail "could not protect Owner PIN state directory"
 
 production_commit="$(/usr/bin/git -C "$PARKER_DIR" rev-parse --verify HEAD)" || fail "could not read production HEAD"
 [[ "$production_commit" =~ ^[0-9a-f]{40}$ ]] || fail "production HEAD is not an exact commit"
