@@ -51,6 +51,9 @@ dependencies {
     // Legacy Office binary records (.doc/.msg) use Apache POI's scratchpad
     // modules; no converter or second parser stack is introduced.
     implementation("org.apache.poi:poi-scratchpad:5.5.1")
+    // Owner PIN verification: maintained pure-Java Argon2id implementation; no native
+    // runtime or custom password-hashing implementation is introduced.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
     testImplementation(kotlin("test-junit5"))
     testImplementation(kotlin("reflect"))

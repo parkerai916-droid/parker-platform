@@ -345,6 +345,11 @@ data class ParkerRuntimeConfig(
     val humanCorrectionAuditStorageRootPath: String? = null,
     val ownerHighAuthorityVerificationCredentialFilePath: String? = null,
     val ownerHighAuthorityPrincipalId: String? = null,
+    /** Unit 1 only: opt-in protected Owner PIN verifier configuration; not yet wired to UI/auth. */
+    val ownerHighAuthorityPinEnabled: Boolean = false,
+    val ownerHighAuthorityPinHashFilePath: String? = null,
+    val ownerHighAuthorityPinAttemptStateStorageRootPath: String? = null,
+    val ownerHighAuthorityPinAuditLogPath: String? = null,
     val externalTranscriptionAuthorizationStorageRootPath: String? = null,
     // CASE-1: all three co-required (present together or absent together), mirroring
     // humanFidelityReviewStorageRootPath's own co-requirement discipline -- optional so a
@@ -442,6 +447,10 @@ object ParkerRuntimeConfigLoader {
     const val KEY_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT = "PARKER_HUMAN_CORRECTION_AUDIT_STORAGE_ROOT"
     const val KEY_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE = "PARKER_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE"
     const val KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID = "PARKER_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID"
+    const val KEY_OWNER_HIGH_AUTHORITY_PIN_ENABLED = "OWNER_HIGH_AUTHORITY_PIN_ENABLED"
+    const val KEY_OWNER_HIGH_AUTHORITY_PIN_HASH_FILE = "OWNER_HIGH_AUTHORITY_PIN_HASH_FILE"
+    const val KEY_OWNER_HIGH_AUTHORITY_PIN_ATTEMPT_STATE_ROOT = "OWNER_HIGH_AUTHORITY_PIN_ATTEMPT_STATE_ROOT"
+    const val KEY_OWNER_HIGH_AUTHORITY_PIN_AUDIT_LOG = "OWNER_HIGH_AUTHORITY_PIN_AUDIT_LOG"
     const val KEY_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT = "PARKER_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT"
     const val KEY_CASE_STORAGE_ROOT = "PARKER_CASE_STORAGE_ROOT"
     const val KEY_CASE_ASSIGNMENT_STORAGE_ROOT = "PARKER_CASE_ASSIGNMENT_STORAGE_ROOT"
@@ -673,6 +682,28 @@ object ParkerRuntimeConfigLoader {
                 "must be true or false; was '$externalTranscriptionEnabledRaw'",
             )
 
+        val ownerPinEnabledRaw = environment[KEY_OWNER_HIGH_AUTHORITY_PIN_ENABLED]?.takeIf { it.isNotBlank() }
+        val ownerPinEnabled = ownerPinEnabledRaw?.trim()?.toBooleanStrictOrNull()
+            ?: if (ownerPinEnabledRaw == null) false else throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_OWNER_HIGH_AUTHORITY_PIN_ENABLED,
+                "must be true or false; was '$ownerPinEnabledRaw'",
+            )
+        val ownerPinHashFile = environment[KEY_OWNER_HIGH_AUTHORITY_PIN_HASH_FILE]?.takeIf { it.isNotBlank() }
+        val ownerPinStateRoot = environment[KEY_OWNER_HIGH_AUTHORITY_PIN_ATTEMPT_STATE_ROOT]?.takeIf { it.isNotBlank() }
+        val ownerPinAuditLog = environment[KEY_OWNER_HIGH_AUTHORITY_PIN_AUDIT_LOG]?.takeIf { it.isNotBlank() }
+        if (ownerPinEnabled && (ownerPinHashFile == null || ownerPinStateRoot == null || ownerPinAuditLog == null)) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_OWNER_HIGH_AUTHORITY_PIN_ENABLED,
+                "enabled PIN verification requires hash file, attempt-state root, and audit log paths",
+            )
+        }
+        if (!ownerPinEnabled && listOf(ownerPinHashFile, ownerPinStateRoot, ownerPinAuditLog).any { it != null }) {
+            throw ParkerRuntimeException.InvalidConfiguration(
+                KEY_OWNER_HIGH_AUTHORITY_PIN_ENABLED,
+                "PIN paths may not be configured while PIN verification is disabled",
+            )
+        }
+
         val ordinaryRegionEnabledRaw = environment[KEY_ORDINARY_REGION_INGESTION_ENABLED]?.takeIf { it.isNotBlank() }
         val ordinaryRegionEnabled = ordinaryRegionEnabledRaw?.trim()?.toBooleanStrictOrNull()
             ?: if (ordinaryRegionEnabledRaw == null) false else throw ParkerRuntimeException.InvalidConfiguration(
@@ -787,6 +818,10 @@ object ParkerRuntimeConfigLoader {
                 environment[KEY_OWNER_HIGH_AUTHORITY_VERIFICATION_CREDENTIAL_FILE]?.takeIf { it.isNotBlank() },
             ownerHighAuthorityPrincipalId =
                 environment[KEY_OWNER_HIGH_AUTHORITY_PRINCIPAL_ID]?.takeIf { it.isNotBlank() },
+            ownerHighAuthorityPinEnabled = ownerPinEnabled,
+            ownerHighAuthorityPinHashFilePath = ownerPinHashFile,
+            ownerHighAuthorityPinAttemptStateStorageRootPath = ownerPinStateRoot,
+            ownerHighAuthorityPinAuditLogPath = ownerPinAuditLog,
             externalTranscriptionAuthorizationStorageRootPath =
                 environment[KEY_EXTERNAL_TRANSCRIPTION_AUTHORIZATION_STORAGE_ROOT]?.takeIf { it.isNotBlank() },
             caseStorageRootPath = environment[KEY_CASE_STORAGE_ROOT]?.takeIf { it.isNotBlank() },

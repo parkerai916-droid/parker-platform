@@ -55,6 +55,38 @@ class ParkerRuntimeConfigLoaderTest {
     }
 
     @Test
+    fun `Owner PIN configuration is disabled by default`() {
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment())
+        assertEquals(false, config.ownerHighAuthorityPinEnabled)
+        assertEquals(null, config.ownerHighAuthorityPinHashFilePath)
+    }
+
+    @Test
+    fun `enabled Owner PIN configuration requires all protected storage paths`() {
+        val hash = Files.createTempFile("owner-pin", ".hash")
+        val state = Files.createTempDirectory("owner-pin-state")
+        val audit = Files.createTempFile("owner-pin", ".audit")
+        val config = ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
+            ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PIN_ENABLED to "true",
+            ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PIN_HASH_FILE to hash.toString(),
+            ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PIN_ATTEMPT_STATE_ROOT to state.toString(),
+            ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PIN_AUDIT_LOG to audit.toString(),
+        )))
+        assertTrue(config.ownerHighAuthorityPinEnabled)
+        assertEquals(hash.toString(), config.ownerHighAuthorityPinHashFilePath)
+    }
+
+    @Test
+    fun `enabled Owner PIN configuration fails closed when a path is missing`() {
+        assertFailsWith<ParkerRuntimeException.InvalidConfiguration> {
+            ParkerRuntimeConfigLoader.load(fullEnvironment(mapOf(
+                ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PIN_ENABLED to "true",
+                ParkerRuntimeConfigLoader.KEY_OWNER_HIGH_AUTHORITY_PIN_HASH_FILE to "/run/secrets/owner-pin",
+            )))
+        }
+    }
+
+    @Test
     fun `every key present loads exactly the supplied values`() {
         val environment = fullEnvironment()
         val config = ParkerRuntimeConfigLoader.load(environment)
