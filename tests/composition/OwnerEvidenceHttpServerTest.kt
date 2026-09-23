@@ -1221,10 +1221,15 @@ class OwnerEvidenceHttpServerTest {
                 return send(builder.POST(HttpRequest.BodyPublishers.ofString(body)).build())
             }
             assertEquals(400, post("{\"pin\":\"12345\"}").statusCode())
+            assertEquals(400, post("{\"pin\":\"1234567\"}").statusCode())
+            assertEquals(400, post("{\"pin\":\"１２３４５６\"}").statusCode())
+            assertEquals(400, post("{\"pin\":\"123456 \"}").statusCode())
+            assertEquals(400, post("{}").statusCode())
             assertEquals(400, post("{\"pin\":\"123456\",\"extra\":true}").statusCode())
             assertEquals(401, post("{\"pin\":\"123456\"}", cookie = null).statusCode())
             assertEquals(403, post("{\"pin\":\"123456\"}", origin = "https://attacker.invalid").statusCode())
-            assertEquals(0, calls)
+            assertEquals(200, post("{\"pin\":\"123456\"}", origin = null).statusCode())
+            assertEquals(1, calls)
         } finally { harness.shutdown() }
     }
 

@@ -4033,6 +4033,7 @@ class ParkerRuntime(
                 evidenceArtifactId.value,
                 detail = "AUTHORIZATION_UNAVAILABLE",
             )
+        coordinator.currentAuthorizationIfValid(evidenceArtifactId)?.let { return it }
         val manifest = when (val retrieved = evidenceCustodian.retrieveManifest(PrincipalId(config.ownerPrincipalId), evidenceArtifactId)) {
             is EvidenceManifestRetrievalResult.Found -> retrieved.manifest
             else -> return parker.core.runtime.ExternalTranscriptionAuthorizationView(
@@ -4078,7 +4079,8 @@ class ParkerRuntime(
     }
 
     fun ownerPinAuthorizationEnabled(): Boolean = config.ownerHighAuthorityPinEnabled
-    fun ownerPinAuthorizationAvailable(): Boolean = ownerPinVerifier?.isAvailable() == true
+    fun ownerPinAuthorizationAvailable(): Boolean =
+        ownerPinVerifier?.isAvailable() == true && ownerUnlockProofStore != null && externalTranscriptionAuthorizationCoordinator != null
 
     private fun pinFailure(evidenceArtifactId: EvidenceArtifactId, detail: String) =
         parker.core.runtime.ExternalTranscriptionAuthorizationView(

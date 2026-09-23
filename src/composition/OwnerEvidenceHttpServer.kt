@@ -5584,7 +5584,14 @@ function appendEnhancedTranscriptionAuthorizationSection(panel, row, index, deci
     confirmPin.type = 'button';
     confirmPin.textContent = 'Confirm authorization';
     const stableEvidenceArtifactId = row.evidenceArtifactId;
-    confirmPin.onclick = () => { const submittedPin = pinInput.value; pinInput.value = ''; authorizePinEnhancedTranscription(stableEvidenceArtifactId, submittedPin); };
+    confirmPin.onclick = () => {
+      if (row.pinAuthorizationInFlight) return;
+      row.pinAuthorizationInFlight = true;
+      confirmPin.disabled = true;
+      const submittedPin = pinInput.value;
+      pinInput.value = '';
+      authorizePinEnhancedTranscription(stableEvidenceArtifactId, submittedPin);
+    };
     panel.appendChild(confirmPin);
     const cancelPin = document.createElement('button');
     cancelPin.type = 'button';
@@ -5641,6 +5648,7 @@ async function authorizePinEnhancedTranscription(evidenceArtifactId, pin) {
     render();
   } finally {
     pin = '';
+    row.pinAuthorizationInFlight = false;
   }
 }
 

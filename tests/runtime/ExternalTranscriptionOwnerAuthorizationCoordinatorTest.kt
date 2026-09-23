@@ -270,6 +270,18 @@ class ExternalTranscriptionOwnerAuthorizationCoordinatorTest {
     }
 
     @Test
+    fun `current trusted authorization precheck is idempotent without high authority verification`() = runTest {
+        val verification = FakeVerification(secret)
+        val c = coordinator(verification = verification)
+        c.authorize(evidenceId, OwnerVerificationCredential.presented(secret))
+
+        val existing = c.currentAuthorizationIfValid(evidenceId)
+
+        assertEquals(ExternalTranscriptionAuthorizationDisposition.AUTHORISED, existing?.disposition)
+        assertEquals(1, verification.calls)
+    }
+
+    @Test
     fun `wrong evidence target -- unresolvable manifest -- fails closed`() = runTest {
         val c = coordinator(custodian = FakeCustodian(emptyMap()))
         val view = c.authorize(evidenceId, OwnerVerificationCredential.presented(secret))

@@ -220,6 +220,24 @@ class ExternalTranscriptionOwnerAuthorizationCoordinator(
     fun isAuthorized(evidenceArtifactId: EvidenceArtifactId): Boolean = loadUsable(evidenceArtifactId.value) != null
 
     /**
+     * Returns an existing grant only when the current trusted manifest and permission policy
+     * still validate the exact target. This is the idempotent pre-check used by the PIN route;
+     * it never invokes high-authority verification and never executes a provider.
+     */
+    suspend fun currentAuthorizationIfValid(evidenceArtifactId: EvidenceArtifactId): ExternalTranscriptionAuthorizationView? {
+        val resolution = resolveExactTarget(evidenceArtifactId)
+        val manifest = (resolution as? ExactTargetResolution.Ready)?.manifest ?: return null
+        if (!permissionAllows(evidenceArtifactId)) return null
+        val existing = loadUsable(evidenceArtifactId.value) ?: return null
+        if (existing.sourceSha256 != manifest.sha256 || existing.principalId != ownerPrincipalId.value || existing.purpose != purpose.value) return null
+        return ExternalTranscriptionAuthorizationView(
+            ExternalTranscriptionAuthorizationDisposition.AUTHORISED,
+            evidenceArtifactId.value,
+            approvedAt = existing.approvedAt,
+        )
+    }
+
+    /**
      * Verifies one transient Owner approval for one Parker-minted batch. This creates no
      * evidence-level grant and never invokes a provider; the binding coordinator persists only
      * the resulting boolean and its audit fact. The batch identity is included in the verified
